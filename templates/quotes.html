@@ -2,138 +2,97 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ORA Glass ERP</title>
+    <title>ORA Glass ERP - Quotes</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
-        .header { background: #C41E3A; color: white; padding: 15px 30px; display: flex; align-items: center; }
-        .header h1 { font-size: 24px; font-weight: 300; letter-spacing: 2px; }
-        .header span { font-size: 12px; margin-left: 10px; opacity: 0.8; }
-        .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
-        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .card h2 { color: #333; font-size: 18px; margin-bottom: 15px; border-bottom: 2px solid #C41E3A; padding-bottom: 8px; }
-        .form-row { display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
-        .form-group { flex: 1; min-width: 200px; }
+        .header { background: #C41E3A; color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .container { max-width: 1100px; margin: 20px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; }
+        .card h2 { color: #333; margin-bottom: 15px; border-bottom: 2px solid #C41E3A; padding-bottom: 8px; }
+        .form-row { display: flex; gap: 15px; margin-bottom: 15px; }
+        .form-group { flex: 1; }
         .form-group label { display: block; font-size: 12px; color: #666; margin-bottom: 5px; font-weight: 600; }
-        .form-group select, .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        .form-group select:focus, .form-group input:focus { outline: none; border-color: #C41E3A; }
-        .btn { background: #C41E3A; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 14px; }
-        .btn:hover { background: #a01830; }
+        .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        .btn { background: #C41E3A; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; }
         .result { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px; }
-        .result-price { font-size: 32px; color: #C41E3A; font-weight: bold; }
-        .breakdown { margin-top: 15px; }
-        .breakdown table { width: 100%; border-collapse: collapse; }
-        .breakdown th, .breakdown td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
-        .breakdown th { font-size: 12px; color: #666; }
-        .nav { background: #1a1a2e; padding: 10px 30px; }
-        .nav a { color: white; text-decoration: none; margin-right: 20px; font-size: 14px; }
-        .nav a:hover { color: #C41E3A; }
+        .result-price { font-size: 28px; color: #C41E3A; font-weight: bold; }
+        .section { background: #f9f9f9; padding: 15px; border-radius: 6px; margin-bottom: 15px; }
+        .section h3 { font-size: 14px; color: #C41E3A; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>ORA GLASS</h1>
-        <span>ERP System</span>
-    </div>
-    <div class="nav">
-        <a href="/">Quote Builder</a>
-        <a href="#">Orders</a>
-        <a href="#">Customers</a>
-        <a href="#">Inventory</a>
+        <h1>ORA GLASS ERP</h1>
+        <a href="/">← Dashboard</a>
     </div>
     <div class="container">
         <div class="card">
             <h2>IGU Quote Calculator</h2>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Glass 1 (Outboard)</label>
-                    <select id="glass1">
-                        <option value="">Select glass...</option>
-                        {% for g in glass %}
-                        <option value="{{ g.name }}" data-temperable="{{ g.temperable }}">{{ g.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Glass 2 (Inboard)</label>
-                    <select id="glass2">
-                        <option value="">Select glass...</option>
-                        {% for g in glass %}
-                        <option value="{{ g.name }}">{{ g.name }}</option>
-                        {% endfor %}
-                    </select>
+            <div class="section">
+                <h3>Glass Layers</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Glass A (Outboard)</label>
+                        <select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Glass B (Middle)</label>
+                        <select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Glass C (Inboard)</label>
+                        <select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
                 </div>
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Spacer</label>
-                    <select id="spacer">
-                        <option value="">Select spacer...</option>
-                        {% for s in spacers %}
-                        <option value="{{ s.name }}">{{ s.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Sealant</label>
-                    <select id="sealant">
-                        <option value="">Select sealant...</option>
-                        {% for s in sealants %}
-                        <option value="{{ s.name }}">{{ s.name }}</option>
-                        {% endfor %}
-                    </select>
+            <div class="section">
+                <h3>Spacers & Sealants</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Spacer 1</label>
+                        <select id="spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant 1</label>
+                        <select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Spacer 2</label>
+                        <select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant 2</label>
+                        <select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
                 </div>
             </div>
             <div class="form-row">
                 <div class="form-group">
                     <label>Tier</label>
-                    <select id="tier">
-                        <option value="T1">Tier 1 (Internal)</option>
-                        <option value="T2" selected>Tier 2 (ORA Canada)</option>
-                        <option value="T3">Tier 3</option>
-                        <option value="T4">Tier 4</option>
-                    </select>
+                    <select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select>
                 </div>
                 <div class="form-group">
                     <label>Tempered</label>
-                    <select id="tempered">
-                        <option value="false">Annealed</option>
-                        <option value="true">Fully Tempered</option>
-                    </select>
+                    <select id="tempered"><option value="false">Annealed</option><option value="true">Tempered</option></select>
                 </div>
             </div>
             <button class="btn" onclick="calculate()">Calculate Price</button>
             <div id="result" class="result" style="display:none;">
                 <div class="result-price">$<span id="price">0.00</span> / sqf</div>
-                <div class="breakdown">
-                    <table>
-                        <thead><tr><th>Item</th><th>Price</th></tr></thead>
-                        <tbody id="breakdown"></tbody>
-                    </table>
-                </div>
+                <div id="breakdown"></div>
             </div>
         </div>
     </div>
     <script>
         async function calculate() {
-            const data = {
-                glass1: document.getElementById('glass1').value,
-                glass2: document.getElementById('glass2').value,
-                spacer: document.getElementById('spacer').value,
-                sealant: document.getElementById('sealant').value,
-                tier: document.getElementById('tier').value,
-                tempered: document.getElementById('tempered').value === 'true'
-            };
-            const res = await fetch('/api/calculate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            });
+            const data = {glass1: document.getElementById('glass1').value, glass2: document.getElementById('glass2').value, glass3: document.getElementById('glass3').value, spacer1: document.getElementById('spacer1').value, spacer2: document.getElementById('spacer2').value, sealant1: document.getElementById('sealant1').value, sealant2: document.getElementById('sealant2').value, tier: document.getElementById('tier').value, tempered: document.getElementById('tempered').value === 'true'};
+            const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
             const result = await res.json();
             document.getElementById('price').textContent = result.price_sqf.toFixed(2);
-            document.getElementById('breakdown').innerHTML = result.breakdown
-                .map(b => `<tr><td>${b.item}</td><td>$${b.price.toFixed(2)}</td></tr>`).join('');
+            document.getElementById('breakdown').innerHTML = result.breakdown.map(b => '<p>' + b.item + ': $' + b.price.toFixed(2) + '</p>').join('');
             document.getElementById('result').style.display = 'block';
         }
     </script>
