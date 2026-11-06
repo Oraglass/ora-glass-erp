@@ -107,6 +107,18 @@ def load_pricing():
         return []
 
 PRICING = load_pricing()
+if not PRICING:
+    PRICING = [
+        {'name': 'Clear Glass 4mm', 'thickness': '4mm', 'base_price': 1.12, 'temperable': True},
+        {'name': 'Clear Glass 6mm', 'thickness': '6mm', 'base_price': 1.67, 'temperable': True},
+        {'name': 'LoE 366 6mm', 'thickness': '6mm', 'base_price': 2.95, 'temperable': False},
+        {'name': 'LoE Q-366 6mm', 'thickness': '6mm', 'base_price': 3.64, 'temperable': True},
+        {'name': 'Solarban60 6mm', 'thickness': '6mm', 'base_price': 3.85, 'temperable': False},
+        {'name': 'Superspacer 12mm / sqf', 'thickness': '12mm', 'base_price': 0.80, 'temperable': False},
+        {'name': 'Superspacer 16mm / sqf', 'thickness': '16mm', 'base_price': 0.96, 'temperable': False},
+        {'name': 'Sealant -  12mm Polyurethane', 'thickness': '12mm', 'base_price': 0.17, 'temperable': False},
+        {'name': 'Sealant -  16mm Polyurethane', 'thickness': '16mm', 'base_price': 0.23, 'temperable': False},
+    ]
 GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['temper', 'spacer', 'sealant'])]
 SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower()]
 SEALANTS = [p for p in PRICING if 'sealant' in p['name'].lower()]
