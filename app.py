@@ -110,14 +110,33 @@ PRICING = load_pricing()
 if not PRICING:
     PRICING = [
         {'name': 'Clear Glass 4mm', 'thickness': '4mm', 'base_price': 1.12, 'temperable': True},
+        {'name': 'Clear Glass 5mm', 'thickness': '5mm', 'base_price': 1.44, 'temperable': True},
         {'name': 'Clear Glass 6mm', 'thickness': '6mm', 'base_price': 1.67, 'temperable': True},
+        {'name': 'Clear Glass 8mm', 'thickness': '8mm', 'base_price': 2.38, 'temperable': True},
+        {'name': 'Clear Glass 10mm', 'thickness': '10mm', 'base_price': 3.01, 'temperable': True},
+        {'name': 'LoE 180 4mm', 'thickness': '4mm', 'base_price': 1.57, 'temperable': False},
+        {'name': 'LoE 180 6mm', 'thickness': '6mm', 'base_price': 2.38, 'temperable': False},
+        {'name': 'LoE 270 4mm', 'thickness': '4mm', 'base_price': 1.57, 'temperable': False},
+        {'name': 'LoE 270 6mm', 'thickness': '6mm', 'base_price': 2.38, 'temperable': False},
+        {'name': 'LoE 366 4mm', 'thickness': '4mm', 'base_price': 2.12, 'temperable': False},
         {'name': 'LoE 366 6mm', 'thickness': '6mm', 'base_price': 2.95, 'temperable': False},
+        {'name': 'LoE Q-180 4mm', 'thickness': '4mm', 'base_price': 2.21, 'temperable': True},
+        {'name': 'LoE Q-180 6mm', 'thickness': '6mm', 'base_price': 2.88, 'temperable': True},
+        {'name': 'LoE Q-366 4mm', 'thickness': '4mm', 'base_price': 3.00, 'temperable': True},
         {'name': 'LoE Q-366 6mm', 'thickness': '6mm', 'base_price': 3.64, 'temperable': True},
+        {'name': 'Solarban60 4mm', 'thickness': '4mm', 'base_price': 2.22, 'temperable': False},
         {'name': 'Solarban60 6mm', 'thickness': '6mm', 'base_price': 3.85, 'temperable': False},
+        {'name': 'Solarban60 VT 6mm', 'thickness': '6mm', 'base_price': 4.27, 'temperable': True},
+        {'name': 'SolarCoat 4mm', 'thickness': '4mm', 'base_price': 2.18, 'temperable': True},
+        {'name': 'SolarCoat 6mm', 'thickness': '6mm', 'base_price': 3.28, 'temperable': True},
+        {'name': 'Superspacer 10mm / sqf', 'thickness': '10mm', 'base_price': 0.73, 'temperable': False},
         {'name': 'Superspacer 12mm / sqf', 'thickness': '12mm', 'base_price': 0.80, 'temperable': False},
+        {'name': 'Superspacer 14mm / sqf', 'thickness': '14mm', 'base_price': 0.88, 'temperable': False},
         {'name': 'Superspacer 16mm / sqf', 'thickness': '16mm', 'base_price': 0.96, 'temperable': False},
         {'name': 'Sealant -  12mm Polyurethane', 'thickness': '12mm', 'base_price': 0.17, 'temperable': False},
+        {'name': 'Sealant -  12mm Silicone', 'thickness': '12mm', 'base_price': 0.21, 'temperable': False},
         {'name': 'Sealant -  16mm Polyurethane', 'thickness': '16mm', 'base_price': 0.23, 'temperable': False},
+        {'name': 'Sealant -  16mm Silicone', 'thickness': '16mm', 'base_price': 0.27, 'temperable': False},
     ]
 GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['temper', 'spacer', 'sealant'])]
 SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower()]
