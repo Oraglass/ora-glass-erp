@@ -89,7 +89,10 @@ def module_required(module):
 # Load pricing
 def load_pricing():
     try:
-        wb = openpyxl.load_workbook('data/pricing_base.xlsx', data_only=True)
+       import os
+        paths = ['data/pricing_base.xlsx', 'pricing_base.xlsx']
+        path = next((p for p in paths if os.path.exists(p)), paths[0])
+        wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb['pricelist']
         items = []
         for row in range(2, 110):
