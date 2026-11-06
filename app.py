@@ -89,10 +89,7 @@ def module_required(module):
 # Load pricing
 def load_pricing():
     try:
-       import os
-        paths = ['data/pricing_base.xlsx', 'pricing_base.xlsx']
-        path = next((p for p in paths if os.path.exists(p)), paths[0])
-        wb = openpyxl.load_workbook(path, data_only=True)
+        wb = openpyxl.load_workbook('data/pricing_base.xlsx', data_only=True)
         ws = wb['pricelist']
         items = []
         for row in range(2, 110):
@@ -238,7 +235,7 @@ def pricing():
 @login_required
 @module_required('users')
 def users():
-    return render_template('users.html', users=USERS, roles=ROLES, user=session)
+    return render_template('module.html', module='Users', user=session)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
