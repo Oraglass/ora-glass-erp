@@ -202,7 +202,7 @@ if not PRICING:
         {'name': 'Sealant -  26mm Polyurethane', 'thickness': '26mm', 'base_price': 0.3672, 'temperable': False, 'annealed': False},
         {'name': 'Sealant -  26mm Silicone', 'thickness': '26mm', 'base_price': 0.4447, 'temperable': False, 'annealed': False},
     ]
-GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['temper', 'spacer', 'sealant'])]
+GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['temper', 'spacer', 'sealant', 'technoform'])]
 SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower() or 'technoform' in p['name'].lower()]
 SEALANTS = [p for p in PRICING if 'sealant' in p['name'].lower()]
 
