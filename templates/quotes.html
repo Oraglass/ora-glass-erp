@@ -7,14 +7,12 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
-.header h1{font-size:22px}
-.header a{color:white;text-decoration:none}
+.header h1{font-size:22px}.header a{color:white;text-decoration:none}
 .container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
 .card h2{color:#333;margin-bottom:15px;border-bottom:2px solid #C41E3A;padding-bottom:8px}
 .form-row{display:flex;gap:10px;margin-bottom:10px}
-.form-group{flex:1}
-.form-group.small{flex:0 0 150px}
+.form-group{flex:1}.form-group.small{flex:0 0 150px}
 .form-group label{display:block;font-size:11px;color:#666;margin-bottom:4px;font-weight:600}
 .form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:12px 24px;border-radius:4px;cursor:pointer}
@@ -29,34 +27,32 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
 <div class="container"><div class="card">
 <h2>IGU Quote Calculator</h2>
-<div class="section"><h3>Layer A (Outboard)</h3>
-<div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
+<div class="form-group"><label>Glass</label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">n/a</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section"><h3>Spacer 1 & Sealant 1</h3>
-<div class="layer">
+<div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 <div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
-<div class="section"><h3>Layer B (Middle) - optional</h3>
-<div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
+<div class="form-group"><label>Glass</label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper2"><option value="n/a">n/a</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3>
-<div class="layer">
+<div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 <div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
-<div class="section"><h3>Layer C (Inboard) - optional</h3>
-<div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
+<div class="form-group"><label>Glass</label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">n/a</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="form-row"><div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div></div>
 <button class="btn" onclick="calculate()">Calculate Price</button>
-<div id="result" class="result" style="display:none"><div class="result-price">$<span id="price">0.00</span> / sqf</div><div id="breakdown"></div></div>
+<div id="result" class="result" style="display:none">
+<div class="result-price">USD $<span id="price">0.00</span> / sqf</div>
+<div class="result-price" style="font-size:22px;color:#666;margin-top:5px">CAD $<span id="price-cad">0.00</span> / sqf</div>
+</div>
 </div></div>
 <script>
 const sealantOptions=[];
@@ -74,6 +70,20 @@ const silicone=filtered.find(s=>s.text.toLowerCase().includes('silicone'));
 if(poly){const opt=document.createElement('option');opt.value=poly.value;opt.text=poly.text;opt.selected=true;sealantEl.appendChild(opt)}
 if(silicone){const opt=document.createElement('option');opt.value=silicone.value;opt.text=silicone.text;sealantEl.appendChild(opt)}
 }
+function updateTemper(glassId,temperId){
+const glassEl=document.getElementById(glassId);
+const temperEl=document.getElementById(temperId);
+const selected=glassEl.options[glassEl.selectedIndex];
+if(!selected||!selected.value){temperEl.innerHTML='<option value="n/a">n/a</option>';return}
+const canTemper=selected.dataset.temper==='True';
+const canAnneal=selected.dataset.annealed!=='False';
+temperEl.innerHTML='';
+if(canAnneal){const opt=document.createElement('option');opt.value='n/a';opt.text='n/a (Annealed)';if(!canTemper)opt.selected=true;temperEl.appendChild(opt)}
+if(canTemper){const opt=document.createElement('option');opt.value='yes';opt.text='Tempered';if(!canAnneal)opt.selected=true;temperEl.appendChild(opt)}
+}
+document.getElementById('glass1').addEventListener('change',()=>updateTemper('glass1','temper1'));
+document.getElementById('glass2').addEventListener('change',()=>updateTemper('glass2','temper2'));
+document.getElementById('glass3').addEventListener('change',()=>updateTemper('glass3','temper3'));
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
 document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
 async function calculate(){
@@ -81,7 +91,7 @@ const data={glass1:document.getElementById('glass1').value,glass2:document.getEl
 const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const result=await res.json();
 document.getElementById('price').textContent=result.price_sqf.toFixed(2);
-document.getElementById('breakdown').innerHTML=result.breakdown.map(b=>'<p>'+b.item+': $'+b.price.toFixed(2)+'</p>').join('');
+document.getElementById('price-cad').textContent=(result.price_sqf*1.4).toFixed(2);
 document.getElementById('result').style.display='block';
 }
 </script>
