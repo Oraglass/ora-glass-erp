@@ -64,29 +64,4 @@
             <div class="section">
                 <h3>Layer C (Inboard) - optional</h3>
                 <div class="layer">
-                    <div class="form-group"><label>Glass</label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
-                    <div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">n/a</option><option value="yes">Tempered</option></select></div>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div>
-            </div>
-            <button class="btn" onclick="calculate()">Calculate Price</button>
-            <div id="result" class="result" style="display:none;">
-                <div class="result-price">$<span id="price">0.00</span> / sqf</div>
-                <div id="breakdown"></div>
-            </div>
-        </div>
-    </div>
-    <script>
-        async function calculate() {
-            const data = {glass1: document.getElementById('glass1').value, glass2: document.getElementById('glass2').value, glass3: document.getElementById('glass3').value, temper1: document.getElementById('temper1').value, temper2: document.getElementById('temper2').value, temper3: document.getElementById('temper3').value, spacer1: document.getElementById('spacer1').value, spacer2: document.getElementById('spacer2').value, sealant1: document.getElementById('sealant1').value, sealant2: document.getElementById('sealant2').value, tier: document.getElementById('tier').value};
-            const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
-            const result = await res.json();
-            document.getElementById('price').textContent = result.price_sqf.toFixed(2);
-            document.getElementById('breakdown').innerHTML = result.breakdown.map(b => '<p>' + b.item + ': $' + b.price.toFixed(2) + '</p>').join('');
-            document.getElementById('result').style.display = 'block';
-        }
-    </script>
-</body>
-</html>
+                    <div class="form-group"><label>Glass</label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name 
