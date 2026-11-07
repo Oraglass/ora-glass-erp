@@ -195,47 +195,41 @@ def quotes():
 @login_required
 def calculate():
     data = request.json
-    glass1 = next((g for g in PRICING if g['name'] == data.get('glass1')), None)
-    glass2 = next((g for g in PRICING if g['name'] == data.get('glass2')), None)
-    spacer = next((s for s in PRICING if s['name'] == data.get('spacer')), None)
-    sealant = next((s for s in PRICING if s['name'] == data.get('sealant')), None)
     tier = data.get('tier', 'T2')
-    tempered = data.get('tempered', False)
-    
     pct = TIERS.get(tier, TIERS['T2'])
-    
     def apply_tier(base, item_type):
         return base * (1 + pct.get(item_type, 0) / 100)
-    
     total = 0
     breakdown = []
-    
-    if glass1:
-        p = apply_tier(glass1['base_price'], 'glass')
-        total += p
-        breakdown.append({'item': glass1['name'], 'price': round(p, 2)})
-        if tempered and glass1['temperable']:
-            total += 0.65
-            breakdown.append({'item': 'Tempering', 'price': 0.65})
-    
-    if spacer:
-        p = apply_tier(spacer['base_price'], 'spacer')
-        total += p
-        breakdown.append({'item': spacer['name'], 'price': round(p, 2)})
-    
-    if sealant:
-        p = apply_tier(sealant['base_price'], 'sealant')
-        total += p
-        breakdown.append({'item': sealant['name'], 'price': round(p, 2)})
-    
-    if glass2:
-        p = apply_tier(glass2['base_price'], 'glass')
-        total += p
-        breakdown.append({'item': glass2['name'], 'price': round(p, 2)})
-        if tempered and glass2['temperable']:
-            total += 0.65
-            breakdown.append({'item': 'Tempering', 'price': 0.65})
-    
+    layers = [
+        (data.get('glass1'), data.get('temper1')),
+        (data.get('glass2'), data.get('temper2')),
+        (data.get('glass3'), data.get('temper3'))
+    ]
+    for glass_name, temper in layers:
+        if glass_name and glass_name != 'n/a':
+            glass = next((g for g in PRICING if g['name'] == glass_name), None)
+            if glass:
+                p = apply_tier(glass['base_price'], 'glass')
+                total += p
+                breakdown.append({'item': glass['name'], 'price': round(p, 2)})
+                if temper == 'yes' and glass.get('temperable'):
+                    total += 0.65
+                    breakdown.append({'item': 'Tempering', 'price': 0.65})
+    for spacer_name in [data.get('spacer1'), data.get('spacer2')]:
+        if spacer_name and spacer_name != 'n/a':
+            spacer = next((s for s in PRICING if s['name'] == spacer_name), None)
+            if spacer:
+                p = apply_tier(spacer['base_price'], 'spacer')
+                total += p
+                breakdown.append({'item': spacer['name'], 'price': round(p, 2)})
+    for sealant_name in [data.get('sealant1'), data.get('sealant2')]:
+        if sealant_name and sealant_name != 'n/a':
+            sealant = next((s for s in PRICING if s['name'] == sealant_name), None)
+            if sealant:
+                p = apply_tier(sealant['base_price'], 'sealant')
+                total += p
+                breakdown.append({'item': sealant['name'], 'price': round(p, 2)})
     return jsonify({'price_sqf': round(total, 2), 'breakdown': breakdown, 'tier': tier})
 
 @app.route('/orders')
