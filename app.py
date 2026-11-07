@@ -341,7 +341,11 @@ def export_quote():
     for i, item in enumerate(items, 1):
         table_data.append([str(i), item.get('name', ''), f"${item.get('usd', '0.00')}", f"${item.get('cad', '0.00')}"])
     
-    items_table = Table(table_data, colWidths=[0.5*inch, 5*inch, 1*inch, 1*inch])
+    from reportlab.platypus import Paragraph
+desc_style = ParagraphStyle('Desc', parent=styles['Normal'], fontSize=8, leading=10)
+for i in range(1, len(table_data)):
+    table_data[i][1] = Paragraph(table_data[i][1], desc_style)
+items_table = Table(table_data, colWidths=[0.4*inch, 5.2*inch, 0.9*inch, 0.9*inch])
     items_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
