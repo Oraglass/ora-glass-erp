@@ -49,13 +49,24 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 <div class="form-row"><div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div></div>
 <button class="btn" onclick="calculate()">Calculate Price</button>
+<button class="btn" style="margin-left:10px;background:#333" onclick="addToQuote()">Add to Quote</button>
 <div id="result" class="result" style="display:none">
 <div class="result-price">USD $<span id="price">0.00</span> / sqf</div>
 <div class="result-price" style="font-size:22px;color:#666;margin-top:5px">CAD $<span id="price-cad">0.00</span> / sqf</div>
 <div style="margin-top:10px;font-size:14px;color:#333">IGU Thickness: <strong id="thickness-mm">0</strong> mm (<strong id="thickness-in">0</strong>")</div>
+<div style="margin-top:8px;font-size:13px;color:#C41E3A;font-weight:bold" id="igu-name"></div>
+</div>
+<div id="quote-list" style="margin-top:20px;display:none">
+<h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
+<table id="quote-table" style="width:100%;border-collapse:collapse;font-size:13px">
+<thead><tr style="background:#f5f5f5"><th style="padding:8px;text-align:left;border-bottom:1px solid #ddd">Product</th><th style="padding:8px;text-align:right;border-bottom:1px solid #ddd">USD/sqf</th><th style="padding:8px;text-align:right;border-bottom:1px solid #ddd">CAD/sqf</th><th style="padding:8px;text-align:center;border-bottom:1px solid #ddd"></th></tr></thead>
+<tbody id="quote-body"></tbody>
+</table>
+<button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
 </div>
 </div></div>
 <script>
+let quoteItems=[];
 const sealantOptions=[];
 document.querySelectorAll('#sealant1 option').forEach(o=>{if(o.value)sealantOptions.push({value:o.value,text:o.textContent})});
 function showSize(glassId,sizeId){const el=document.getElementById(glassId);const sizeEl=document.getElementById(sizeId);const sel=el.options[el.selectedIndex];sizeEl.textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':''}
@@ -82,7 +93,20 @@ const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole
 let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}
 document.getElementById('thickness-in').textContent=fracStr;
 document.getElementById('result').style.display='block';
+const iguName=generateIGUName();
+document.getElementById('igu-name').textContent=iguName;
 }
+function generateIGUName(){
+const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;
+function cleanGlass(name){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();return thick+'mm'+n}
+function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}
+const parts=[];if(g1)parts.push(cleanGlass(g1));if(s1)parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3));
+const total=document.getElementById('thickness-mm').textContent;return total+' - '+parts.filter(p=>p).join('+');
+}
+function addToQuote(){const name=document.getElementById('igu-name').textContent;const usd=document.getElementById('price').textContent;const cad=document.getElementById('price-cad').textContent;if(!name)return;quoteItems.push({name,usd,cad});renderQuoteList()}
+function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML='';quoteItems.forEach((item,i)=>{tbody.innerHTML+='<tr><td style="padding:8px;border-bottom:1px solid #eee">'+item.name+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.usd+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.cad+'</td><td style="padding:8px;text-align:center;border-bottom:1px solid #eee"><button onclick="removeItem('+i+')" style="background:none;border:none;color:#C41E3A;cursor:pointer">×</button></td></tr>'});document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
+function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
+function exportQuote(){let text='ORA GLASS QUOTE\\n\\n';quoteItems.forEach((item,i)=>{text+=(i+1)+'. '+item.name+'\\n   USD $'+item.usd+'/sqf  |  CAD $'+item.cad+'/sqf\\n\\n'});const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.txt';a.click()}
 </script>
 </body>
 </html>
