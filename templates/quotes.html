@@ -1,111 +1,491 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>ORA Glass ERP - Quotes</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
-.header h1{font-size:22px}.header a{color:white;text-decoration:none}
-.container{max-width:1200px;margin:20px auto;padding:0 20px}
-.card{background:white;border-radius:8px;padding:20px}
-.card h2{color:#333;margin-bottom:15px;border-bottom:2px solid #C41E3A;padding-bottom:8px}
-.form-row{display:flex;gap:10px;margin-bottom:10px}
-.form-group{flex:1}.form-group.small{flex:0 0 150px}
-.form-group label{display:block;font-size:11px;color:#666;margin-bottom:4px;font-weight:600}
-.form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
-.btn{background:#C41E3A;color:white;border:none;padding:12px 24px;border-radius:4px;cursor:pointer}
-.result{background:#f8f9fa;padding:20px;border-radius:8px;margin-top:15px}
-.result-price{font-size:28px;color:#C41E3A;font-weight:bold}
-.section{background:#f9f9f9;padding:12px;border-radius:6px;margin-bottom:12px}
-.section h3{font-size:13px;color:#C41E3A;margin-bottom:8px}
-.layer{display:flex;gap:10px;align-items:flex-end;margin-bottom:8px}
-</style>
+    <meta charset="UTF-8">
+    <title>ORA Glass ERP - Quotes</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: #C41E3A; color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; }
+        .card h2 { color: #333; margin-bottom: 15px; border-bottom: 2px solid #C41E3A; padding-bottom: 8px; }
+        .form-row { display: flex; gap: 10px; margin-bottom: 10px; }
+        .form-group { flex: 1; }
+        .form-group.small { flex: 0 0 150px; }
+        .form-group label { display: block; font-size: 11px; color: #666; margin-bottom: 4px; font-weight: 600; }
+        .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+        .btn { background: #C41E3A; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; }
+        .result { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px; }
+        .result-price { font-size: 28px; color: #C41E3A; font-weight: bold; }
+        .section { background: #f9f9f9; padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+        .section h3 { font-size: 13px; color: #C41E3A; margin-bottom: 8px; }
+        .layer { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 8px; }
+    </style>
 </head>
 <body>
-<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
-<div class="container"><div class="card">
-<h2>IGU Quote Calculator</h2>
-<div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
-<div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
-</div></div>
-<div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
-<div class="form-group"><label>Spacer</label><select id="spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-</div></div>
-<div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size2" style="color:#666;font-weight:normal"></span></label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
-<div class="form-group small"><label>Tempering</label><select id="temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
-</div></div>
-<div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
-<div class="form-group"><label>Spacer</label><select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-</div></div>
-<div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
-<div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
-</div></div>
-<div class="form-row"><div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div></div>
-<button class="btn" style="background:#333" onclick="addToQuote()">Add to Quote</button>
-<div id="result" class="result" style="display:none">
-<div class="result-price">USD $<span id="price">0.00</span> / sqf</div>
-<div class="result-price" style="font-size:22px;color:#666;margin-top:5px">CAD $<span id="price-cad">0.00</span> / sqf</div>
-<div style="margin-top:10px;font-size:14px;color:#333">IGU Thickness: <strong id="thickness-mm">0</strong> mm (<strong id="thickness-in">0</strong>")</div>
-<div style="margin-top:8px;font-size:13px;color:#C41E3A;font-weight:bold" id="igu-name"></div>
-</div>
-<div id="quote-list" style="margin-top:20px;display:none">
-<h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
-<table id="quote-table" style="width:100%;border-collapse:collapse;font-size:13px">
-<thead><tr style="background:#f5f5f5"><th style="padding:8px;text-align:left;border-bottom:1px solid #ddd">Product</th><th style="padding:8px;text-align:right;border-bottom:1px solid #ddd">USD/sqf</th><th style="padding:8px;text-align:right;border-bottom:1px solid #ddd">CAD/sqf</th><th style="padding:8px;text-align:center;border-bottom:1px solid #ddd"></th></tr></thead>
-<tbody id="quote-body"></tbody>
-</table>
-<button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
-</div>
-</div></div>
-<script>
-let quoteItems=[];
-const sealantOptions=[];
-document.querySelectorAll('#sealant1 option').forEach(o=>{if(o.value)sealantOptions.push({value:o.value,text:o.textContent})});
-function showSize(glassId,sizeId){const el=document.getElementById(glassId);const sizeEl=document.getElementById(sizeId);const sel=el.options[el.selectedIndex];sizeEl.textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':''}
-function updateSealant(spacerId,sealantId){
-const spacerVal=document.getElementById(spacerId).value;const sealantEl=document.getElementById(sealantId);const match=spacerVal.match(/(\d+)mm/);const size=match?parseInt(match[1]):null;const isTechno=spacerVal.toLowerCase().includes('techno');sealantEl.innerHTML='<option value="">Select...</option>';if(!size)return;let sizes=[size];if(isTechno){sizes=[size-1,size,size+1]}const filtered=sealantOptions.filter(s=>{const m=s.text.match(/(\d+)mm/);return m&&sizes.includes(parseInt(m[1]))});const poly=filtered.find(s=>s.text.toLowerCase().includes('poly'));const silicone=filtered.find(s=>s.text.toLowerCase().includes('silicone'));if(poly){const opt=document.createElement('option');opt.value=poly.value;opt.text=poly.text;opt.selected=true;sealantEl.appendChild(opt)}if(silicone){const opt=document.createElement('option');opt.value=silicone.value;opt.text=silicone.text;sealantEl.appendChild(opt)}}
-function updateTemper(glassId,temperId){
-const glassEl=document.getElementById(glassId);const temperEl=document.getElementById(temperId);const selected=glassEl.options[glassEl.selectedIndex];if(!selected||!selected.value||selected.value==='n/a'){temperEl.innerHTML='<option value="n/a">Annealed</option>';return}const name=selected.value.toLowerCase();const isQ=name.includes('q-');const isVT=name.includes(' vt');const canTemper=isQ||isVT||name.includes('clear')||name.includes('solarcoat')||name.includes('bronze')||name.includes('ezp')||name.includes('sandblast');const canAnneal=!isQ&&!isVT&&!name.includes('i89');temperEl.innerHTML='';if(canAnneal){const opt=document.createElement('option');opt.value='n/a';opt.text='Annealed';if(!canTemper)opt.selected=true;temperEl.appendChild(opt)}if(canTemper){const opt=document.createElement('option');opt.value='yes';opt.text='Tempered';if(!canAnneal)opt.selected=true;temperEl.appendChild(opt)}}
-document.getElementById('glass1').addEventListener('change',function(){updateTemper('glass1','temper1');showSize('glass1','size1')});
-document.getElementById('glass2').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const s1=document.getElementById('spacer1').value;const se1=document.getElementById('sealant1').value;if(!s1||s1==='n/a'||!se1||se1==='n/a'){alert('Select Spacer 1 and Sealant 1 before selecting Layer B glass');this.value='';return}}updateTemper('glass2','temper2');showSize('glass2','size2')});
-document.getElementById('glass3').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;if(!g2||g2==='n/a'||!s2||s2==='n/a'){alert('Select Layer B glass and Spacer 2 before selecting Layer C');this.value='';return}}updateTemper('glass3','temper3');showSize('glass3','size3')});
-document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
-document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
-function autoCalc(){const spacer1=document.getElementById('spacer1').value;if(spacer1&&spacer1!=='n/a'){calculate()}}
-['glass1','glass2','glass3','temper1','temper2','temper3','spacer1','spacer2','sealant1','sealant2','tier'].forEach(id=>{document.getElementById(id).addEventListener('change',autoCalc)});
-async function calculate(){
-const data={glass1:document.getElementById('glass1').value,glass2:document.getElementById('glass2').value,glass3:document.getElementById('glass3').value,temper1:document.getElementById('temper1').value,temper2:document.getElementById('temper2').value,temper3:document.getElementById('temper3').value,spacer1:document.getElementById('spacer1').value,spacer2:document.getElementById('spacer2').value,sealant1:document.getElementById('sealant1').value,sealant2:document.getElementById('sealant2').value,tier:document.getElementById('tier').value};
-const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-const result=await res.json();
-document.getElementById('price').textContent=result.price_sqf.toFixed(2);
-document.getElementById('price-cad').textContent=(result.price_sqf*1.4).toFixed(2);
-let totalMm=0;['glass1','glass2','glass3','spacer1','spacer2'].forEach(id=>{const val=document.getElementById(id).value;const m=val.match(/(\d+)mm/);if(m)totalMm+=parseInt(m[1])});
-document.getElementById('thickness-mm').textContent=totalMm;
-const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);
-let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}
-document.getElementById('thickness-in').textContent=fracStr;
-document.getElementById('result').style.display='block';
-const iguName=generateIGUName();
-document.getElementById('igu-name').textContent=iguName;
+    <div class="header">
+        <h1>ORA GLASS ERP</h1>
+        <a href="/">← Dashboard</a>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>IGU Quote Calculator</h2>
+            
+            <div class="section">
+                <h3>Layer A (Outboard)</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Spacer 1 & Sealant 1</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Spacer</label>
+                        <select id="spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant</label>
+                        <select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Layer B (Middle) - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Spacer 2 & Sealant 2 - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Spacer</label>
+                        <select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant</label>
+                        <select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Layer C (Inboard) - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group small">
+                    <label>Tier</label>
+                    <select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select>
+                </div>
+            </div>
+            
+            <button class="btn" style="margin-left:10px;background:#333" onclick="addToQuote()">Add to Quote</button>
+            <div id="result" class="result" style="display:none;">
+                <div class="result-price">$<span id="price">0.00</span> / sqf</div>
+                <div id="breakdown"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Store all sealant options
+        const sealantOptions = [];
+        document.querySelectorAll('#sealant1 option').forEach(o => {
+            if (o.value) sealantOptions.push({value: o.value, text: o.textContent});
+        });
+        
+        function updateSealant(spacerId, sealantId) {
+            const spacerVal = document.getElementById(spacerId).value;
+            const sealantEl = document.getElementById(sealantId);
+            const match = spacerVal.match(/(\d+)mm/);
+            const size = match ? match[1] : null;
+            
+            sealantEl.innerHTML = '<option value="">Select...</option>';
+            
+            if (!size) return;
+            
+            // Filter to matching thickness only
+            const filtered = sealantOptions.filter(s => s.text.includes(size + 'mm'));
+            
+            // Add Poly first (default), then Silicone
+            const poly = filtered.find(s => s.text.toLowerCase().includes('poly'));
+            const silicone = filtered.find(s => s.text.toLowerCase().includes('silicone'));
+            
+            if (poly) {
+                const opt = document.createElement('option');
+                opt.value = poly.value;
+                opt.text = poly.text;
+                opt.selected = true;
+                sealantEl.appendChild(opt);
+            }
+            if (silicone) {
+                const opt = document.createElement('option');
+                opt.value = silicone.value;
+                opt.text = silicone.text;
+                sealantEl.appendChild(opt);
+            }
+        }
+        
+        
+        function updateTemper(glassId, temperId) {
+            const glassEl = document.getElementById(glassId);
+            const temperEl = document.getElementById(temperId);
+            const selected = glassEl.options[glassEl.selectedIndex];
+            if (!selected || !selected.value) {
+                temperEl.innerHTML = '<option value="n/a">Annealed</option>';
+                return;
+            }
+            const canTemper = selected.dataset.temper === 'True';
+            const canAnneal = selected.dataset.annealed !== 'False';
+            temperEl.innerHTML = '';
+            if (canAnneal) {
+                const opt = document.createElement('option');
+                opt.value = 'n/a';
+                opt.text = 'n/a (Annealed)';
+                if (!canTemper) opt.selected = true;
+                temperEl.appendChild(opt);
+            }
+            if (canTemper) {
+                const opt = document.createElement('option');
+                opt.value = 'yes';
+                opt.text = 'Tempered';
+                if (!canAnneal) opt.selected = true;
+                temperEl.appendChild(opt);
+            }
+        }
+        document.getElementById('glass1').addEventListener('change', () => updateTemper('glass1', 'temper1'));
+        document.getElementById('glass2').addEventListener('change', () => updateTemper('glass2', 'temper2'));
+        document.getElementById('glass3').addEventListener('change', function(){
+if(this.value && this.value !== 'n/a'){
+const g2 = document.getElementById('glass2').value;
+const s2 = document.getElementById('spacer2').value;
+if(!g2 || g2 === 'n/a' || !s2 || s2 === 'n/a'){
+alert('Select Layer B glass and Spacer 2 before selecting Layer C');
+this.value = '';
+return;
 }
-function generateIGUName(){
-const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;
-function cleanGlass(name){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();return thick+'mm'+n}
-function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}
-const parts=[];if(g1)parts.push(cleanGlass(g1));if(s1)parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3));
-const total=document.getElementById('thickness-mm').textContent;return total+' - '+parts.filter(p=>p).join('+');
 }
-function addToQuote(){const name=document.getElementById('igu-name').textContent;const usd=document.getElementById('price').textContent;const cad=document.getElementById('price-cad').textContent;if(!name)return;quoteItems.push({name,usd,cad});renderQuoteList()}
-function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML='';quoteItems.forEach((item,i)=>{tbody.innerHTML+='<tr><td style="padding:8px;border-bottom:1px solid #eee">'+item.name+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.usd+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.cad+'</td><td style="padding:8px;text-align:center;border-bottom:1px solid #eee"><button onclick="removeItem('+i+')" style="background:none;border:none;color:#C41E3A;cursor:pointer">×</button></td></tr>'});document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
-function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
-function exportQuote(){let text='ORA GLASS QUOTE\\n\\n';quoteItems.forEach((item,i)=>{text+=(i+1)+'. '+item.name+'\\n   USD $'+item.usd+'/sqf  |  CAD $'+item.cad+'/sqf\\n\\n'});const blob=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.txt';a.click()}
-</script>
+updateTemper('glass3', 'temper3');
+});
+        
+        document.getElementById('spacer1').addEventListener('change', () => updateSealant('spacer1', 'sealant1'));
+        document.getElementById('spacer2').addEventListener('change', () => updateSealant('spacer2', 'sealant2'));
+        
+        async function calculate() {
+            const data = {
+                glass1: document.getElementById('glass1').value,
+                glass2: document.getElementById('glass2').value,
+                glass3: document.getElementById('glass3').value,
+                temper1: document.getElementById('temper1').value,
+                temper2: document.getElementById('temper2').value,
+                temper3: document.getElementById('temper3').value,
+                spacer1: document.getElementById('spacer1').value,
+                spacer2: document.getElementById('spacer2').value,
+                sealant1: document.getElementById('sealant1').value,
+                sealant2: document.getElementById('sealant2').value,
+                tier: document.getElementById('tier').value
+            };
+            const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+            const result = await res.json();
+            document.getElementById('price').textContent = result.price_sqf.toFixed(2);
+            document.getElementById('breakdown').innerHTML = result.breakdown.map(b => '<p>' + b.item + ': $' + b.price.toFixed(2) + '</p>').join('');
+            document.getElementById('result').style.display = 'block';
+        }
+    </script>
 </body>
-</html>
+</html>function generateIGUName(){
+const g1=document.getElementById('glass1').value;
+const g2=document.getElementById('glass2').value;
+const g3=document.getElementById('glass3').value;
+const s1=document.getElementById('spacer1').value;
+const s2=document.getElementById('spacer2').value;
+const se1=document.getElementById('sealant1').value;
+const se2=document.getElementById('sealant2').value;
+function cleanGlass(name){
+if(!name||name==='n/a')return'';
+let n=name.replace(' Jumbo','').replace(' / sqf','');
+const m=n.match(/(\d+)mm/);
+const thick=m?m[1]:'';
+n=n.replace(/\d+mm/,'').trim();
+return thick+'mm'+n;
+}
+function cleanSpacer(name,sealant){
+if(!name||name==='n/a')return'';
+const m=name.match(/(\d+)mm/);
+const thick=m?m[1]:'';
+const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';
+const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';
+return thick+'mm'+type+' with Argon('+seal+')';
+}
+const parts=[];
+if(g1)parts.push(cleanGlass(g1));
+if(s1)parts.push(cleanSpacer(s1,se1));
+if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}
+if(g3&&g3!=='n/a')parts.push(cleanGlass(g3));
+const total=document.getElementById('thickness-mm').textContent;
+return total+' - '+parts.filter(p=>p).join('+');
+}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ORA Glass ERP - Quotes</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: #C41E3A; color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; }
+        .card h2 { color: #333; margin-bottom: 15px; border-bottom: 2px solid #C41E3A; padding-bottom: 8px; }
+        .form-row { display: flex; gap: 10px; margin-bottom: 10px; }
+        .form-group { flex: 1; }
+        .form-group.small { flex: 0 0 150px; }
+        .form-group label { display: block; font-size: 11px; color: #666; margin-bottom: 4px; font-weight: 600; }
+        .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+        .btn { background: #C41E3A; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; }
+        .result { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 15px; }
+        .result-price { font-size: 28px; color: #C41E3A; font-weight: bold; }
+        .section { background: #f9f9f9; padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+        .section h3 { font-size: 13px; color: #C41E3A; margin-bottom: 8px; }
+        .layer { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ORA GLASS ERP</h1>
+        <a href="/">← Dashboard</a>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>IGU Quote Calculator</h2>
+            
+            <div class="section">
+                <h3>Layer A (Outboard)</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Spacer 1 & Sealant 1</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Spacer</label>
+                        <select id="spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant</label>
+                        <select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Layer B (Middle) - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Spacer 2 & Sealant 2 - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Spacer</label>
+                        <select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sealant</label>
+                        <select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Layer C (Inboard) - optional</h3>
+                <div class="layer">
+                    <div class="form-group">
+                        <label>Glass</label>
+                        <select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-annealed="{{ g.get('annealed', True) }}">{{ g.name }}</option>{% endfor %}</select>
+                    </div>
+                    <div class="form-group small">
+                        <label>Tempering</label>
+                        <select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group small">
+                    <label>Tier</label>
+                    <select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select>
+                </div>
+            </div>
+            
+            <button class="btn" style="margin-left:10px;background:#333" onclick="addToQuote()">Add to Quote</button>
+            <div id="result" class="result" style="display:none;">
+                <div class="result-price">$<span id="price">0.00</span> / sqf</div>
+                <div id="breakdown"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Store all sealant options
+        const sealantOptions = [];
+        document.querySelectorAll('#sealant1 option').forEach(o => {
+            if (o.value) sealantOptions.push({value: o.value, text: o.textContent});
+        });
+        
+        function updateSealant(spacerId, sealantId) {
+            const spacerVal = document.getElementById(spacerId).value;
+            const sealantEl = document.getElementById(sealantId);
+            const match = spacerVal.match(/(\d+)mm/);
+            const size = match ? match[1] : null;
+            
+            sealantEl.innerHTML = '<option value="">Select...</option>';
+            
+            if (!size) return;
+            
+            // Filter to matching thickness only
+            const filtered = sealantOptions.filter(s => s.text.includes(size + 'mm'));
+            
+            // Add Poly first (default), then Silicone
+            const poly = filtered.find(s => s.text.toLowerCase().includes('poly'));
+            const silicone = filtered.find(s => s.text.toLowerCase().includes('silicone'));
+            
+            if (poly) {
+                const opt = document.createElement('option');
+                opt.value = poly.value;
+                opt.text = poly.text;
+                opt.selected = true;
+                sealantEl.appendChild(opt);
+            }
+            if (silicone) {
+                const opt = document.createElement('option');
+                opt.value = silicone.value;
+                opt.text = silicone.text;
+                sealantEl.appendChild(opt);
+            }
+        }
+        
+        
+        function updateTemper(glassId, temperId) {
+            const glassEl = document.getElementById(glassId);
+            const temperEl = document.getElementById(temperId);
+            const selected = glassEl.options[glassEl.selectedIndex];
+            if (!selected || !selected.value) {
+                temperEl.innerHTML = '<option value="n/a">Annealed</option>';
+                return;
+            }
+            const canTemper = selected.dataset.temper === 'True';
+            const canAnneal = selected.dataset.annealed !== 'False';
+            temperEl.innerHTML = '';
+            if (canAnneal) {
+                const opt = document.createElement('option');
+                opt.value = 'n/a';
+                opt.text = 'n/a (Annealed)';
+                if (!canTemper) opt.selected = true;
+                temperEl.appendChild(opt);
+            }
+            if (canTemper) {
+                const opt = document.createElement('option');
+                opt.value = 'yes';
+                opt.text = 'Tempered';
+                if (!canAnneal) opt.selected = true;
+                temperEl.appendChild(opt);
+            }
+        }
+        document.getElementById('glass1').addEventListener('change', () => updateTemper('glass1', 'temper1'));
+        document.getElementById('glass2').addEventListener('change', () => updateTemper('glass2', 'temper2'));
+        document.getElementById('glass3').addEventListener('change', function(){
+if(this.value && this.value !== 'n/a'){
+const g2 = document.getElementById('glass2').value;
+const s2 = document.getElementById('spacer2').value;
+if(!g2 || g2 === 'n/a' || !s2 || s2 === 'n/a'){
+alert('Select Layer B glass and Spacer 2 before selecting Layer C');
+this.value = '';
+return;
+}
+}
+updateTemper('glass3', 'temper3');
+});
+        
+        document.getElementById('spacer1').addEventListener('change', () => updateSealant('spacer1', 'sealant1'));
+        document.getElementById('spacer2').addEventListener('change', () => updateSealant('spacer2', 'sealant2'));
+        
+        async function calculate() {
+            const data = {
+                glass1: document.getElementById('glass1').value,
+                glass2: document.getElementById('glass2').value,
+                glass3: document.getElementById('glass3').value,
+                temper1: document.getElementById('temper1').value,
+                temper2: document.getElementById('temper2').value,
+                temper3: document.getElementById('temper3').value,
+                spacer1: document.getElementById('spacer1').value,
+                spacer2: document.getElementById('spacer2').value,
+                sealant1: document.getElementById('sealant1').value,
+                sealant2: document.getElementById('sealant2').value,
+                tier: document.getElementById('tier').value
+            };
+            const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+            const result = await res.json();
+            document.getElementById('price').textContent = result.price_sqf.toFixed(2);
+            document.getElementById('breakdown').innerHTML = result.breakdown.map(b => '<p>' + b.item + ': $' + b.price.toFixed(2) + '</p>').join('');
+            document.getElementById('result').style.display = 'block';
+        }
+    </script>
+</body>
+</html>async function exportQuote(){
+const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems})});
+const blob=await res.blob();
+const a=document.createElement('a');
+a.href=URL.createObjectURL(blob);
+a.download='ORA_Quote.pdf';
+a.click();
+}
