@@ -28,7 +28,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="container"><div class="card">
 <h2>IGU Quote Calculator</h2>
 <div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
@@ -36,7 +36,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
 <div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size2" style="color:#666;font-weight:normal"></span></label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
@@ -44,7 +44,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
 <div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass</label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="form-row"><div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div></div>
@@ -58,13 +58,14 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <script>
 const sealantOptions=[];
 document.querySelectorAll('#sealant1 option').forEach(o=>{if(o.value)sealantOptions.push({value:o.value,text:o.textContent})});
+function showSize(glassId,sizeId){const el=document.getElementById(glassId);const sizeEl=document.getElementById(sizeId);const sel=el.options[el.selectedIndex];sizeEl.textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':''}
 function updateSealant(spacerId,sealantId){
 const spacerVal=document.getElementById(spacerId).value;const sealantEl=document.getElementById(sealantId);const match=spacerVal.match(/(\d+)mm/);const size=match?parseInt(match[1]):null;const isTechno=spacerVal.toLowerCase().includes('techno');sealantEl.innerHTML='<option value="">Select...</option>';if(!size)return;let sizes=[size];if(isTechno){sizes=[size-1,size,size+1]}const filtered=sealantOptions.filter(s=>{const m=s.text.match(/(\d+)mm/);return m&&sizes.includes(parseInt(m[1]))});const poly=filtered.find(s=>s.text.toLowerCase().includes('poly'));const silicone=filtered.find(s=>s.text.toLowerCase().includes('silicone'));if(poly){const opt=document.createElement('option');opt.value=poly.value;opt.text=poly.text;opt.selected=true;sealantEl.appendChild(opt)}if(silicone){const opt=document.createElement('option');opt.value=silicone.value;opt.text=silicone.text;sealantEl.appendChild(opt)}}
 function updateTemper(glassId,temperId){
 const glassEl=document.getElementById(glassId);const temperEl=document.getElementById(temperId);const selected=glassEl.options[glassEl.selectedIndex];if(!selected||!selected.value||selected.value==='n/a'){temperEl.innerHTML='<option value="n/a">Annealed</option>';return}const name=selected.value.toLowerCase();const isQ=name.includes('q-');const isVT=name.includes(' vt');const canTemper=isQ||isVT||name.includes('clear')||name.includes('solarcoat')||name.includes('bronze')||name.includes('ezp')||name.includes('sandblast');const canAnneal=!isQ&&!isVT&&!name.includes('i89');temperEl.innerHTML='';if(canAnneal){const opt=document.createElement('option');opt.value='n/a';opt.text='Annealed';if(!canTemper)opt.selected=true;temperEl.appendChild(opt)}if(canTemper){const opt=document.createElement('option');opt.value='yes';opt.text='Tempered';if(!canAnneal)opt.selected=true;temperEl.appendChild(opt)}}
-document.getElementById('glass1').addEventListener('change',()=>updateTemper('glass1','temper1'));
-document.getElementById('glass2').addEventListener('change',()=>updateTemper('glass2','temper2'));
-document.getElementById('glass3').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;if(!g2||g2==='n/a'||!s2||s2==='n/a'){alert('Select Layer B glass and Spacer 2 before selecting Layer C');this.value='';return}}updateTemper('glass3','temper3')});
+document.getElementById('glass1').addEventListener('change',function(){updateTemper('glass1','temper1');showSize('glass1','size1')});
+document.getElementById('glass2').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const s1=document.getElementById('spacer1').value;const se1=document.getElementById('sealant1').value;if(!s1||s1==='n/a'||!se1||se1==='n/a'){alert('Select Spacer 1 and Sealant 1 before selecting Layer B glass');this.value='';return}}updateTemper('glass2','temper2');showSize('glass2','size2')});
+document.getElementById('glass3').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;if(!g2||g2==='n/a'||!s2||s2==='n/a'){alert('Select Layer B glass and Spacer 2 before selecting Layer C');this.value='';return}}updateTemper('glass3','temper3');showSize('glass3','size3')});
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
 document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
 function autoCalc(){const spacer1=document.getElementById('spacer1').value;if(spacer1&&spacer1!=='n/a'){calculate()}}
