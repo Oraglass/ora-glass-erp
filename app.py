@@ -133,7 +133,7 @@ if not PRICING:
         {'name': 'Solarban60 6mm', 'sheet_size': '144"x100"', 'thickness': '6mm', 'base_price': 3.8493, 'temperable': False, 'annealed': True},
         {'name': 'Solarban60 VT 4mm', 'sheet_size': '130"x96"', 'thickness': '4mm', 'base_price': 2.49795, 'temperable': True, 'annealed': False},
         {'name': 'Solarban60 VT 5mm', 'sheet_size': '130"x96"', 'thickness': '5mm', 'base_price': 3.5217, 'temperable': True, 'annealed': False},
-        {'name': 'Solarban60 VT 6mm', 'sheet_size': '204"x130"', 'thickness': '6mm', 'base_price': 4.27245, 'temperable': True, 'annealed': False},
+        {'name': 'Solarban60 VT 6mm Jumbo', 'sheet_size': '204"x130"', 'thickness': '6mm', 'base_price': 4.27245, 'temperable': True, 'annealed': False},
         {'name': 'LoE 180 4mm', 'sheet_size': '144"x84"', 'thickness': '4mm', 'base_price': 1.56702, 'temperable': False, 'annealed': True},
         {'name': 'LoE 180 5mm', 'sheet_size': '144"x96"', 'thickness': '5mm', 'base_price': 1.96328, 'temperable': False, 'annealed': True},
         {'name': 'LoE 180 6mm', 'sheet_size': '144"x96"', 'thickness': '6mm', 'base_price': 2.37742, 'temperable': False, 'annealed': True},
@@ -155,18 +155,18 @@ if not PRICING:
         {'name': 'LoE i89 4mm', 'sheet_size': '144"x96"', 'thickness': '4mm', 'base_price': 3.35913, 'temperable': True, 'annealed': False},
         {'name': 'LoE i89 5mm', 'sheet_size': '144"x96"', 'thickness': '5mm', 'base_price': 3.54463, 'temperable': True, 'annealed': False},
         {'name': 'LoE i89 6mm', 'sheet_size': '144"x96"', 'thickness': '6mm', 'base_price': 3.85121, 'temperable': True, 'annealed': False},
-        {'name': 'Planitherm 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.7508, 'temperable': False, 'annealed': True},
-        {'name': 'Planitherm II EZP 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.94515, 'temperable': True, 'annealed': True},
-        {'name': 'Planitherm Lux 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.613, 'temperable': False, 'annealed': True},
-        {'name': 'Planitherm Lux II EZP 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.691, 'temperable': True, 'annealed': True},
-        {'name': 'Planitherm 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.81225, 'temperable': False, 'annealed': True},
-        {'name': 'Planitherm II EZP 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.81225, 'temperable': True, 'annealed': True},
-        {'name': 'Planitherm Lux 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.51, 'temperable': False, 'annealed': True},
-        {'name': 'Planitherm Lux II EZP 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.588, 'temperable': True, 'annealed': True},
-        {'name': 'SKN176 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 3.3488, 'temperable': False, 'annealed': False},
-        {'name': 'SKN176II EZP 4mm', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 3.48335, 'temperable': True, 'annealed': False},
-        {'name': 'SKN176 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 4.49995, 'temperable': False, 'annealed': False},
-        {'name': 'SKN176II EZP 6mm', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 4.6345, 'temperable': True, 'annealed': False},
+        {'name': 'Planitherm 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.7508, 'temperable': False, 'annealed': True},
+        {'name': 'Planitherm II EZP 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.94515, 'temperable': True, 'annealed': True},
+        {'name': 'Planitherm Lux 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.613, 'temperable': False, 'annealed': True},
+        {'name': 'Planitherm Lux II EZP 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 2.691, 'temperable': True, 'annealed': True},
+        {'name': 'Planitherm 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.81225, 'temperable': False, 'annealed': True},
+        {'name': 'Planitherm II EZP 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.81225, 'temperable': True, 'annealed': True},
+        {'name': 'Planitherm Lux 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.51, 'temperable': False, 'annealed': True},
+        {'name': 'Planitherm Lux II EZP 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 3.588, 'temperable': True, 'annealed': True},
+        {'name': 'SKN176 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 3.3488, 'temperable': False, 'annealed': False},
+        {'name': 'SKN176II EZP 4mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '4mm', 'base_price': 3.48335, 'temperable': True, 'annealed': False},
+        {'name': 'SKN176 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 4.49995, 'temperable': False, 'annealed': False},
+        {'name': 'SKN176II EZP 6mm Jumbo', 'sheet_size': '200"x130"', 'thickness': '6mm', 'base_price': 4.6345, 'temperable': True, 'annealed': False},
         {'name': 'Superspacer 10mm / sqf', 'thickness': '10mm', 'base_price': 0.727776, 'temperable': False, 'annealed': False},
         {'name': 'Superspacer 11mm / sqf', 'thickness': '11mm', 'base_price': 0.795207, 'temperable': False, 'annealed': False},
         {'name': 'Superspacer 12mm / sqf', 'thickness': '12mm', 'base_price': 0.802788, 'temperable': False, 'annealed': False},
@@ -295,6 +295,71 @@ def calculate():
                 total += p
                 breakdown.append({'item': sealant['name'], 'price': round(p, 2)})
     return jsonify({'price_sqf': round(total, 2), 'breakdown': breakdown, 'tier': tier})
+
+
+@app.route('/api/export-quote', methods=['POST'])
+@login_required
+def export_quote():
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from io import BytesIO
+    from datetime import date
+    
+    data = request.json
+    items = data.get('items', [])
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#C41E3A'), alignment=2)
+    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, leading=12)
+    
+    elements = []
+    
+    # Header
+    header_data = [
+        [Paragraph('<b>ORA GLASS</b><br/>2312 Leatherwood Pl<br/>Lynden, WA 98264, USA', header_style),
+         Paragraph('<b>QUOTATION</b>', title_style),
+         Paragraph(f'<b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Net:</b> C.O.D.', header_style)]
+    ]
+    header_table = Table(header_data, colWidths=[2.5*inch, 2.5*inch, 2.5*inch])
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ALIGN', (1, 0), (1, 0), 'CENTER'),
+        ('ALIGN', (2, 0), (2, 0), 'RIGHT'),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 20))
+    
+    # Items table
+    table_data = [['ID', 'ITEM DESCRIPTION', 'USD/SQF', 'CAD/SQF']]
+    for i, item in enumerate(items, 1):
+        table_data.append([str(i), item.get('name', ''), f"${item.get('usd', '0.00')}", f"${item.get('cad', '0.00')}"])
+    
+    items_table = Table(table_data, colWidths=[0.5*inch, 5*inch, 1*inch, 1*inch])
+    items_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9f9f9')]),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(items_table)
+    
+    doc.build(elements)
+    buffer.seek(0)
+    
+    from flask import send_file
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='ORA_Quote.pdf')
 
 @app.route('/orders')
 @login_required
