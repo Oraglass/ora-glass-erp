@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ORA Glass ERP - Invoices</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
+.header h1{font-size:22px}.header a{color:white;text-decoration:none}
+.container{max-width:1200px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:20px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
+td{padding:10px;border-bottom:1px solid #eee}
+.status{padding:4px 8px;border-radius:4px;font-size:11px}
+.status.paid{background:#d4edda;color:#155724}
+.status.pending{background:#fff3cd;color:#856404}
+.status.overdue{background:#f8d7da;color:#721c24}
+</style>
+</head>
+<body>
+<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
+<div class="container"><div class="card">
+<h2 style="margin-bottom:20px;color:#333">Invoices</h2>
+<table>
+<thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Amount</th><th>Status</th><th>Due Date</th></tr></thead>
+<tbody id="invoice-list"><tr><td colspan="6" style="text-align:center;color:#666">No invoices found</td></tr></tbody>
+</table>
+</div></div>
+</body>
+</html>
