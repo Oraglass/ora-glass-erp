@@ -312,50 +312,54 @@ def export_quote():
     items = data.get('items', [])
     
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.5*inch, bottomMargin=0.5*inch)
     styles = getSampleStyleSheet()
     
-    # Custom styles
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#C41E3A'), alignment=2)
-    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=9, leading=12)
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor('#C41E3A'), alignment=1)
+    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontSize=8, leading=10)
+    desc_style = ParagraphStyle('Desc', parent=styles['Normal'], fontSize=7, leading=9)
+    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, leading=10, alignment=2)
     
     elements = []
     
     # Header
-    header_data = [
-        [Paragraph('<b>ORA GLASS</b><br/>2312 Leatherwood Pl<br/>Lynden, WA 98264, USA', header_style),
-         Paragraph('<b>QUOTATION</b>', title_style),
-         Paragraph(f'<b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Net:</b> C.O.D.', header_style)]
-    ]
+    header_data = [[
+        Paragraph('<b>ORA GLASS</b><br/>2312 Leatherwood Pl<br/>Lynden, WA 98264, USA', header_style),
+        Paragraph('<b>QUOTATION</b>', title_style),
+        Paragraph(f'<b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Net:</b> C.O.D.', header_style)
+    ]]
     header_table = Table(header_data, colWidths=[2.5*inch, 2.5*inch, 2.5*inch])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('ALIGN', (1, 0), (1, 0), 'CENTER'),
-        ('ALIGN', (2, 0), (2, 0), 'RIGHT'),
-    ]))
+    header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
     elements.append(header_table)
-    elements.append(Spacer(1, 20))
+    elements.append(Spacer(1, 15))
     
-    # Items table
-    table_data = [['ID', 'ITEM DESCRIPTION', 'USD/SQF', 'CAD/SQF']]
+    # Items table with wrapped text
+    table_data = [[
+        Paragraph('<b>ID</b>', cell_style),
+        Paragraph('<b>ITEM DESCRIPTION</b>', desc_style),
+        Paragraph('<b>USD/SQF</b>', cell_style),
+        Paragraph('<b>CAD/SQF</b>', cell_style)
+    ]]
     for i, item in enumerate(items, 1):
-        table_data.append([str(i), item.get('name', ''), f"${item.get('usd', '0.00')}", f"${item.get('cad', '0.00')}"])
+        table_data.append([
+            Paragraph(str(i), cell_style),
+            Paragraph(item.get('name', ''), desc_style),
+            Paragraph(f"${item.get('usd', '0.00')}", cell_style),
+            Paragraph(f"${item.get('cad', '0.00')}", cell_style)
+        ])
     
-    from reportlab.platypus import Paragraph
-desc_style = ParagraphStyle('Desc', parent=styles['Normal'], fontSize=8, leading=10)
-for i in range(1, len(table_data)):
-    table_data[i][1] = Paragraph(table_data[i][1], desc_style)
-items_table = Table(table_data, colWidths=[0.4*inch, 5.2*inch, 0.9*inch, 0.9*inch])
+    items_table = Table(table_data, colWidths=[0.35*inch, 5.5*inch, 0.8*inch, 0.8*inch])
     items_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
         ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9f9f9')]),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
     ]))
     elements.append(items_table)
     
