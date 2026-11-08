@@ -21,12 +21,20 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .section{background:#f9f9f9;padding:12px;border-radius:6px;margin-bottom:12px}
 .section h3{font-size:13px;color:#C41E3A;margin-bottom:8px}
 .layer{display:flex;gap:10px;align-items:flex-end;margin-bottom:8px}
+.tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #ddd}
+.tab{padding:12px 24px;cursor:pointer;border:none;background:none;font-size:14px;color:#666;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:#C41E3A;border-bottom-color:#C41E3A;font-weight:600}
+.tab-content{display:none}.tab-content.active{display:block}
 </style>
 </head>
 <body>
 <div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
 <div class="container"><div class="card">
-<h2>IGU Quote Calculator</h2>
+<div class="tabs">
+<button class="tab active" onclick="showTab('sqf')">IGU Quote Calculator per sqf</button>
+<button class="tab" onclick="showTab('size')">IGU Quote Calculator per size</button>
+</div>
+<div id="tab-sqf" class="tab-content active">
 <div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-temper="{{ g.temperable }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
@@ -63,7 +71,37 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
 </div>
 </div></div>
+<div id="tab-size" class="tab-content">
+<div class="section"><h3>Dimensions</h3><div class="layer">
+<div class="form-group small"><label>Unit</label><select id="unit"><option value="in">Inches</option><option value="mm">Millimeters</option></select></div>
+<div class="form-group"><label>Width</label><input type="number" id="width" placeholder="0" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+<div class="form-group"><label>Height</label><input type="number" id="height" placeholder="0" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+<div class="form-group small"><label>Pieces</label><input type="number" id="pieces" value="1" min="1" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+</div></div>
+<div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
+<div class="form-group"><label>Glass</label><select id="s-glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group small"><label>Tempering</label><select id="s-temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
+</div></div>
+<div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
+<div class="form-group"><label>Spacer</label><select id="s-spacer1"><option value="">Select...</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Sealant</label><select id="s-sealant1"><option value="">Select...</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+</div></div>
+<div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
+<div class="form-group"><label>Glass</label><select id="s-glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group small"><label>Tempering</label><select id="s-temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
+</div></div>
+<div class="form-row"><div class="form-group small"><label>Tier</label><select id="s-tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div></div>
+<button class="btn" style="background:#333" onclick="calcSize()">Calculate</button>
+<div id="size-result" class="result" style="display:none">
+<div style="font-size:14px;color:#666;margin-bottom:10px">Area: <strong id="area">0</strong> sqf | Pieces: <strong id="pcs">1</strong></div>
+<div class="result-price">USD $<span id="s-price">0.00</span> / piece</div>
+<div class="result-price" style="font-size:22px;color:#666;margin-top:5px">CAD $<span id="s-price-cad">0.00</span> / piece</div>
+<div class="result-price" style="font-size:18px;color:#333;margin-top:10px">Total: USD $<span id="s-total">0.00</span></div>
+</div>
+</div>
+</div></div>
 <script>
+function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');event.target.classList.add('active')}
 let quoteItems=[];
 const sealantOptions=[];
 document.querySelectorAll('#sealant1 option').forEach(o=>{if(o.value)sealantOptions.push({value:o.value,text:o.textContent})});
@@ -102,6 +140,24 @@ return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+');
 function addToQuote(){const name=document.getElementById('igu-name').textContent;const usd=document.getElementById('price').textContent;const cad=document.getElementById('price-cad').textContent;if(!name)return;quoteItems.push({name,usd,cad});renderQuoteList()}
 function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML='';quoteItems.forEach((item,i)=>{tbody.innerHTML+='<tr><td style="padding:8px;border-bottom:1px solid #eee">'+item.name+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.usd+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.cad+'</td><td style="padding:8px;text-align:center;border-bottom:1px solid #eee"><button onclick="removeItem('+i+')" style="background:none;border:none;color:#C41E3A;cursor:pointer">×</button></td></tr>'});document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
 function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
+async function calcSize(){
+const w=parseFloat(document.getElementById('width').value)||0;
+const h=parseFloat(document.getElementById('height').value)||0;
+const pcs=parseInt(document.getElementById('pieces').value)||1;
+const unit=document.getElementById('unit').value;
+let sqf=0;
+if(unit==='in'){sqf=(w*h)/144}else{sqf=(w*h)/92903.04}
+document.getElementById('area').textContent=sqf.toFixed(2);
+document.getElementById('pcs').textContent=pcs;
+const data={glass1:document.getElementById('s-glass1').value,glass2:document.getElementById('s-glass2').value,glass3:'',temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:'',spacer1:document.getElementById('s-spacer1').value,spacer2:'',sealant1:document.getElementById('s-sealant1').value,sealant2:'',tier:document.getElementById('s-tier').value};
+const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+const result=await res.json();
+const pricePerPc=result.price_sqf*sqf;
+document.getElementById('s-price').textContent=pricePerPc.toFixed(2);
+document.getElementById('s-price-cad').textContent=(pricePerPc*1.4).toFixed(2);
+document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);
+document.getElementById('size-result').style.display='block';
+}
 async function exportQuote(){const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 </script>
 </body>
