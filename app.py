@@ -247,7 +247,7 @@ def export_quote():
         for i, item in enumerate(items, 1):
             price_sqf = float(item.get('price_sqf', 0))
             price_pc = float(item.get('price_pc', 0))
-            item_total = float(item.get('total', 0)) * int(item.get('pcs', 1))
+            item_total = float(item.get('total', 0))
             sqf = float(item.get('sqf', 0))
             pcs = int(item.get('pcs', 1))
             total_sqf += sqf
@@ -259,7 +259,7 @@ def export_quote():
             total_usd += item_total
             pcs = int(item.get('pcs', 1))
             sqf = float(item.get('sqf', 0)) * pcs
-            total_line = item_total * pcs
+            total_line = item_total
             if currency == 'cad':
                 table_data.append([
                     Paragraph(f'({i})', cell_style),
