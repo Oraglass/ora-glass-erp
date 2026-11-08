@@ -18,7 +18,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .btn{background:#C41E3A;color:white;border:none;padding:12px 24px;border-radius:4px;cursor:pointer}
 .result{background:#f8f9fa;padding:20px;border-radius:8px;margin-top:15px}
 .result-price{font-size:28px;color:#C41E3A;font-weight:bold}
-.section{background:#f9f9f9;padding:15px;border-radius:6px;margin-bottom:20px}
+.section{background:#f9f9f9 !important;padding:15px;border-radius:6px;margin-bottom:20px}
 .section h3{font-size:13px;color:#C41E3A;margin-bottom:8px}
 .layer{display:flex;gap:10px;align-items:flex-end;margin-bottom:8px}
 .tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid #ddd}
@@ -72,7 +72,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div>
 </div></div>
 <div id="tab-size" class="tab-content">
-<div class="section"><h3>Dimensions</h3>
+<div class="section" style="background:#f9f9f9;padding:15px;border-radius:6px;margin-bottom:20px"><h3>Dimensions</h3>
 <div class="layer">
 <div class="form-group small"><label>Unit</label><select id="unit"><option value="in">Inches</option><option value="mm">mm</option></select></div>
 <div class="form-group small"><label>Width</label><input type="number" id="width" placeholder="0" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
@@ -139,7 +139,19 @@ document.getElementById('glass2').addEventListener('change',function(){if(this.v
 document.getElementById('glass3').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;if(!g2||g2==='n/a'||!s2||s2==='n/a'){alert('Select Layer B glass and Spacer 2 before selecting Layer C');this.value='';return}}updateTemper('glass3','temper3');showSize('glass3','size3')});
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
 document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
-function autoCalc(){const glass1=document.getElementById('glass1').value;if(glass1&&glass1!=='n/a'){calculate()}}
+function autoCalc(){
+const glass1=document.getElementById('glass1').value;
+const spacer1=document.getElementById('spacer1').value;
+const sealant1=document.getElementById('sealant1').value;
+const glass2=document.getElementById('glass2').value;
+const spacer2=document.getElementById('spacer2').value;
+const sealant2=document.getElementById('sealant2').value;
+const glass3=document.getElementById('glass3').value;
+if(!glass1||glass1==='n/a')return;
+if(spacer1&&spacer1!=='n/a'&&sealant1&&sealant1!=='n/a'&&(!glass2||glass2==='n/a'))return;
+if(spacer2&&spacer2!=='n/a'&&sealant2&&sealant2!=='n/a'&&(!glass3||glass3==='n/a'))return;
+calculate();
+}
 ['glass1','glass2','glass3','temper1','temper2','temper3','spacer1','spacer2','sealant1','sealant2','tier'].forEach(id=>{document.getElementById(id).addEventListener('change',autoCalc)});
 async function calculate(){
 const data={glass1:document.getElementById('glass1').value,glass2:document.getElementById('glass2').value,glass3:document.getElementById('glass3').value,temper1:document.getElementById('temper1').value,temper2:document.getElementById('temper2').value,temper3:document.getElementById('temper3').value,spacer1:document.getElementById('spacer1').value,spacer2:document.getElementById('spacer2').value,sealant1:document.getElementById('sealant1').value,sealant2:document.getElementById('sealant2').value,tier:document.getElementById('tier').value};
@@ -165,6 +177,16 @@ function addToQuote(){const name=document.getElementById('igu-name').textContent
 function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML='';quoteItems.forEach((item,i)=>{tbody.innerHTML+='<tr><td style="padding:8px;border-bottom:1px solid #eee">'+item.name+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.usd+'</td><td style="padding:8px;text-align:right;border-bottom:1px solid #eee">$'+item.cad+'</td><td style="padding:8px;text-align:center;border-bottom:1px solid #eee"><button onclick="removeItem('+i+')" style="background:none;border:none;color:#C41E3A;cursor:pointer">×</button></td></tr>'});document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
 function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
 async function calcSize(){
+const glass1=document.getElementById('s-glass1').value;
+const spacer1=document.getElementById('s-spacer1').value;
+const sealant1=document.getElementById('s-sealant1').value;
+const glass2=document.getElementById('s-glass2').value;
+const spacer2=document.getElementById('s-spacer2').value;
+const sealant2=document.getElementById('s-sealant2').value;
+const glass3=document.getElementById('s-glass3').value;
+if(!glass1||glass1==='n/a')return;
+if(spacer1&&spacer1!=='n/a'&&sealant1&&sealant1!=='n/a'&&(!glass2||glass2==='n/a'))return;
+if(spacer2&&spacer2!=='n/a'&&sealant2&&sealant2!=='n/a'&&(!glass3||glass3==='n/a'))return;
 const w=parseFloat(document.getElementById('width').value)||0;
 const h=parseFloat(document.getElementById('height').value)||0;
 const pcs=parseInt(document.getElementById('pieces').value)||1;
@@ -216,6 +238,16 @@ a.download='ORA_Quote.pdf';
 a.click();
 }
 async function calcSize(){
+const glass1=document.getElementById('s-glass1').value;
+const spacer1=document.getElementById('s-spacer1').value;
+const sealant1=document.getElementById('s-sealant1').value;
+const glass2=document.getElementById('s-glass2').value;
+const spacer2=document.getElementById('s-spacer2').value;
+const sealant2=document.getElementById('s-sealant2').value;
+const glass3=document.getElementById('s-glass3').value;
+if(!glass1||glass1==='n/a')return;
+if(spacer1&&spacer1!=='n/a'&&sealant1&&sealant1!=='n/a'&&(!glass2||glass2==='n/a'))return;
+if(spacer2&&spacer2!=='n/a'&&sealant2&&sealant2!=='n/a'&&(!glass3||glass3==='n/a'))return;
 const w=parseFloat(document.getElementById('width').value)||0;
 const h=parseFloat(document.getElementById('height').value)||0;
 const pcs=parseInt(document.getElementById('pieces').value)||1;
