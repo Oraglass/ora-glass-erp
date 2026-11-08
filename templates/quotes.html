@@ -45,7 +45,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
+<div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="spacer1"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 <div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
@@ -84,7 +84,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Glass <span id="s-size1" style="color:#666;font-weight:normal"></span></label><select id="s-glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="s-temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section"><h3>Spacer 1 & Sealant 1</h3><div class="layer">
+<div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="s-spacer1"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 <div class="form-group"><label>Sealant</label><select id="s-sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div></div>
