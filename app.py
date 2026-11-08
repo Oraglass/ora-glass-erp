@@ -22,10 +22,13 @@ ROLES = {
 }
 
 USERS = {
-    'admin': {'password': hashlib.sha256('admin123'.encode()).hexdigest(), 'role': 'admin', 'name': 'Administrator'},
-    'sales': {'password': hashlib.sha256('sales123'.encode()).hexdigest(), 'role': 'sales', 'name': 'Sales User'},
-    'production': {'password': hashlib.sha256('prod123'.encode()).hexdigest(), 'role': 'production', 'name': 'Production User'},
-    'customer': {'password': hashlib.sha256('customer123'.encode()).hexdigest(), 'role': 'customer', 'name': 'Customer User'}
+    'admin': {'password': hashlib.sha256('admin123'.encode()).hexdigest(), 'role': 'admin', 'name': 'Administrator', 'company': None},
+    'sales': {'password': hashlib.sha256('sales123'.encode()).hexdigest(), 'role': 'sales', 'name': 'Sales User', 'company': None},
+    'production': {'password': hashlib.sha256('prod123'.encode()).hexdigest(), 'role': 'production', 'name': 'Production User', 'company': None}
+}
+
+CUSTOMERS = {
+    'demo': {'name': 'Demo Company', 'address': '123 Main St', 'city': 'Seattle', 'state': 'WA', 'zip': '98101', 'phone': '555-1234', 'email': 'demo@company.com', 'credit_approved': True, 'payment_terms': 'Net 30', 'tier': 'T2', 'status': 'active'}
 }
 
 def login_required(f):
@@ -368,6 +371,58 @@ def invoices():
 @app.route('/financial')
 def financial():
     return render_template('financial.html')
+
+# Customer API
+@app.route('/api/customers', methods=['GET'])
+@login_required
+def get_customers():
+    return jsonify([{'id': k, **v} for k, v in CUSTOMERS.items()])
+
+@app.route('/api/customers', methods=['POST'])
+@login_required
+def add_customer():
+    data = request.json
+    cid = data.get('id', data['name'].lower().replace(' ', '_'))
+    CUSTOMERS[cid] = {'name': data['name'], 'address': data.get('address', ''), 'city': data.get('city', ''), 'state': data.get('state', ''), 'zip': data.get('zip', ''), 'phone': data.get('phone', ''), 'email': data.get('email', ''), 'credit_approved': data.get('credit_approved', False), 'payment_terms': data.get('payment_terms', 'Net 30'), 'tier': data.get('tier', 'T2'), 'status': 'active'}
+    return jsonify({'success': True, 'id': cid})
+
+@app.route('/api/customers/<cid>', methods=['PUT'])
+@login_required
+def update_customer(cid):
+    if cid in CUSTOMERS:
+        CUSTOMERS[cid].update(request.json)
+        return jsonify({'success': True})
+    return jsonify({'error': 'Not found'}), 404
+
+@app.route('/api/customers/<cid>', methods=['DELETE'])
+@login_required
+def delete_customer(cid):
+    if cid in CUSTOMERS:
+        del CUSTOMERS[cid]
+        return jsonify({'success': True})
+    return jsonify({'error': 'Not found'}), 404
+
+# User API
+@app.route('/api/users', methods=['GET'])
+@login_required
+def get_users():
+    return jsonify([{'id': k, 'name': v['name'], 'role': v['role'], 'company': v.get('company')} for k, v in USERS.items()])
+
+@app.route('/api/users', methods=['POST'])
+@login_required
+def add_user():
+    data = request.json
+    uid = data['email'].split('@')[0]
+    USERS[uid] = {'password': hashlib.sha256(data['password'].encode()).hexdigest(), 'role': data.get('role', 'customer'), 'name': data['name'], 'company': data.get('company')}
+    return jsonify({'success': True, 'id': uid})
+
+@app.route('/api/users/<uid>', methods=['DELETE'])
+@login_required
+def delete_user(uid):
+    if uid in USERS and uid != 'admin':
+        del USERS[uid]
+        return jsonify({'success': True})
+    return jsonify({'error': 'Cannot delete'}), 400
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
