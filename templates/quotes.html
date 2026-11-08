@@ -77,7 +77,7 @@ document.getElementById('glass2').addEventListener('change',function(){if(this.v
 document.getElementById('glass3').addEventListener('change',function(){if(this.value&&this.value!=='n/a'){const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;if(!g2||g2==='n/a'||!s2||s2==='n/a'){alert('Select Layer B glass and Spacer 2 before selecting Layer C');this.value='';return}}updateTemper('glass3','temper3');showSize('glass3','size3')});
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
 document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
-function autoCalc(){const spacer1=document.getElementById('spacer1').value;if(spacer1&&spacer1!=='n/a'){calculate()}}
+function autoCalc(){const glass1=document.getElementById('glass1').value;if(glass1&&glass1!=='n/a'){calculate()}}
 ['glass1','glass2','glass3','temper1','temper2','temper3','spacer1','spacer2','sealant1','sealant2','tier'].forEach(id=>{document.getElementById(id).addEventListener('change',autoCalc)});
 async function calculate(){
 const data={glass1:document.getElementById('glass1').value,glass2:document.getElementById('glass2').value,glass3:document.getElementById('glass3').value,temper1:document.getElementById('temper1').value,temper2:document.getElementById('temper2').value,temper3:document.getElementById('temper3').value,spacer1:document.getElementById('spacer1').value,spacer2:document.getElementById('spacer2').value,sealant1:document.getElementById('sealant1').value,sealant2:document.getElementById('sealant2').value,tier:document.getElementById('tier').value};
