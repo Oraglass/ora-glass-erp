@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORA Glass ERP</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: #C41E3A; color: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; letter-spacing: 2px; }
+        .user-info { font-size: 13px; }
+        .user-info a { color: white; margin-left: 15px; }
+        .container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
+        .welcome { margin-bottom: 30px; }
+        .welcome h2 { color: #333; }
+        .welcome p { color: #666; margin-top: 5px; }
+        .modules { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+        .module { background: white; padding: 25px; border-radius: 10px; text-decoration: none; color: #333; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.2s; }
+        .module:hover { transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+        .module h3 { color: #C41E3A; margin-bottom: 8px; }
+        .module p { font-size: 13px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ORA GLASS ERP</h1>
+        <div class="user-info">
+            {{ user.name }} ({{ role_name }})
+            <a href="/logout">Logout</a>
+        </div>
+    </div>
+    <div class="container">
+        <div class="welcome">
+            <h2>Welcome, {{ user.name }}</h2>
+            <p>Select a module to get started</p>
+        </div>
+        <div class="modules">
+            {% if 'quotes' in modules %}
+            <a href="/quotes" class="module">
+                <h3>Quotes</h3>
+                <p>Create and manage quotes</p>
+            </a>
+            {% endif %}
+            {% if 'quote-history' in modules %}
+            <a href="/quote-history" class="module">
+                <h3>Quote History</h3>
+                <p>View saved quotes</p>
+            </a>
+            {% endif %}
+            {% if 'orders' in modules %}
+            <a href="/orders" class="module">
+                <h3>Orders</h3>
+                <p>View and track orders</p>
+            </a>
+            {% endif %}
+            {% if 'customers' in modules %}
+            <a href="/customers" class="module">
+                <h3>Customers</h3>
+                <p>Manage customer accounts</p>
+            </a>
+            {% endif %}
+            {% if 'invoices' in modules %}
+            <a href="/invoices" class="module">
+                <h3>Invoices</h3>
+                <p>View invoices</p>
+            </a>
+            {% endif %}
+            {% if 'financial' in modules %}
+            <a href="/financial" class="module">
+                <h3>Financial</h3>
+                <p>Financial overview</p>
+            </a>
+            {% endif %}
+            {% if 'inventory' in modules %}
+            <a href="/inventory" class="module">
+                <h3>Inventory</h3>
+                <p>Stock levels and materials</p>
+            </a>
+            {% endif %}
+            {% if 'pricing' in modules %}
+            <a href="/pricing" class="module">
+                <h3>Pricing</h3>
+                <p>Manage price lists</p>
+            </a>
+            {% endif %}
+            {% if 'users' in modules %}
+            <a href="/users" class="module">
+                <h3>Users</h3>
+                <p>Manage user accounts</p>
+            </a>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
