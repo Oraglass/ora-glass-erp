@@ -299,20 +299,20 @@ def export_quote():
             ])
             col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
     else:
+        curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
         table_data = [[
             Paragraph('<b>ID</b>', header_cell),
             Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph('<b>USD/SQF</b>', header_cell),
-            Paragraph('<b>CAD/SQF</b>', header_cell)
+            Paragraph(f'<b>{curr_label}</b>', header_cell)
         ]]
         for i, item in enumerate(items, 1):
+            price = item.get('price', '0.00')
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(item.get('name', ''), cell_style),
-                Paragraph(f"${item.get('usd', '0.00')}", cell_style),
-                Paragraph(f"${item.get('cad', '0.00')}", cell_style)
+                Paragraph(f"${price}", cell_style)
             ])
-        col_widths = [0.4*inch, 5.3*inch, 0.9*inch, 0.9*inch]
+        col_widths = [0.4*inch, 5.5*inch, 1.1*inch]
     
     items_table = Table(table_data, colWidths=col_widths)
     items_table.setStyle(TableStyle([
