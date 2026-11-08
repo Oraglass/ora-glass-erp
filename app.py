@@ -258,26 +258,18 @@ def export_quote():
             total_cad_pc += price_pc * 1.4
             total_usd += item_total
             pcs = int(item.get('pcs', 1))
-            sqf = float(item.get('sqf', 0)) * pcs
-            total_line = float(item.get('price_pc', 0)) * pcs
-            if currency == 'cad':
-                table_data.append([
-                    Paragraph(f'({i})', cell_style),
-                    Paragraph(item.get('name', ''), cell_style),
-                    Paragraph(f"{sqf:.2f}", cell_style),
-                    Paragraph(f"${price_sqf*1.4:.2f}", cell_style),
-                    Paragraph(f"${price_pc*1.4:.2f}", cell_style),
-                    Paragraph(f"${total_line*1.4:.2f}", cell_style)
-                ])
-            else:
-                table_data.append([
-                    Paragraph(f'({i})', cell_style),
-                    Paragraph(item.get('name', ''), cell_style),
-                    Paragraph(f"{sqf:.2f}", cell_style),
-                    Paragraph(f"${price_sqf:.2f}", cell_style),
-                    Paragraph(f"${price_pc:.2f}", cell_style),
-                    Paragraph(f"${total_line:.2f}", cell_style)
-                ])
+            sqf_per_pc = float(item.get('sqf', 0))
+            total_sqf_line = sqf_per_pc * pcs
+            price_pc = float(item.get('price_pc', 0))
+            total_line = price_pc * pcs
+            table_data.append([
+                Paragraph(f'({i})', cell_style),
+                Paragraph(item.get('name', ''), cell_style),
+                Paragraph(f"{total_sqf_line:.2f}", cell_style),
+                Paragraph(f"${price_sqf:.2f}", cell_style),
+                Paragraph(f"${price_pc:.2f}", cell_style),
+                Paragraph(f"${total_line:.2f}", cell_style)
+            ])
         # Totals row
         total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
         if currency == 'cad':
