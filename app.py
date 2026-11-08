@@ -213,21 +213,7 @@ def export_quote():
     elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
     elements.append(Spacer(1, 6))
     
-    # Sold To and Job Name
-    info_data = [[
-        Paragraph('<font size="8"><b>Sold To:</b> _______________________<br/><br/></font>', small_style),
-        Paragraph('<font size="8"><b>Job Name:</b> _______________________<br/><br/></font>', small_style)
-    ]]
-    info_table = Table(info_data, colWidths=[3.75*inch, 3.75*inch])
-    info_table.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.5, colors.black), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4)]))
-    elements.append(info_table)
     
-    # Remarks
-    remarks_data = [[Paragraph('<font size="8"><b>Remarks:</b></font>', small_style)]]
-    remarks_table = Table(remarks_data, colWidths=[7.5*inch])
-    remarks_table.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.5, colors.black), ('LEFTPADDING', (0, 0), (-1, -1), 4)]))
-    elements.append(remarks_table)
-    elements.append(Spacer(1, 4))
     
     # Items table
     table_data = [[
@@ -256,16 +242,6 @@ def export_quote():
     elements.append(items_table)
     elements.append(Spacer(1, 20))
     
-    # Footer
-    elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-    elements.append(Spacer(1, 8))
-    footer_data = [[
-        Paragraph('<font size="8"><b>Accept Signature:</b> _______________<br/><b>Name:</b> _______________</font>', small_style),
-        Paragraph('<font size="8"><b>Date:</b> _______________</font>', small_style),
-        Paragraph('<font size="8"><b>Net:</b> C.O.D.</font>', small_style)
-    ]]
-    footer_table = Table(footer_data, colWidths=[3*inch, 2.5*inch, 2*inch])
-    elements.append(footer_table)
     elements.append(Spacer(1, 10))
     elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))
     
