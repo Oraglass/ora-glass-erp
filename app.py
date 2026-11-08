@@ -50,6 +50,7 @@ def module_required(module):
         return decorated
     return decorator
 
+# Pricing data
 PRICING = [
     {'name': 'Clear Glass 4mm', 'sheet_size': '130"x84"', 'base_price': 1.1232, 'temperable': True, 'annealed': True},
     {'name': 'Clear Glass 5mm', 'sheet_size': '144"x84"', 'base_price': 1.4391, 'temperable': True, 'annealed': True},
@@ -59,3 +60,248 @@ PRICING = [
     {'name': 'Clear Glass 8mm Jumbo', 'sheet_size': '204"x130"', 'base_price': 3.7044, 'temperable': True, 'annealed': True},
     {'name': 'Clear Glass 10mm', 'sheet_size': '144"x96"', 'base_price': 3.0051, 'temperable': True, 'annealed': True},
     {'name': 'Clear Glass 10mm Jumbo', 'sheet_size': '204"x130"', 'base_price': 4.3953, 'temperable': True, 'annealed': True},
+    {'name': 'LoE 180 4mm', 'sheet_size': '144"x84"', 'base_price': 1.56702, 'temperable': False, 'annealed': True},
+    {'name': 'LoE 180 6mm', 'sheet_size': '144"x96"', 'base_price': 2.37742, 'temperable': False, 'annealed': True},
+    {'name': 'LoE 366 4mm', 'sheet_size': '144"x96"', 'base_price': 2.12435, 'temperable': False, 'annealed': True},
+    {'name': 'LoE 366 6mm', 'sheet_size': '144"x96"', 'base_price': 2.94635, 'temperable': False, 'annealed': True},
+    {'name': 'LoE Q-180 4mm', 'sheet_size': '144"x96"', 'base_price': 2.20749, 'temperable': True, 'annealed': False},
+    {'name': 'LoE Q-366 6mm', 'sheet_size': '144"x96"', 'base_price': 3.63745, 'temperable': True, 'annealed': False},
+    {'name': 'Solarban60 4mm', 'sheet_size': '130"x96"', 'base_price': 2.22495, 'temperable': False, 'annealed': True},
+    {'name': 'Solarban60 6mm', 'sheet_size': '144"x100"', 'base_price': 3.8493, 'temperable': False, 'annealed': True},
+    {'name': 'SolarCoat 4mm', 'sheet_size': '144"x84"', 'base_price': 2.1762, 'temperable': True, 'annealed': True},
+    {'name': 'SolarCoat 6mm', 'sheet_size': '144"x96"', 'base_price': 3.28185, 'temperable': True, 'annealed': True},
+    {'name': 'Superspacer 10mm / sqf', 'base_price': 0.727776, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 11mm / sqf', 'base_price': 0.795207, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 12mm / sqf', 'base_price': 0.802788, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 14mm / sqf', 'base_price': 0.881657, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 16mm / sqf', 'base_price': 0.958531, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 18mm / sqf', 'base_price': 0.967974, 'temperable': False, 'annealed': False},
+    {'name': 'Superspacer 20mm / sqf', 'base_price': 1.123584, 'temperable': False, 'annealed': False},
+    {'name': 'Technoform 11mm / sqf', 'base_price': 0.70, 'temperable': False, 'annealed': False},
+    {'name': 'Technoform 12mm / sqf', 'base_price': 0.74, 'temperable': False, 'annealed': False},
+    {'name': 'Technoform 14mm / sqf', 'base_price': 0.82, 'temperable': False, 'annealed': False},
+    {'name': 'Technoform 16mm / sqf', 'base_price': 0.90, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  10mm Polyurethane', 'base_price': 0.1483, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  10mm Silicone', 'base_price': 0.1796, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  11mm Polyurethane', 'base_price': 0.1624, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  11mm Silicone', 'base_price': 0.1967, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  12mm Polyurethane', 'base_price': 0.1695, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  12mm Silicone', 'base_price': 0.2052, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  14mm Polyurethane', 'base_price': 0.1977, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  14mm Silicone', 'base_price': 0.2394, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  16mm Polyurethane', 'base_price': 0.2260, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant -  16mm Silicone', 'base_price': 0.2736, 'temperable': False, 'annealed': False},
+]
+
+GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['spacer', 'sealant', 'technoform'])]
+SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower() or 'technoform' in p['name'].lower()]
+SEALANTS = [p for p in PRICING if 'sealant' in p['name'].lower()]
+
+TIER_MARKUPS = {'T1': 0.30, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75}
+SPACER_MARKUPS = {'T1': 0.20, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75}
+TEMPER_PRICE = 0.65
+
+@app.route('/')
+def index():
+    if 'user' in session:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username', '').lower()
+        password = request.form.get('password', '')
+        user = USERS.get(username)
+        if user and user['password'] == hashlib.sha256(password.encode()).hexdigest():
+            session['user'] = username
+            return redirect(url_for('dashboard'))
+        flash('Invalid credentials', 'error')
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    user = USERS.get(session['user'], {})
+    return render_template('dashboard.html', user=user, role=ROLES.get(user.get('role', ''), {}))
+
+@app.route('/quotes')
+@login_required
+@module_required('quotes')
+def quotes():
+    return render_template('quotes.html', glass=GLASS, spacers=SPACERS, sealants=SEALANTS)
+
+@app.route('/api/calculate', methods=['POST'])
+@login_required
+def calculate():
+    data = request.json
+    tier = data.get('tier', 'T2')
+    glass_markup = TIER_MARKUPS.get(tier, 0.40)
+    spacer_markup = SPACER_MARKUPS.get(tier, 0.40)
+    
+    total = 0
+    for key in ['glass1', 'glass2', 'glass3']:
+        name = data.get(key, '')
+        if name and name != 'n/a':
+            item = next((p for p in PRICING if p['name'] == name), None)
+            if item:
+                total += item['base_price'] * (1 + glass_markup)
+                if data.get(key.replace('glass', 'temper')) == 'yes':
+                    total += TEMPER_PRICE
+    
+    for key in ['spacer1', 'spacer2']:
+        name = data.get(key, '')
+        if name and name != 'n/a':
+            item = next((p for p in PRICING if p['name'] == name), None)
+            if item:
+                total += item['base_price'] * (1 + spacer_markup)
+    
+    for key in ['sealant1', 'sealant2']:
+        name = data.get(key, '')
+        if name and name != 'n/a':
+            item = next((p for p in PRICING if p['name'] == name), None)
+            if item:
+                total += item['base_price'] * (1 + spacer_markup)
+    
+    return jsonify({'price_sqf': round(total, 2)})
+
+@app.route('/api/export-quote', methods=['POST'])
+@login_required
+def export_quote():
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    
+    data = request.json
+    items = data.get('items', [])
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.4*inch, bottomMargin=0.4*inch)
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('Title', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
+    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, leading=10)
+    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=7, leading=9)
+    header_cell = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=7, fontName='Helvetica-Bold', textColor=colors.white)
+    
+    elements = []
+    
+    # Header with logo
+    logo_path = 'logo.png' if os.path.exists('logo.png') else None
+    if logo_path:
+        logo = Image(logo_path, width=1.2*inch, height=0.8*inch)
+    else:
+        logo = Paragraph('<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style)
+    
+    header_data = [[
+        logo,
+        Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
+        Paragraph(f'<font size="8"><b>Quotation:</b> D{date.today().strftime("%y%m%d")}001<br/><b>Customer P.O.#:</b><br/><b>Quote By:</b> Production<br/><b>Update By:</b><br/><b>Packaging Method:</b></font>', small_style),
+        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Pmt Mode:</b><br/><b>Net:</b> C.O.D.<br/><b>Div Method:</b></font>', small_style)
+    ]]
+    header_table = Table(header_data, colWidths=[1.3*inch, 2.2*inch, 2.2*inch, 1.8*inch])
+    header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
+    elements.append(Spacer(1, 6))
+    
+    # Sold To and Job Name
+    info_data = [[
+        Paragraph('<font size="8"><b>Sold To:</b> _______________________<br/><br/></font>', small_style),
+        Paragraph('<font size="8"><b>Job Name:</b> _______________________<br/><br/></font>', small_style)
+    ]]
+    info_table = Table(info_data, colWidths=[3.75*inch, 3.75*inch])
+    info_table.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.5, colors.black), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4)]))
+    elements.append(info_table)
+    
+    # Remarks
+    remarks_data = [[Paragraph('<font size="8"><b>Remarks:</b></font>', small_style)]]
+    remarks_table = Table(remarks_data, colWidths=[7.5*inch])
+    remarks_table.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.5, colors.black), ('LEFTPADDING', (0, 0), (-1, -1), 4)]))
+    elements.append(remarks_table)
+    elements.append(Spacer(1, 4))
+    
+    # Items table
+    table_data = [[
+        Paragraph('<b>ID</b>', header_cell),
+        Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
+        Paragraph('<b>USD/SQF</b>', header_cell),
+        Paragraph('<b>CAD/SQF</b>', header_cell)
+    ]]
+    for i, item in enumerate(items, 1):
+        table_data.append([
+            Paragraph(f'({i})', cell_style),
+            Paragraph(item.get('name', ''), cell_style),
+            Paragraph(f"${item.get('usd', '0.00')}", cell_style),
+            Paragraph(f"${item.get('cad', '0.00')}", cell_style)
+        ])
+    
+    items_table = Table(table_data, colWidths=[0.4*inch, 5.3*inch, 0.9*inch, 0.9*inch])
+    items_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(items_table)
+    elements.append(Spacer(1, 20))
+    
+    # Footer
+    elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+    elements.append(Spacer(1, 8))
+    footer_data = [[
+        Paragraph('<font size="8"><b>Accept Signature:</b> _______________<br/><b>Name:</b> _______________</font>', small_style),
+        Paragraph('<font size="8"><b>Date:</b> _______________</font>', small_style),
+        Paragraph('<font size="8"><b>Net:</b> C.O.D.</font>', small_style)
+    ]]
+    footer_table = Table(footer_data, colWidths=[3*inch, 2.5*inch, 2*inch])
+    elements.append(footer_table)
+    elements.append(Spacer(1, 10))
+    elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='ORA_Quote.pdf')
+
+@app.route('/orders')
+@login_required
+@module_required('orders')
+def orders():
+    return render_template('module.html', module='Orders', user=session)
+
+@app.route('/customers')
+@login_required
+@module_required('customers')
+def customers():
+    return render_template('module.html', module='Customers', user=session)
+
+@app.route('/inventory')
+@login_required
+@module_required('inventory')
+def inventory():
+    return render_template('module.html', module='Inventory', user=session)
+
+@app.route('/pricing')
+@login_required
+@module_required('pricing')
+def pricing():
+    return render_template('module.html', module='Pricing Admin', user=session)
+
+@app.route('/users')
+@login_required
+@module_required('users')
+def users():
+    return render_template('module.html', module='Users', user=session)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
