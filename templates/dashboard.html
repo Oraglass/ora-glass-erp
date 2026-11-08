@@ -16,8 +16,8 @@
         .welcome h2 { color: #333; }
         .welcome p { color: #666; margin-top: 5px; }
         .modules { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
-        .module { background: white; padding: 25px; border-radius: 10px; text-decoration: none; color: #333; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .module:hover { transform: translateY(-3px); }
+        .module { background: white; padding: 25px; border-radius: 10px; text-decoration: none; color: #333; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.2s; }
+        .module:hover { transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
         .module h3 { color: #C41E3A; margin-bottom: 8px; }
         .module p { font-size: 13px; color: #666; }
     </style>
@@ -37,22 +37,58 @@
         </div>
         <div class="modules">
             {% if 'quotes' in modules %}
-            <a href="/quotes" class="module"><h3>Quotes</h3><p>Create and manage quotes</p></a>
+            <a href="/quotes" class="module">
+                <h3>Quotes</h3>
+                <p>Create and manage quotes</p>
+            </a>
+            {% endif %}
+            {% if 'quote-history' in modules %}
+            <a href="/quote-history" class="module">
+                <h3>Quote History</h3>
+                <p>View saved quotes</p>
+            </a>
             {% endif %}
             {% if 'orders' in modules %}
-            <a href="/orders" class="module"><h3>Orders</h3><p>View and track orders</p></a>
+            <a href="/orders" class="module">
+                <h3>Orders</h3>
+                <p>View and track orders</p>
+            </a>
             {% endif %}
             {% if 'customers' in modules %}
-            <a href="/customers" class="module"><h3>Customers</h3><p>Manage customer accounts</p></a>
+            <a href="/customers" class="module">
+                <h3>Customers</h3>
+                <p>Manage customer accounts</p>
+            </a>
+            {% endif %}
+            {% if 'invoices' in modules %}
+            <a href="/invoices" class="module">
+                <h3>Invoices</h3>
+                <p>View invoices</p>
+            </a>
+            {% endif %}
+            {% if 'financial' in modules %}
+            <a href="/financial" class="module">
+                <h3>Financial</h3>
+                <p>Financial overview</p>
+            </a>
             {% endif %}
             {% if 'inventory' in modules %}
-            <a href="/inventory" class="module"><h3>Inventory</h3><p>Stock levels and materials</p></a>
+            <a href="/inventory" class="module">
+                <h3>Inventory</h3>
+                <p>Stock levels and materials</p>
+            </a>
             {% endif %}
             {% if 'pricing' in modules %}
-            <a href="/pricing" class="module"><h3>Pricing</h3><p>Manage price lists</p></a>
+            <a href="/pricing" class="module">
+                <h3>Pricing</h3>
+                <p>Manage price lists</p>
+            </a>
             {% endif %}
             {% if 'users' in modules %}
-            <a href="/users" class="module"><h3>Users</h3><p>Manage user accounts</p></a>
+            <a href="/users" class="module">
+                <h3>Users</h3>
+                <p>Manage user accounts</p>
+            </a>
             {% endif %}
         </div>
     </div>
