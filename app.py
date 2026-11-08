@@ -247,7 +247,7 @@ def export_quote():
         for i, item in enumerate(items, 1):
             price_sqf = float(item.get('price_sqf', 0))
             price_pc = float(item.get('price_pc', 0))
-            item_total = float(item.get('total', 0))
+            item_total = float(item.get('total', 0)) * int(item.get('pcs', 1))
             sqf = float(item.get('sqf', 0))
             pcs = int(item.get('pcs', 1))
             total_sqf += sqf
@@ -258,23 +258,25 @@ def export_quote():
             total_cad_pc += price_pc * 1.4
             total_usd += item_total
             pcs = int(item.get('pcs', 1))
+            sqf = float(item.get('sqf', 0)) * pcs
+            total_line = item_total * pcs
             if currency == 'cad':
                 table_data.append([
                     Paragraph(f'({i})', cell_style),
-                    Paragraph(f"{item.get('name', '')} ({pcs} pcs)", cell_style),
-                    Paragraph(str(item.get('sqf', '')), cell_style),
+                    Paragraph(item.get('name', ''), cell_style),
+                    Paragraph(f"{sqf:.2f}", cell_style),
                     Paragraph(f"${price_sqf*1.4:.2f}", cell_style),
                     Paragraph(f"${price_pc*1.4:.2f}", cell_style),
-                    Paragraph(f"${item_total*1.4:.2f}", cell_style)
+                    Paragraph(f"${total_line*1.4:.2f}", cell_style)
                 ])
             else:
                 table_data.append([
                     Paragraph(f'({i})', cell_style),
-                    Paragraph(f"{item.get('name', '')} ({pcs} pcs)", cell_style),
-                    Paragraph(str(item.get('sqf', '')), cell_style),
+                    Paragraph(item.get('name', ''), cell_style),
+                    Paragraph(f"{sqf:.2f}", cell_style),
                     Paragraph(f"${price_sqf:.2f}", cell_style),
                     Paragraph(f"${price_pc:.2f}", cell_style),
-                    Paragraph(f"${item_total:.2f}", cell_style)
+                    Paragraph(f"${total_line:.2f}", cell_style)
                 ])
         # Totals row
         total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
