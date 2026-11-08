@@ -204,10 +204,9 @@ def export_quote():
     header_data = [[
         logo,
         Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
-        Paragraph(f'<font size="8"><b>Quotation:</b> D{date.today().strftime("%y%m%d")}001<br/><b>Customer P.O.#:</b><br/><b>Quote By:</b> Production<br/><b>Update By:</b><br/><b>Packaging Method:</b></font>', small_style),
-        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Pmt Mode:</b><br/><b>Net:</b> C.O.D.<br/><b>Div Method:</b></font>', small_style)
+        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}</font>', small_style)
     ]]
-    header_table = Table(header_data, colWidths=[1.3*inch, 2.2*inch, 2.2*inch, 1.8*inch])
+    header_table = Table(header_data, colWidths=[1.5*inch, 3*inch, 2.5*inch])
     header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
     elements.append(header_table)
     elements.append(Spacer(1, 8))
