@@ -14,11 +14,11 @@ app = Flask(__name__)
 app.secret_key = 'ora-glass-erp-2026-secret'
 
 ROLES = {
-    'admin': {'name': 'Administrator', 'modules': ['quotes', 'orders', 'customers', 'inventory', 'pricing', 'users']},
-    'sales': {'name': 'Sales', 'modules': ['quotes', 'orders', 'customers']},
+    'admin': {'name': 'Administrator', 'modules': ['quotes', 'quote-history', 'orders', 'customers', 'invoices', 'financial', 'inventory', 'pricing', 'users']},
+    'sales': {'name': 'Sales', 'modules': ['quotes', 'quote-history', 'orders', 'customers', 'invoices']},
     'production': {'name': 'Production', 'modules': ['orders', 'inventory']},
-    'viewer': {'name': 'Viewer', 'modules': ['quotes', 'orders']},
-    'customer': {'name': 'Customer', 'modules': ['quotes', 'orders']}
+    'viewer': {'name': 'Viewer', 'modules': ['quotes', 'quote-history', 'orders']},
+    'customer': {'name': 'Customer', 'modules': ['quotes', 'quote-history', 'orders', 'invoices', 'financial']}
 }
 
 USERS = {
