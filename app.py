@@ -259,7 +259,7 @@ def export_quote():
             total_usd += item_total
             pcs = int(item.get('pcs', 1))
             sqf = float(item.get('sqf', 0)) * pcs
-            total_line = item_total
+            total_line = float(item.get('price_pc', 0)) * pcs
             if currency == 'cad':
                 table_data.append([
                     Paragraph(f'({i})', cell_style),
