@@ -223,20 +223,56 @@ def export_quote():
             Paragraph('<b>ID</b>', header_cell),
             Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
             Paragraph('<b>SQF</b>', header_cell),
-            Paragraph('<b>$/SQF</b>', header_cell),
-            Paragraph('<b>$/PC</b>', header_cell),
-            Paragraph('<b>TOTAL</b>', header_cell)
+            Paragraph('<b>USD/SQF</b>', header_cell),
+            Paragraph('<b>CAD/SQF</b>', header_cell),
+            Paragraph('<b>USD/PC</b>', header_cell),
+            Paragraph('<b>CAD/PC</b>', header_cell),
+            Paragraph('<b>TOTAL USD</b>', header_cell)
         ]]
+        total_sqf = 0
+        total_pcs = 0
+        total_usd_sqf = 0
+        total_cad_sqf = 0
+        total_usd_pc = 0
+        total_cad_pc = 0
+        total_usd = 0
         for i, item in enumerate(items, 1):
+            price_sqf = float(item.get('price_sqf', 0))
+            price_pc = float(item.get('price_pc', 0))
+            item_total = float(item.get('total', 0))
+            sqf = float(item.get('sqf', 0))
+            pcs = int(item.get('pcs', 1))
+            total_sqf += sqf
+            total_pcs += pcs
+            total_usd_sqf += price_sqf
+            total_cad_sqf += price_sqf * 1.4
+            total_usd_pc += price_pc
+            total_cad_pc += price_pc * 1.4
+            total_usd += item_total
+            pcs = int(item.get('pcs', 1))
             table_data.append([
                 Paragraph(f'({i})', cell_style),
-                Paragraph(item.get('name', ''), cell_style),
+                Paragraph(f"{item.get('name', '')} ({pcs} pcs)", cell_style),
                 Paragraph(str(item.get('sqf', '')), cell_style),
-                Paragraph(f"${item.get('price_sqf', '0.00')}", cell_style),
-                Paragraph(f"${item.get('price_pc', '0.00')}", cell_style),
-                Paragraph(f"${item.get('total', '0.00')}", cell_style)
+                Paragraph(f"${price_sqf:.2f}", cell_style),
+                Paragraph(f"${price_sqf*1.4:.2f}", cell_style),
+                Paragraph(f"${price_pc:.2f}", cell_style),
+                Paragraph(f"${price_pc*1.4:.2f}", cell_style),
+                Paragraph(f"${item_total:.2f}", cell_style)
             ])
-        col_widths = [0.4*inch, 3.5*inch, 0.8*inch, 0.9*inch, 0.9*inch, 1*inch]
+        # Totals row
+        total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
+        table_data.append([
+            Paragraph('', cell_style),
+            Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
+            Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
+            Paragraph('', cell_style),
+            Paragraph('', cell_style),
+            Paragraph(f'<b>${total_usd_pc:.2f}</b>', total_style),
+            Paragraph(f'<b>${total_cad_pc:.2f}</b>', total_style),
+            Paragraph(f'<b>${total_usd:.2f}</b>', total_style)
+        ])
+        col_widths = [0.35*inch, 2.8*inch, 0.6*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.85*inch]
     else:
         table_data = [[
             Paragraph('<b>ID</b>', header_cell),
