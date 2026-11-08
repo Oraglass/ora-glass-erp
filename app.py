@@ -128,7 +128,8 @@ def logout():
 @login_required
 def dashboard():
     user = USERS.get(session['user'], {})
-    return render_template('dashboard.html', user=user, role=ROLES.get(user.get('role', ''), {}))
+    role = ROLES.get(user.get('role', ''), {})
+    return render_template('dashboard.html', user=user, role_name=role.get('name', ''), modules=role.get('modules', []))
 
 @app.route('/quotes')
 @login_required
