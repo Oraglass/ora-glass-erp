@@ -357,5 +357,17 @@ def pricing():
 def users():
     return render_template('module.html', module='Users', user=session)
 
+@app.route('/quote-history')
+def quote_history():
+    return render_template('quote_history.html')
+
+@app.route('/invoices')
+def invoices():
+    return render_template('invoices.html')
+
+@app.route('/financial')
+def financial():
+    return render_template('financial.html')
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
