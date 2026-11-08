@@ -216,22 +216,44 @@ def export_quote():
     
     
     
-    # Items table
-    table_data = [[
-        Paragraph('<b>ID</b>', header_cell),
-        Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-        Paragraph('<b>USD/SQF</b>', header_cell),
-        Paragraph('<b>CAD/SQF</b>', header_cell)
-    ]]
-    for i, item in enumerate(items, 1):
-        table_data.append([
-            Paragraph(f'({i})', cell_style),
-            Paragraph(item.get('name', ''), cell_style),
-            Paragraph(f"${item.get('usd', '0.00')}", cell_style),
-            Paragraph(f"${item.get('cad', '0.00')}", cell_style)
-        ])
+    # Items table - check if per size data
+    has_size = any(item.get('sqf') for item in items)
+    if has_size:
+        table_data = [[
+            Paragraph('<b>ID</b>', header_cell),
+            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
+            Paragraph('<b>SQF</b>', header_cell),
+            Paragraph('<b>$/SQF</b>', header_cell),
+            Paragraph('<b>$/PC</b>', header_cell),
+            Paragraph('<b>TOTAL</b>', header_cell)
+        ]]
+        for i, item in enumerate(items, 1):
+            table_data.append([
+                Paragraph(f'({i})', cell_style),
+                Paragraph(item.get('name', ''), cell_style),
+                Paragraph(str(item.get('sqf', '')), cell_style),
+                Paragraph(f"${item.get('price_sqf', '0.00')}", cell_style),
+                Paragraph(f"${item.get('price_pc', '0.00')}", cell_style),
+                Paragraph(f"${item.get('total', '0.00')}", cell_style)
+            ])
+        col_widths = [0.4*inch, 3.5*inch, 0.8*inch, 0.9*inch, 0.9*inch, 1*inch]
+    else:
+        table_data = [[
+            Paragraph('<b>ID</b>', header_cell),
+            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
+            Paragraph('<b>USD/SQF</b>', header_cell),
+            Paragraph('<b>CAD/SQF</b>', header_cell)
+        ]]
+        for i, item in enumerate(items, 1):
+            table_data.append([
+                Paragraph(f'({i})', cell_style),
+                Paragraph(item.get('name', ''), cell_style),
+                Paragraph(f"${item.get('usd', '0.00')}", cell_style),
+                Paragraph(f"${item.get('cad', '0.00')}", cell_style)
+            ])
+        col_widths = [0.4*inch, 5.3*inch, 0.9*inch, 0.9*inch]
     
-    items_table = Table(table_data, colWidths=[0.4*inch, 5.3*inch, 0.9*inch, 0.9*inch])
+    items_table = Table(table_data, colWidths=col_widths)
     items_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
