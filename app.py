@@ -67,100 +67,26 @@ def module_required(module):
     return decorator
 
 # Pricing data
-PRICING = [
-    {'name': 'Bronze 4mm', 'sheet_size': '130"x84"', 'base_price': 1.5, 'temperable': True, 'annealed': True},
-    {'name': 'Bronze 6mm', 'sheet_size': '130"x84"', 'base_price': 1.8, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 4mm', 'sheet_size': '130"x84"', 'base_price': 1.12, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 5mm', 'sheet_size': '144"x84"', 'base_price': 1.25, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 6mm', 'sheet_size': '144"x84"', 'base_price': 1.67, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 6mm Jumbo', 'sheet_size': '144"x100"', 'base_price': 1.45, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 8mm', 'sheet_size': '144"x84"', 'base_price': 1.65, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 8mm Jumbo', 'sheet_size': '144"x100"', 'base_price': 1.75, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 10mm', 'sheet_size': '144"x84"', 'base_price': 1.95, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 10mm Jumbo', 'sheet_size': '144"x100"', 'base_price': 2.05, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 12mm', 'sheet_size': '144"x84"', 'base_price': 2.25, 'temperable': True, 'annealed': True},
-    {'name': 'Clear Glass 12mm Jumbo', 'sheet_size': '144"x100"', 'base_price': 2.35, 'temperable': True, 'annealed': True},
-    {'name': 'LoE 180 4mm', 'sheet_size': '130"x84"', 'base_price': 1.57, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 180 5mm', 'sheet_size': '130"x84"', 'base_price': 1.96, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 180 6mm', 'sheet_size': '130"x84"', 'base_price': 2.38, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 270 4mm', 'sheet_size': '130"x84"', 'base_price': 1.57, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 270 5mm', 'sheet_size': '130"x84"', 'base_price': 1.96, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 270 6mm', 'sheet_size': '130"x84"', 'base_price': 2.38, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 366 4mm', 'sheet_size': '130"x84"', 'base_price': 2.6, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 366 5mm', 'sheet_size': '130"x84"', 'base_price': 2.8, 'temperable': True, 'annealed': False},
-    {'name': 'LoE 366 6mm', 'sheet_size': '130"x84"', 'base_price': 3.0, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-180 4mm', 'sheet_size': '130"x84"', 'base_price': 2.21, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-180 5mm', 'sheet_size': '130"x84"', 'base_price': 2.53, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-180 6mm', 'sheet_size': '130"x84"', 'base_price': 2.88, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-270 4mm', 'sheet_size': '130"x84"', 'base_price': 2.21, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-270 5mm', 'sheet_size': '130"x84"', 'base_price': 2.53, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-270 6mm', 'sheet_size': '130"x84"', 'base_price': 2.88, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-366 4mm', 'sheet_size': '130"x84"', 'base_price': 2.5, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-366 5mm', 'sheet_size': '130"x84"', 'base_price': 2.7, 'temperable': True, 'annealed': False},
-    {'name': 'LoE Q-366 6mm', 'sheet_size': '130"x84"', 'base_price': 2.9, 'temperable': True, 'annealed': False},
-    {'name': 'LoE i89 4mm', 'sheet_size': '130"x84"', 'base_price': 2.3, 'temperable': True, 'annealed': False},
-    {'name': 'LoE i89 5mm', 'sheet_size': '130"x84"', 'base_price': 2.5, 'temperable': True, 'annealed': False},
-    {'name': 'LoE i89 6mm', 'sheet_size': '130"x84"', 'base_price': 2.7, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm 4mm', 'sheet_size': '130"x84"', 'base_price': 2.2, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm 6mm', 'sheet_size': '130"x84"', 'base_price': 2.5, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm II EZP 4mm', 'sheet_size': '130"x84"', 'base_price': 2.3, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm II EZP 6mm', 'sheet_size': '130"x84"', 'base_price': 2.6, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm Lux 4mm', 'sheet_size': '130"x84"', 'base_price': 2.4, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm Lux 6mm', 'sheet_size': '130"x84"', 'base_price': 2.7, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm Lux II EZP 4mm', 'sheet_size': '130"x84"', 'base_price': 2.5, 'temperable': True, 'annealed': False},
-    {'name': 'Planitherm Lux II EZP 6mm', 'sheet_size': '130"x84"', 'base_price': 2.8, 'temperable': True, 'annealed': False},
-    {'name': 'SKN176 4mm', 'sheet_size': '130"x84"', 'base_price': 3.0, 'temperable': True, 'annealed': False},
-    {'name': 'SKN176 6mm', 'sheet_size': '130"x84"', 'base_price': 3.3, 'temperable': True, 'annealed': False},
-    {'name': 'SKN176II EZP 4mm', 'sheet_size': '130"x84"', 'base_price': 3.1, 'temperable': True, 'annealed': False},
-    {'name': 'SKN176II EZP 6mm', 'sheet_size': '130"x84"', 'base_price': 3.4, 'temperable': True, 'annealed': False},
-    {'name': 'Sandblast 4mm', 'sheet_size': '130"x84"', 'base_price': 1.8, 'temperable': True, 'annealed': True},
-    {'name': 'Sandblast 6mm', 'sheet_size': '130"x84"', 'base_price': 2.1, 'temperable': True, 'annealed': True},
-    {'name': 'SolarCoat 4mm', 'sheet_size': '130"x84"', 'base_price': 1.6, 'temperable': True, 'annealed': True},
-    {'name': 'SolarCoat 5mm', 'sheet_size': '130"x84"', 'base_price': 1.8, 'temperable': True, 'annealed': True},
-    {'name': 'SolarCoat 6mm', 'sheet_size': '130"x84"', 'base_price': 2.0, 'temperable': True, 'annealed': True},
-    {'name': 'SolarCoat 8mm', 'sheet_size': '144"x84"', 'base_price': 2.3, 'temperable': True, 'annealed': True},
-    {'name': 'SolarCoat 10mm', 'sheet_size': '144"x84"', 'base_price': 2.6, 'temperable': True, 'annealed': True},
-    {'name': 'Solarban60 4mm', 'sheet_size': '130"x84"', 'base_price': 2.8, 'temperable': True, 'annealed': False},
-    {'name': 'Solarban60 5mm', 'sheet_size': '130"x84"', 'base_price': 3.0, 'temperable': True, 'annealed': False},
-    {'name': 'Solarban60 6mm', 'sheet_size': '130"x84"', 'base_price': 3.2, 'temperable': True, 'annealed': False},
-    {'name': 'Solarban60 VT 4mm', 'sheet_size': '130"x84"', 'base_price': 2.9, 'temperable': True, 'annealed': False},
-    {'name': 'Solarban60 VT 5mm', 'sheet_size': '130"x84"', 'base_price': 3.1, 'temperable': True, 'annealed': False},
-    {'name': 'Solarban60 VT 6mm', 'sheet_size': '130"x84"', 'base_price': 4.27, 'temperable': True, 'annealed': False},
-    {'name': 'Superspacer 10mm / sqf', 'sheet_size': '', 'base_price': 0.5, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 11mm / sqf', 'sheet_size': '', 'base_price': 0.52, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 12mm / sqf', 'sheet_size': '', 'base_price': 0.80, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 14mm / sqf', 'sheet_size': '', 'base_price': 0.58, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 16mm / sqf', 'sheet_size': '', 'base_price': 0.62, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 18mm / sqf', 'sheet_size': '', 'base_price': 0.66, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 20mm / sqf', 'sheet_size': '', 'base_price': 0.70, 'temperable': False, 'annealed': False},
-    {'name': 'Superspacer 24mm / sqf', 'sheet_size': '', 'base_price': 0.78, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 11mm / sqf', 'sheet_size': '', 'base_price': 0.45, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 12mm / sqf', 'sheet_size': '', 'base_price': 0.47, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 14mm / sqf', 'sheet_size': '', 'base_price': 0.51, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 16mm / sqf', 'sheet_size': '', 'base_price': 0.55, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 18mm / sqf', 'sheet_size': '', 'base_price': 0.59, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 20mm / sqf', 'sheet_size': '', 'base_price': 0.63, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 25mm / sqf', 'sheet_size': '', 'base_price': 0.73, 'temperable': False, 'annealed': False},
-    {'name': 'Technoform 27mm / sqf', 'sheet_size': '', 'base_price': 0.77, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 10mm Polyurethane', 'sheet_size': '', 'base_price': 0.3, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 11mm Polyurethane', 'sheet_size': '', 'base_price': 0.32, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 12mm Polyurethane', 'sheet_size': '', 'base_price': 0.17, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 14mm Polyurethane', 'sheet_size': '', 'base_price': 0.38, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 16mm Polyurethane', 'sheet_size': '', 'base_price': 0.42, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 18mm Polyurethane', 'sheet_size': '', 'base_price': 0.46, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 20mm Polyurethane', 'sheet_size': '', 'base_price': 0.50, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 24mm Polyurethane', 'sheet_size': '', 'base_price': 0.58, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 26mm Polyurethane', 'sheet_size': '', 'base_price': 0.62, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 10mm Silicone', 'sheet_size': '', 'base_price': 0.35, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 11mm Silicone', 'sheet_size': '', 'base_price': 0.37, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 12mm Silicone', 'sheet_size': '', 'base_price': 0.39, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 14mm Silicone', 'sheet_size': '', 'base_price': 0.43, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 16mm Silicone', 'sheet_size': '', 'base_price': 0.47, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 18mm Silicone', 'sheet_size': '', 'base_price': 0.51, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 20mm Silicone', 'sheet_size': '', 'base_price': 0.55, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 24mm Silicone', 'sheet_size': '', 'base_price': 0.63, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 26mm Silicone', 'sheet_size': '', 'base_price': 0.67, 'temperable': False, 'annealed': False},
-]
+def load_pricing():
+    try:
+        wb = openpyxl.load_workbook('data/pricing_base.xlsx', data_only=True)
+        ws = wb['pricelist']
+        pricing = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] and row[8]:
+                pricing.append({
+                    'name': str(row[0]),
+                    'thickness': str(row[1]) if row[1] else '',
+                    'sheet_size': f'{row[2]}"x{row[3]}"' if row[2] and row[3] else '',
+                    'base_price': float(row[8]) if row[8] else 0,
+                    'temperable': True,
+                    'annealed': True
+                })
+        return pricing
+    except:
+        return []
+
+PRICING = load_pricing()
 
 GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['name'].lower() for x in ['spacer', 'sealant', 'technoform'])]
 SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower() or 'technoform' in p['name'].lower()]
