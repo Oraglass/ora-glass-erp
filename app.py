@@ -304,24 +304,15 @@ def export_quote():
             ]]
         total_sqf = 0
         total_pcs = 0
-        total_usd_sqf = 0
-        total_cad_sqf = 0
-        total_usd_pc = 0
-        total_cad_pc = 0
-        total_usd = 0
+        total_line_sum = 0
         for i, item in enumerate(items, 1):
             price_sqf = float(item.get('price_sqf', 0))
             price_pc = float(item.get('price_pc', 0))
-            item_total = float(item.get('total', 0))
             sqf = float(item.get('sqf', 0))
             pcs = int(item.get('pcs', 1))
-            total_sqf += sqf
+            total_sqf += sqf * pcs
             total_pcs += pcs
-            total_usd_sqf += price_sqf
-            total_cad_sqf += price_sqf * 1.4
-            total_usd_pc += price_pc
-            total_cad_pc += price_pc * 1.4
-            total_usd += item_total
+            total_line_sum += price_pc * pcs
             pcs = int(item.get('pcs', 1))
             sqf_per_pc = float(item.get('sqf', 0))
             total_sqf_line = sqf_per_pc * pcs
@@ -344,7 +335,7 @@ def export_quote():
                 Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
-                Paragraph(f'<b>${total_usd*1.4:.2f}</b>', total_style)
+                Paragraph(f'<b>${total_line_sum*1.4:.2f}</b>', total_style)
             ])
             col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
         else:
@@ -354,7 +345,7 @@ def export_quote():
                 Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
-                Paragraph(f'<b>${total_usd:.2f}</b>', total_style)
+                Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
             ])
             col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
     else:
