@@ -74,14 +74,19 @@ def load_pricing():
         pricing = []
         for row in ws.iter_rows(min_row=2, values_only=True):
             if row[0] and row[8]:
-                pricing.append({
-                    'name': str(row[0]),
+                name = str(row[0])
+                item = {
                     'thickness': str(row[1]) if row[1] else '',
                     'sheet_size': f'{row[2]}"x{row[3]}"' if row[2] and row[3] else '',
                     'base_price': float(row[8]) if row[8] else 0,
                     'temperable': True,
                     'annealed': True
-                })
+                }
+                if '180/270' in name:
+                    pricing.append({**item, 'name': name.replace('180/270', '180')})
+                    pricing.append({**item, 'name': name.replace('180/270', '270')})
+                else:
+                    pricing.append({**item, 'name': name})
         return pricing
     except:
         return []
