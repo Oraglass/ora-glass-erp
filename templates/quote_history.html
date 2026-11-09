@@ -35,7 +35,9 @@ td{padding:10px;border-bottom:1px solid #eee}
 </table>
 </div></div>
 <script>
-function filterQuotes(){/* TODO: implement filtering */}
+async function loadQuotes(){const res=await fetch('/api/quotes');const data=await res.json();const tbody=document.getElementById('quote-list');tbody.innerHTML='';data.forEach(q=>{tbody.innerHTML+='<tr><td>'+q.date+'</td><td>'+q.user+'</td><td>'+(q.project||'-')+'</td><td>'+q.items.map(i=>i.name).join(', ')+'</td><td>'+q.currency.toUpperCase()+'</td><td>$'+q.items.reduce((s,i)=>s+parseFloat(i.total||i.price||0),0).toFixed(2)+'</td><td>'+q.type+'</td></tr>'});if(!data.length)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">No quotes found</td></tr>'}
+function filterQuotes(){loadQuotes()}
+loadQuotes();
 </script>
 </body>
 </html>
