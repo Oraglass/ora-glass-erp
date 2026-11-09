@@ -229,7 +229,7 @@ def calculate():
         if name and name != 'n/a':
             item = next((p for p in PRICING if p['name'] == name), None)
             if item:
-                total += item['base_price'] * (1 + glass_markup)
+                total += round(item['base_price'] * (1 + glass_markup), 2)
                 if data.get(key.replace('glass', 'temper')) == 'yes':
                     thick = name.split()[-1] if name else ''
                     total += TEMPER_PRICES.get(thick, 0.65)
@@ -239,14 +239,14 @@ def calculate():
         if name and name != 'n/a':
             item = next((p for p in PRICING if p['name'] == name), None)
             if item:
-                total += item['base_price'] * (1 + spacer_markup)
+                total += round(item['base_price'] * (1 + spacer_markup), 2)
     
     for key in ['sealant1', 'sealant2']:
         name = data.get(key, '')
         if name and name != 'n/a':
             item = next((p for p in PRICING if p['name'] == name), None)
             if item:
-                total += item['base_price'] * (1 + spacer_markup)
+                total += round(item['base_price'] * (1 + spacer_markup), 2)
     
     return jsonify({'price_sqf': round(total, 2)})
 
