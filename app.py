@@ -28,7 +28,17 @@ USERS = {
     'production': {'password': hashlib.sha256('prod123'.encode()).hexdigest(), 'role': 'production', 'name': 'Production User', 'company': None}
 }
 
-QUOTES = []
+import json
+QUOTES_FILE = 'quotes.json'
+try:
+    with open(QUOTES_FILE, 'r') as f:
+        QUOTES = json.load(f)
+except:
+    QUOTES = []
+
+def save_quotes():
+    with open(QUOTES_FILE, 'w') as f:
+        json.dump(QUOTES, f)
 
 CUSTOMERS = {
     'demo': {'name': 'Demo Company', 'address': '123 Main St', 'city': 'Seattle', 'state': 'WA', 'zip': '98101', 'phone': '555-1234', 'email': 'demo@company.com', 'credit_approved': True, 'payment_terms': 'Net 30', 'tier': 'T2', 'status': 'active'}
@@ -439,13 +449,24 @@ from zoneinfo import ZoneInfotime
     company = user_data.get('company') or 'ORA'
     quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'), 'user': session.get('user'), 'company': company, 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
     QUOTES.append(quote)
+    save_quotes()
     return jsonify({'success': True, 'id': quote['id']})
 
 @app.route('/api/quotes/clear', methods=['POST'])
 @login_required
 def clear_quotes():
     global QUOTES
+    import json
+QUOTES_FILE = 'quotes.json'
+try:
+    with open(QUOTES_FILE, 'r') as f:
+        QUOTES = json.load(f)
+except:
     QUOTES = []
+
+def save_quotes():
+    with open(QUOTES_FILE, 'w') as f:
+        json.dump(QUOTES, f)
     return jsonify({'success': True})
 
 @app.route('/api/quotes', methods=['GET'])
