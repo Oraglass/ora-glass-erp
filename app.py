@@ -4,7 +4,8 @@ ORA Glass ERP - Online Quoting & Pricing System
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, send_file
 from functools import wraps
 import openpyxl
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 import json
 import os
 import hashlib
@@ -432,10 +433,11 @@ def delete_user(uid):
 @login_required
 def save_quote():
     data = request.json
-    from datetime import datetime
+    from datetime import date, datetime
+from zoneinfo import ZoneInfotime
     user_data = USERS.get(session.get('user'), {})
     company = user_data.get('company') or 'ORA'
-    quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'time': datetime.now().strftime('%H:%M'), 'user': session.get('user'), 'company': company, 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
+    quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'), 'user': session.get('user'), 'company': company, 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
     QUOTES.append(quote)
     return jsonify({'success': True, 'id': quote['id']})
 
