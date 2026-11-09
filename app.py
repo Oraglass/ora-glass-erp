@@ -443,8 +443,6 @@ def delete_user(uid):
 @login_required
 def save_quote():
     data = request.json
-    from datetime import date, datetime
-from zoneinfo import ZoneInfotime
     user_data = USERS.get(session.get('user'), {})
     company = user_data.get('company') or 'ORA'
     quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'), 'user': session.get('user'), 'company': company, 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
@@ -456,17 +454,9 @@ from zoneinfo import ZoneInfotime
 @login_required
 def clear_quotes():
     global QUOTES
-    import json
-QUOTES_FILE = 'quotes.json'
-try:
-    with open(QUOTES_FILE, 'r') as f:
-        QUOTES = json.load(f)
-except:
     QUOTES = []
-
-def save_quotes():
-    with open(QUOTES_FILE, 'w') as f:
-        json.dump(QUOTES, f)
+    save_quotes()
+    return jsonify({'success': True})
     return jsonify({'success': True})
 
 @app.route('/api/quotes', methods=['GET'])
