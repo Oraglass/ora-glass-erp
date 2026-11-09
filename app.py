@@ -27,6 +27,8 @@ USERS = {
     'production': {'password': hashlib.sha256('prod123'.encode()).hexdigest(), 'role': 'production', 'name': 'Production User', 'company': None}
 }
 
+QUOTES = []
+
 CUSTOMERS = {
     'demo': {'name': 'Demo Company', 'address': '123 Main St', 'city': 'Seattle', 'state': 'WA', 'zip': '98101', 'phone': '555-1234', 'email': 'demo@company.com', 'credit_approved': True, 'payment_terms': 'Net 30', 'tier': 'T2', 'status': 'active'}
 }
@@ -204,10 +206,12 @@ def export_quote():
     else:
         logo = Paragraph('<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style)
     
+    project = data.get('project', '')
+    project_line = f'<br/><b>Project:</b> {project}' if project else ''
     header_data = [[
         logo,
         Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
-        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}</font>', small_style)
+        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}{project_line}</font>', small_style)
     ]]
     header_table = Table(header_data, colWidths=[1.5*inch, 3*inch, 2.5*inch])
     header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
@@ -423,6 +427,23 @@ def delete_user(uid):
         del USERS[uid]
         return jsonify({'success': True})
     return jsonify({'error': 'Cannot delete'}), 400
+
+@app.route('/api/quotes', methods=['POST'])
+@login_required
+def save_quote():
+    data = request.json
+    quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'user': session.get('user'), 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
+    QUOTES.append(quote)
+    return jsonify({'success': True, 'id': quote['id']})
+
+@app.route('/api/quotes', methods=['GET'])
+@login_required
+def get_quotes():
+    user = session.get('user')
+    role = USERS.get(user, {}).get('role')
+    if role == 'admin':
+        return jsonify(QUOTES)
+    return jsonify([q for q in QUOTES if q['user'] == user])
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
