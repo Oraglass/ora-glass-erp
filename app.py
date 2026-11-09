@@ -88,8 +88,24 @@ def load_pricing():
                 else:
                     pricing.append({**item, 'name': name})
         return pricing
-    except:
-        return []
+    except Exception as e:
+        print(f'Pricing load error: {e}')
+        return [
+            {'name': 'Clear Glass 4mm', 'sheet_size': '130"x84"', 'base_price': 1.12, 'temperable': True, 'annealed': True},
+            {'name': 'Clear Glass 6mm', 'sheet_size': '144"x84"', 'base_price': 1.67, 'temperable': True, 'annealed': True},
+            {'name': 'Solarban60 4mm', 'sheet_size': '130"x84"', 'base_price': 2.22, 'temperable': True, 'annealed': False},
+            {'name': 'Solarban60 6mm', 'sheet_size': '130"x84"', 'base_price': 3.85, 'temperable': True, 'annealed': False},
+            {'name': 'Solarban60 VT 4mm', 'sheet_size': '130"x84"', 'base_price': 2.50, 'temperable': True, 'annealed': False},
+            {'name': 'Solarban60 VT 6mm', 'sheet_size': '130"x84"', 'base_price': 4.27, 'temperable': True, 'annealed': False},
+            {'name': 'LoE 366 4mm', 'sheet_size': '130"x84"', 'base_price': 2.12, 'temperable': True, 'annealed': False},
+            {'name': 'LoE 366 6mm', 'sheet_size': '130"x84"', 'base_price': 2.95, 'temperable': True, 'annealed': False},
+            {'name': 'Superspacer 10mm / sqf', 'sheet_size': '', 'base_price': 0.73, 'temperable': False, 'annealed': False},
+            {'name': 'Superspacer 12mm / sqf', 'sheet_size': '', 'base_price': 0.80, 'temperable': False, 'annealed': False},
+            {'name': 'Superspacer 16mm / sqf', 'sheet_size': '', 'base_price': 0.90, 'temperable': False, 'annealed': False},
+            {'name': 'Sealant - 10mm Polyurethane', 'sheet_size': '', 'base_price': 0.15, 'temperable': False, 'annealed': False},
+            {'name': 'Sealant - 12mm Polyurethane', 'sheet_size': '', 'base_price': 0.17, 'temperable': False, 'annealed': False},
+            {'name': 'Sealant - 16mm Polyurethane', 'sheet_size': '', 'base_price': 0.20, 'temperable': False, 'annealed': False},
+        ]
 
 PRICING = load_pricing()
 
