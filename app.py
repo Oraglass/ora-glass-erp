@@ -160,8 +160,8 @@ GLASS = [p for p in PRICING if 'mm' in p['name'].lower() and not any(x in p['nam
 SPACERS = [p for p in PRICING if 'spacer' in p['name'].lower() or 'technoform' in p['name'].lower()]
 SEALANTS = [p for p in PRICING if 'sealant' in p['name'].lower()]
 
-TIER_MARKUPS = {'T1': 0.30, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75}
-SPACER_MARKUPS = {'T1': 0.20, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75}
+TIER_MARKUPS = {'T1': 0.30, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75, 'T5': 4.25}
+SPACER_MARKUPS = {'T1': 0.20, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75, 'T5': 4.25}
 TEMPER_PRICE = 0.65
 
 @app.route('/')
