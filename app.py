@@ -212,7 +212,7 @@ def export_quote():
     header_data = [[
         logo,
         Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
-        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}{project_line}</font>', small_style)
+        Paragraph(f'<font size="8"><b>Date:</b> {date.today().strftime("%m/%d/%Y")}<br/><b>Time:</b> {datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%H:%M")} PST{project_line}</font>', small_style)
     ]]
     header_table = Table(header_data, colWidths=[1.5*inch, 3*inch, 2.5*inch])
     header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
