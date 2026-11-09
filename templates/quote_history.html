@@ -30,13 +30,14 @@ td{padding:10px;border-bottom:1px solid #eee}
 <button class="btn" onclick="filterQuotes()">Filter</button>
 </div>
 <table>
-<thead><tr><th>Date</th><th>User</th><th>Project</th><th>Product</th><th>Currency</th><th>Total</th><th>Type</th></tr></thead>
+<thead><tr><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th><th>Total</th><th>Type</th><th>PDF</th></tr></thead>
 <tbody id="quote-list"><tr><td colspan="7" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
 </div></div>
 <script>
-async function loadQuotes(){const res=await fetch('/api/quotes');const data=await res.json();const tbody=document.getElementById('quote-list');tbody.innerHTML='';data.forEach(q=>{tbody.innerHTML+='<tr><td>'+q.date+'</td><td>'+q.user+'</td><td>'+(q.project||'-')+'</td><td>'+q.items.map(i=>i.name).join(', ')+'</td><td>'+q.currency.toUpperCase()+'</td><td>$'+q.items.reduce((s,i)=>s+parseFloat(i.total||i.price||0),0).toFixed(2)+'</td><td>'+q.type+'</td></tr>'});if(!data.length)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">No quotes found</td></tr>'}
+async function loadQuotes(){const res=await fetch('/api/quotes');const data=await res.json();const tbody=document.getElementById('quote-list');tbody.innerHTML='';data.forEach(q=>{tbody.innerHTML+='<tr><td>'+q.date+'</td><td>'+(q.time||'-')+'</td><td>'+q.user+'</td><td>'+(q.company||'ORA')+'</td><td>'+(q.project||'-')+'</td><td>'+q.items.map(i=>i.name).join(', ')+'</td><td>'+q.currency.toUpperCase()+'</td><td>$'+q.items.reduce((s,i)=>s+parseFloat(i.total||i.price||0),0).toFixed(2)+'</td><td>'+q.type+'</td><td><button onclick="downloadPDF('+q.id+')" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button></td></tr>'});if(!data.length)tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:#666">No quotes found</td></tr>'}
 function filterQuotes(){loadQuotes()}
+async function downloadPDF(id){const res=await fetch('/api/quotes');const quotes=await res.json();const q=quotes.find(x=>x.id===id);if(!q)return;const pdfRes=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:q.items,currency:q.currency,project:q.project})});const blob=await pdfRes.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Quote_'+q.id+'.pdf';a.click()}
 loadQuotes();
 </script>
 </body>
