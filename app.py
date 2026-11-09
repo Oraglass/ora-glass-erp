@@ -441,6 +441,13 @@ from zoneinfo import ZoneInfotime
     QUOTES.append(quote)
     return jsonify({'success': True, 'id': quote['id']})
 
+@app.route('/api/quotes/clear', methods=['POST'])
+@login_required
+def clear_quotes():
+    global QUOTES
+    QUOTES = []
+    return jsonify({'success': True})
+
 @app.route('/api/quotes', methods=['GET'])
 @login_required
 def get_quotes():
