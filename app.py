@@ -432,7 +432,10 @@ def delete_user(uid):
 @login_required
 def save_quote():
     data = request.json
-    quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'user': session.get('user'), 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
+    from datetime import datetime
+    user_data = USERS.get(session.get('user'), {})
+    company = user_data.get('company') or 'ORA'
+    quote = {'id': len(QUOTES)+1, 'date': date.today().isoformat(), 'time': datetime.now().strftime('%H:%M'), 'user': session.get('user'), 'company': company, 'project': data.get('project', ''), 'items': data.get('items', []), 'currency': data.get('currency', 'usd'), 'type': data.get('type', 'sqf')}
     QUOTES.append(quote)
     return jsonify({'success': True, 'id': quote['id']})
 
