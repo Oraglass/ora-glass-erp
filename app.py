@@ -168,7 +168,7 @@ SEALANTS = [p for p in PRICING if 'sealant' in p['name'].lower()]
 
 TIER_MARKUPS = {'T1': 0.30, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75, 'T5': 4.25}
 SPACER_MARKUPS = {'T1': 0.20, 'T2': 0.40, 'T3': 0.60, 'T4': 0.75, 'T5': 4.25}
-TEMPER_PRICE = 0.65
+TEMPER_PRICES = {'4mm': 0.50, '5mm': 0.55, '6mm': 0.65, '8mm': 0.75, '10mm': 0.85, '12mm': 0.95}
 
 @app.route('/')
 def index():
@@ -222,7 +222,8 @@ def calculate():
             if item:
                 total += item['base_price'] * (1 + glass_markup)
                 if data.get(key.replace('glass', 'temper')) == 'yes':
-                    total += TEMPER_PRICE
+                    thick = name.split()[-1] if name else ''
+                    total += TEMPER_PRICES.get(thick, 0.65)
     
     for key in ['spacer1', 'spacer2']:
         name = data.get(key, '')
