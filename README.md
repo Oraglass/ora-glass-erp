@@ -40,7 +40,7 @@ If neither variable is set, files go to `./data/` next to the app. A legacy `quo
 
 Writes create the parent directory and replace the file atomically (temp file in the same directory, then `os.replace`).
 
-`pricing_base.xlsx` is loaded from, in order: `PRICING_PATH`, the file next to `app.py`, `DATA_DIR/pricing_base.xlsx`, then `data/pricing_base.xlsx`. The workbook ships in the repo root, so it does not need to be copied onto the disk. Rows with a zero price are skipped, which currently leaves Technoform spacers out of the list because those rows are $0 in the workbook. Temper add-on prices still come from the code table (`4mm` $0.50, `5mm` $0.55, `6mm` $0.65, `8mm` $0.75, `10mm` $0.85, `12mm` $0.95). The workbook has different temper rows; confirm those before switching the calculator over to them.
+`pricing_base.xlsx` is loaded from absolute paths, in order: `PRICING_PATH`, the file next to `app.py` (from `__file__`, not the process working directory), then `DATA_DIR/pricing_base.xlsx`. Production currently fails with `No such file or directory: 'data/pricing_base.xlsx'` because that relative path is not in the deploy, and then uses the built-in list. The workbook ships beside `app.py`, so it does not need to be copied onto the disk. Startup prints `Pricing loaded: N items from <path>`. Rows with a zero price are skipped, which currently leaves Technoform spacers out of the list because those rows are $0 in the workbook. Temper add-on prices still come from the code table (`4mm` $0.50, `5mm` $0.55, `6mm` $0.65, `8mm` $0.75, `10mm` $0.85, `12mm` $0.95). The workbook has different temper rows; confirm those before switching the calculator over to them.
 
 ## Accounts
 
@@ -91,7 +91,7 @@ T1–T4 keep their previous markups. **Tier 5 (End User)** is the existing T5 ti
 
 `render.yaml` sets `APP_ENV=production`, the `/data` paths, `AUTO_SEED=1`, and a generated `SECRET_KEY`. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in the dashboard for the first boot, deploy, sign in, then delete `ADMIN_PASSWORD`.
 
-The blueprint also declares a 1 GB disk at `/data`. If the service already has that disk, remove the `disk` block from `render.yaml` before syncing so Render does not try to attach a second one.
+The service already has a 1 GB disk mounted at `/data`. `render.yaml` does not declare another disk, so a blueprint sync will not try to attach a second one. The `/data` env vars stay.
 
 Optional `BASE_URL` (for example `https://ora-glass-erp.onrender.com`) is used when an admin generates a setup link. If it is empty, the link uses the request host.
 

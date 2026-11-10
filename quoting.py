@@ -5,7 +5,7 @@ import os
 import re
 import warnings
 
-from storage import resolve_pricing_path
+from storage import pricing_search_paths, resolve_pricing_path
 
 logger = logging.getLogger('ora_glass.quoting')
 
@@ -69,16 +69,27 @@ FALLBACK_PRICING = [
     {'name': 'Technoform 16mm / sqf', 'sheet_size': '', 'base_price': 0.55, 'temperable': False, 'annealed': False},
     {'name': 'Technoform 18mm / sqf', 'sheet_size': '', 'base_price': 0.59, 'temperable': False, 'annealed': False},
     {'name': 'Technoform 20mm / sqf', 'sheet_size': '', 'base_price': 0.63, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 10mm Polyurethane', 'sheet_size': '', 'base_price': 0.15, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 12mm Polyurethane', 'sheet_size': '', 'base_price': 0.17, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 16mm Polyurethane', 'sheet_size': '', 'base_price': 0.20, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 18mm Polyurethane', 'sheet_size': '', 'base_price': 0.22, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 20mm Polyurethane', 'sheet_size': '', 'base_price': 0.24, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 10mm Silicone', 'sheet_size': '', 'base_price': 0.18, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 12mm Silicone', 'sheet_size': '', 'base_price': 0.20, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 16mm Silicone', 'sheet_size': '', 'base_price': 0.23, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 18mm Silicone', 'sheet_size': '', 'base_price': 0.25, 'temperable': False, 'annealed': False},
-    {'name': 'Sealant - 20mm Silicone', 'sheet_size': '', 'base_price': 0.27, 'temperable': False, 'annealed': False},
+    # Sealant prices are copied from pricing_base.xlsx. Widths match the workbook
+    # (10, 11, 12, 14, 16, 18, 20, 24, 26). Technoform prices below are the old
+    # fallback only; the workbook prices those rows at 0 and they are not added here.
+    {'name': 'Sealant - 10mm Polyurethane', 'sheet_size': '', 'base_price': 0.14831243227223856, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 11mm Polyurethane', 'sheet_size': '', 'base_price': 0.16243742582197554, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 12mm Polyurethane', 'sheet_size': '', 'base_price': 0.16949992259684407, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 14mm Polyurethane', 'sheet_size': '', 'base_price': 0.19774990969631806, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 16mm Polyurethane', 'sheet_size': '', 'base_price': 0.2259998967957921, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 18mm Polyurethane', 'sheet_size': '', 'base_price': 0.2542498838952661, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 20mm Polyurethane', 'sheet_size': '', 'base_price': 0.28249987099474017, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 24mm Polyurethane', 'sheet_size': '', 'base_price': 0.33899984519368814, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 26mm Polyurethane', 'sheet_size': '', 'base_price': 0.3672498322931621, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 10mm Silicone', 'sheet_size': '', 'base_price': 0.1795788450989665, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 11mm Silicone', 'sheet_size': '', 'base_price': 0.19668159225124895, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 12mm Silicone', 'sheet_size': '', 'base_price': 0.20523296582739026, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 14mm Silicone', 'sheet_size': '', 'base_price': 0.23943846013195527, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 16mm Silicone', 'sheet_size': '', 'base_price': 0.27364395443652034, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 18mm Silicone', 'sheet_size': '', 'base_price': 0.30784944874108533, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 20mm Silicone', 'sheet_size': '', 'base_price': 0.3420549430456505, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 24mm Silicone', 'sheet_size': '', 'base_price': 0.4104659316547805, 'temperable': False, 'annealed': False},
+    {'name': 'Sealant - 26mm Silicone', 'sheet_size': '', 'base_price': 0.4446714259593455, 'temperable': False, 'annealed': False},
 ]
 
 
@@ -296,14 +307,30 @@ def load_pricing_workbook(path):
     return pricing
 
 
+def _announce_pricing(message):
+    """Print as well as log. Render captured the old print() line, not the logger."""
+    print(message, flush=True)
+    logger.warning(message)
+
+
 def load_pricing(path=None):
-    path = path or resolve_pricing_path()
+    if path:
+        candidates = [os.path.abspath(path)]
+    else:
+        candidates = pricing_search_paths()
+    chosen = next((candidate for candidate in candidates if os.path.isfile(candidate)), None)
     try:
-        if not path or not os.path.isfile(path):
-            raise FileNotFoundError(path or 'pricing_base.xlsx')
-        pricing = load_pricing_workbook(path)
-        logger.info('Loaded %s pricing rows from %s', len(pricing), path)
-        return pricing, path
+        if not chosen:
+            raise FileNotFoundError('pricing_base.xlsx not found')
+        pricing = load_pricing_workbook(chosen)
+        _announce_pricing(f'Pricing loaded: {len(pricing)} items from {chosen}')
+        return pricing, chosen
     except Exception:
-        logger.exception('Pricing load error for %s; using built-in fallback', path)
-        return [dict(item) for item in FALLBACK_PRICING], None
+        logger.exception('Pricing load error for %s; using built-in fallback', chosen or candidates)
+        fallback = [dict(item) for item in FALLBACK_PRICING]
+        tried = ', '.join(candidates) if candidates else '(none)'
+        _announce_pricing(
+            f'Pricing loaded: {len(fallback)} items from built-in fallback. '
+            f'Workbook not found or unreadable. Tried: {tried}'
+        )
+        return fallback, None

@@ -65,23 +65,34 @@ def tiers_path():
     return os.path.join(data_dir(), 'tiers.json')
 
 
-def resolve_pricing_path(base_dir=None, data_directory=None):
-    """Find pricing_base.xlsx. The repo root is preferred over a copy under data/."""
-    base = base_dir or BASE_DIR
-    data = data_directory or data_dir()
+def pricing_search_paths(base_dir=None, data_directory=None):
+    """Absolute paths, in order: PRICING_PATH, next to app.py, then DATA_DIR.
+
+    Production main used the relative path data/pricing_base.xlsx. That file is not
+    in the deploy, so the workbook never opened. The copy beside app.py is addressed
+    from this file's location, not the process working directory.
+    """
+    base = os.path.abspath(base_dir or BASE_DIR)
+    data = os.path.abspath(data_directory or data_dir())
+    paths = []
     env = os.environ.get('PRICING_PATH', '').strip()
-    candidates = []
     if env:
-        candidates.append(env)
-    candidates.extend([
-        os.path.join(base, 'pricing_base.xlsx'),
-        os.path.join(data, 'pricing_base.xlsx'),
-        os.path.join(base, 'data', 'pricing_base.xlsx'),
-    ])
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
+        paths.append(os.path.abspath(env))
+    beside_app = os.path.join(base, 'pricing_base.xlsx')
+    on_disk = os.path.join(data, 'pricing_base.xlsx')
+    for path in (beside_app, on_disk):
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def resolve_pricing_path(base_dir=None, data_directory=None):
+    """First existing pricing workbook, or the path beside app.py when none exist."""
+    paths = pricing_search_paths(base_dir, data_directory)
+    for candidate in paths:
+        if os.path.isfile(candidate):
             return candidate
-    return os.path.join(base, 'pricing_base.xlsx')
+    return paths[0]
 
 
 def lock_for(path):

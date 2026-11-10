@@ -69,10 +69,7 @@ def test_workbook_and_fallback_gaps():
         if suggest_sealant(item['name'], fallback_sealants)['selected'] is None
     ]
     assert workbook_gaps == []
-    assert fallback_gaps == [
-        'Superspacer 11mm / sqf',
-        'Superspacer 14mm / sqf',
-        'Technoform 14mm / sqf',
-    ]
-    technoform_11 = suggest_sealant('Technoform 11mm / sqf', fallback_sealants)
-    assert technoform_11['selected'] == 'Sealant - 10mm Polyurethane'
+    assert fallback_gaps == []
+    assert suggest_sealant('Superspacer 14mm / sqf', fallback_sealants)['selected'] == 'Sealant - 14mm Polyurethane'
+    assert suggest_sealant('Technoform 11mm / sqf', fallback_sealants)['match'] == 'exact'
+    assert suggest_sealant('Technoform 11mm / sqf', fallback_sealants)['selected'] == 'Sealant - 11mm Polyurethane'

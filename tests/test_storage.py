@@ -99,10 +99,56 @@ def test_pricing_path_env_wins(tmp_path, monkeypatch):
 
 def test_repo_pricing_file_loads_without_a_data_copy():
     from app import GLASS, PRICING, PRICING_SOURCE, SEALANTS
-    assert PRICING_SOURCE
-    assert os.path.samefile(PRICING_SOURCE, os.path.join(BASE_DIR, 'pricing_base.xlsx'))
+    workbook = os.path.join(BASE_DIR, 'pricing_base.xlsx')
+    assert os.path.isabs(PRICING_SOURCE)
+    assert os.path.samefile(PRICING_SOURCE, workbook)
     glass = next(item for item in PRICING if item['name'] == 'Clear Glass 4mm')
     assert abs(glass['base_price'] - 1.1232) < 0.0001
+    sealant = next(item for item in SEALANTS if item['name'] == 'Sealant -  14mm Polyurethane')
+    assert sealant['base_price'] == 0.19774990969631806
     assert all('tempering' not in item['name'].lower() for item in GLASS)
-    assert any('sealant' in item['name'].lower() for item in SEALANTS)
     assert not os.path.exists(os.path.join(BASE_DIR, 'data', 'pricing_base.xlsx'))
+
+
+def test_workbook_loads_beside_app_when_cwd_is_elsewhere(tmp_path, monkeypatch):
+    monkeypatch.delenv('PRICING_PATH', raising=False)
+    monkeypatch.chdir(tmp_path)
+    from quoting import load_pricing
+    pricing, source = load_pricing()
+    workbook = os.path.join(BASE_DIR, 'pricing_base.xlsx')
+    assert os.path.isabs(source)
+    assert os.path.samefile(source, workbook)
+    assert any(item['name'] == 'Sealant -  14mm Polyurethane' for item in pricing)
+    assert not os.path.exists(os.path.join(tmp_path, 'data', 'pricing_base.xlsx'))
+
+
+def test_fallback_sealants_use_workbook_prices_without_new_technoform_prices():
+    from quoting import FALLBACK_PRICING, load_pricing_workbook
+    workbook = load_pricing_workbook(os.path.join(BASE_DIR, 'pricing_base.xlsx'))
+
+    def normalize(name):
+        return ' '.join(name.split())
+
+    book = {
+        normalize(item['name']): item['base_price']
+        for item in workbook
+        if 'sealant' in item['name'].lower()
+    }
+    fallback = {
+        normalize(item['name']): item['base_price']
+        for item in FALLBACK_PRICING
+        if 'sealant' in item['name'].lower()
+    }
+    assert set(fallback) == set(book)
+    for name, price in book.items():
+        assert fallback[name] == price
+    technoform = [item for item in FALLBACK_PRICING if 'technoform' in item['name'].lower()]
+    assert [item['name'] for item in technoform] == [
+        'Technoform 11mm / sqf',
+        'Technoform 12mm / sqf',
+        'Technoform 14mm / sqf',
+        'Technoform 16mm / sqf',
+        'Technoform 18mm / sqf',
+        'Technoform 20mm / sqf',
+    ]
+    assert all(item['base_price'] > 0 for item in technoform)
