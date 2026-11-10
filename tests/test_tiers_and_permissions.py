@@ -511,6 +511,16 @@ def test_users_form_includes_company_default_and_user_tier(client):
     assert b"label.textContent = company.tier_label || company.tier || ''" in body
     assert b'Choose at least one allowed tier.' in body
     assert b'The company tier is not allowed. Choose one of the allowed tiers for this user.' in body
+    assert b'class="row-actions"' in body
+    assert b'act act-primary' in body
+    assert b'act act-secondary' in body
+    assert b'act act-danger' in body
+    assert b'white-space:nowrap' in body
+    customers = client.get('/customers')
+    assert customers.status_code == 200
+    assert b'act act-primary' in customers.data
+    assert b'act act-danger' in customers.data
+    assert b'white-space:nowrap' in customers.data
 
 
 def test_customer_can_choose_an_allowed_tier_and_not_a_blocked_one(client):
