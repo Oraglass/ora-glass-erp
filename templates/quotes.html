@@ -26,6 +26,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .currency-btn.selected{border-color:#C41E3A;background:#C41E3A;color:white}
 .result{background:#f8f9fa;padding:20px;border-radius:8px;margin-top:15px}
 .result-price{font-size:28px;color:#C41E3A;font-weight:bold}
+.sealant-note{color:#C41E3A;font-size:11px;margin-top:4px;min-height:14px}
 </style>
 </head>
 <body>
@@ -48,7 +49,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 <div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="spacer1"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select><div class="sealant-note" id="sealant1-note"></div></div>
 </div></div>
 <div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="size2" style="color:#666;font-weight:normal"></span></label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
@@ -56,7 +57,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 <div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select><div class="sealant-note" id="sealant2-note"></div></div>
 </div></div>
 <div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
@@ -101,7 +102,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 <div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="s-spacer1"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="s-sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Sealant</label><select id="s-sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select><div class="sealant-note" id="s-sealant1-note"></div></div>
 </div></div>
 <div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="s-size2" style="color:#666;font-weight:normal"></span></label><select id="s-glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
@@ -109,7 +110,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 <div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
 <div class="form-group"><label>Spacer</label><select id="s-spacer2"><option value="">n/a</option>{% for s in spacers %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
-<div class="form-group"><label>Sealant</label><select id="s-sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Sealant</label><select id="s-sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select><div class="sealant-note" id="s-sealant2-note"></div></div>
 </div></div>
 <div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="s-size3" style="color:#666;font-weight:normal"></span></label><select id="s-glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
@@ -133,13 +134,15 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div>
 </div>
 </div></div>
+<script id="sealant-match-data" type="application/json">{{ sealant_matches|tojson }}</script>
 <script>
+const SEALANT_MATCH = JSON.parse(document.getElementById('sealant-match-data').textContent);
 function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');event.target.classList.add('active')}
 let selectedCurrency=null;let quoteItems=[];let sizeQuoteItems=[];
 function selectCurrency(c){if(selectedCurrency&&selectedCurrency!==c&&(quoteItems.length>0||sizeQuoteItems.length>0)){if(!confirm('Changing currency will clear your quote. Continue?'))return;quoteItems=[];sizeQuoteItems=[];renderQuoteList();renderSizeQuoteList()}selectedCurrency=c;document.getElementById('btn-usd').classList.remove('selected');document.getElementById('btn-cad').classList.remove('selected');document.getElementById('btn-'+c).classList.add('selected');const mult=c==='cad'?1.4:1;const curr=c.toUpperCase();if(document.getElementById('result').style.display==='block'){const base=parseFloat(document.getElementById('price').textContent)/(c==='usd'?1.4:1);document.getElementById('price').textContent=(base*mult).toFixed(2);document.getElementById('curr-label').textContent=curr}if(document.getElementById('size-result').style.display==='block'){const baseSqf=parseFloat(document.getElementById('s-price-sqf').textContent)/(c==='usd'?1.4:1);const basePc=parseFloat(document.getElementById('s-price').textContent)/(c==='usd'?1.4:1);const pcs=parseInt(document.getElementById('pcs').textContent)||1;document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(baseSqf*mult).toFixed(2);document.getElementById('s-price').textContent=(basePc*mult).toFixed(2);document.getElementById('s-total').textContent=(basePc*mult*pcs).toFixed(2)}calculate();calcSize()}
 const sealantOptions=[];document.querySelectorAll('#sealant1 option').forEach(o=>{if(o.value)sealantOptions.push({value:o.value,text:o.textContent})});
 function showSize(glassId,sizeId){const el=document.getElementById(glassId);const sizeEl=document.getElementById(sizeId);const sel=el.options[el.selectedIndex];sizeEl.textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':''}
-function updateSealant(spacerId,sealantId){const spacerVal=document.getElementById(spacerId).value;const sealantEl=document.getElementById(sealantId);if(!spacerVal||spacerVal==='n/a'){sealantEl.innerHTML='<option value="">n/a</option>';return}const match=spacerVal.match(/(\d+)mm/);const size=match?parseInt(match[1]):null;const isTechno=spacerVal.toLowerCase().includes('techno');sealantEl.innerHTML='<option value="">Select...</option>';if(!size){sealantOptions.forEach(s=>{const opt=document.createElement('option');opt.value=s.value;opt.text=s.text;sealantEl.appendChild(opt)});return}let sizes=[size];if(isTechno){sizes=[size-1,size,size+1]}const filtered=sealantOptions.filter(s=>{const m=s.text.match(/(\d+)/);return m&&sizes.includes(parseInt(m[1]))});if(!filtered.length){sealantOptions.forEach(s=>{const opt=document.createElement('option');opt.value=s.value;opt.text=s.text;sealantEl.appendChild(opt)});return}const poly=filtered.find(s=>s.text.toLowerCase().includes('poly'));const silicone=filtered.find(s=>s.text.toLowerCase().includes('silicone'));if(poly){const opt=document.createElement('option');opt.value=poly.value;opt.text=poly.text;opt.selected=true;sealantEl.appendChild(opt)}if(silicone){const opt=document.createElement('option');opt.value=silicone.value;opt.text=silicone.text;sealantEl.appendChild(opt)}}
+function updateSealant(spacerId,sealantId){const spacerVal=document.getElementById(spacerId).value;const sealantEl=document.getElementById(sealantId);const note=document.getElementById(sealantId+'-note');function setNote(text){if(note)note.textContent=text||''}if(!spacerVal||spacerVal==='n/a'){sealantEl.innerHTML='<option value="">n/a</option>';setNote('');return}const match=SEALANT_MATCH[spacerVal]||{selected:null,options:sealantOptions.map(function(s){return s.value}),message:'No matching sealant found. Choose a sealant.'};sealantEl.innerHTML='';if(!match.selected){const placeholder=document.createElement('option');placeholder.value='';placeholder.text='No matching sealant — choose one';placeholder.selected=true;sealantEl.appendChild(placeholder)}(match.options||[]).forEach(function(name){const opt=document.createElement('option');opt.value=name;opt.text=name;if(name===match.selected)opt.selected=true;sealantEl.appendChild(opt)});setNote(match.message)}
 function updateTemper(glassId,temperId){const glassEl=document.getElementById(glassId);const temperEl=document.getElementById(temperId);const selected=glassEl.options[glassEl.selectedIndex];if(!selected||!selected.value||selected.value==='n/a'){temperEl.innerHTML='<option value="n/a">Annealed</option>';return}const name=selected.value.toLowerCase();const isQ=name.includes('q-');const isVT=name.includes(' vt');const canTemper=isQ||isVT||name.includes('clear')||name.includes('solarcoat')||name.includes('bronze')||name.includes('ezp')||name.includes('sandblast');const canAnneal=!isQ&&!isVT&&!name.includes('i89');temperEl.innerHTML='';if(canAnneal){const opt=document.createElement('option');opt.value='n/a';opt.text='Annealed';if(!canTemper)opt.selected=true;temperEl.appendChild(opt)}if(canTemper){const opt=document.createElement('option');opt.value='yes';opt.text='Tempered';if(!canAnneal)opt.selected=true;temperEl.appendChild(opt)}}
 document.getElementById('glass1').addEventListener('change',function(){updateTemper('glass1','temper1');showSize('glass1','size1')});
 document.getElementById('glass2').addEventListener('change',function(){updateTemper('glass2','temper2');showSize('glass2','size2')});

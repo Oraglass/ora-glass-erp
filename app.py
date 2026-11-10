@@ -15,7 +15,7 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, sen
 from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from quoting import calculate_price_sqf, classify, load_pricing, resolve_effective_tier
+from quoting import calculate_price_sqf, classify, load_pricing, resolve_effective_tier, sealant_match_map
 from seed_data import apply_seed, new_user
 from security import (
     attach_invite,
@@ -609,6 +609,7 @@ def quote_template_context(user):
         'default_tier': effective,
         'locked_tier': effective,
         'locked_tier_label': tier_label(effective, tiers),
+        'sealant_matches': sealant_match_map(SPACERS, SEALANTS),
     }
 
 

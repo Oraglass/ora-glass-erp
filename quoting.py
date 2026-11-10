@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import warnings
 
 from storage import resolve_pricing_path
@@ -107,6 +108,106 @@ def _markup(cfg, key, fallback):
     if value < 0:
         return fallback
     return value
+
+
+_WIDTH_MM = re.compile(r'(\d+(?:\.\d+)?)\s*mm', re.IGNORECASE)
+
+
+def component_width_mm(name):
+    """Spacer or sealant width. Accepts '14mm', '14 mm', '14MM', and extra spaces."""
+    if not name:
+        return None
+    match = _WIDTH_MM.search(str(name))
+    if not match:
+        return None
+    width = float(match.group(1))
+    if width != int(width):
+        return None
+    return int(width)
+
+
+def _sealant_names(sealants):
+    names = []
+    for item in sealants or []:
+        name = item.get('name') if isinstance(item, dict) else item
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _prefer_polyurethane(options):
+    """Default material is polyurethane, then silicone, matching the quote screen."""
+    for name in options:
+        if 'poly' in name.lower():
+            return name
+    return options[0] if options else None
+
+
+def suggest_sealant(spacer_name, sealants):
+    """Choose the sealant for a spacer.
+
+    Exact width wins. Polyurethane is selected when that width has more than one material.
+    Technoform with no exact width uses a sealant 1mm smaller, then 1mm larger.
+    Other spacers never use that ±1mm rule: the sealant stays unselected.
+    """
+    names = _sealant_names(sealants)
+    width = component_width_mm(spacer_name)
+    if width is None:
+        return {
+            'selected': None,
+            'options': names,
+            'message': 'Could not read a spacer width. Choose a sealant.',
+            'width': None,
+            'match': 'none',
+        }
+    by_width = {}
+    for name in names:
+        sealant_width = component_width_mm(name)
+        if sealant_width is None:
+            continue
+        by_width.setdefault(sealant_width, []).append(name)
+    technoform = 'techno' in str(spacer_name).lower()
+    chosen_width = None
+    match = 'none'
+    if width in by_width:
+        chosen_width = width
+        match = 'exact'
+    elif technoform and (width - 1) in by_width:
+        # Both neighbors can exist. The smaller one is the consistent choice.
+        chosen_width = width - 1
+        match = 'technoform_narrower'
+    elif technoform and (width + 1) in by_width:
+        chosen_width = width + 1
+        match = 'technoform_wider'
+    if chosen_width is None:
+        return {
+            'selected': None,
+            'options': names,
+            'message': f'No {width}mm sealant found. Choose a sealant.',
+            'width': width,
+            'match': 'none',
+        }
+    options = by_width[chosen_width]
+    message = ''
+    if match != 'exact':
+        message = f'No {width}mm sealant. Using {chosen_width}mm.'
+    return {
+        'selected': _prefer_polyurethane(options),
+        'options': options,
+        'message': message,
+        'width': width,
+        'match': match,
+    }
+
+
+def sealant_match_map(spacers, sealants):
+    """Spacer name to the sealant suggestion used by both quote calculators."""
+    mapping = {}
+    for item in spacers or []:
+        name = item.get('name') if isinstance(item, dict) else item
+        if name:
+            mapping[str(name)] = suggest_sealant(name, sealants)
+    return mapping
 
 
 def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
