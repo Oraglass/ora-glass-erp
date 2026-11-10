@@ -6,7 +6,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
+.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between;align-items:center}
 .header h1{font-size:22px}.header a{color:white;text-decoration:none}
 .container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
@@ -20,9 +20,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 </style>
 </head>
 <body>
-<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="margin-bottom:20px;color:#333">Invoices</h2>
+{% if note %}<p style="color:#666;margin-bottom:12px">{{ note }}</p>{% endif %}
 <table>
 <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Amount</th><th>Status</th><th>Due Date</th></tr></thead>
 <tbody id="invoice-list"><tr><td colspan="6" style="text-align:center;color:#666">No invoices found</td></tr></tbody>

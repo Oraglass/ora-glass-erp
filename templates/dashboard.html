@@ -23,13 +23,7 @@
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>ORA GLASS ERP</h1>
-        <div class="user-info">
-            {{ user.name }} ({{ role_name }})
-            <a href="/logout">Logout</a>
-        </div>
-    </div>
+    {% include 'partials/header.html' %}
     <div class="container">
         <div class="welcome">
             <h2>Welcome, {{ user.name }}</h2>
