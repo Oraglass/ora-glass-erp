@@ -279,6 +279,8 @@ def public_user(user, customers, tiers):
         'role': user.get('role'),
         'customer_id': customer_id,
         'company': customer.get('name') if customer else None,
+        'company_tier': customer.get('tier') if customer else None,
+        'company_tier_label': tier_label(customer.get('tier'), tiers) if customer else None,
         'tier_override': user.get('tier_override'),
         'effective_tier': effective,
         'effective_tier_label': tier_label(effective, tiers),

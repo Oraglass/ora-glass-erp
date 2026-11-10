@@ -25,7 +25,7 @@ input{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:1
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="color:#333">Tier markups</h2>
-<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. End User is tier T5.</p>
+<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 (End User) is the existing 425% tier.</p>
 <form method="POST">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <table>

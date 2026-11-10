@@ -65,9 +65,9 @@ The password is read from `ADMIN_PASSWORD` or from a prompt. It is not accepted 
 
 On startup (`AUTO_SEED` defaults to `1`) the app creates, if missing:
 
-- Customer **Open Windows** (`open-windows.ca`), company tier **End User** (T5, 425% glass and spacer)
-- `alex@open-windows.ca` as a customer user with a **T2** override
-- `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca` on the company tier (End User / T5)
+- Customer **Open Windows** (`open-windows.ca`), company default tier **T2**
+- `alex@open-windows.ca` and `kiu@open-windows.ca` with a per-user override to **T5 (Tier 5 (End User), 425%)**
+- `vlad@open-windows.ca` and `support@open-windows.ca` with no override, so they inherit **T2**
 
 No password is stored for them. To activate someone:
 
@@ -82,11 +82,11 @@ The same links can be printed from the shell. This replaces any unused link for 
 flask --app app seed --links --base-url https://your-public-host
 ```
 
-Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided. If an earlier build created `alex@oraglass.us` or a separate End User tier, the next startup renames that user to `alex@open-windows.ca` and keeps End User as T5.
+Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided. Startup also corrects seed records from earlier builds of this branch: `alex@oraglass.us` is renamed to `alex@open-windows.ca`, Open Windows' company tier becomes T2, Alex and Kiu get a T5 override, and Vlad and support stay on the company default. That correction runs once. Later edits on those accounts are left as saved.
 
 ## Tier markups
 
-T1–T4 keep their previous markups. **End User is T5**, the tier the original quote screen already used, at 425% glass and 425% spacer. There is no separate End User tier. The Pricing page is admin-only and saves markups to `tiers.json`. An admin can change the End User percentages there.
+T1–T4 keep their previous markups. **Tier 5 (End User)** is the existing T5 tier at 425% glass and 425% spacer. There is no separate tier. The Pricing page is admin-only and saves markups to `tiers.json`. A company has one default tier. An admin sets a different tier on an individual user when that person should not use the company default.
 
 ## Render
 

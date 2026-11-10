@@ -38,9 +38,9 @@ td{padding:10px;border-bottom:1px solid #eee}
 <h2 style="color:#333">Customers</h2>
 {% if can_manage %}<button class="btn" type="button" id="add-customer">+ Add Customer</button>{% endif %}
 </div>
-<p class="help" style="margin-top:8px">Each company has its own users and one pricing tier. A user override, set on the Users page, replaces the company tier for that person only.</p>
+<p class="help" style="margin-top:8px">The tier on this page is the company default. On the Users page, set a different tier for an individual person when they should not use that default.</p>
 <table>
-<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Phone</th><th>Tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
 <tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
@@ -62,13 +62,13 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 <div class="form-row">
 <div class="form-group"><label>Payment Terms</label><select id="c-terms"><option>Net 30</option><option>Net 15</option><option>COD</option><option>Prepaid</option></select></div>
-<div class="form-group"><label>Price Tier</label>
+<div class="form-group"><label>Company default tier</label>
 <select id="c-tier">
 {% for tid, tier in tiers %}
 <option value="{{ tid }}">{{ tier.label }}</option>
 {% endfor %}
 </select>
-<p class="help">Users inherit this tier unless an admin sets an override on their account.</p>
+<p class="help">People at this company use this tier unless their user account has its own tier.</p>
 </div>
 </div>
 <div class="form-row">

@@ -40,10 +40,10 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 <h2 style="color:#333">Users</h2>
 <button class="btn" type="button" id="add-user">+ Add User</button>
 </div>
-<p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. Customer users only see their own company's quotes.</p>
+<p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. A customer's company has a default tier. Set "This user's tier" when this person should be priced differently.</p>
 <table>
-<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Company</th><th>Tier</th><th>Access</th><th>Actions</th></tr></thead>
-<tbody id="user-list"><tr><td colspan="7" style="text-align:center;color:#666">Loading...</td></tr></tbody>
+<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Company</th><th>Company tier</th><th>This user's tier</th><th>Access</th><th>Actions</th></tr></thead>
+<tbody id="user-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
 
@@ -61,15 +61,15 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 {% endfor %}
 </select>
 </div>
-<div class="form-group"><label>Company</label><select id="u-company"><option value="">None</option></select><p class="help">Required for customer users. Staff can leave this empty.</p></div>
-<div class="form-group"><label>Tier override</label>
+<div class="form-group"><label>Company</label><select id="u-company"><option value="">None</option></select><p class="help">Required for customer users. Staff can leave this empty.</p><p class="help" id="company-tier-note"></p></div>
+<div class="form-group"><label>This user's tier</label>
 <select id="u-tier">
-<option value="">Inherit customer tier</option>
+<option value="">Use company default</option>
 {% for tid, tier in tiers %}
 <option value="{{ tid }}">{{ tier.label }}</option>
 {% endfor %}
 </select>
-<p class="help">Quotes use this tier when it is set. Otherwise they use the company tier.</p>
+<p class="help">Applies only to this person. "Use company default" follows the tier on the Customers page.</p>
 </div>
 <div class="form-group" id="active-group" style="display:none"><label><input type="checkbox" id="u-active" checked> Account enabled</label></div>
 <div style="display:flex;gap:10px;margin-top:20px">
@@ -105,6 +105,7 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 <script>
 const CURRENT_EMAIL = {{ current_user.email|tojson }};
 let users = [];
+let companies = [];
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -124,22 +125,22 @@ function accessLabel(user) {
   if (user.must_change_password) return 'Temporary password';
   return 'Active';
 }
-function tierLabel(user) {
-  if (user.tier_override) return esc(user.effective_tier_label) + ' (override)';
-  if (user.customer_id) return 'Inherits ' + esc(user.effective_tier_label);
+function userTierLabel(user) {
+  if (user.tier_override) return esc(user.effective_tier_label);
+  if (user.customer_id) return 'Company default';
   return esc(user.effective_tier_label);
 }
 function render() {
   const tbody = document.getElementById('user-list');
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#666">No users</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#666">No users</td></tr>';
     return;
   }
   tbody.innerHTML = users.map(user => {
     const email = esc(user.email);
     const self = user.email === CURRENT_EMAIL;
     const del = self ? '' : '<button class="btn-small" type="button" data-action="delete" data-email="' + email + '">Delete</button>';
-    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role) + '</span></td><td>' + esc(user.company || '-') + '</td><td>' + tierLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td><td>'
+    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role) + '</span></td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td><td>'
       + '<button class="btn-small" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
       + '<button class="btn-small" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
       + '<button class="btn-small" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
@@ -152,17 +153,28 @@ async function loadUsers() {
   users = data;
   render();
 }
+function updateCompanyTierNote() {
+  const note = document.getElementById('company-tier-note');
+  const company = companies.find(item => item.id === document.getElementById('u-company').value);
+  if (!company) {
+    note.textContent = 'Select a company to see its default tier.';
+    return;
+  }
+  note.textContent = company.name + ' default tier: ' + (company.tier_label || company.tier) + '. Choosing a tier above replaces that default for this user only.';
+}
 async function loadCompanies(selected) {
   const data = await api('/api/customers');
+  companies = data || [];
   const sel = document.getElementById('u-company');
   sel.innerHTML = '<option value="">None</option>';
-  (data || []).forEach(customer => {
+  companies.forEach(customer => {
     const option = document.createElement('option');
     option.value = customer.id;
     option.textContent = customer.name;
     sel.appendChild(option);
   });
   sel.value = selected || '';
+  updateCompanyTierNote();
 }
 async function openAdd() {
   document.getElementById('user-modal-title').textContent = 'Add User';
@@ -199,6 +211,7 @@ function showLink(email, url) {
   document.getElementById('link-url').value = url;
   document.getElementById('link-modal').classList.add('active');
 }
+document.getElementById('u-company').addEventListener('change', updateCompanyTierNote);
 document.getElementById('add-user').addEventListener('click', () => { openAdd(); });
 document.getElementById('close-user').addEventListener('click', () => document.getElementById('user-modal').classList.remove('active'));
 document.getElementById('close-link').addEventListener('click', () => document.getElementById('link-modal').classList.remove('active'));

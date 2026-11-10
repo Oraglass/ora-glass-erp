@@ -10,13 +10,13 @@ logger = logging.getLogger('ora_glass.storage')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# T5 is the existing End User tier (425% glass and spacer), matching the original quote screen.
+# T5 is the existing end-user tier (425% glass and spacer). The quote screen shows it as Tier 5 (End User).
 DEFAULT_TIERS = {
     'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
     'T2': {'label': 'Tier 2', 'glass_markup': 0.40, 'spacer_markup': 0.40},
     'T3': {'label': 'Tier 3', 'glass_markup': 0.60, 'spacer_markup': 0.60},
     'T4': {'label': 'Tier 4', 'glass_markup': 0.75, 'spacer_markup': 0.75},
-    'T5': {'label': 'End User', 'glass_markup': 4.25, 'spacer_markup': 4.25},
+    'T5': {'label': 'Tier 5 (End User)', 'glass_markup': 4.25, 'spacer_markup': 4.25},
 }
 TIER_ORDER = ('T1', 'T2', 'T3', 'T4', 'T5')
 
@@ -229,10 +229,10 @@ def load_tiers():
                 if field not in current:
                     current[field] = fallback
                     changed = True
-        # The first cut of this branch renamed T5 to "Tier 5" and added a duplicate EU tier.
+        # Earlier builds labeled T5 "Tier 5" or "End User". The displayed name is "Tier 5 (End User)".
         t5 = stored.get('T5')
-        if isinstance(t5, dict) and t5.get('label') in {None, '', 'Tier 5'}:
-            t5['label'] = 'End User'
+        if isinstance(t5, dict) and t5.get('label') in {None, '', 'Tier 5', 'End User'}:
+            t5['label'] = 'Tier 5 (End User)'
             changed = True
         if changed:
             atomic_write_json(path, stored)

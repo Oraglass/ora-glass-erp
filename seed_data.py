@@ -9,8 +9,8 @@ logger = logging.getLogger('ora_glass.seed')
 
 OPEN_WINDOWS_ID = 'open-windows'
 
-# Company default tier is T5, the existing End User tier. Alex is an Open Windows
-# customer with a T2 override; the other users inherit End User.
+# Company default is T2. Alex and Kiu have a per-user T5 override. Vlad and support inherit T2.
+SEED_REVISION = 2
 SEED_CUSTOMER = {
     'id': OPEN_WINDOWS_ID,
     'name': 'Open Windows',
@@ -23,8 +23,9 @@ SEED_CUSTOMER = {
     'email': '',
     'credit_approved': False,
     'payment_terms': 'Net 30',
-    'tier': 'T5',
+    'tier': 'T2',
     'status': 'active',
+    'seed_revision': SEED_REVISION,
 }
 
 SEED_USERS = [
@@ -33,14 +34,14 @@ SEED_USERS = [
         'name': 'Alex',
         'role': 'customer',
         'customer_id': OPEN_WINDOWS_ID,
-        'tier_override': 'T2',
+        'tier_override': 'T5',
     },
     {
         'email': 'kiu@open-windows.ca',
         'name': 'Kiu',
         'role': 'customer',
         'customer_id': OPEN_WINDOWS_ID,
-        'tier_override': None,
+        'tier_override': 'T5',
     },
     {
         'email': 'vlad@open-windows.ca',
@@ -90,6 +91,13 @@ def apply_seed(issue_links=False):
         if customer.get('tier') == 'EU':
             customer['tier'] = 'T5'
             customers_changed = True
+    open_windows = customers.get(OPEN_WINDOWS_ID)
+    migrate_seed_tiers = bool(open_windows) and int(open_windows.get('seed_revision') or 0) < SEED_REVISION
+    if migrate_seed_tiers:
+        open_windows['tier'] = 'T2'
+        open_windows['seed_revision'] = SEED_REVISION
+        customers_changed = True
+        logger.info('Set Open Windows company tier to T2')
     if customers_changed:
         save_customers(customers)
 
@@ -110,6 +118,15 @@ def apply_seed(issue_links=False):
     for user in users.values():
         if user.get('tier_override') == 'EU':
             user['tier_override'] = 'T5'
+            changed = True
+    if migrate_seed_tiers:
+        for spec in SEED_USERS:
+            existing = users.get(spec['email'])
+            if not existing:
+                continue
+            existing['tier_override'] = spec['tier_override']
+            existing['customer_id'] = OPEN_WINDOWS_ID
+            existing['role'] = 'customer'
             changed = True
     for spec in SEED_USERS:
         email = spec['email']

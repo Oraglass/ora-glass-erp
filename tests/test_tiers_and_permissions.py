@@ -39,13 +39,13 @@ def test_end_user_is_existing_t5_markup(data_dir):
     from storage import save_tiers
     save_tiers({
         'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
-        'T5': {'label': 'Tier 5', 'glass_markup': 4.25, 'spacer_markup': 4.25},
+        'T5': {'label': 'End User', 'glass_markup': 4.25, 'spacer_markup': 4.25},
         'EU': {'label': 'End User', 'glass_markup': 1.0, 'spacer_markup': 1.0, 'placeholder': True},
     })
     tiers = load_tiers()
     assert 'EU' not in tiers
     assert set(tiers) == {'T1', 'T2', 'T3', 'T4', 'T5'}
-    assert tiers['T5']['label'] == 'End User'
+    assert tiers['T5']['label'] == 'Tier 5 (End User)'
     assert tiers['T5']['glass_markup'] == 4.25
     assert tiers['T5']['spacer_markup'] == 4.25
     assert tiers['T1']['glass_markup'] == 0.30
@@ -59,19 +59,21 @@ def test_seed_has_no_passwords_and_assigns_tiers(data_dir):
     tiers = load_tiers()
     assert customers['open-windows']['name'] == 'Open Windows'
     assert customers['open-windows']['domain'] == 'open-windows.ca'
-    assert customers['open-windows']['tier'] == 'T5'
+    assert customers['open-windows']['tier'] == 'T2'
     assert 'alex@oraglass.us' not in users
-    assert resolve_effective_tier(users['alex@open-windows.ca'], customers, tiers) == 'T2'
+    assert users['alex@open-windows.ca']['tier_override'] == 'T5'
+    assert users['kiu@open-windows.ca']['tier_override'] == 'T5'
+    assert users['vlad@open-windows.ca']['tier_override'] is None
+    assert users['support@open-windows.ca']['tier_override'] is None
+    assert resolve_effective_tier(users['alex@open-windows.ca'], customers, tiers) == 'T5'
+    assert resolve_effective_tier(users['kiu@open-windows.ca'], customers, tiers) == 'T5'
+    assert resolve_effective_tier(users['vlad@open-windows.ca'], customers, tiers) == 'T2'
+    assert resolve_effective_tier(users['support@open-windows.ca'], customers, tiers) == 'T2'
+    assert tiers['T5']['label'] == 'Tier 5 (End User)'
     for spec in SEED_USERS:
         user = users[spec['email']]
         assert user['password_hash'] is None
         assert user['customer_id'] == 'open-windows'
-        if spec['email'] == 'alex@open-windows.ca':
-            assert user['tier_override'] == 'T2'
-        else:
-            assert user['tier_override'] is None
-            assert resolve_effective_tier(user, customers, tiers) == 'T5'
-            assert tiers['T5']['label'] == 'End User'
     apply_seed()
     assert load_users()['kiu@open-windows.ca']['password_hash'] is None
 
@@ -100,10 +102,21 @@ def test_seed_renames_old_alex_address_and_folds_duplicate_tier(data_dir):
     apply_seed()
     users = load_users()
     assert 'alex@oraglass.us' not in users
-    assert users['alex@open-windows.ca']['tier_override'] == 'T2'
+    assert users['alex@open-windows.ca']['tier_override'] == 'T5'
     assert users['alex@open-windows.ca']['password_hash'] is None
-    assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T5'
+    assert users['kiu@open-windows.ca']['tier_override'] == 'T5'
+    assert users['vlad@open-windows.ca']['tier_override'] is None
+    assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T2'
     assert resolve_effective_tier(users['kiu@open-windows.ca'], load_customers(), load_tiers()) == 'T5'
+    assert resolve_effective_tier(users['vlad@open-windows.ca'], load_customers(), load_tiers()) == 'T2'
+    customers = load_customers()
+    customers[OPEN_WINDOWS_ID]['tier'] = 'T3'
+    save_customers(customers)
+    users['alex@open-windows.ca']['tier_override'] = 'T1'
+    save_users(users)
+    apply_seed()
+    assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T3'
+    assert load_users()['alex@open-windows.ca']['tier_override'] == 'T1'
 
 
 def test_customer_cannot_choose_a_different_tier(client):
@@ -132,9 +145,8 @@ def test_staff_can_choose_tier_including_end_user(client):
     assert login(client, 'admin@oraglass.us').status_code == 302
     page = client.get('/quotes')
     assert b'<select id="tier">' in page.data
-    assert b'End User' in page.data
+    assert b'Tier 5 (End User)' in page.data
     assert b'value="T5"' in page.data
-    assert b'>Tier 5<' not in page.data
     payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'}
     response = client.post('/api/calculate', json=payload)
     body = response.get_json()
