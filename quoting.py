@@ -5,7 +5,7 @@ import os
 import re
 import warnings
 
-from storage import pricing_search_paths, resolve_pricing_path
+from storage import TIER_ORDER, pricing_search_paths, resolve_pricing_path
 
 logger = logging.getLogger('ora_glass.quoting')
 
@@ -109,6 +109,54 @@ def resolve_effective_tier(user, customers, valid_tiers):
     if not valid_tiers:
         return 'T2'
     return next(iter(valid_tiers))
+
+
+def _ordered_tier_ids(ids, valid_tiers):
+    valid = set(valid_tiers)
+    chosen = []
+    for tid in ids:
+        if tid in valid and tid not in chosen:
+            chosen.append(tid)
+    ordered = [tid for tid in TIER_ORDER if tid in chosen]
+    ordered.extend(tid for tid in chosen if tid not in ordered)
+    return ordered
+
+
+def allowed_tier_ids(user, customers, valid_tiers):
+    """Tiers this user may quote at.
+
+    A missing allowed_tiers list is the legacy set: company tier and override.
+    The company tier and the user's default tier are always included.
+    """
+    user = user or {}
+    customers = customers or {}
+    customer = customers.get(user.get('customer_id') or '') or {}
+    company_tier = customer.get('tier') or ''
+    override = user.get('tier_override') or ''
+    default = resolve_effective_tier(user, customers, valid_tiers)
+    stored = user.get('allowed_tiers', None)
+    if stored is None:
+        base = [company_tier, override, default]
+    else:
+        base = []
+        if isinstance(stored, (list, tuple)):
+            base.extend(str(item or '').strip() for item in stored)
+        base.extend((company_tier, default))
+    return _ordered_tier_ids(base, valid_tiers)
+
+
+def tier_for_request(user, requested, customers, valid_tiers):
+    """Tier to price and store. Customers may only use an allowed tier."""
+    user = user or {}
+    default = resolve_effective_tier(user, customers, valid_tiers)
+    requested = str(requested or '').strip()
+    if user.get('role') == 'customer':
+        if requested in set(allowed_tier_ids(user, customers, valid_tiers)):
+            return requested
+        return default
+    if requested in set(valid_tiers):
+        return requested
+    return default
 
 
 def _markup(cfg, key, fallback):
