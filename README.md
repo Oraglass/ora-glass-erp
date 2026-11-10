@@ -65,9 +65,9 @@ The password is read from `ADMIN_PASSWORD` or from a prompt. It is not accepted 
 
 On startup (`AUTO_SEED` defaults to `1`) the app creates, if missing:
 
-- Customer **Open Windows** (`open-windows.ca`), company tier **End User**
-- `alex@oraglass.us` as a customer user with a **T2** override
-- `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca` on the company tier (End User)
+- Customer **Open Windows** (`open-windows.ca`), company tier **End User** (T5, 425% glass and spacer)
+- `alex@open-windows.ca` as a customer user with a **T2** override
+- `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca` on the company tier (End User / T5)
 
 No password is stored for them. To activate someone:
 
@@ -82,13 +82,11 @@ The same links can be printed from the shell. This replaces any unused link for 
 flask --app app seed --links --base-url https://your-public-host
 ```
 
-Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided.
+Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided. If an earlier build created `alex@oraglass.us` or a separate End User tier, the next startup renames that user to `alex@open-windows.ca` and keeps End User as T5.
 
 ## Tier markups
 
-T1–T5 keep their previous markups. **End User** (`EU`) is a new tier. Its starting markup is a **placeholder of 100% on glass and 100% on spacers** (the customer pays 2× base). The Pricing page is admin-only and saves markups to `tiers.json`. Saving clears the placeholder flag.
-
-The previous quote screen labeled T5 as "End User". T5 is still Tier 5 at 425% glass and 425% spacer. It is not the new End User tier. Set the real End User percentages on the Pricing page.
+T1–T4 keep their previous markups. **End User is T5**, the tier the original quote screen already used, at 425% glass and 425% spacer. There is no separate End User tier. The Pricing page is admin-only and saves markups to `tiers.json`. An admin can change the End User percentages there.
 
 ## Render
 

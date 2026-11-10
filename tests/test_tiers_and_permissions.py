@@ -8,12 +8,12 @@ from tests.conftest import login, write_user
 
 
 def test_resolve_effective_tier_override_then_customer_then_default():
-    customers = {'c': {'tier': 'EU'}}
-    valid = {'T1': {}, 'T2': {}, 'EU': {}}
+    customers = {'c': {'tier': 'T5'}}
+    valid = {'T1': {}, 'T2': {}, 'T5': {}}
     assert resolve_effective_tier({'tier_override': 'T2', 'customer_id': 'c'}, customers, valid) == 'T2'
-    assert resolve_effective_tier({'tier_override': '', 'customer_id': 'c'}, customers, valid) == 'EU'
-    assert resolve_effective_tier({'tier_override': None, 'customer_id': 'c'}, customers, valid) == 'EU'
-    assert resolve_effective_tier({'tier_override': 'NOPE', 'customer_id': 'c'}, customers, valid) == 'EU'
+    assert resolve_effective_tier({'tier_override': '', 'customer_id': 'c'}, customers, valid) == 'T5'
+    assert resolve_effective_tier({'tier_override': None, 'customer_id': 'c'}, customers, valid) == 'T5'
+    assert resolve_effective_tier({'tier_override': 'NOPE', 'customer_id': 'c'}, customers, valid) == 'T5'
     assert resolve_effective_tier({'role': 'admin'}, {}, valid) == 'T2'
 
 
@@ -35,14 +35,19 @@ def test_calculate_uses_glass_and_spacer_markups_separately():
     assert tempered == 1.90
 
 
-def test_end_user_tier_is_separate_from_t5_and_marked_placeholder(data_dir):
+def test_end_user_is_existing_t5_markup(data_dir):
+    from storage import save_tiers
+    save_tiers({
+        'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
+        'T5': {'label': 'Tier 5', 'glass_markup': 4.25, 'spacer_markup': 4.25},
+        'EU': {'label': 'End User', 'glass_markup': 1.0, 'spacer_markup': 1.0, 'placeholder': True},
+    })
     tiers = load_tiers()
-    assert tiers['EU']['label'] == 'End User'
-    assert tiers['EU']['placeholder'] is True
-    assert tiers['EU']['glass_markup'] == 1.0
-    assert tiers['EU']['spacer_markup'] == 1.0
-    assert tiers['T5']['label'] == 'Tier 5'
+    assert 'EU' not in tiers
+    assert set(tiers) == {'T1', 'T2', 'T3', 'T4', 'T5'}
+    assert tiers['T5']['label'] == 'End User'
     assert tiers['T5']['glass_markup'] == 4.25
+    assert tiers['T5']['spacer_markup'] == 4.25
     assert tiers['T1']['glass_markup'] == 0.30
     assert tiers['T1']['spacer_markup'] == 0.20
 
@@ -54,25 +59,57 @@ def test_seed_has_no_passwords_and_assigns_tiers(data_dir):
     tiers = load_tiers()
     assert customers['open-windows']['name'] == 'Open Windows'
     assert customers['open-windows']['domain'] == 'open-windows.ca'
-    assert customers['open-windows']['tier'] == 'EU'
-    assert resolve_effective_tier(users['alex@oraglass.us'], customers, tiers) == 'T2'
+    assert customers['open-windows']['tier'] == 'T5'
+    assert 'alex@oraglass.us' not in users
+    assert resolve_effective_tier(users['alex@open-windows.ca'], customers, tiers) == 'T2'
     for spec in SEED_USERS:
         user = users[spec['email']]
         assert user['password_hash'] is None
         assert user['customer_id'] == 'open-windows'
-        if spec['email'] == 'alex@oraglass.us':
+        if spec['email'] == 'alex@open-windows.ca':
             assert user['tier_override'] == 'T2'
         else:
             assert user['tier_override'] is None
-            assert resolve_effective_tier(user, customers, tiers) == 'EU'
+            assert resolve_effective_tier(user, customers, tiers) == 'T5'
+            assert tiers['T5']['label'] == 'End User'
     apply_seed()
     assert load_users()['kiu@open-windows.ca']['password_hash'] is None
+
+
+def test_seed_renames_old_alex_address_and_folds_duplicate_tier(data_dir):
+    from seed_data import OPEN_WINDOWS_ID, new_user
+    from storage import save_customers, save_users
+    save_customers({
+        OPEN_WINDOWS_ID: {
+            'id': OPEN_WINDOWS_ID,
+            'name': 'Open Windows',
+            'domain': 'open-windows.ca',
+            'tier': 'EU',
+            'status': 'active',
+        }
+    })
+    save_users({
+        'alex@oraglass.us': new_user(
+            email='alex@oraglass.us',
+            name='Alex',
+            role='customer',
+            customer_id=OPEN_WINDOWS_ID,
+            tier_override='T2',
+        )
+    })
+    apply_seed()
+    users = load_users()
+    assert 'alex@oraglass.us' not in users
+    assert users['alex@open-windows.ca']['tier_override'] == 'T2'
+    assert users['alex@open-windows.ca']['password_hash'] is None
+    assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T5'
+    assert resolve_effective_tier(users['kiu@open-windows.ca'], load_customers(), load_tiers()) == 'T5'
 
 
 def test_customer_cannot_choose_a_different_tier(client):
     write_user(
         'kiu@open-windows.ca', 'customer', customer_id='open-windows',
-        customer_name='Open Windows', customer_tier='EU', tier_override='T2',
+        customer_name='Open Windows', customer_tier='T5', tier_override='T2',
     )
     assert login(client, 'kiu@open-windows.ca').status_code == 302
     page = client.get('/quotes')
@@ -96,18 +133,19 @@ def test_staff_can_choose_tier_including_end_user(client):
     page = client.get('/quotes')
     assert b'<select id="tier">' in page.data
     assert b'End User' in page.data
-    assert b'Tier 5' in page.data
-    payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'EU'}
+    assert b'value="T5"' in page.data
+    assert b'>Tier 5<' not in page.data
+    payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'}
     response = client.post('/api/calculate', json=payload)
     body = response.get_json()
-    assert body['tier'] == 'EU'
+    assert body['tier'] == 'T5'
     from app import PRICING
-    assert body['price_sqf'] == calculate_price_sqf(payload, 'EU', PRICING, load_tiers())
+    assert body['price_sqf'] == calculate_price_sqf(payload, 'T5', PRICING, load_tiers())
 
 
 def test_customer_sees_only_own_company_quotes_and_storage_path(client, data_dir):
     write_user('admin@oraglass.us', 'admin')
-    write_user('kiu@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows', customer_tier='EU')
+    write_user('kiu@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows', customer_tier='T5')
     write_user('other@example.com', 'customer', customer_id='other-co', customer_name='Other Co', customer_tier='T1')
     assert login(client, 'kiu@open-windows.ca').status_code == 302
     saved = client.post('/api/quotes', json={
@@ -123,7 +161,7 @@ def test_customer_sees_only_own_company_quotes_and_storage_path(client, data_dir
     assert on_disk[0]['customer_id'] == 'open-windows'
     assert on_disk[0]['company'] == 'Open Windows'
     assert on_disk[0]['user'] == 'kiu@open-windows.ca'
-    assert on_disk[0]['tier'] == 'EU'
+    assert on_disk[0]['tier'] == 'T5'
     client.post('/logout')
     assert login(client, 'other@example.com').status_code == 302
     client.post('/api/quotes', json={
@@ -144,7 +182,7 @@ def test_customer_sees_only_own_company_quotes_and_storage_path(client, data_dir
 def test_permissions_and_anonymous_access(client):
     write_user('admin@oraglass.us', 'admin')
     write_user('sales@oraglass.us', 'sales')
-    write_user('kiu@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows', customer_tier='EU')
+    write_user('kiu@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows', customer_tier='T5')
 
     anonymous = client.get('/api/quotes')
     assert anonymous.status_code == 401
@@ -186,7 +224,7 @@ def test_permissions_and_anonymous_access(client):
         'email': 'pat@north.example',
         'role': 'customer',
         'customer_id': 'north-glass',
-        'tier_override': 'EU',
+        'tier_override': 'T5',
     })
     body = created_user.get_json()
     assert created_user.status_code == 200
@@ -194,7 +232,7 @@ def test_permissions_and_anonymous_access(client):
     assert 'password' not in body
     stored = load_users()['pat@north.example']
     assert stored['password_hash'] is None
-    assert stored['tier_override'] == 'EU'
+    assert stored['tier_override'] == 'T5'
     assert stored['invite_token_hash']
     assert verify_password(stored['password_hash'], 'anything') is False
     removed = client.delete('/api/users/' + 'admin@oraglass.us')

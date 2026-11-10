@@ -9,9 +9,8 @@ logger = logging.getLogger('ora_glass.seed')
 
 OPEN_WINDOWS_ID = 'open-windows'
 
-# Company default tier is End User. alex@oraglass.us is seeded as a customer user of
-# Open Windows with a T2 override. The mailbox is on oraglass.us, so the owner should
-# confirm whether Alex should instead be an Ora Glass staff account.
+# Company default tier is T5, the existing End User tier. Alex is an Open Windows
+# customer with a T2 override; the other users inherit End User.
 SEED_CUSTOMER = {
     'id': OPEN_WINDOWS_ID,
     'name': 'Open Windows',
@@ -24,13 +23,13 @@ SEED_CUSTOMER = {
     'email': '',
     'credit_approved': False,
     'payment_terms': 'Net 30',
-    'tier': 'EU',
+    'tier': 'T5',
     'status': 'active',
 }
 
 SEED_USERS = [
     {
-        'email': 'alex@oraglass.us',
+        'email': 'alex@open-windows.ca',
         'name': 'Alex',
         'role': 'customer',
         'customer_id': OPEN_WINDOWS_ID,
@@ -82,14 +81,36 @@ def apply_seed(issue_links=False):
     token. Raw tokens are returned to the caller and are not written to disk.
     """
     customers = load_customers()
+    customers_changed = False
     if OPEN_WINDOWS_ID not in customers:
         customers[OPEN_WINDOWS_ID] = dict(SEED_CUSTOMER)
-        save_customers(customers)
+        customers_changed = True
         logger.info('Seeded customer Open Windows')
+    for customer in customers.values():
+        if customer.get('tier') == 'EU':
+            customer['tier'] = 'T5'
+            customers_changed = True
+    if customers_changed:
+        save_customers(customers)
 
     users = load_users()
     tokens = {}
     changed = False
+    old_alex = 'alex@oraglass.us'
+    new_alex = 'alex@open-windows.ca'
+    if old_alex in users and new_alex not in users:
+        moved = users.pop(old_alex)
+        moved['email'] = new_alex
+        users[new_alex] = moved
+        changed = True
+        logger.info('Renamed seeded user %s to %s', old_alex, new_alex)
+    elif old_alex in users and not users[old_alex].get('password_hash'):
+        del users[old_alex]
+        changed = True
+    for user in users.values():
+        if user.get('tier_override') == 'EU':
+            user['tier_override'] = 'T5'
+            changed = True
     for spec in SEED_USERS:
         email = spec['email']
         if email not in users:

@@ -10,18 +10,15 @@ logger = logging.getLogger('ora_glass.storage')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# End User (EU) markups are a PLACEHOLDER until an admin confirms them on the Pricing page.
-# Tier 5 stays the historical 425% markup. The old quote screen labeled T5 "End User";
-# that label was not a separate tier.
+# T5 is the existing End User tier (425% glass and spacer), matching the original quote screen.
 DEFAULT_TIERS = {
-    'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20, 'placeholder': False},
-    'T2': {'label': 'Tier 2', 'glass_markup': 0.40, 'spacer_markup': 0.40, 'placeholder': False},
-    'T3': {'label': 'Tier 3', 'glass_markup': 0.60, 'spacer_markup': 0.60, 'placeholder': False},
-    'T4': {'label': 'Tier 4', 'glass_markup': 0.75, 'spacer_markup': 0.75, 'placeholder': False},
-    'T5': {'label': 'Tier 5', 'glass_markup': 4.25, 'spacer_markup': 4.25, 'placeholder': False},
-    'EU': {'label': 'End User', 'glass_markup': 1.00, 'spacer_markup': 1.00, 'placeholder': True},
+    'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
+    'T2': {'label': 'Tier 2', 'glass_markup': 0.40, 'spacer_markup': 0.40},
+    'T3': {'label': 'Tier 3', 'glass_markup': 0.60, 'spacer_markup': 0.60},
+    'T4': {'label': 'Tier 4', 'glass_markup': 0.75, 'spacer_markup': 0.75},
+    'T5': {'label': 'End User', 'glass_markup': 4.25, 'spacer_markup': 4.25},
 }
-TIER_ORDER = ('T1', 'T2', 'T3', 'T4', 'T5', 'EU')
+TIER_ORDER = ('T1', 'T2', 'T3', 'T4', 'T5')
 
 _locks = {}
 _locks_guard = threading.Lock()
@@ -218,6 +215,10 @@ def load_tiers():
             atomic_write_json(path, defaults)
             return defaults
         changed = False
+        for key in list(stored):
+            if key not in TIER_ORDER:
+                del stored[key]
+                changed = True
         for key, value in defaults.items():
             current = stored.get(key)
             if not isinstance(current, dict):
@@ -228,6 +229,11 @@ def load_tiers():
                 if field not in current:
                     current[field] = fallback
                     changed = True
+        # The first cut of this branch renamed T5 to "Tier 5" and added a duplicate EU tier.
+        t5 = stored.get('T5')
+        if isinstance(t5, dict) and t5.get('label') in {None, '', 'Tier 5'}:
+            t5['label'] = 'End User'
+            changed = True
         if changed:
             atomic_write_json(path, stored)
         return stored

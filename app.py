@@ -831,7 +831,6 @@ def pricing_admin():
             cfg['label'] = label
             cfg['glass_markup'] = round(glass / 100.0, 6)
             cfg['spacer_markup'] = round(spacer / 100.0, 6)
-            cfg['placeholder'] = False
         if errors:
             flash('Check markup values for: ' + ', '.join(errors), 'error')
         else:
