@@ -9,8 +9,8 @@ logger = logging.getLogger('ora_glass.seed')
 
 OPEN_WINDOWS_ID = 'open-windows'
 
-# Company default is T2. Alex and Kiu have a per-user T5 override. Vlad and support inherit T2.
-SEED_REVISION = 2
+# Company default is T2. Alex, Kiu, Vlad, and support each have a per-user T5 override.
+SEED_REVISION = 3
 SEED_CUSTOMER = {
     'id': OPEN_WINDOWS_ID,
     'name': 'Open Windows',
@@ -48,14 +48,14 @@ SEED_USERS = [
         'name': 'Vlad',
         'role': 'customer',
         'customer_id': OPEN_WINDOWS_ID,
-        'tier_override': None,
+        'tier_override': 'T5',
     },
     {
         'email': 'support@open-windows.ca',
         'name': 'Open Windows Support',
         'role': 'customer',
         'customer_id': OPEN_WINDOWS_ID,
-        'tier_override': None,
+        'tier_override': 'T5',
     },
 ]
 

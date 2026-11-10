@@ -63,12 +63,12 @@ def test_seed_has_no_passwords_and_assigns_tiers(data_dir):
     assert 'alex@oraglass.us' not in users
     assert users['alex@open-windows.ca']['tier_override'] == 'T5'
     assert users['kiu@open-windows.ca']['tier_override'] == 'T5'
-    assert users['vlad@open-windows.ca']['tier_override'] is None
-    assert users['support@open-windows.ca']['tier_override'] is None
+    assert users['vlad@open-windows.ca']['tier_override'] == 'T5'
+    assert users['support@open-windows.ca']['tier_override'] == 'T5'
     assert resolve_effective_tier(users['alex@open-windows.ca'], customers, tiers) == 'T5'
     assert resolve_effective_tier(users['kiu@open-windows.ca'], customers, tiers) == 'T5'
-    assert resolve_effective_tier(users['vlad@open-windows.ca'], customers, tiers) == 'T2'
-    assert resolve_effective_tier(users['support@open-windows.ca'], customers, tiers) == 'T2'
+    assert resolve_effective_tier(users['vlad@open-windows.ca'], customers, tiers) == 'T5'
+    assert resolve_effective_tier(users['support@open-windows.ca'], customers, tiers) == 'T5'
     assert tiers['T5']['label'] == 'Tier 5 (End User)'
     for spec in SEED_USERS:
         user = users[spec['email']]
@@ -105,10 +105,11 @@ def test_seed_renames_old_alex_address_and_folds_duplicate_tier(data_dir):
     assert users['alex@open-windows.ca']['tier_override'] == 'T5'
     assert users['alex@open-windows.ca']['password_hash'] is None
     assert users['kiu@open-windows.ca']['tier_override'] == 'T5'
-    assert users['vlad@open-windows.ca']['tier_override'] is None
+    assert users['vlad@open-windows.ca']['tier_override'] == 'T5'
+    assert users['support@open-windows.ca']['tier_override'] == 'T5'
     assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T2'
     assert resolve_effective_tier(users['kiu@open-windows.ca'], load_customers(), load_tiers()) == 'T5'
-    assert resolve_effective_tier(users['vlad@open-windows.ca'], load_customers(), load_tiers()) == 'T2'
+    assert resolve_effective_tier(users['vlad@open-windows.ca'], load_customers(), load_tiers()) == 'T5'
     customers = load_customers()
     customers[OPEN_WINDOWS_ID]['tier'] = 'T3'
     save_customers(customers)
@@ -117,6 +118,40 @@ def test_seed_renames_old_alex_address_and_folds_duplicate_tier(data_dir):
     apply_seed()
     assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T3'
     assert load_users()['alex@open-windows.ca']['tier_override'] == 'T1'
+
+
+def test_seed_revision_sets_t5_override_for_vlad_and_support(data_dir):
+    from seed_data import OPEN_WINDOWS_ID, new_user
+    from storage import save_customers, save_users
+    save_customers({
+        OPEN_WINDOWS_ID: {
+            'id': OPEN_WINDOWS_ID,
+            'name': 'Open Windows',
+            'domain': 'open-windows.ca',
+            'tier': 'T2',
+            'status': 'active',
+            'seed_revision': 2,
+        }
+    })
+    save_users({
+        'vlad@open-windows.ca': new_user(
+            email='vlad@open-windows.ca', name='Vlad', role='customer',
+            customer_id=OPEN_WINDOWS_ID, tier_override=None,
+        ),
+        'support@open-windows.ca': new_user(
+            email='support@open-windows.ca', name='Open Windows Support', role='customer',
+            customer_id=OPEN_WINDOWS_ID, tier_override=None,
+        ),
+    })
+    apply_seed()
+    users = load_users()
+    assert users['vlad@open-windows.ca']['tier_override'] == 'T5'
+    assert users['support@open-windows.ca']['tier_override'] == 'T5'
+    assert load_customers()[OPEN_WINDOWS_ID]['tier'] == 'T2'
+    users['support@open-windows.ca']['tier_override'] = 'T4'
+    save_users(users)
+    apply_seed()
+    assert load_users()['support@open-windows.ca']['tier_override'] == 'T4'
 
 
 def test_customer_cannot_choose_a_different_tier(client):

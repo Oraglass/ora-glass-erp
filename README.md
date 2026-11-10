@@ -66,8 +66,7 @@ The password is read from `ADMIN_PASSWORD` or from a prompt. It is not accepted 
 On startup (`AUTO_SEED` defaults to `1`) the app creates, if missing:
 
 - Customer **Open Windows** (`open-windows.ca`), company default tier **T2**
-- `alex@open-windows.ca` and `kiu@open-windows.ca` with a per-user override to **T5 (Tier 5 (End User), 425%)**
-- `vlad@open-windows.ca` and `support@open-windows.ca` with no override, so they inherit **T2**
+- `alex@open-windows.ca`, `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca`, each with a per-user override to **T5 (Tier 5 (End User), 425%)**
 
 No password is stored for them. To activate someone:
 
@@ -82,7 +81,7 @@ The same links can be printed from the shell. This replaces any unused link for 
 flask --app app seed --links --base-url https://your-public-host
 ```
 
-Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided. Startup also corrects seed records from earlier builds of this branch: `alex@oraglass.us` is renamed to `alex@open-windows.ca`, Open Windows' company tier becomes T2, Alex and Kiu get a T5 override, and Vlad and support stay on the company default. That correction runs once. Later edits on those accounts are left as saved.
+Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) because no legal names were provided. Startup also corrects seed records from earlier builds of this branch: `alex@oraglass.us` is renamed to `alex@open-windows.ca`, Open Windows' company tier becomes T2, and Alex, Kiu, Vlad, and support each get a T5 override. That correction runs once. Later edits on those accounts are left as saved.
 
 ## Tier markups
 
