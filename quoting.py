@@ -5,7 +5,7 @@ import os
 import re
 import warnings
 
-from storage import pricing_search_paths, resolve_pricing_path
+from storage import TIER_ORDER, pricing_search_paths, resolve_pricing_path
 
 logger = logging.getLogger('ora_glass.quoting')
 
@@ -109,6 +109,82 @@ def resolve_effective_tier(user, customers, valid_tiers):
     if not valid_tiers:
         return 'T2'
     return next(iter(valid_tiers))
+
+
+def _ordered_tier_ids(ids, valid_tiers):
+    valid = set(valid_tiers)
+    chosen = []
+    for tid in ids:
+        if tid in valid and tid not in chosen:
+            chosen.append(tid)
+    ordered = [tid for tid in TIER_ORDER if tid in chosen]
+    ordered.extend(tid for tid in chosen if tid not in ordered)
+    return ordered
+
+
+def allowed_tier_ids(user, customers, valid_tiers):
+    """Tiers this user may quote at.
+
+    A missing allowed_tiers list is the legacy set: company tier and override.
+    An explicit list is used as stored. The company tier is not added to it.
+    """
+    user = user or {}
+    customers = customers or {}
+    customer = customers.get(user.get('customer_id') or '') or {}
+    company_tier = customer.get('tier') or ''
+    override = user.get('tier_override') or ''
+    stored = user.get('allowed_tiers', None)
+    if stored is None:
+        base = [company_tier, override]
+        if not _ordered_tier_ids(base, valid_tiers):
+            base.append(resolve_effective_tier(user, customers, valid_tiers))
+    else:
+        base = []
+        if isinstance(stored, (list, tuple)):
+            base.extend(str(item or '').strip() for item in stored)
+    return _ordered_tier_ids(base, valid_tiers)
+
+
+def default_quote_tier(user, customers, valid_tiers):
+    """Tier used when the request does not choose one. Never a tier the user is not allowed."""
+    user = user or {}
+    if user.get('role') == 'customer':
+        allowed = allowed_tier_ids(user, customers, valid_tiers)
+        allowed_set = set(allowed)
+        override = user.get('tier_override') or ''
+        if override in allowed_set:
+            return override
+        customer = (customers or {}).get(user.get('customer_id') or '') or {}
+        company_tier = customer.get('tier') or ''
+        if company_tier in allowed_set:
+            return company_tier
+        if allowed:
+            return allowed[0]
+        return ''
+    return resolve_effective_tier(user, customers, valid_tiers)
+
+
+def tier_for_request(user, requested, customers, valid_tiers):
+    """Tier to price and store.
+
+    Customers may only use an allowed tier. A requested tier outside that list
+    is refused (None) instead of priced. Staff may use any known tier.
+    """
+    user = user or {}
+    requested = str(requested or '').strip()
+    if user.get('role') == 'customer':
+        allowed = set(allowed_tier_ids(user, customers, valid_tiers))
+        if requested:
+            if requested in allowed:
+                return requested
+            return None
+        chosen = default_quote_tier(user, customers, valid_tiers)
+        if chosen in allowed:
+            return chosen
+        return None
+    if requested in set(valid_tiers):
+        return requested
+    return resolve_effective_tier(user, customers, valid_tiers)
 
 
 def _markup(cfg, key, fallback):
