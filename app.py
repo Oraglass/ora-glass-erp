@@ -19,6 +19,7 @@ from quoting import (
     allowed_tier_ids,
     calculate_price_sqf,
     classify,
+    default_quote_tier,
     load_pricing,
     resolve_effective_tier,
     sealant_match_map,
@@ -303,7 +304,7 @@ def public_user(user, customers, tiers):
 
 
 def apply_allowed_tiers(record, data, customers, tiers):
-    """Store allowed tiers when the request includes them. Company tier and the default stay included."""
+    """Store an explicit allowed-tier list. The company tier is included only when it is sent."""
     if 'allowed_tiers' not in data:
         return None
     raw = data.get('allowed_tiers')
@@ -318,6 +319,21 @@ def apply_allowed_tiers(record, data, customers, tiers):
             return 'Unknown pricing tier.'
         if tid not in cleaned:
             cleaned.append(tid)
+    if not cleaned:
+        return 'Choose at least one allowed tier.'
+    override = record.get('tier_override') or ''
+    customer = (customers or {}).get(record.get('customer_id') or '') or {}
+    company_tier = customer.get('tier') or ''
+    if override:
+        if override not in cleaned:
+            return "This user's tier must be one of the allowed tiers."
+    elif company_tier:
+        if company_tier not in cleaned:
+            return 'The company tier is not allowed. Choose one of the allowed tiers for this user.'
+    else:
+        fallback = 'T2' if 'T2' in tiers else next(iter(tiers), '')
+        if fallback not in cleaned:
+            return "This user's tier must be one of the allowed tiers."
     draft = dict(record)
     draft['allowed_tiers'] = cleaned
     record['allowed_tiers'] = allowed_tier_ids(draft, customers, tiers)
@@ -633,13 +649,14 @@ def dashboard():
 def quote_template_context(user):
     tiers = load_tiers()
     customers = load_customers()
-    effective = effective_tier_for(user, customers, tiers)
     ordered = ordered_tiers(tiers)
     if user.get('role') == 'customer':
         allowed = set(allowed_tier_ids(user, customers, tiers))
         choices = [(tid, cfg) for tid, cfg in ordered if tid in allowed]
+        effective = default_quote_tier(user, customers, tiers)
     else:
         choices = ordered
+        effective = effective_tier_for(user, customers, tiers)
     locked = len(choices) <= 1
     locked_id = choices[0][0] if locked and choices else effective
     return {
@@ -671,6 +688,8 @@ def calculate():
     tiers = load_tiers()
     customers = load_customers()
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
+    if not tier:
+        return json_error('That pricing tier is not available.', 400)
     price = calculate_price_sqf(data, tier, PRICING, tiers)
     return jsonify({'price_sqf': price, 'tier': tier})
 
@@ -1197,6 +1216,8 @@ def save_quote():
         company = 'ORA'
     tiers = load_tiers()
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
+    if not tier:
+        return json_error('That pricing tier is not available.', 400)
     quote = {
         'date': date.today().isoformat(),
         'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
@@ -1224,7 +1245,19 @@ def clear_quotes():
 @module_required('quote-history')
 def get_quotes():
     user = current_user()
-    return jsonify(quotes_visible_to(user, load_quotes()))
+    quotes = quotes_visible_to(user, load_quotes())
+    if user.get('role') != 'customer':
+        return jsonify(quotes)
+    customers = load_customers()
+    tiers = load_tiers()
+    allowed = set(allowed_tier_ids(user, customers, tiers))
+    visible = []
+    for quote in quotes:
+        row = dict(quote)
+        if row.get('tier') not in allowed:
+            row.pop('tier', None)
+        visible.append(row)
+    return jsonify(visible)
 
 
 def _upsert_admin(email, name, password):

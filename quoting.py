@@ -126,37 +126,65 @@ def allowed_tier_ids(user, customers, valid_tiers):
     """Tiers this user may quote at.
 
     A missing allowed_tiers list is the legacy set: company tier and override.
-    The company tier and the user's default tier are always included.
+    An explicit list is used as stored. The company tier is not added to it.
     """
     user = user or {}
     customers = customers or {}
     customer = customers.get(user.get('customer_id') or '') or {}
     company_tier = customer.get('tier') or ''
     override = user.get('tier_override') or ''
-    default = resolve_effective_tier(user, customers, valid_tiers)
     stored = user.get('allowed_tiers', None)
     if stored is None:
-        base = [company_tier, override, default]
+        base = [company_tier, override]
+        if not _ordered_tier_ids(base, valid_tiers):
+            base.append(resolve_effective_tier(user, customers, valid_tiers))
     else:
         base = []
         if isinstance(stored, (list, tuple)):
             base.extend(str(item or '').strip() for item in stored)
-        base.extend((company_tier, default))
     return _ordered_tier_ids(base, valid_tiers)
 
 
-def tier_for_request(user, requested, customers, valid_tiers):
-    """Tier to price and store. Customers may only use an allowed tier."""
+def default_quote_tier(user, customers, valid_tiers):
+    """Tier used when the request does not choose one. Never a tier the user is not allowed."""
     user = user or {}
-    default = resolve_effective_tier(user, customers, valid_tiers)
+    if user.get('role') == 'customer':
+        allowed = allowed_tier_ids(user, customers, valid_tiers)
+        allowed_set = set(allowed)
+        override = user.get('tier_override') or ''
+        if override in allowed_set:
+            return override
+        customer = (customers or {}).get(user.get('customer_id') or '') or {}
+        company_tier = customer.get('tier') or ''
+        if company_tier in allowed_set:
+            return company_tier
+        if allowed:
+            return allowed[0]
+        return ''
+    return resolve_effective_tier(user, customers, valid_tiers)
+
+
+def tier_for_request(user, requested, customers, valid_tiers):
+    """Tier to price and store.
+
+    Customers may only use an allowed tier. A requested tier outside that list
+    is refused (None) instead of priced. Staff may use any known tier.
+    """
+    user = user or {}
     requested = str(requested or '').strip()
     if user.get('role') == 'customer':
-        if requested in set(allowed_tier_ids(user, customers, valid_tiers)):
-            return requested
-        return default
+        allowed = set(allowed_tier_ids(user, customers, valid_tiers))
+        if requested:
+            if requested in allowed:
+                return requested
+            return None
+        chosen = default_quote_tier(user, customers, valid_tiers)
+        if chosen in allowed:
+            return chosen
+        return None
     if requested in set(valid_tiers):
         return requested
-    return default
+    return resolve_effective_tier(user, customers, valid_tiers)
 
 
 def _markup(cfg, key, fallback):

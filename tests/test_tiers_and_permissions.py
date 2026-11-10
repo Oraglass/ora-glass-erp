@@ -14,11 +14,13 @@ def test_allowed_tiers_include_company_and_default_and_block_the_rest():
     assert allowed_tier_ids(legacy, customers, valid) == ['T2', 'T5']
     assert tier_for_request(legacy, 'T5', customers, valid) == 'T5'
     assert tier_for_request(legacy, 'T2', customers, valid) == 'T2'
-    assert tier_for_request(legacy, 'T1', customers, valid) == 'T5'
+    assert tier_for_request(legacy, 'T1', customers, valid) is None
     explicit = dict(legacy, allowed_tiers=['T4', 'T5'])
-    assert allowed_tier_ids(explicit, customers, valid) == ['T2', 'T4', 'T5']
+    assert allowed_tier_ids(explicit, customers, valid) == ['T4', 'T5']
     assert tier_for_request(explicit, 'T4', customers, valid) == 'T4'
-    assert tier_for_request(explicit, 'T3', customers, valid) == 'T5'
+    assert tier_for_request(explicit, 'T2', customers, valid) is None
+    assert tier_for_request(explicit, 'T3', customers, valid) is None
+    assert tier_for_request(explicit, '', customers, valid) == 'T5'
     staff = {'role': 'sales', 'tier_override': 'T1', 'allowed_tiers': ['T1']}
     assert tier_for_request(staff, 'T5', {}, valid) == 'T5'
     assert tier_for_request(staff, 'NOPE', {}, valid) == 'T1'
@@ -185,14 +187,16 @@ def test_customer_cannot_choose_a_different_tier(client):
     assert page.data.count(b'value="T2" selected') == 2
     assert page.data.count(b'value="T5"') == 2
     assert b'value="T1"' not in page.data
-    payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'}
-    response = client.post('/api/calculate', json=payload)
-    body = response.get_json()
-    assert response.status_code == 200
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    assert blocked.status_code == 400
+    assert b'price_sqf' not in blocked.data
+    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T2'})
+    body = priced.get_json()
+    assert priced.status_code == 200
     assert body['tier'] == 'T2'
     from app import PRICING
-    expected = calculate_price_sqf(payload, 'T2', PRICING, load_tiers())
-    other = calculate_price_sqf(payload, 'T1', PRICING, load_tiers())
+    expected = calculate_price_sqf({'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T2'}, 'T2', PRICING, load_tiers())
+    other = calculate_price_sqf({'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'}, 'T1', PRICING, load_tiers())
     assert body['price_sqf'] == expected
     assert expected != other
     company_tier = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'})
@@ -224,7 +228,7 @@ def test_customer_sees_only_own_company_quotes_and_storage_path(client, data_dir
         'currency': 'usd',
         'project': 'Open Job',
         'type': 'sqf',
-        'tier': 'T1',
+        'tier': 'T5',
     })
     assert saved.status_code == 200
     on_disk = json.loads((data_dir / 'quotes.json').read_text())
@@ -349,7 +353,9 @@ def test_create_customer_user_with_tier_override(client):
     assert row['allowed_tier_labels'] == ['Tier 3', 'Tier 5 (End User)']
     client.post('/logout')
     assert login(client, 'pat@north.example').status_code == 302
-    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    assert blocked.status_code == 400
+    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'})
     assert priced.status_code == 200
     assert priced.get_json()['tier'] == 'T5'
 
@@ -386,7 +392,10 @@ def test_create_customer_user_without_tier_override(client):
     assert row['allowed_tier_labels'] == ['Tier 3']
     client.post('/logout')
     assert login(client, 'sam@south.example').status_code == 302
-    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    assert blocked.status_code == 400
+    assert b'price_sqf' not in blocked.data
+    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a'})
     assert priced.get_json()['tier'] == 'T3'
     client.post('/logout')
     _admin(client)
@@ -500,6 +509,8 @@ def test_users_form_includes_company_default_and_user_tier(client):
     assert b'id="allowed-tiers"' in body
     assert b'<label><input type="checkbox" value="T5"> Tier 5 (End User)</label>' in body
     assert b"label.textContent = company.tier_label || company.tier || ''" in body
+    assert b'Choose at least one allowed tier.' in body
+    assert b'The company tier is not allowed. Choose one of the allowed tiers for this user.' in body
 
 
 def test_customer_can_choose_an_allowed_tier_and_not_a_blocked_one(client):
@@ -513,15 +524,18 @@ def test_customer_can_choose_an_allowed_tier_and_not_a_blocked_one(client):
     assert page.data.count(b'<select id="tier">') == 1
     assert page.data.count(b'<select id="s-tier">') == 1
     assert page.data.count(b'value="T5" selected') == 2
-    assert page.data.count(b'value="T2"') == 2
     assert page.data.count(b'value="T4"') == 2
+    assert b'value="T2"' not in page.data
     assert b'value="T1"' not in page.data
     assert b'value="T3"' not in page.data
+    assert b'Tier 2' not in page.data
     allowed = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T4'})
     assert allowed.status_code == 200
     assert allowed.get_json()['tier'] == 'T4'
-    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T3'})
-    assert blocked.get_json()['tier'] == 'T5'
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T2'})
+    assert blocked.status_code == 400
+    assert b'price_sqf' not in blocked.data
+    assert b'Tier 2' not in blocked.data
     saved = client.post('/api/quotes', json={
         'items': [{'name': 'Unit', 'price': '1'}],
         'currency': 'usd',
@@ -535,12 +549,96 @@ def test_customer_can_choose_an_allowed_tier_and_not_a_blocked_one(client):
         'currency': 'usd',
         'project': 'Blocked',
         'type': 'size',
-        'tier': 'T1',
+        'tier': 'T2',
     })
-    assert blocked_quote.status_code == 200
+    assert blocked_quote.status_code == 400
     by_project = {quote['project']: quote['tier'] for quote in load_quotes()}
-    assert by_project['Allowed'] == 'T4'
-    assert by_project['Blocked'] == 'T5'
+    assert by_project == {'Allowed': 'T4'}
+
+
+def test_customer_with_only_t5_never_sees_the_company_tier(client):
+    import re
+    write_user(
+        'sam@harbor.example', 'customer', customer_id='harbor-glass',
+        customer_name='Harbor Glass', customer_tier='T2', tier_override='T5',
+        allowed_tiers=['T5'],
+    )
+    from storage import append_quote
+    append_quote({
+        'date': '2026-01-01',
+        'time': '09:00',
+        'user': 'sam@harbor.example',
+        'company': 'Harbor Glass',
+        'customer_id': 'harbor-glass',
+        'project': 'Old company price',
+        'items': [{'name': 'Clear Glass', 'price': '10.00'}],
+        'currency': 'usd',
+        'type': 'sqf',
+        'tier': 'T2',
+    })
+    assert login(client, 'sam@harbor.example').status_code == 302
+    forbidden = (b'Tier 2', b'value="T2"', b'"T2"')
+    pages = ('/quotes', '/quote-history', '/orders', '/invoices', '/financial', '/dashboard')
+    for path in pages:
+        page = client.get(path)
+        assert page.status_code == 200, path
+        for needle in forbidden:
+            assert needle not in page.data, (path, needle)
+    quotes = client.get('/quotes')
+    assert b'Tier 5 (End User)' in quotes.data
+    assert b'<input type="hidden" id="tier" value="T5">' in quotes.data
+    assert b'<input type="hidden" id="s-tier" value="T5">' in quotes.data
+    customers = client.get('/api/customers')
+    assert customers.status_code == 403
+    for needle in forbidden:
+        assert needle not in customers.data
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T2'})
+    assert blocked.status_code == 400
+    assert b'price_sqf' not in blocked.data
+    for needle in forbidden:
+        assert needle not in blocked.data
+    from app import PRICING
+    payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a'}
+    allowed = client.post('/api/calculate', json={**payload, 'tier': 'T5'})
+    assert allowed.status_code == 200
+    assert allowed.get_json()['tier'] == 'T5'
+    assert allowed.get_json()['price_sqf'] == calculate_price_sqf(payload, 'T5', PRICING, load_tiers())
+    assert allowed.get_json()['price_sqf'] != calculate_price_sqf(payload, 'T2', PRICING, load_tiers())
+    rejected = client.post('/api/quotes', json={
+        'items': [{'name': 'Unit', 'price': '1'}],
+        'currency': 'usd',
+        'project': 'Company tier',
+        'type': 'sqf',
+        'tier': 'T2',
+    })
+    assert rejected.status_code == 400
+    saved = client.post('/api/quotes', json={
+        'items': [{'name': 'Unit', 'price': '1'}],
+        'currency': 'usd',
+        'project': 'End user',
+        'type': 'sqf',
+        'tier': 'T5',
+    })
+    assert saved.status_code == 200
+    history = client.get('/api/quotes')
+    assert history.status_code == 200
+    for needle in forbidden:
+        assert needle not in history.data
+    body = history.get_json()
+    assert {quote['project'] for quote in body} == {'Old company price', 'End user'}
+    assert all(quote.get('tier') in (None, 'T5') for quote in body)
+    pdf = client.post('/api/export-quote', json={
+        'items': [{'name': 'Clear Glass', 'price': '10.00'}],
+        'currency': 'usd',
+        'project': 'End user',
+        'tier': 'T2',
+    })
+    assert pdf.status_code == 200
+    assert pdf.data.startswith(b'%PDF')
+    drawn = b'\n'.join(re.findall(rb'\((?:\\.|[^\\)])*\)\s*Tj', pdf.data))
+    assert b'Tier 2' not in drawn
+    assert b'(T2)' not in drawn
+    assert b'T2' not in drawn
 
 
 def test_sealant_note_renders_below_the_spacer_row(client):
@@ -567,7 +665,9 @@ def test_customer_with_only_the_company_tier_sees_it_read_only(client):
     assert b'<select id="s-tier">' not in page.data
     assert page.data.count(b'value="T3"') == 2
     assert b'Tier 3' in page.data
-    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
+    assert blocked.status_code == 400
+    priced = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a'})
     assert priced.get_json()['tier'] == 'T3'
 
 
@@ -583,21 +683,30 @@ def test_admin_sets_allowed_tiers_when_creating_and_editing(client):
         'allowed_tiers': ['T5', 'T1'],
     })
     assert created.status_code == 200
-    assert load_users()['pat@west.example']['allowed_tiers'] == ['T1', 'T3', 'T5']
+    assert load_users()['pat@west.example']['allowed_tiers'] == ['T1', 'T5']
     row = next(item for item in client.get('/api/users').get_json() if item['email'] == 'pat@west.example')
     assert row['company_tier_label'] == 'Tier 3'
     assert row['effective_tier_label'] == 'Tier 5 (End User)'
-    assert row['allowed_tier_labels'] == ['Tier 1', 'Tier 3', 'Tier 5 (End User)']
+    assert row['allowed_tier_labels'] == ['Tier 1', 'Tier 5 (End User)']
     bad = client.put('/api/users/pat@west.example', json={'allowed_tiers': ['T4', 'NOPE']})
     assert bad.status_code == 400
     assert b'Unknown pricing tier' in bad.data
-    assert load_users()['pat@west.example']['allowed_tiers'] == ['T1', 'T3', 'T5']
-    edited = client.put('/api/users/pat@west.example', json={'allowed_tiers': ['T4'], 'tier_override': 'T5'})
+    assert load_users()['pat@west.example']['allowed_tiers'] == ['T1', 'T5']
+    needs_default = client.put('/api/users/pat@west.example', json={
+        'tier_override': '',
+        'allowed_tiers': ['T5'],
+    })
+    assert needs_default.status_code == 400
+    assert b'Choose one of the allowed tiers' in needs_default.data
+    empty = client.put('/api/users/pat@west.example', json={'allowed_tiers': []})
+    assert empty.status_code == 400
+    assert b'at least one allowed tier' in empty.data
+    edited = client.put('/api/users/pat@west.example', json={'allowed_tiers': ['T4', 'T5'], 'tier_override': 'T5'})
     assert edited.status_code == 200
-    assert load_users()['pat@west.example']['allowed_tiers'] == ['T3', 'T4', 'T5']
+    assert load_users()['pat@west.example']['allowed_tiers'] == ['T4', 'T5']
     not_a_list = client.put('/api/users/pat@west.example', json={'allowed_tiers': 'T4'})
     assert not_a_list.status_code == 400
-    assert load_users()['pat@west.example']['allowed_tiers'] == ['T3', 'T4', 'T5']
+    assert load_users()['pat@west.example']['allowed_tiers'] == ['T4', 'T5']
 
 
 def test_create_user_keeps_csrf_protection(data_dir):

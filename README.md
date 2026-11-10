@@ -48,7 +48,7 @@ Sign-in is by email. Passwords are salted with `werkzeug.security` (scrypt). The
 
 Session cookies are `HttpOnly` and `SameSite=Lax`. In production they are also `Secure`. State-changing forms and API calls require a CSRF token. Login allows 5 failures per email and 30 per IP in 15 minutes, tracked in memory, so the process is started with one gunicorn worker.
 
-Only an administrator can create or edit customers, users, tier assignments, and tier markups. Sales can view customers. A customer user can quote and can see quote history, orders, invoices, and the financial page, limited to their own company. On the calculator they can choose among the tiers an admin allowed for that person. The company tier is always allowed, and so is the user's default (their override, or the company tier when they have no override). If only one tier is allowed, it is shown read-only. A tier that is not allowed is ignored and the quote uses the default. Staff can still choose any tier.
+Only an administrator can create or edit customers, users, tier assignments, and tier markups. Sales can view customers. A customer user can quote and can see quote history, orders, invoices, and the financial page, limited to their own company. On the calculator they can choose among the tiers an admin allowed for that person. The company tier is checked by default for a new user and can be cleared. This user's tier must be one of the allowed tiers. If only one tier is allowed, it is shown read-only. A tier that is not allowed is rejected and is not shown on pages, API responses, or quote PDFs that person can open. Staff can still choose any tier.
 
 ### First administrator
 
@@ -85,7 +85,7 @@ Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) b
 
 ## Tier markups
 
-T1–T4 keep their previous markups. **Tier 5 (End User)** is the existing T5 tier at 425% glass and 425% spacer. There is no separate tier. The Pricing page is admin-only and saves markups to `tiers.json`. A company has one default tier. An admin sets a user's default tier when adding or editing that person, and checks the tiers that customer may choose on the calculator. The company tier stays allowed. Users saved before this field existed are limited to the company tier and their override, so their default price does not change.
+T1–T4 keep their previous markups. **Tier 5 (End User)** is the existing T5 tier at 425% glass and 425% spacer. There is no separate tier. The Pricing page is admin-only and saves markups to `tiers.json`. A company has one default tier. An admin sets a user's default tier when adding or editing that person, and checks the tiers that customer may choose on the calculator. The company tier is not forced into that list. Users saved before this field existed keep the company tier and their override, so their default price does not change.
 
 ## Render
 

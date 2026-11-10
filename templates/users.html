@@ -31,6 +31,7 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 .readonly-label{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;background:#f5f5f5;color:#333;min-height:34px}
 .tier-checks label{display:flex;align-items:center;gap:8px;font-size:13px;color:#333;font-weight:400;margin:4px 0}
 .tier-checks input{width:auto;padding:0}
+.form-error{color:#9f1239;font-size:12px;margin-top:6px;min-height:1em}
 .help{font-size:12px;color:#666;margin-top:4px;line-height:1.4}
 .link-box{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:12px}
 </style>
@@ -43,7 +44,7 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 <h2 style="color:#333">Users</h2>
 <button class="btn" type="button" id="add-user">+ Add User</button>
 </div>
-<p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. When you add or edit a user, the company default tier is shown, "This user's tier" is their default price, and Allowed tiers are the prices a customer may choose. The company tier is always allowed. Staff can still quote at any tier.</p>
+<p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. When you add or edit a user, the company default tier is shown for reference. Allowed tiers are the only prices a customer may see or quote. The company tier starts checked for a new user and can be cleared. This user's tier must be one of the allowed tiers.</p>
 <table>
 <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Company</th><th>Company tier</th><th>This user's tier</th><th>Allowed tiers</th><th>Access</th><th>Actions</th></tr></thead>
 <tbody id="user-list"><tr><td colspan="9" style="text-align:center;color:#666">Loading...</td></tr></tbody>
@@ -85,7 +86,8 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 <label><input type="checkbox" value="{{ tid }}"> {{ tier.label }}</label>
 {% endfor %}
 </div>
-<p class="help" id="allowed-help">The company tier is always allowed. This person's default tier stays selected. Customer users can quote at the checked tiers. Staff can still choose any tier while quoting.</p>
+<p class="help" id="allowed-help">Check every tier this person may quote at. At least one is required. The company tier is not added unless it stays checked. If it is cleared, choose an allowed tier instead of "Use company default". Staff can still quote at any tier.</p>
+<p class="form-error" id="tier-error"></p>
 </div>
 <div class="form-group" id="active-group" style="display:none"><label><input type="checkbox" id="u-active" checked> Account enabled</label></div>
 <div style="display:flex;gap:10px;margin-top:20px">
@@ -122,7 +124,8 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 const CURRENT_EMAIL = {{ current_user.email|tojson }};
 let users = [];
 let companies = [];
-let autoAllowed = new Set();
+let addingUser = false;
+let defaultedCompanyId = '';
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -154,19 +157,8 @@ function allowedLabel(user) {
 function currentCompany() {
   return companies.find(item => item.id === document.getElementById('u-company').value);
 }
-function requiredTierIds() {
-  const company = currentCompany();
-  const chosen = document.getElementById('u-tier').value;
-  const role = document.getElementById('u-role').value;
-  const required = new Set();
-  if (company && company.tier) required.add(company.tier);
-  if (chosen) required.add(chosen);
-  else if (!company && role !== 'customer') required.add('T2');
-  return required;
-}
 function setAllowedChecks(ids) {
   const selected = new Set(ids || []);
-  autoAllowed = new Set();
   document.querySelectorAll('#allowed-tiers input[type=checkbox]').forEach(box => {
     box.disabled = false;
     box.checked = selected.has(box.value);
@@ -176,6 +168,24 @@ function collectAllowed() {
   return Array.from(document.querySelectorAll('#allowed-tiers input[type=checkbox]'))
     .filter(box => box.checked)
     .map(box => box.value);
+}
+function tierFormError() {
+  const allowed = new Set(collectAllowed());
+  const chosen = document.getElementById('u-tier').value;
+  const company = currentCompany();
+  if (!allowed.size) return 'Choose at least one allowed tier.';
+  if (chosen) {
+    if (!allowed.has(chosen)) return 'This user\'s tier must be one of the allowed tiers.';
+    return '';
+  }
+  if (company && company.tier && !allowed.has(company.tier)) {
+    return 'The company tier is not allowed. Choose one of the allowed tiers for this user.';
+  }
+  const role = document.getElementById('u-role').value;
+  if (!company && role !== 'customer' && !allowed.has('T2')) {
+    return 'This user\'s tier must be one of the allowed tiers.';
+  }
+  return '';
 }
 function render() {
   const tbody = document.getElementById('user-list');
@@ -212,17 +222,20 @@ function updateTierFields() {
   } else {
     group.style.display = 'block';
     label.textContent = company.tier_label || company.tier || '';
-    help.textContent = 'Applies only to this person. "Use company default" follows the company default tier above.';
+    help.textContent = 'Applies only to this person. "Use company default" follows the company default tier above, and only when that tier is allowed.';
   }
-  const required = requiredTierIds();
-  document.querySelectorAll('#allowed-tiers input[type=checkbox]').forEach(box => {
-    const must = required.has(box.value);
-    if (autoAllowed.has(box.value) && !must) box.checked = false;
-    if (must) box.checked = true;
-    box.disabled = must;
-    box.title = must ? 'This tier stays allowed.' : '';
-  });
-  autoAllowed = required;
+  const error = document.getElementById('tier-error');
+  if (error) error.textContent = tierFormError();
+}
+function onCompanyChanged() {
+  const company = currentCompany();
+  if (addingUser && company && company.id !== defaultedCompanyId) {
+    const box = document.querySelector('#allowed-tiers input[value="' + company.tier + '"]');
+    if (box) box.checked = true;
+    defaultedCompanyId = company.id;
+  }
+  if (!company) defaultedCompanyId = '';
+  updateTierFields();
 }
 async function loadCompanies(selected) {
   const data = await api('/api/customers');
@@ -236,9 +249,11 @@ async function loadCompanies(selected) {
     sel.appendChild(option);
   });
   sel.value = selected || '';
-  updateTierFields();
+  onCompanyChanged();
 }
 async function openAdd() {
+  addingUser = true;
+  defaultedCompanyId = '';
   document.getElementById('user-modal-title').textContent = 'Add User';
   document.getElementById('u-original').value = '';
   document.getElementById('u-name').value = '';
@@ -255,6 +270,8 @@ async function openAdd() {
   document.getElementById('user-modal').classList.add('active');
 }
 async function openEdit(user) {
+  addingUser = false;
+  defaultedCompanyId = '';
   document.getElementById('user-modal-title').textContent = 'Edit User';
   document.getElementById('u-original').value = user.email;
   document.getElementById('u-name').value = user.name || '';
@@ -275,9 +292,17 @@ function showLink(email, url) {
   document.getElementById('link-url').value = url;
   document.getElementById('link-modal').classList.add('active');
 }
-document.getElementById('u-company').addEventListener('change', updateTierFields);
-document.getElementById('u-tier').addEventListener('change', updateTierFields);
+document.getElementById('u-company').addEventListener('change', onCompanyChanged);
+document.getElementById('u-tier').addEventListener('change', () => {
+  const chosen = document.getElementById('u-tier').value;
+  if (chosen) {
+    const box = document.querySelector('#allowed-tiers input[value="' + chosen + '"]');
+    if (box) box.checked = true;
+  }
+  updateTierFields();
+});
 document.getElementById('u-role').addEventListener('change', updateTierFields);
+document.getElementById('allowed-tiers').addEventListener('change', updateTierFields);
 document.getElementById('add-user').addEventListener('click', () => { openAdd(); });
 document.getElementById('close-user').addEventListener('click', () => document.getElementById('user-modal').classList.remove('active'));
 document.getElementById('close-link').addEventListener('click', () => document.getElementById('link-modal').classList.remove('active'));
@@ -291,6 +316,8 @@ document.getElementById('copy-link').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(input.value); } catch (err) { document.execCommand('copy'); }
 });
 document.getElementById('save-user').addEventListener('click', async () => {
+  const problem = tierFormError();
+  if (problem) { alert(problem); return; }
   const original = document.getElementById('u-original').value;
   if (original) {
     const data = await api('/api/users/' + encodeURIComponent(original), {
