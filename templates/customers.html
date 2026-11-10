@@ -6,12 +6,13 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
+.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between;align-items:center}
 .header h1{font-size:22px}.header a{color:white;text-decoration:none}
 .container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
 .btn{background:#C41E3A;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer}
 .btn-secondary{background:#333}
+.btn-small{background:none;border:none;color:#C41E3A;cursor:pointer;padding:0 6px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:20px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee}
@@ -20,35 +21,40 @@ td{padding:10px;border-bottom:1px solid #eee}
 .status.inactive{background:#f8d7da;color:#721c24}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center}
 .modal.active{display:flex}
-.modal-content{background:white;padding:30px;border-radius:8px;width:500px;max-width:90%;max-height:90vh;overflow-y:auto}
+.modal-content{background:white;padding:30px;border-radius:8px;width:560px;max-width:90%;max-height:90vh;overflow-y:auto}
 .form-group{margin-bottom:15px}
 .form-group label{display:block;font-size:12px;color:#666;margin-bottom:5px;font-weight:600}
 .form-group input,.form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .form-row{display:flex;gap:15px}
 .form-row .form-group{flex:1}
+.help{font-size:12px;color:#666;margin-top:4px}
 </style>
 </head>
 <body>
-<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="color:#333">Customers</h2>
-<button class="btn" onclick="openModal()">+ Add Customer</button>
+{% if can_manage %}<button class="btn" type="button" id="add-customer">+ Add Customer</button>{% endif %}
 </div>
+<p class="help" style="margin-top:8px">Each company has its own users and one pricing tier. A user override, set on the Users page, replaces the company tier for that person only.</p>
 <table>
-<thead><tr><th>Company</th><th>City</th><th>Phone</th><th>Tier</th><th>Credit</th><th>Status</th><th>Actions</th></tr></thead>
-<tbody id="customer-list"><tr><td colspan="7" style="text-align:center;color:#666">Loading...</td></tr></tbody>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Phone</th><th>Tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
 <div class="modal" id="customer-modal">
 <div class="modal-content">
-<h3 style="margin-bottom:20px">Add Customer</h3>
+<h3 style="margin-bottom:20px" id="modal-title">Add Customer</h3>
+<input type="hidden" id="c-id">
 <div class="form-group"><label>Company Name</label><input type="text" id="c-name"></div>
+<div class="form-group"><label>Domain</label><input type="text" id="c-domain" placeholder="open-windows.ca"></div>
 <div class="form-group"><label>Address</label><input type="text" id="c-address"></div>
 <div class="form-row">
 <div class="form-group"><label>City</label><input type="text" id="c-city"></div>
-<div class="form-group"><label>State</label><input type="text" id="c-state"></div>
-<div class="form-group"><label>ZIP</label><input type="text" id="c-zip"></div>
+<div class="form-group"><label>State / Province</label><input type="text" id="c-state"></div>
+<div class="form-group"><label>Postal code</label><input type="text" id="c-zip"></div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>Phone</label><input type="text" id="c-phone"></div>
@@ -56,21 +62,124 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 <div class="form-row">
 <div class="form-group"><label>Payment Terms</label><select id="c-terms"><option>Net 30</option><option>Net 15</option><option>COD</option><option>Prepaid</option></select></div>
-<div class="form-group"><label>Price Tier</label><select id="c-tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option></select></div>
+<div class="form-group"><label>Price Tier</label>
+<select id="c-tier">
+{% for tid, tier in tiers %}
+<option value="{{ tid }}">{{ tier.label }}</option>
+{% endfor %}
+</select>
+<p class="help">Users inherit this tier unless an admin sets an override on their account.</p>
 </div>
+</div>
+<div class="form-row">
+<div class="form-group"><label>Status</label><select id="c-status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
 <div class="form-group"><label><input type="checkbox" id="c-credit"> Credit Approved</label></div>
+</div>
 <div style="display:flex;gap:10px;margin-top:20px">
-<button class="btn" onclick="saveCustomer()">Save</button>
-<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+<button class="btn" type="button" id="save-customer">Save</button>
+<button class="btn btn-secondary" type="button" id="close-customer">Cancel</button>
 </div>
 </div>
 </div>
 <script>
-async function loadCustomers(){const res=await fetch('/api/customers');const data=await res.json();const tbody=document.getElementById('customer-list');tbody.innerHTML='';data.forEach(c=>{tbody.innerHTML+='<tr><td>'+c.name+'</td><td>'+c.city+'</td><td>'+c.phone+'</td><td>'+c.tier+'</td><td>'+(c.credit_approved?'Yes':'No')+'</td><td><span class="status '+c.status+'">'+c.status+'</span></td><td><button onclick="deleteCustomer(\''+c.id+'\')" style="background:none;border:none;color:#C41E3A;cursor:pointer">Delete</button></td></tr>'});if(!data.length)tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#666">No customers</td></tr>'}
-function openModal(){document.getElementById('customer-modal').classList.add('active')}
-function closeModal(){document.getElementById('customer-modal').classList.remove('active')}
-async function saveCustomer(){const data={name:document.getElementById('c-name').value,address:document.getElementById('c-address').value,city:document.getElementById('c-city').value,state:document.getElementById('c-state').value,zip:document.getElementById('c-zip').value,phone:document.getElementById('c-phone').value,email:document.getElementById('c-email').value,payment_terms:document.getElementById('c-terms').value,tier:document.getElementById('c-tier').value,credit_approved:document.getElementById('c-credit').checked};await fetch('/api/customers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});closeModal();loadCustomers()}
-async function deleteCustomer(id){if(confirm('Delete customer?')){await fetch('/api/customers/'+id,{method:'DELETE'});loadCustomers()}}
+const CAN_MANAGE = {{ can_manage|tojson }};
+let customers = [];
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+async function api(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) { window.location = '/login'; return null; }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(data.error || 'Request failed'); return null; }
+  return data;
+}
+function render() {
+  const tbody = document.getElementById('customer-list');
+  const cols = CAN_MANAGE ? 8 : 7;
+  if (!customers.length) {
+    tbody.innerHTML = '<tr><td colspan="' + cols + '" style="text-align:center;color:#666">No customers</td></tr>';
+    return;
+  }
+  tbody.innerHTML = customers.map(c => {
+    const actions = CAN_MANAGE
+      ? '<td><button class="btn-small" type="button" data-action="edit" data-id="' + esc(c.id) + '">Edit</button><button class="btn-small" type="button" data-action="delete" data-id="' + esc(c.id) + '">Delete</button></td>'
+      : '';
+    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
+  }).join('');
+}
+async function loadCustomers() {
+  const data = await api('/api/customers');
+  if (!data) return;
+  customers = data;
+  render();
+}
+function openModal(customer) {
+  document.getElementById('modal-title').textContent = customer ? 'Edit Customer' : 'Add Customer';
+  document.getElementById('c-id').value = customer ? customer.id : '';
+  document.getElementById('c-name').value = customer ? customer.name : '';
+  document.getElementById('c-domain').value = customer ? (customer.domain || '') : '';
+  document.getElementById('c-address').value = customer ? (customer.address || '') : '';
+  document.getElementById('c-city').value = customer ? (customer.city || '') : '';
+  document.getElementById('c-state').value = customer ? (customer.state || '') : '';
+  document.getElementById('c-zip').value = customer ? (customer.zip || '') : '';
+  document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
+  document.getElementById('c-email').value = customer ? (customer.email || '') : '';
+  document.getElementById('c-terms').value = customer ? (customer.payment_terms || 'Net 30') : 'Net 30';
+  document.getElementById('c-tier').value = customer ? customer.tier : 'T2';
+  document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
+  document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
+  document.getElementById('customer-modal').classList.add('active');
+}
+function payload() {
+  return {
+    name: document.getElementById('c-name').value,
+    domain: document.getElementById('c-domain').value,
+    address: document.getElementById('c-address').value,
+    city: document.getElementById('c-city').value,
+    state: document.getElementById('c-state').value,
+    zip: document.getElementById('c-zip').value,
+    phone: document.getElementById('c-phone').value,
+    email: document.getElementById('c-email').value,
+    payment_terms: document.getElementById('c-terms').value,
+    tier: document.getElementById('c-tier').value,
+    status: document.getElementById('c-status').value,
+    credit_approved: document.getElementById('c-credit').checked
+  };
+}
+document.getElementById('customer-list').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const id = button.getAttribute('data-id');
+  const customer = customers.find(row => row.id === id);
+  if (button.dataset.action === 'edit' && customer) openModal(customer);
+  if (button.dataset.action === 'delete') deleteCustomer(id);
+});
+const addButton = document.getElementById('add-customer');
+if (addButton) addButton.addEventListener('click', () => openModal(null));
+document.getElementById('close-customer').addEventListener('click', () => {
+  document.getElementById('customer-modal').classList.remove('active');
+});
+document.getElementById('save-customer').addEventListener('click', async () => {
+  const id = document.getElementById('c-id').value;
+  const options = {
+    method: id ? 'PUT' : 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload())
+  };
+  const url = id ? '/api/customers/' + encodeURIComponent(id) : '/api/customers';
+  const data = await api(url, options);
+  if (!data) return;
+  document.getElementById('customer-modal').classList.remove('active');
+  loadCustomers();
+});
+async function deleteCustomer(id) {
+  if (!confirm('Delete this customer? Their users must be removed first.')) return;
+  const data = await api('/api/customers/' + encodeURIComponent(id), {method: 'DELETE'});
+  if (data) loadCustomers();
+}
 loadCustomers();
 </script>
 </body>

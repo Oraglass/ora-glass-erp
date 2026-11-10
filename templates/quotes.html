@@ -29,7 +29,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </style>
 </head>
 <body>
-<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <div class="tabs">
 <button class="tab active" onclick="showTab('sqf')">IGU Quote Calculator per sqf</button>
@@ -61,7 +62,21 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section" style="padding:10px 15px"><div class="form-group small"><label>Tier</label><select id="tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option><option value="T5">End User</option></select></div></div>
+{% macro tier_field(field_id) %}
+<div class="section" style="padding:10px 15px"><div class="form-group small"><label>Tier</label>
+{% if can_choose_tier %}
+<select id="{{ field_id }}">
+{% for tid, tier in tiers %}
+<option value="{{ tid }}" {% if tid == default_tier %}selected{% endif %}>{{ tier.label }}</option>
+{% endfor %}
+</select>
+{% else %}
+<input type="hidden" id="{{ field_id }}" value="{{ locked_tier }}">
+<div style="padding:8px 0;font-size:13px">{{ locked_tier_label }}</div>
+{% endif %}
+</div></div>
+{% endmacro %}
+{{ tier_field('tier') }}
 <div id="result" class="result" style="display:none">
 <div class="result-price"><span id="curr-label">USD</span> $<span id="price">0.00</span> / sqf</div>
 <div style="margin-top:8px;font-size:13px;color:#C41E3A;font-weight:bold" id="igu-name"></div>
@@ -100,7 +115,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Glass <span id="s-size3" style="color:#666;font-weight:normal"></span></label><select id="s-glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="s-temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
-<div class="section" style="padding:10px 15px"><div class="form-group small"><label>Tier</label><select id="s-tier"><option value="T1">Tier 1</option><option value="T2" selected>Tier 2</option><option value="T3">Tier 3</option><option value="T4">Tier 4</option><option value="T5">End User</option></select></div></div>
+{{ tier_field('s-tier') }}
 <div id="size-result" class="result" style="display:none">
 <div style="font-size:14px;color:#666;margin-bottom:10px">Area: <strong id="area">0</strong> sqf | Pieces: <strong id="pcs">1</strong></div>
 <div style="display:flex;gap:40px">

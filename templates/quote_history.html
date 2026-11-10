@@ -6,7 +6,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between}
+.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between;align-items:center}
 .header h1{font-size:22px}.header a{color:white;text-decoration:none}
 .container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
@@ -19,9 +19,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 </style>
 </head>
 <body>
-<div class="header"><h1>ORA GLASS ERP</h1><a href="/">← Dashboard</a></div>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="margin-bottom:20px;color:#333">Quote History</h2>
+{% if note %}<p style="color:#666;margin-bottom:12px">{{ note }}</p>{% endif %}
 <div class="filters">
 <select id="filter-user"><option value="">All Users</option></select>
 <input type="text" id="filter-project" placeholder="Project name">
@@ -35,9 +37,78 @@ td{padding:10px;border-bottom:1px solid #eee}
 </table>
 </div></div>
 <script>
-async function loadQuotes(){const res=await fetch('/api/quotes');const data=await res.json();const tbody=document.getElementById('quote-list');tbody.innerHTML='';data.forEach(q=>{tbody.innerHTML+='<tr><td>'+q.date+'</td><td>'+(q.time||'-')+'</td><td>'+q.user+'</td><td>'+(q.company||'ORA')+'</td><td>'+(q.project||'-')+'</td><td>'+(function(){var items=q.items||[];if(!items.length)return'-';var allNames=items.map(function(i){return i.name||i}).join(', ');var parts=allNames.split(', ');if(parts.length<=1)return allNames.substring(0,50);return parts[0].substring(0,40)+'... +'+(parts.length-1)+' more'})()+'</td><td>'+q.currency.toUpperCase()+'</td><td>$'+q.items.reduce((s,i)=>s+parseFloat(i.total||i.price||0),0).toFixed(2)+'</td><td>'+q.type+'</td><td><button onclick="downloadPDF('+q.id+')" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button></td></tr>'});if(!data.length)tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:#666">No quotes found</td></tr>'}
-function filterQuotes(){loadQuotes()}
-async function downloadPDF(id){const res=await fetch('/api/quotes');const quotes=await res.json();const q=quotes.find(x=>x.id===id);if(!q)return;const pdfRes=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:q.items,currency:q.currency,project:q.project})});const blob=await pdfRes.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Quote_'+q.id+'.pdf';a.click()}
+let allQuotes = [];
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function productLabel(quote) {
+  const items = quote.items || [];
+  if (!items.length) return '-';
+  const parts = items.map(item => (item && item.name) ? item.name : String(item || ''));
+  if (parts.length <= 1) return parts[0].substring(0, 50);
+  return parts[0].substring(0, 40) + '... +' + (parts.length - 1) + ' more';
+}
+function renderQuotes(rows) {
+  const tbody = document.getElementById('quote-list');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#666">No quotes found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(quote => {
+    const total = (quote.items || []).reduce((sum, item) => sum + parseFloat(item.total || item.price || 0), 0);
+    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td><button type="button" data-id="' + esc(quote.id) + '" class="pdf-btn" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button></td></tr>';
+  }).join('');
+}
+function fillUsers(rows) {
+  const select = document.getElementById('filter-user');
+  const current = select.value;
+  const names = Array.from(new Set(rows.map(quote => quote.user).filter(Boolean))).sort();
+  select.innerHTML = '<option value="">All Users</option>' + names.map(name => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('');
+  select.value = names.includes(current) ? current : '';
+}
+async function loadQuotes() {
+  const res = await fetch('/api/quotes');
+  if (res.status === 401) { window.location = '/login'; return; }
+  allQuotes = await res.json();
+  fillUsers(allQuotes);
+  filterQuotes();
+}
+function filterQuotes() {
+  const user = document.getElementById('filter-user').value;
+  const project = document.getElementById('filter-project').value.toLowerCase();
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  const rows = allQuotes.filter(quote => {
+    if (user && quote.user !== user) return false;
+    if (project && !String(quote.project || '').toLowerCase().includes(project)) return false;
+    if (from && quote.date < from) return false;
+    if (to && quote.date > to) return false;
+    return true;
+  });
+  renderQuotes(rows);
+}
+async function downloadPDF(id) {
+  const quote = allQuotes.find(item => String(item.id) === String(id));
+  if (!quote) return;
+  const pdfRes = await fetch('/api/export-quote', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project})
+  });
+  if (!pdfRes.ok) { alert('Could not build the PDF'); return; }
+  const blob = await pdfRes.blob();
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'Quote_' + quote.id + '.pdf';
+  link.click();
+}
+document.getElementById('quote-list').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  downloadPDF(button.getAttribute('data-id'));
+});
 loadQuotes();
 </script>
 </body>

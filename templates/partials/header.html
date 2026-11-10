@@ -1,0 +1,63 @@
+<style>
+.header button.linkish { background: none; border: 0; color: #fff; cursor: pointer; font: inherit; margin-left: 15px; text-decoration: underline; padding: 0; }
+.header .user-info form { display: inline; }
+.flash-wrap { max-width: 1000px; margin: 16px auto 0; padding: 0 20px; }
+.flash { padding: 10px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
+.flash.error { background: #fde8ec; color: #9f1239; }
+.flash.success { background: #e8f6ee; color: #166534; }
+.flash.message { background: #eef2ff; color: #1e3a8a; }
+</style>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script>
+(function () {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  if (!meta || !window.fetch || window.fetch.__oraCsrf) return;
+  var token = meta.getAttribute('content');
+  var orig = window.fetch.bind(window);
+  function wrapped(url, opts) {
+    opts = opts || {};
+    var method = String(opts.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      var headers = opts.headers || {};
+      if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+        if (!headers.has('X-CSRFToken')) headers.set('X-CSRFToken', token);
+      } else {
+        var merged = {};
+        for (var key in headers) {
+          if (Object.prototype.hasOwnProperty.call(headers, key)) merged[key] = headers[key];
+        }
+        if (!merged['X-CSRFToken'] && !merged['x-csrftoken']) merged['X-CSRFToken'] = token;
+        opts.headers = merged;
+      }
+    }
+    return orig(url, opts);
+  }
+  wrapped.__oraCsrf = true;
+  window.fetch = wrapped;
+})();
+</script>
+<div class="header">
+  <h1>ORA GLASS ERP</h1>
+  <div class="user-info">
+    {% if show_back %}
+    <a href="{{ url_for('dashboard') }}">← Dashboard</a>
+    {% elif current_user %}
+    {{ current_user.name }}{% if role_name is defined and role_name %} ({{ role_name }}){% endif %}
+    {% endif %}
+    {% if current_user %}
+    <form method="post" action="{{ url_for('logout') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="linkish">Logout</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="flash-wrap">
+  {% for category, message in messages %}
+  <div class="flash {{ category }}">{{ message }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endwith %}

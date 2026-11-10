@@ -3,7 +3,40 @@ services:
     name: ora-glass-erp
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    # One worker so the in-process login limiter and JSON locks stay in one process.
+    startCommand: gunicorn app:app --workers 1 --timeout 120
+    # Persistent disk for quotes, customers, users, and tier markups.
+    # If this service ALREADY has a disk mounted at /data, delete this block before
+    # syncing the blueprint so Render does not try to attach a second disk.
+    disk:
+      name: ora-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: "3.11.0"
+      - key: APP_ENV
+        value: production
+      - key: DATA_DIR
+        value: /data
+      - key: QUOTES_PATH
+        value: /data/quotes.json
+      - key: CUSTOMERS_PATH
+        value: /data/customers.json
+      - key: USERS_PATH
+        value: /data/users.json
+      - key: TIERS_PATH
+        value: /data/tiers.json
+      - key: AUTO_SEED
+        value: "1"
+      # Generated once when missing. Do not rotate it casually; sessions would reset.
+      - key: SECRET_KEY
+        generateValue: true
+      # Set these in the dashboard for the first boot, then remove ADMIN_PASSWORD.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Optional public origin for setup links, e.g. https://ora-glass-erp.onrender.com
+      - key: BASE_URL
+        sync: false
