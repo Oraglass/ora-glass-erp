@@ -59,6 +59,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <a class="btn" id="csv-link" href="#">Export CSV</a>
 <a class="btn" id="pdf-link" href="#">PDF timesheet</a>
 <a href="{{ url_for('punch') }}">Punch page</a>
+{% if can_payroll %}<a href="{{ url_for('payroll_page') }}">Payroll</a>{% endif %}
 </div>
 </div>
 <div class="card">
@@ -67,6 +68,14 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <table>
 <thead><tr><th>Date</th><th>Employee</th><th>Hours</th><th></th></tr></thead>
 <tbody id="day-rows"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Scheduled and actual</h2>
+<p class="note">Paid hours use break punches when they exist. Otherwise the shift's unpaid break is deducted when the worked span covers it. Late and early use the grace minutes from payroll settings.</p>
+<table>
+<thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Scheduled</th><th>Actual</th><th>Paid</th><th></th></tr></thead>
+<tbody id="attendance-rows"></tbody>
 </table>
 </div>
 <div class="card">
@@ -103,6 +112,8 @@ function render(data) {
   const byEmail = {};
   employees.forEach(emp => { byEmail[emp.email] = emp.name; });
   days.innerHTML = dayRows.length ? dayRows.map(day => '<tr><td>' + esc(day.date) + '</td><td>' + esc(byEmail[day.user] || day.user) + '</td><td>' + Number(day.hours).toFixed(2) + '</td><td>' + (day.missing_out ? '<span class="flag">Missing punch-out</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="4">No shifts</td></tr>';
+  const attendance = document.getElementById('attendance-rows');
+  attendance.innerHTML = (data.attendance || []).map(row => '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.name || row.user) + '</td><td>' + esc(row.shift_name) + '</td><td>' + esc(row.scheduled_hours) + '</td><td>' + esc(row.actual_hours) + '</td><td>' + esc(row.paid_hours) + '</td><td>' + esc((row.flags || []).join(', ')) + '</td></tr>').join('') || '<tr><td colspan="7">No scheduled or worked days</td></tr>';
   const punches = document.getElementById('punch-rows');
   punches.innerHTML = (data.punches || []).map(row => {
     const loc = row.kiosk_id ? ('Kiosk ' + row.kiosk_id) : (row.no_location ? 'No location' : (row.lat != null ? Number(row.lat).toFixed(5) + ', ' + Number(row.lng).toFixed(5) : ''));

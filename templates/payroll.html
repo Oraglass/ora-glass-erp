@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Payroll</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
+h1,h2{margin:0 0 10px;color:#333;font-size:20px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
+.note{color:#666;font-size:13px}
+.banner{background:#fff6f7;border:1px solid #f0c9d0;color:#9f1830;border-radius:8px;padding:10px 12px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.days label{display:inline-flex;flex-direction:row;align-items:center;gap:4px;margin-right:8px;color:#222}
+.gross{font-size:18px;font-weight:700}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>Payroll</h1>
+<p class="banner" id="gross-label">Gross pay (before taxes)</p>
+<p class="note">This is an estimate of gross pay from the schedule, punches, and hourly rates. It is not official tax withholding. Overtime is 1.5× after the weekly hour threshold. There is no daily overtime.</p>
+<div class="filters">
+<label>Work week starts<select id="week-start"></select></label>
+<label>OT after hours<input id="ot-hours" type="number" min="1" max="168" step="0.25" value="40"></label>
+<label>Pay frequency<select id="frequency"><option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="semimonthly">Semi-monthly</option></select></label>
+<label>Period anchor<input id="anchor" type="date"></label>
+<label>Round paid time<select id="rounding"><option value="none">None</option><option value="5">Nearest 5 min</option><option value="15">Nearest 15 min</option></select></label>
+<label>Grace minutes<input id="grace" type="number" min="0" max="120" value="0"></label>
+<button type="button" id="save-settings">Save settings</button>
+</div>
+</div>
+<div class="card">
+<h2>Shifts</h2>
+<div class="filters">
+<label>Name<input id="shift-name" placeholder="Day"></label>
+<label>Start<input id="shift-start" value="07:00"></label>
+<label>End<input id="shift-end" value="15:30"></label>
+<label>Unpaid break min<input id="shift-break" type="number" min="0" value="30"></label>
+</div>
+<div class="days" id="shift-days"></div>
+<button type="button" id="save-shift">Add shift</button>
+<table><thead><tr><th>Name</th><th>Time</th><th>Days</th><th>Unpaid break</th></tr></thead><tbody id="shift-rows"></tbody></table>
+</div>
+<div class="card">
+<h2 id="period-title">Pay period</h2>
+<div class="filters">
+<button type="button" id="prev-period">Previous</button>
+<button type="button" id="next-period">Next</button>
+<a class="btn" id="csv-link" href="#">Summary CSV</a>
+<a class="btn" id="pdf-link" href="#">Summary PDF</a>
+</div>
+<p class="gross" id="period-total"></p>
+<table>
+<thead><tr><th>Worker</th><th>Regular h</th><th>OT h</th><th>Regular pay</th><th>OT pay</th><th>Adjustments</th><th>Gross</th><th>YTD gross</th><th></th></tr></thead>
+<tbody id="stub-rows"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Worker pay</h2>
+<div class="filters">
+<label>Worker<select id="worker"></select></label>
+<label>Hourly rate<input id="rate" type="number" min="0" step="0.01" placeholder="20.00"></label>
+<label>Currency<input id="currency" value="USD" maxlength="3"></label>
+<label>Rate effective<input id="rate-from" type="date"></label>
+<button type="button" id="save-rate">Save rate</button>
+</div>
+<p class="note" id="rate-history"></p>
+<div class="filters">
+<label>Shift<select id="assign-shift"></select></label>
+<label>Assignment effective<input id="assign-from" type="date"></label>
+<button type="button" id="save-assignment">Assign shift</button>
+</div>
+<p class="note" id="assignment-history"></p>
+<div class="filters">
+<label>Adjustment<select id="adj-kind"><option value="bonus">Bonus</option><option value="reimbursement">Reimbursement</option></select></label>
+<label>Amount<input id="adj-amount" type="number" min="0" step="0.01"></label>
+<label>Reason<input id="adj-reason" placeholder="Why this amount"></label>
+<button type="button" id="save-adjustment">Add adjustment</button>
+</div>
+<p class="note" id="stub-detail"></p>
+<div class="filters">
+<button type="button" id="approve">Approve period</button>
+<button type="button" id="reopen">Reopen</button>
+<a class="btn" id="stub-pdf" href="#">Paystub PDF</a>
+</div>
+</div>
+</div>
+<script>
+const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+let periodStart = '';
+let periodEnd = '';
+let payload = null;
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function selectedWorker() { return document.getElementById('worker').value; }
+function dayChecks(selected) {
+  document.getElementById('shift-days').innerHTML = WEEKDAYS.map((name, index) => {
+    const on = !selected || selected.indexOf(index) !== -1 && (selected.length ? selected.indexOf(index) !== -1 : index < 5);
+    return '<label><input type="checkbox" value="' + index + '"' + (index < 5 ? ' checked' : '') + '> ' + name + '</label>';
+  }).join('');
+}
+function shiftDays() {
+  return Array.from(document.querySelectorAll('#shift-days input:checked')).map(box => Number(box.value));
+}
+function render() {
+  const settings = payload.settings || {};
+  document.getElementById('gross-label').textContent = payload.label || 'Gross pay (before taxes)';
+  document.getElementById('week-start').innerHTML = WEEKDAYS.map((name, index) => '<option value="' + index + '">' + name + '</option>').join('');
+  document.getElementById('week-start').value = String(settings.work_week_start || 0);
+  document.getElementById('ot-hours').value = settings.overtime_threshold_hours || '40.00';
+  document.getElementById('frequency').value = settings.pay_frequency || 'weekly';
+  document.getElementById('anchor').value = settings.period_anchor || '';
+  document.getElementById('rounding').value = settings.rounding || 'none';
+  document.getElementById('grace').value = settings.grace_minutes || 0;
+  document.getElementById('period-title').textContent = 'Pay period ' + payload.period_start + ' to ' + payload.period_end;
+  document.getElementById('period-total').textContent = 'Gross pay (before taxes): ' + (payload.gross_total || '0.00');
+  document.getElementById('csv-link').href = '/api/payroll/summary.csv?start=' + encodeURIComponent(payload.period_start);
+  document.getElementById('pdf-link').href = '/api/payroll/summary.pdf?start=' + encodeURIComponent(payload.period_start);
+  const names = {};
+  (payload.weekdays || WEEKDAYS).forEach((name, index) => { names[index] = name; });
+  document.getElementById('shift-rows').innerHTML = (payload.shifts || []).map(shift => '<tr><td>' + esc(shift.name) + '</td><td>' + esc(shift.start) + '–' + esc(shift.end) + '</td><td>' + esc((shift.weekdays || []).map(day => names[day] || day).join(', ')) + '</td><td>' + esc(shift.unpaid_break_minutes) + ' min</td></tr>').join('') || '<tr><td colspan="4">No shifts yet</td></tr>';
+  const workers = payload.workers || [];
+  const current = selectedWorker();
+  document.getElementById('worker').innerHTML = workers.map(row => '<option value="' + esc(row.account) + '">' + esc(row.name) + (row.employee_number ? ' (' + esc(row.employee_number) + ')' : '') + '</option>').join('');
+  if (workers.some(row => row.account === current)) document.getElementById('worker').value = current;
+  document.getElementById('assign-shift').innerHTML = '<option value="">No shift</option>' + (payload.shifts || []).map(shift => '<option value="' + esc(shift.id) + '">' + esc(shift.name) + '</option>').join('');
+  const worker = selectedWorker();
+  const rates = ((payload.rates || {})[worker] || []).slice().sort((a, b) => a.effective_from < b.effective_from ? 1 : -1);
+  document.getElementById('rate-history').textContent = rates.length ? rates.map(row => row.effective_from + '  ' + row.hourly_rate + ' ' + row.currency + '/h').join('   ·   ') : 'No hourly rate yet.';
+  const shiftName = (id) => {
+    const found = (payload.shifts || []).find(row => String(row.id) === String(id));
+    return found ? found.name : 'No shift';
+  };
+  const assigned = ((payload.assignments || {})[worker] || []).slice().sort((a, b) => a.effective_from < b.effective_from ? 1 : -1);
+  document.getElementById('assignment-history').textContent = assigned.length ? assigned.map(row => row.effective_from + '  ' + shiftName(row.shift_id)).join('   ·   ') : 'No shift assignment yet.';
+  if (assigned[0]) document.getElementById('assign-shift').value = assigned[0].shift_id || '';
+  document.getElementById('stub-rows').innerHTML = (payload.stubs || []).map(stub => '<tr><td>' + esc(stub.name) + '</td><td>' + esc(stub.regular_hours) + '</td><td>' + esc(stub.overtime_hours) + '</td><td>' + esc(stub.regular_pay) + '</td><td>' + esc(stub.overtime_pay) + '</td><td>' + esc(stub.adjustment_total) + '</td><td>' + esc(stub.gross_pay || '') + '</td><td>' + esc(stub.ytd_gross || '') + '</td><td>' + esc(stub.status) + '</td></tr>').join('') || '<tr><td colspan="9">No workers</td></tr>';
+  const stub = (payload.stubs || []).find(row => row.worker === worker);
+  const lines = [];
+  if (stub) {
+    (stub.rates || []).forEach(rate => lines.push(rate.hourly_rate + ' ' + rate.currency + '/h · regular ' + rate.regular_hours + ' h ' + rate.regular_pay + ' · OT ' + rate.overtime_hours + ' h ' + rate.overtime_pay));
+    (stub.adjustments || []).forEach(row => lines.push(row.kind + ' ' + row.amount + ' — ' + row.reason));
+    lines.push('Gross pay (before taxes): ' + (stub.gross_pay || '—') + '    YTD gross: ' + (stub.ytd_gross || '—') + '    ' + stub.status);
+  }
+  document.getElementById('stub-detail').textContent = lines.join('   |   ') || 'Select a worker.';
+  document.getElementById('stub-pdf').href = '/api/payroll/paystub.pdf?worker=' + encodeURIComponent(worker) + '&start=' + encodeURIComponent(payload.period_start);
+}
+async function load(start) {
+  const res = await fetch('/api/payroll/period' + (start ? '?start=' + encodeURIComponent(start) : ''));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not load payroll'); return; }
+  payload = body;
+  periodStart = body.period_start;
+  periodEnd = body.period_end;
+  render();
+}
+function settingsBody() {
+  return {
+    work_week_start: Number(document.getElementById('week-start').value),
+    overtime_threshold_hours: document.getElementById('ot-hours').value,
+    pay_frequency: document.getElementById('frequency').value,
+    period_anchor: document.getElementById('anchor').value,
+    rounding: document.getElementById('rounding').value,
+    grace_minutes: Number(document.getElementById('grace').value)
+  };
+}
+document.getElementById('save-settings').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/settings', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settingsBody())});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Settings were not saved'); return; }
+  load();
+});
+document.getElementById('save-shift').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/shifts', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    name: document.getElementById('shift-name').value,
+    start: document.getElementById('shift-start').value,
+    end: document.getElementById('shift-end').value,
+    unpaid_break_minutes: Number(document.getElementById('shift-break').value),
+    weekdays: shiftDays()
+  })});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Shift was not saved'); return; }
+  load(periodStart);
+});
+document.getElementById('worker').addEventListener('change', render);
+document.getElementById('save-rate').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/rates', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    worker: selectedWorker(), hourly_rate: document.getElementById('rate').value,
+    currency: document.getElementById('currency').value, effective_from: document.getElementById('rate-from').value
+  })});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Rate was not saved'); return; }
+  load(periodStart);
+});
+document.getElementById('save-assignment').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/assignments', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    worker: selectedWorker(), shift_id: document.getElementById('assign-shift').value, effective_from: document.getElementById('assign-from').value
+  })});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Assignment was not saved'); return; }
+  load(periodStart);
+});
+document.getElementById('save-adjustment').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/adjustments', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    worker: selectedWorker(), kind: document.getElementById('adj-kind').value,
+    amount: document.getElementById('adj-amount').value, reason: document.getElementById('adj-reason').value,
+    period_start: periodStart
+  })});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Adjustment was not saved'); return; }
+  load(periodStart);
+});
+document.getElementById('approve').addEventListener('click', async () => {
+  const res = await fetch('/api/payroll/approve', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: selectedWorker(), period_start: periodStart})});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Not approved'); return; }
+  load(periodStart);
+});
+document.getElementById('reopen').addEventListener('click', async () => {
+  const reason = prompt('Why reopen this approved period?');
+  if (!reason) return;
+  const res = await fetch('/api/payroll/reopen', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({worker: selectedWorker(), period_start: periodStart, reason})});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Not reopened'); return; }
+  load(periodStart);
+});
+function movePeriod(step) {
+  const day = new Date(periodStart + 'T12:00:00');
+  const frequency = document.getElementById('frequency').value;
+  if (frequency === 'semimonthly') day.setDate(day.getDate() + step * 16);
+  else day.setDate(day.getDate() + step * (frequency === 'biweekly' ? 14 : 7));
+  const iso = day.toISOString().slice(0, 10);
+  load(iso).then(() => {});
+}
+document.getElementById('prev-period').addEventListener('click', () => {
+  const day = new Date(periodStart + 'T12:00:00');
+  day.setDate(day.getDate() - 1);
+  load(day.toISOString().slice(0, 10));
+});
+document.getElementById('next-period').addEventListener('click', () => {
+  const day = new Date(periodEnd + 'T12:00:00');
+  day.setDate(day.getDate() + 1);
+  load(day.toISOString().slice(0, 10));
+});
+dayChecks();
+load();
+</script>
+</body>
+</html>

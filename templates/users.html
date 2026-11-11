@@ -126,7 +126,11 @@ td.actions{width:15.5rem;vertical-align:middle}
 </div>
 <div class="form-group" id="manage-time-group" style="display:none">
 <label><input type="checkbox" id="u-manage-time"> Manage time</label>
-<p class="help">Lets this Ora Glass employee open timesheets, correct punches, and export payroll. Off unless an admin turns it on.</p>
+<p class="help">Lets this Ora Glass employee open timesheets, correct punches, and export timesheets. Off unless an admin turns it on.</p>
+</div>
+<div class="form-group" id="manage-payroll-group" style="display:none">
+<label><input type="checkbox" id="u-manage-payroll"> Manage payroll</label>
+<p class="help">Lets this Ora Glass employee see and edit hourly rates, shifts, and gross pay. Off unless an admin turns it on. Administrators always can.</p>
 </div>
 <div class="form-group" id="staff-privileges" style="display:none">
 <label>Order privileges</label>
@@ -281,6 +285,7 @@ function syncRoleExtras() {
   document.getElementById('shop-fields').style.display = shop ? 'block' : 'none';
   document.getElementById('uses-time-group').style.display = employee ? 'block' : 'none';
   document.getElementById('manage-time-group').style.display = employee ? 'block' : 'none';
+  document.getElementById('manage-payroll-group').style.display = employee ? 'block' : 'none';
   document.getElementById('password-group').style.display = shop ? 'none' : document.getElementById('password-group').style.display;
   document.getElementById('u-company').closest('.form-group').style.display = shop ? 'none' : 'block';
   document.getElementById('u-tier').closest('.form-group').style.display = shop ? 'none' : 'block';
@@ -288,6 +293,7 @@ function syncRoleExtras() {
   if (shop) document.getElementById('module-group').style.display = 'none';
   if (!employee) {
     document.getElementById('u-manage-time').checked = false;
+    document.getElementById('u-manage-payroll').checked = false;
     document.getElementById('u-uses-time-clock').checked = false;
   }
 }
@@ -424,6 +430,7 @@ async function openEdit(user) {
   document.getElementById('u-update-order-status').checked = !!user.update_order_status;
   document.getElementById('u-record-payments').checked = !!user.record_payments;
   document.getElementById('u-manage-time').checked = !!user.manage_time;
+  document.getElementById('u-manage-payroll').checked = !!user.manage_payroll;
   document.getElementById('u-uses-time-clock').checked = !!user.uses_time_clock;
   document.getElementById('u-employee-number').value = user.employee_number || '';
   document.getElementById('u-pin').value = '';
@@ -491,6 +498,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
         manage_time: document.getElementById('u-manage-time').checked,
+        manage_payroll: document.getElementById('u-manage-payroll').checked,
         uses_time_clock: document.getElementById('u-uses-time-clock').checked,
         employee_number: document.getElementById('u-employee-number').value,
         pin: document.getElementById('u-pin').value,
@@ -518,6 +526,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
         manage_time: document.getElementById('u-manage-time').checked,
+        manage_payroll: document.getElementById('u-manage-payroll').checked,
         uses_time_clock: document.getElementById('u-uses-time-clock').checked,
         employee_number: document.getElementById('u-employee-number').value,
         pin: document.getElementById('u-pin').value,
