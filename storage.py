@@ -313,6 +313,8 @@ def load_time_settings():
     data = read_json(time_settings_path(), {})
     if not isinstance(data, dict):
         data = {}
+    else:
+        data = dict(data)
     days = data.get('photo_retention_days', 90)
     try:
         days = int(days)
@@ -320,7 +322,8 @@ def load_time_settings():
         days = 90
     if days < 90:
         days = 90
-    return {'photo_retention_days': days}
+    data['photo_retention_days'] = days
+    return data
 
 
 def save_time_settings(settings):
@@ -513,6 +516,110 @@ def save_tiers(tiers):
     path = tiers_path()
     with lock_for(path):
         atomic_write_json(path, tiers)
+
+
+def _json_list(path_fn):
+    data = read_json(path_fn(), [])
+    return data if isinstance(data, list) else []
+
+
+def _json_dict(path_fn):
+    data = read_json(path_fn(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_json(path_fn, payload):
+    path = path_fn()
+    with lock_for(path):
+        atomic_write_json(path, payload)
+
+
+def shifts_path():
+    return os.path.join(data_dir(), 'shifts.json')
+
+
+def load_shifts():
+    return _json_list(shifts_path)
+
+
+def save_shifts(shifts):
+    if not isinstance(shifts, list):
+        raise TypeError('shifts must be a list')
+    _save_json(shifts_path, shifts)
+
+
+def shift_assignments_path():
+    return os.path.join(data_dir(), 'shift_assignments.json')
+
+
+def load_shift_assignments():
+    return _json_dict(shift_assignments_path)
+
+
+def save_shift_assignments(assignments):
+    if not isinstance(assignments, dict):
+        raise TypeError('assignments must be an object')
+    _save_json(shift_assignments_path, assignments)
+
+
+def pay_rates_path():
+    return os.path.join(data_dir(), 'pay_rates.json')
+
+
+def load_pay_rates():
+    return _json_dict(pay_rates_path)
+
+
+def save_pay_rates(rates):
+    if not isinstance(rates, dict):
+        raise TypeError('rates must be an object')
+    _save_json(pay_rates_path, rates)
+
+
+def pay_adjustments_path():
+    return os.path.join(data_dir(), 'pay_adjustments.json')
+
+
+def load_pay_adjustments():
+    return _json_list(pay_adjustments_path)
+
+
+def save_pay_adjustments(adjustments):
+    if not isinstance(adjustments, list):
+        raise TypeError('adjustments must be a list')
+    _save_json(pay_adjustments_path, adjustments)
+
+
+def paystubs_path():
+    return os.path.join(data_dir(), 'paystubs.json')
+
+
+def load_paystubs():
+    return _json_list(paystubs_path)
+
+
+def save_paystubs(stubs):
+    if not isinstance(stubs, list):
+        raise TypeError('paystubs must be a list')
+    _save_json(paystubs_path, stubs)
+
+
+def payroll_audit_path():
+    return os.path.join(data_dir(), 'payroll_audit.json')
+
+
+def load_payroll_audit():
+    return _json_list(payroll_audit_path)
+
+
+def append_payroll_audit(entry):
+    path = payroll_audit_path()
+    with lock_for(path):
+        rows = read_json(path, [])
+        if not isinstance(rows, list):
+            rows = []
+        rows.append(dict(entry))
+        atomic_write_json(path, rows)
 
 
 def ordered_tiers(tiers=None):

@@ -70,13 +70,36 @@ from security import (
     valid_email,
     verify_password,
 )
+from payroll import (
+    GROSS_LABEL,
+    WEEKDAY_NAMES,
+    attendance_range,
+    build_stub,
+    normalize_settings as normalize_payroll_settings,
+    period_containing,
+    q_money,
+    validate_settings as validate_payroll_settings,
+    weeks_covering,
+)
 from storage import (
+    append_payroll_audit,
     append_punch,
     append_quote,
     load_kiosks,
+    load_pay_adjustments,
+    load_pay_rates,
+    load_paystubs,
+    load_payroll_audit,
+    load_shift_assignments,
+    load_shifts,
     load_time_settings,
     punch_photo_dir,
     save_kiosks,
+    save_pay_adjustments,
+    save_pay_rates,
+    save_paystubs,
+    save_shift_assignments,
+    save_shifts,
     save_time_settings,
     data_dir,
     append_invoice,
@@ -284,6 +307,26 @@ def apply_manage_time(record, data):
         record['manage_time'] = False
 
 
+def can_manage_payroll(user):
+    """Admins always can. Other staff need Manage payroll. Shop workers and customers cannot."""
+    if not user or user.get('role') in {'customer', 'shop'}:
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('manage_payroll'))
+
+
+def apply_manage_payroll(record, data):
+    role = record.get('role')
+    if role == 'admin' or role == 'customer' or role == 'shop' or role not in LEGACY_STAFF_ROLES:
+        record['manage_payroll'] = False
+        return
+    if 'manage_payroll' in data:
+        record['manage_payroll'] = bool(data.get('manage_payroll'))
+    elif 'manage_payroll' not in record:
+        record['manage_payroll'] = False
+
+
 def uses_time_clock(user):
     """Shop workers and admins can punch. Other staff need Uses time clock."""
     if not user or user.get('role') == 'customer':
@@ -302,6 +345,7 @@ def apply_uses_time_clock(record, data):
         record['modules'] = []
         record['uses_time_clock'] = False
         record['manage_time'] = False
+        record['manage_payroll'] = False
         return None
     if role not in LEGACY_STAFF_ROLES:
         record['uses_time_clock'] = False
@@ -567,6 +611,7 @@ def public_user(user, customers, tiers):
         'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'manage_time': bool(user.get('manage_time')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'manage_payroll': bool(user.get('manage_payroll')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'uses_time_clock': uses_time_clock(user) if user.get('role') != 'shop' else False,
         'employee_number': user.get('employee_number') or '',
         'has_pin': bool(user.get('pin_hash')),
@@ -1040,6 +1085,7 @@ def dashboard():
         user=user,
         role_name=role_display_name(user),
         modules=effective_module_ids(user),
+        can_payroll=can_manage_payroll(user),
     )
 
 
@@ -1525,6 +1571,7 @@ def _apply_shop_fields(user, data, users, current_key=None):
     user['tier_override'] = None
     user['modules'] = []
     user['manage_time'] = False
+    user['manage_payroll'] = False
     user['uses_time_clock'] = False
     user['customer_subrole'] = None
     if not user.get('employee_number') and not valid_email(user.get('email')):
@@ -1616,6 +1663,7 @@ def add_user():
         return json_error(subrole_error, 400)
     apply_order_privileges(record, data)
     apply_manage_time(record, data)
+    apply_manage_payroll(record, data)
     apply_uses_time_clock(record, data)
     setup_url = None
     password = data.get('password') or ''
@@ -1684,6 +1732,7 @@ def update_user(email):
         return json_error(subrole_error, 400)
     apply_order_privileges(user, data)
     apply_manage_time(user, data)
+    apply_manage_payroll(user, data)
     apply_uses_time_clock(user, data)
     if user.get('role') == 'shop':
         pin_error = _apply_shop_fields(user, data, users, current_key=email)
@@ -3440,6 +3489,9 @@ def _purge_old_photos():
 
 def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, accuracy):
     moment = stamp(datetime.now(timezone.utc))
+    locked = _payroll_lock(key, moment)
+    if locked:
+        return locked
     existing = _punches_for(key)
     try:
         replay(existing + [{'id': 10 ** 9, 'action': action, 'at': moment}])
@@ -3594,7 +3646,9 @@ def time_clock_settings():
         return json_error('Photos are kept for at least 90 days.', 400)
     if days > 3650:
         return json_error('Photo retention is too long.', 400)
-    save_time_settings({'photo_retention_days': days})
+    current = load_time_settings()
+    current['photo_retention_days'] = days
+    save_time_settings(current)
     return jsonify(load_time_settings())
 
 
@@ -3603,7 +3657,7 @@ def time_clock_settings():
 def time_clock_admin():
     if not can_manage_time(current_user()):
         return forbidden()
-    return render_template('time_clock.html')
+    return render_template('time_clock.html', can_payroll=can_manage_payroll(current_user()))
 
 
 @app.route('/api/punches/me', methods=['GET'])
@@ -3665,6 +3719,9 @@ def create_punch():
             return json_error('Location is out of range.', 400)
         no_location = False
     moment = stamp(datetime.now(timezone.utc))
+    locked = _payroll_lock(_punch_owner(user), moment)
+    if locked:
+        return locked
     existing = _punches_for(_punch_owner(user))
     try:
         replay(existing + [{'id': 10 ** 9, 'action': action, 'at': moment}])
@@ -3753,10 +3810,12 @@ def time_clock_data():
         view = _punch_view(row)
         view['name'] = names.get(row.get('user'), row.get('user'))
         punch_rows.append(view)
+    attendance = _attendance_rows(email, start, end, names)
     return jsonify({
         'employees': employees,
         'punches': punch_rows,
         'days': days,
+        'attendance': attendance,
         'period_hours': period_hours,
     })
 
@@ -3771,6 +3830,15 @@ def correct_punch(punch_id):
     reason = clean_text(data.get('reason'), 300)
     if not reason:
         return json_error('A reason is required.', 400)
+    existing = next((row for row in load_punches() if row.get('id') == punch_id), None)
+    if not existing:
+        return json_error('Not found', 404)
+    moments = [existing.get('at')]
+    if data.get('at_pacific'):
+        moments.append(data.get('at_pacific'))
+    locked = _payroll_lock(existing.get('user'), *moments)
+    if locked:
+        return locked
 
     def mutator(punch, all_rows):
         updated = dict(punch)
@@ -3940,6 +4008,730 @@ def _timesheet_pdf(name, email, start, end, punches, days, period_hours):
     doc.build(elements)
     buffer.seek(0)
     return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='timesheet.pdf')
+
+
+def _as_payroll_day(value):
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    text = str(value or '')
+    naive = 'Z' not in text and '+' not in text[10:]
+    try:
+        return pacific_date(as_utc(value, naive_is_pacific=naive))
+    except (TypeError, ValueError):
+        return None
+
+
+def _payroll_lock(worker, *moments):
+    """Approved gross-pay periods stay fixed until someone reopens them."""
+    if not worker:
+        return None
+    stubs = load_paystubs()
+    for moment in moments:
+        day = _as_payroll_day(moment)
+        if not day:
+            continue
+        for stub in stubs:
+            if stub.get('worker') != worker or stub.get('status') != 'approved':
+                continue
+            try:
+                start = date.fromisoformat(stub.get('period_start'))
+                end = date.fromisoformat(stub.get('period_end'))
+            except (TypeError, ValueError):
+                continue
+            if start <= day <= end:
+                return json_error('This pay period is approved. Reopen it before changing hours.', 409)
+    return None
+
+
+def _payroll_workers():
+    rows = []
+    for key, record in load_users().items():
+        role = record.get('role')
+        if role == 'shop' or (role in LEGACY_STAFF_ROLES and uses_time_clock(record)):
+            rows.append({
+                'account': key,
+                'name': record.get('name') or key,
+                'employee_number': record.get('employee_number') or '',
+                'role': 'employee' if role in LEGACY_STAFF_ROLES else role,
+            })
+    rows.sort(key=lambda row: (row['name'] or '').lower())
+    return rows
+
+
+def _payroll_audit(actor, action, target, before=None, after=None, reason=''):
+    append_payroll_audit({
+        'at': stamp(datetime.now(timezone.utc)),
+        'by': (actor or {}).get('email') or (actor or {}).get('account') or '',
+        'action': action,
+        'target': target,
+        'before': before,
+        'after': after,
+        'reason': reason or '',
+    })
+
+
+def _stored_stub(worker, period_start):
+    key = period_start.isoformat() if isinstance(period_start, date) else str(period_start)
+    for stub in load_paystubs():
+        if stub.get('worker') == worker and stub.get('period_start') == key:
+            return stub
+    return None
+
+
+def _prior_ytd(worker, period_start):
+    from decimal import Decimal
+    total = Decimal('0')
+    for stub in load_paystubs():
+        if stub.get('worker') != worker or stub.get('status') != 'approved':
+            continue
+        try:
+            start = date.fromisoformat(stub.get('period_start'))
+        except (TypeError, ValueError):
+            continue
+        if start.year != period_start.year or start >= period_start:
+            continue
+        gross = (stub.get('snapshot') or {}).get('gross_pay')
+        if gross not in (None, ''):
+            total += Decimal(str(gross))
+    return total
+
+
+def _attendance_rows(user_filter, start, end, names):
+    settings = normalize_payroll_settings(load_time_settings())
+    shifts = {row.get('id'): row for row in load_shifts()}
+    assignments = load_shift_assignments()
+    punches = load_punches()
+    if user_filter:
+        keys = [user_filter]
+    else:
+        keys = [row['account'] for row in _payroll_workers()]
+        for punch in punches:
+            if punch.get('user') and punch.get('user') not in keys:
+                keys.append(punch.get('user'))
+    rows = []
+    for key in keys:
+        owned = [row for row in punches if row.get('user') == key]
+        row_start, row_end = start, end
+        if row_start is None or row_end is None:
+            dates = []
+            for punch in owned:
+                day = _as_payroll_day(punch.get('at'))
+                if day:
+                    dates.append(day)
+            if not dates:
+                continue
+            row_start = row_start or min(dates)
+            row_end = row_end or max(dates)
+        for item in attendance_range(owned, assignments.get(key) or [], shifts, settings, row_start, row_end):
+            if item['scheduled_hours'] == '0.00' and item['actual_hours'] == '0.00' and not item['flags']:
+                continue
+            item = dict(item)
+            item['user'] = key
+            item['name'] = names.get(key, key)
+            rows.append(item)
+    rows.sort(key=lambda row: (row['date'], row.get('name') or ''))
+    return rows
+
+
+def _worker_stub(worker_key, period_start, period_end):
+    settings = normalize_payroll_settings(load_time_settings())
+    first, last = weeks_covering(period_start, period_end, settings['work_week_start'])
+    punches = [row for row in load_punches() if row.get('user') == worker_key]
+    shifts = {row.get('id'): row for row in load_shifts()}
+    days = attendance_range(
+        punches,
+        load_shift_assignments().get(worker_key) or [],
+        shifts,
+        settings,
+        first,
+        last,
+    )
+    stub = build_stub(
+        worker_key,
+        period_start,
+        period_end,
+        days,
+        load_pay_rates().get(worker_key) or [],
+        load_pay_adjustments(),
+        settings,
+        _prior_ytd(worker_key, period_start),
+    )
+    record = load_users().get(worker_key) or {}
+    stub['name'] = record.get('name') or worker_key
+    stub['employee_number'] = record.get('employee_number') or ''
+    stored = _stored_stub(worker_key, period_start)
+    if stored and stored.get('status') == 'approved' and stored.get('snapshot'):
+        frozen = dict(stored['snapshot'])
+        frozen['status'] = 'approved'
+        frozen['approved_at'] = stored.get('approved_at')
+        frozen['approved_by'] = stored.get('approved_by')
+        return frozen
+    stub['status'] = (stored or {}).get('status') or 'draft'
+    return stub
+
+
+def _require_payroll():
+    actor = current_user()
+    if not can_manage_payroll(actor):
+        return None, json_error('Access denied', 403)
+    return actor, None
+
+
+def _period_from_request():
+    settings = normalize_payroll_settings(load_time_settings())
+    raw = (request.args.get('start') or (json_body() or {}).get('period_start') or '').strip()
+    if raw:
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            return None, None, json_error('Period start is not a date.', 400)
+    else:
+        day = pacific_date(datetime.now(timezone.utc))
+    start, end = period_containing(day, settings)
+    return (start, end), settings, None
+
+
+def _money_ok(value):
+    from decimal import Decimal, InvalidOperation
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, AttributeError):
+        return None
+    if amount <= 0 or amount > Decimal('100000'):
+        return None
+    return q_money(amount)
+
+
+@app.route('/payroll')
+@login_required
+def payroll_page():
+    if not can_manage_payroll(current_user()):
+        return forbidden()
+    return render_template('payroll.html')
+
+
+@app.route('/api/payroll/period', methods=['GET'])
+@login_required
+def payroll_period():
+    _actor, denied = _require_payroll()
+    if denied:
+        return denied
+    period, settings, error = _period_from_request()
+    if error:
+        return error
+    start, end = period
+    stubs = [_worker_stub(row['account'], start, end) for row in _payroll_workers()]
+    from decimal import Decimal
+    gross = sum(
+        (Decimal(stub['gross_pay']) for stub in stubs if stub.get('gross_pay') not in (None, '')),
+        Decimal('0'),
+    )
+    return jsonify({
+        'settings': settings,
+        'period_start': start.isoformat(),
+        'period_end': end.isoformat(),
+        'label': GROSS_LABEL,
+        'workers': _payroll_workers(),
+        'shifts': load_shifts(),
+        'assignments': load_shift_assignments(),
+        'rates': load_pay_rates(),
+        'stubs': stubs,
+        'gross_total': f'{gross:.2f}',
+        'weekdays': list(WEEKDAY_NAMES),
+    })
+
+
+@app.route('/api/payroll/settings', methods=['PUT'])
+@login_required
+def save_payroll_settings():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    settings, error = validate_payroll_settings(data)
+    if error:
+        return json_error(error, 400)
+    current = load_time_settings()
+    before = normalize_payroll_settings(current)
+    current.update(settings)
+    save_time_settings(current)
+    _payroll_audit(actor, 'settings', 'payroll', before, settings)
+    return jsonify(normalize_payroll_settings(load_time_settings()))
+
+
+@app.route('/api/payroll/shifts', methods=['POST'])
+@login_required
+def create_shift():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    shift, error = _shift_from_body(json_body() or {})
+    if error:
+        return json_error(error, 400)
+    shifts = load_shifts()
+    shift['id'] = max([row.get('id') or 0 for row in shifts] or [0]) + 1
+    shift['active'] = True
+    shifts.append(shift)
+    save_shifts(shifts)
+    _payroll_audit(actor, 'shift', str(shift['id']), None, shift)
+    return jsonify(shift)
+
+
+@app.route('/api/payroll/shifts/<int:shift_id>', methods=['PUT'])
+@login_required
+def update_shift(shift_id):
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    shifts = load_shifts()
+    current = next((row for row in shifts if row.get('id') == shift_id), None)
+    if not current:
+        return json_error('Not found', 404)
+    incoming, error = _shift_from_body(json_body() or {}, current)
+    if error:
+        return json_error(error, 400)
+    before = dict(current)
+    current.update(incoming)
+    save_shifts(shifts)
+    _payroll_audit(actor, 'shift', str(shift_id), before, current)
+    return jsonify(current)
+
+
+def _shift_from_body(data, current=None):
+    name = clean_text(data.get('name') if 'name' in data else (current or {}).get('name'), 80)
+    start = str(data.get('start') if 'start' in data else (current or {}).get('start') or '').strip()
+    end = str(data.get('end') if 'end' in data else (current or {}).get('end') or '').strip()
+    if not name:
+        return None, 'Shift name is required.'
+    try:
+        from payroll import shift_bounds
+        shift_bounds(date(2026, 1, 5), {'start': start, 'end': end, 'unpaid_break_minutes': 0})
+    except (TypeError, ValueError):
+        return None, 'Shift times must look like 07:00 and 15:30.'
+    weekdays = data.get('weekdays') if 'weekdays' in data else (current or {}).get('weekdays')
+    if not isinstance(weekdays, list) or not weekdays:
+        return None, 'Choose at least one weekday.'
+    cleaned = []
+    for item in weekdays:
+        try:
+            day = int(item)
+        except (TypeError, ValueError):
+            return None, 'Weekdays are not valid.'
+        if day not in range(7) or day in cleaned:
+            continue
+        cleaned.append(day)
+    if not cleaned:
+        return None, 'Choose at least one weekday.'
+    raw_break = data.get('unpaid_break_minutes') if 'unpaid_break_minutes' in data else (current or {}).get('unpaid_break_minutes')
+    try:
+        unpaid = int(raw_break or 0)
+    except (TypeError, ValueError):
+        return None, 'Unpaid break must be a number of minutes.'
+    if unpaid < 0 or unpaid > 240:
+        return None, 'Unpaid break must be between 0 and 240 minutes.'
+    return {
+        'name': name,
+        'start': start,
+        'end': end,
+        'weekdays': cleaned,
+        'unpaid_break_minutes': unpaid,
+        'active': True if current is None else current.get('active', True),
+    }, None
+
+
+@app.route('/api/payroll/assignments', methods=['POST'])
+@login_required
+def assign_shift():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    worker = str(data.get('worker') or '').strip()
+    if worker not in load_users() or worker not in {row['account'] for row in _payroll_workers()}:
+        return json_error('Choose a shop worker or an employee who uses the time clock.', 400)
+    try:
+        effective = date.fromisoformat(str(data.get('effective_from') or ''))
+    except ValueError:
+        return json_error('Effective date is required.', 400)
+    shift_id = data.get('shift_id')
+    if shift_id in ('', None):
+        shift_id = None
+    else:
+        try:
+            shift_id = int(shift_id)
+        except (TypeError, ValueError):
+            return json_error('Unknown shift.', 400)
+        if not any(row.get('id') == shift_id for row in load_shifts()):
+            return json_error('Unknown shift.', 400)
+    assignments = load_shift_assignments()
+    history = list(assignments.get(worker) or [])
+    before = next((dict(row) for row in history if row.get('effective_from') == effective.isoformat()), None)
+    if before:
+        for row in history:
+            if row.get('effective_from') == effective.isoformat():
+                row['shift_id'] = shift_id
+                row['updated_at'] = stamp(datetime.now(timezone.utc))
+                row['updated_by'] = actor.get('email') or ''
+                saved = row
+    else:
+        saved = {
+            'id': max([row.get('id') or 0 for rows in assignments.values() for row in rows] or [0]) + 1,
+            'shift_id': shift_id,
+            'effective_from': effective.isoformat(),
+            'created_at': stamp(datetime.now(timezone.utc)),
+            'created_by': actor.get('email') or '',
+        }
+        history.append(saved)
+    assignments[worker] = history
+    save_shift_assignments(assignments)
+    _payroll_audit(actor, 'assignment', worker, before, saved)
+    return jsonify(saved)
+
+
+@app.route('/api/payroll/rates', methods=['POST'])
+@login_required
+def save_pay_rate():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    worker = str(data.get('worker') or '').strip()
+    if worker not in {row['account'] for row in _payroll_workers()}:
+        return json_error('Choose a shop worker or an employee who uses the time clock.', 400)
+    amount = _money_ok(data.get('hourly_rate'))
+    if not amount:
+        return json_error('Hourly rate must be greater than zero.', 400)
+    currency = str(data.get('currency') or 'USD').strip().upper()
+    if not re.fullmatch(r'[A-Z]{3}', currency):
+        return json_error('Currency must be a 3-letter code.', 400)
+    try:
+        effective = date.fromisoformat(str(data.get('effective_from') or ''))
+    except ValueError:
+        return json_error('Effective date is required.', 400)
+    rates = load_pay_rates()
+    history = list(rates.get(worker) or [])
+    before = next((dict(row) for row in history if row.get('effective_from') == effective.isoformat()), None)
+    if before:
+        for row in history:
+            if row.get('effective_from') == effective.isoformat():
+                row['hourly_rate'] = amount
+                row['currency'] = currency
+                row['updated_at'] = stamp(datetime.now(timezone.utc))
+                row['updated_by'] = actor.get('email') or ''
+                saved = row
+    else:
+        saved = {
+            'id': max([row.get('id') or 0 for rows in rates.values() for row in rows] or [0]) + 1,
+            'hourly_rate': amount,
+            'currency': currency,
+            'effective_from': effective.isoformat(),
+            'created_at': stamp(datetime.now(timezone.utc)),
+            'created_by': actor.get('email') or '',
+        }
+        history.append(saved)
+    rates[worker] = history
+    save_pay_rates(rates)
+    _payroll_audit(actor, 'pay_rate', worker, before, saved)
+    return jsonify(saved)
+
+
+@app.route('/api/payroll/adjustments', methods=['POST'])
+@login_required
+def add_pay_adjustment():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    worker = str(data.get('worker') or '').strip()
+    if worker not in {row['account'] for row in _payroll_workers()}:
+        return json_error('Choose a shop worker or an employee who uses the time clock.', 400)
+    kind = str(data.get('kind') or '').strip()
+    if kind not in {'bonus', 'reimbursement'}:
+        return json_error('Adjustment must be a bonus or a reimbursement.', 400)
+    amount = _money_ok(data.get('amount'))
+    if not amount:
+        return json_error('Amount must be greater than zero.', 400)
+    reason = clean_text(data.get('reason'), 300)
+    if not reason:
+        return json_error('A reason is required.', 400)
+    try:
+        period_start = date.fromisoformat(str(data.get('period_start') or ''))
+    except ValueError:
+        return json_error('Period start is not a date.', 400)
+    settings = normalize_payroll_settings(load_time_settings())
+    start, _end = period_containing(period_start, settings)
+    if start != period_start:
+        return json_error('That date is not the start of a pay period.', 400)
+    if _stored_stub(worker, period_start) and _stored_stub(worker, period_start).get('status') == 'approved':
+        return json_error('This pay period is approved. Reopen it before changing pay.', 409)
+    rows = load_pay_adjustments()
+    saved = {
+        'id': max([row.get('id') or 0 for row in rows] or [0]) + 1,
+        'worker': worker,
+        'period_start': period_start.isoformat(),
+        'kind': kind,
+        'amount': amount,
+        'reason': reason,
+        'created_at': stamp(datetime.now(timezone.utc)),
+        'created_by': actor.get('email') or '',
+    }
+    rows.append(saved)
+    save_pay_adjustments(rows)
+    _payroll_audit(actor, 'adjustment', worker, None, saved, reason)
+    return jsonify(saved)
+
+
+@app.route('/api/payroll/adjustments/<int:adjustment_id>', methods=['DELETE'])
+@login_required
+def delete_pay_adjustment(adjustment_id):
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    rows = load_pay_adjustments()
+    found = next((row for row in rows if row.get('id') == adjustment_id), None)
+    if not found:
+        return json_error('Not found', 404)
+    try:
+        period_start = date.fromisoformat(found.get('period_start'))
+    except (TypeError, ValueError):
+        period_start = None
+    if period_start and (_stored_stub(found.get('worker'), period_start) or {}).get('status') == 'approved':
+        return json_error('This pay period is approved. Reopen it before changing pay.', 409)
+    save_pay_adjustments([row for row in rows if row.get('id') != adjustment_id])
+    _payroll_audit(actor, 'adjustment_delete', found.get('worker'), found, None, found.get('reason') or '')
+    return jsonify({'success': True})
+
+
+@app.route('/api/payroll/approve', methods=['POST'])
+@login_required
+def approve_paystub():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    worker = str(data.get('worker') or '').strip()
+    try:
+        period_start = date.fromisoformat(str(data.get('period_start') or ''))
+    except ValueError:
+        return json_error('Period start is not a date.', 400)
+    settings = normalize_payroll_settings(load_time_settings())
+    start, end = period_containing(period_start, settings)
+    if start != period_start:
+        return json_error('That date is not the start of a pay period.', 400)
+    if worker not in {row['account'] for row in _payroll_workers()}:
+        return json_error('Unknown worker.', 400)
+    existing = _stored_stub(worker, period_start)
+    if existing and existing.get('status') == 'approved':
+        return json_error('This pay period is already approved.', 400)
+    stub = _worker_stub(worker, start, end)
+    if stub.get('mixed_currency'):
+        return json_error('This period uses more than one currency.', 400)
+    stub['status'] = 'approved'
+    stub['approved_at'] = stamp(datetime.now(timezone.utc))
+    stub['approved_by'] = actor.get('email') or ''
+    rows = load_paystubs()
+    saved = {
+        'id': (existing or {}).get('id') or (max([row.get('id') or 0 for row in rows] or [0]) + 1),
+        'worker': worker,
+        'period_start': start.isoformat(),
+        'period_end': end.isoformat(),
+        'status': 'approved',
+        'approved_at': stub['approved_at'],
+        'approved_by': stub['approved_by'],
+        'snapshot': stub,
+        'history': (existing or {}).get('history') or [],
+    }
+    if existing:
+        rows = [saved if row.get('id') == existing.get('id') else row for row in rows]
+    else:
+        rows.append(saved)
+    save_paystubs(rows)
+    _payroll_audit(actor, 'approve', worker, None, {'period_start': start.isoformat(), 'gross_pay': stub.get('gross_pay')})
+    return jsonify(stub)
+
+
+@app.route('/api/payroll/reopen', methods=['POST'])
+@login_required
+def reopen_paystub():
+    actor, denied = _require_payroll()
+    if denied:
+        return denied
+    data = json_body() or {}
+    reason = clean_text(data.get('reason'), 300)
+    if not reason:
+        return json_error('A reason is required.', 400)
+    worker = str(data.get('worker') or '').strip()
+    try:
+        period_start = date.fromisoformat(str(data.get('period_start') or ''))
+    except ValueError:
+        return json_error('Period start is not a date.', 400)
+    rows = load_paystubs()
+    found = next((row for row in rows if row.get('worker') == worker and row.get('period_start') == period_start.isoformat()), None)
+    if not found or found.get('status') != 'approved':
+        return json_error('That pay period is not approved.', 400)
+    history = list(found.get('history') or [])
+    history.append({
+        'at': stamp(datetime.now(timezone.utc)),
+        'by': actor.get('email') or '',
+        'reason': reason,
+        'snapshot': found.get('snapshot'),
+    })
+    found['history'] = history
+    found['status'] = 'draft'
+    found['snapshot'] = None
+    found['reopened_at'] = history[-1]['at']
+    save_paystubs(rows)
+    _payroll_audit(actor, 'reopen', worker, {'period_start': period_start.isoformat()}, {'status': 'draft'}, reason)
+    settings = normalize_payroll_settings(load_time_settings())
+    start, end = period_containing(period_start, settings)
+    return jsonify(_worker_stub(worker, start, end))
+
+
+@app.route('/api/payroll/summary.csv', methods=['GET'])
+@login_required
+def payroll_summary_csv():
+    import csv
+    from io import StringIO
+    _actor, denied = _require_payroll()
+    if denied:
+        return denied
+    period, _settings, error = _period_from_request()
+    if error:
+        return error
+    start, end = period
+    stubs = [_worker_stub(row['account'], start, end) for row in _payroll_workers()]
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(['Gross pay (before taxes)', start.isoformat(), end.isoformat()])
+    writer.writerow(['worker', 'name', 'regular_hours', 'overtime_hours', 'regular_pay', 'overtime_pay', 'adjustments', 'gross_pay', 'ytd_gross', 'status'])
+    for stub in stubs:
+        writer.writerow([
+            stub.get('worker'), stub.get('name'), stub.get('regular_hours'), stub.get('overtime_hours'),
+            stub.get('regular_pay'), stub.get('overtime_pay'), stub.get('adjustment_total'),
+            stub.get('gross_pay') or '', stub.get('ytd_gross') or '', stub.get('status'),
+        ])
+    return send_file(
+        BytesIO(buffer.getvalue().encode('utf-8')),
+        mimetype='text/csv', as_attachment=True, download_name='payroll.csv',
+    )
+
+
+@app.route('/api/payroll/summary.pdf', methods=['GET'])
+@login_required
+def payroll_summary_pdf():
+    _actor, denied = _require_payroll()
+    if denied:
+        return denied
+    period, _settings, error = _period_from_request()
+    if error:
+        return error
+    start, end = period
+    stubs = [_worker_stub(row['account'], start, end) for row in _payroll_workers()]
+    return _payroll_pdf(stubs, start, end, summary=True)
+
+
+@app.route('/api/payroll/paystub.pdf', methods=['GET'])
+@login_required
+def paystub_pdf():
+    _actor, denied = _require_payroll()
+    if denied:
+        return denied
+    worker = str(request.args.get('worker') or '').strip()
+    period, _settings, error = _period_from_request()
+    if error:
+        return error
+    if worker not in {row['account'] for row in _payroll_workers()}:
+        return json_error('Unknown worker.', 400)
+    start, end = period
+    return _payroll_pdf([_worker_stub(worker, start, end)], start, end, summary=False)
+
+
+def _logo_flowable(width, height, title_style):
+    from reportlab.platypus import Image, Paragraph
+    for path in (
+        os.path.join(app.root_path, 'static', 'logo.png'),
+        os.path.join(app.root_path, 'logo.png'),
+        'logo.png',
+    ):
+        if os.path.exists(path):
+            return Image(path, width=width, height=height)
+    return Paragraph('ORA GLASS', title_style)
+
+
+def _payroll_pdf(stubs, start, end, summary):
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch,
+        topMargin=0.45 * inch, bottomMargin=0.45 * inch,
+    )
+    styles = getSampleStyleSheet()
+    small = ParagraphStyle('PaySmall', parent=styles['Normal'], fontSize=8, leading=10)
+    title = ParagraphStyle('PayTitle', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
+    cell = ParagraphStyle('PayCell', parent=styles['Normal'], fontSize=8, leading=10)
+    head = ParagraphStyle('PayHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
+    logo = _logo_flowable(1.2 * inch, 0.8 * inch, title)
+    heading = 'Payroll summary' if summary else 'Paystub'
+    elements = [
+        Table([[
+            logo,
+            Paragraph(f'<b>{heading}</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title),
+            Paragraph(f"<font size='8'>{escape(start.isoformat())} to {escape(end.isoformat())}<br/>{escape(GROSS_LABEL)}</font>", small),
+        ]], colWidths=[1.5 * inch, 3.2 * inch, 2.6 * inch]),
+        Spacer(1, 8),
+        HRFlowable(width='100%', thickness=1, color=colors.black),
+        Spacer(1, 8),
+    ]
+    header = ['Worker', 'Regular h', 'OT h', 'Regular pay', 'OT pay', 'Adjustments', 'Gross']
+    table_data = [[Paragraph(f'<b>{label}</b>', head) for label in header]]
+    for stub in stubs:
+        table_data.append([
+            Paragraph(escape(stub.get('name') or ''), cell),
+            Paragraph(escape(stub.get('regular_hours') or ''), cell),
+            Paragraph(escape(stub.get('overtime_hours') or ''), cell),
+            Paragraph(escape(stub.get('regular_pay') or ''), cell),
+            Paragraph(escape(stub.get('overtime_pay') or ''), cell),
+            Paragraph(escape(stub.get('adjustment_total') or ''), cell),
+            Paragraph(escape(stub.get('gross_pay') or ''), cell),
+        ])
+    table = Table(table_data, colWidths=[1.7 * inch, 0.8 * inch, 0.7 * inch, 1.0 * inch, 0.9 * inch, 1.0 * inch, 1.0 * inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#9f1830')),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(table)
+    if not summary and stubs:
+        stub = stubs[0]
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph(f"Year-to-date gross: {escape(stub.get('ytd_gross') or '0.00')} {escape(stub.get('currency') or 'USD')}", small))
+        for rate in stub.get('rates') or []:
+            elements.append(Paragraph(
+                f"Rate {escape(rate.get('hourly_rate') or '')} {escape(rate.get('currency') or '')}: "
+                f"{escape(rate.get('regular_hours') or '')} regular h, {escape(rate.get('overtime_hours') or '')} OT h",
+                small,
+            ))
+        for adjustment in stub.get('adjustments') or []:
+            elements.append(Paragraph(
+                f"{escape(adjustment.get('kind') or '')} {escape(adjustment.get('amount') or '')}: {escape(adjustment.get('reason') or '')}",
+                small,
+            ))
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph('Gross pay (before taxes). This is not official tax withholding.', small))
+    elif summary:
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph('Gross pay (before taxes). This is not official tax withholding.', small))
+    doc.build(elements)
+    buffer.seek(0)
+    name = 'payroll.pdf' if summary else 'paystub.pdf'
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name=name)
 
 
 @app.cli.command('create-admin')
