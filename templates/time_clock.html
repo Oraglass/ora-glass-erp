@@ -18,6 +18,11 @@ button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoratio
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
 .flag{color:#9f1830;font-weight:600}
+.thumb{width:72px;height:54px;object-fit:cover;border-radius:6px;display:block}
+.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer}
+#photo-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:30}
+#photo-lightbox.open{display:flex}
+#photo-lightbox img{max-width:90vw;max-height:90vh;border-radius:8px}
 .note{color:#666;font-size:13px}
 .correct{display:none;background:#fafafa;padding:8px;border-radius:8px;margin-top:6px}
 .correct.open{display:grid;gap:6px}
@@ -35,6 +40,14 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="wrap">
 <div class="card">
 <h1>Time Clock</h1>
+<div class="filters" id="kiosk-tools">
+<label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
+<button type="button" id="activate-kiosk">Activate this device as kiosk</button>
+<label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<button type="button" id="save-retention">Save retention</button>
+</div>
+<p class="note">Photos are kept at least 90 days and are visible only to administrators and staff who can manage time.</p>
+<p class="note" id="kiosk-list"></p>
 <p class="note">Times are shown in Pacific. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
 <div class="filters">
 <label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
@@ -59,7 +72,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="card">
 <h2>Punches</h2>
 <table>
-<thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Location</th><th></th></tr></thead>
+<thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Photo</th><th>Location</th><th></th></tr></thead>
 <tbody id="punch-rows"></tbody>
 </table>
 </div>
@@ -81,18 +94,23 @@ function rangeQuery() {
 function render(data) {
   const users = document.getElementById('filter-user');
   const current = users.value;
-  const names = data.employees || [];
-  users.innerHTML = '<option value="">All employees</option>' + names.map(row => '<option value="' + esc(row.email) + '">' + esc(row.name) + '</option>').join('');
-  if (names.some(row => row.email === current)) users.value = current;
+  const employees = data.employees || [];
+  users.innerHTML = '<option value="">All employees</option>' + employees.map(row => '<option value="' + esc(row.email) + '">' + esc(row.name) + '</option>').join('');
+  if (employees.some(row => row.email === current)) users.value = current;
   document.getElementById('week-total').textContent = 'Closed hours in this period: ' + Number(data.period_hours || 0).toFixed(2);
   const days = document.getElementById('day-rows');
   const dayRows = data.days || [];
-  days.innerHTML = dayRows.length ? dayRows.map(day => '<tr><td>' + esc(day.date) + '</td><td>' + esc(day.user) + '</td><td>' + Number(day.hours).toFixed(2) + '</td><td>' + (day.missing_out ? '<span class="flag">Missing punch-out</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="4">No shifts</td></tr>';
+  const byEmail = {};
+  employees.forEach(emp => { byEmail[emp.email] = emp.name; });
+  days.innerHTML = dayRows.length ? dayRows.map(day => '<tr><td>' + esc(day.date) + '</td><td>' + esc(byEmail[day.user] || day.user) + '</td><td>' + Number(day.hours).toFixed(2) + '</td><td>' + (day.missing_out ? '<span class="flag">Missing punch-out</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="4">No shifts</td></tr>';
   const punches = document.getElementById('punch-rows');
   punches.innerHTML = (data.punches || []).map(row => {
-    const loc = row.no_location ? 'No location' : (row.lat != null ? Number(row.lat).toFixed(5) + ', ' + Number(row.lng).toFixed(5) : '');
-    return '<tr><td>' + esc(row.pacific) + '</td><td>' + esc(row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
-  }).join('') || '<tr><td colspan="5">No punches</td></tr>';
+    const loc = row.kiosk_id ? ('Kiosk ' + row.kiosk_id) : (row.no_location ? 'No location' : (row.lat != null ? Number(row.lat).toFixed(5) + ', ' + Number(row.lng).toFixed(5) : ''));
+    const photo = row.has_photo
+      ? '<button type="button" class="thumb-btn" data-photo="' + esc(row.id) + '"><img class="thumb" alt="Punch photo" src="/api/time-clock/photos/' + esc(row.id) + '"></button>'
+      : '<span class="flag">No photo</span>';
+    return '<tr><td>' + esc(row.pacific) + '</td><td>' + esc(row.name || row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + photo + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
+  }).join('') || '<tr><td colspan="6">No punches</td></tr>';
 }
 async function load() {
   const params = rangeQuery();
@@ -127,7 +145,62 @@ document.getElementById('punch-rows').addEventListener('submit', async (event) =
   if (!res.ok) { alert(payload.error || 'Correction was not saved'); return; }
   load();
 });
+document.getElementById('punch-rows').addEventListener('click', (event) => {
+  const photo = event.target.closest('[data-photo]');
+  if (!photo) return;
+  const box = document.getElementById('photo-lightbox');
+  box.querySelector('img').src = '/api/time-clock/photos/' + photo.getAttribute('data-photo');
+  box.classList.add('open');
+});
+document.getElementById('activate-kiosk').addEventListener('click', async () => {
+  if (!confirm('Activate this device as the shop time clock? You will be signed out on this tablet.')) return;
+  const res = await fetch('/api/time-clock/kiosks', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: document.getElementById('kiosk-name').value})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not activate the kiosk'); return; }
+  window.location = '/kiosk';
+});
+document.getElementById('save-retention').addEventListener('click', async () => {
+  const res = await fetch('/api/time-clock/settings', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({photo_retention_days: Number(document.getElementById('retention-days').value)})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Retention was not saved'); return; }
+  document.getElementById('retention-days').value = body.photo_retention_days;
+});
+document.getElementById('kiosk-list').addEventListener('click', async (event) => {
+  const revoke = event.target.closest('[data-revoke]');
+  const unlock = event.target.closest('[data-unlock]');
+  const id = (revoke || unlock) && (revoke || unlock).getAttribute(revoke ? 'data-revoke' : 'data-unlock');
+  if (!id) return;
+  const res = await fetch('/api/time-clock/kiosks/' + id + (revoke ? '/revoke' : '/unlock'), {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.error || 'Not saved'); return; }
+  loadKiosks();
+});
+async function loadKiosks() {
+  const [listRes, settingsRes] = await Promise.all([
+    fetch('/api/time-clock/kiosks'),
+    fetch('/api/time-clock/settings')
+  ]);
+  if (settingsRes.ok) {
+    const settings = await settingsRes.json();
+    document.getElementById('retention-days').value = settings.photo_retention_days;
+  }
+  if (!listRes.ok) return;
+  const rows = await listRes.json();
+  document.getElementById('kiosk-list').innerHTML = rows.length ? rows.map(row => {
+    const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
+    const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + esc(row.id) + '">Revoke</button>';
+    const unlock = row.locked ? ' <button type="button" data-unlock="' + esc(row.id) + '">Unlock</button>' : '';
+    return '<span>' + esc(row.name) + ' · ' + state + '</span>' + revoke + unlock;
+  }).join('<br>') : 'No kiosks registered.';
+}
 load();
+loadKiosks();
 </script>
+<div id="photo-lightbox" onclick="this.classList.remove('open')"><img alt="Punch photo" onclick="event.stopPropagation()"></div>
 </body>
 </html>

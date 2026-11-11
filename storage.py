@@ -280,6 +280,63 @@ def append_punch(punch):
         return stored
 
 
+def kiosks_path():
+    explicit = os.environ.get('KIOSKS_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'kiosks.json')
+
+
+def load_kiosks():
+    path = kiosks_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_kiosks(kiosks):
+    if not isinstance(kiosks, list):
+        raise TypeError('kiosks must be a list')
+    path = kiosks_path()
+    with lock_for(path):
+        atomic_write_json(path, kiosks)
+
+
+def time_settings_path():
+    explicit = os.environ.get('TIME_SETTINGS_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'time_settings.json')
+
+
+def load_time_settings():
+    data = read_json(time_settings_path(), {})
+    if not isinstance(data, dict):
+        data = {}
+    days = data.get('photo_retention_days', 90)
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = 90
+    if days < 90:
+        days = 90
+    return {'photo_retention_days': days}
+
+
+def save_time_settings(settings):
+    if not isinstance(settings, dict):
+        raise TypeError('settings must be an object')
+    path = time_settings_path()
+    with lock_for(path):
+        atomic_write_json(path, settings)
+
+
+def punch_photo_dir():
+    path = os.path.join(data_dir(), 'punch_photos')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def update_punch(punch_id, mutator):
     """Replace one punch under the file lock. mutator returns (new_punch, error)."""
     path = punches_path()

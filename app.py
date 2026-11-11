@@ -2,10 +2,13 @@
 ORA Glass ERP - quoting, customers, and accounts.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from io import BytesIO
@@ -70,6 +73,11 @@ from security import (
 from storage import (
     append_punch,
     append_quote,
+    load_kiosks,
+    load_time_settings,
+    punch_photo_dir,
+    save_kiosks,
+    save_time_settings,
     data_dir,
     append_invoice,
     append_order,
@@ -88,6 +96,7 @@ from storage import (
     update_order,
     ordered_tiers,
     replace_quote,
+    save_punches,
     save_quotes,
     save_tiers,
     save_users,
@@ -561,6 +570,8 @@ def public_user(user, customers, tiers):
         'uses_time_clock': uses_time_clock(user) if user.get('role') != 'shop' else False,
         'employee_number': user.get('employee_number') or '',
         'has_pin': bool(user.get('pin_hash')),
+        'allow_phone_punch': bool(user.get('allow_phone_punch')),
+        'pin_locked': bool(user.get('pin_locked')),
         'account': user.get('account') or user.get('email'),
     }
 
@@ -1496,6 +1507,12 @@ def _apply_shop_fields(user, data, users, current_key=None):
         if not pin_ok(pin):
             return 'PIN must be 4 to 6 digits.'
         user['pin_hash'] = hash_password(pin)
+        user['pin_failures'] = 0
+        user['pin_locked'] = False
+    if 'allow_phone_punch' in data:
+        user['allow_phone_punch'] = bool(data.get('allow_phone_punch'))
+    elif 'allow_phone_punch' not in user:
+        user['allow_phone_punch'] = False
     if 'email' in data or current_key is None:
         email = normalize_email(data.get('email'))
         if email and not valid_email(email):
@@ -3067,6 +3084,8 @@ def _punch_snapshot(punch):
         'lng': punch.get('lng'),
         'accuracy': punch.get('accuracy'),
         'no_location': bool(punch.get('no_location')),
+        'no_photo': bool(punch.get('no_photo', True)),
+        'kiosk_id': punch.get('kiosk_id'),
     }
 
 
@@ -3080,16 +3099,21 @@ def _punch_view(punch):
         'corrected': bool(punch.get('corrections')),
         'original': punch.get('original'),
         'corrections': punch.get('corrections') or [],
+        'has_photo': bool(punch.get('photo')) and not punch.get('no_photo'),
     })
     return view
 
 
-def _punches_for(email):
-    return [row for row in load_punches() if row.get('user') == email]
+def _punch_owner(user):
+    return user.get('account') or user.get('email')
+
+
+def _punches_for(account):
+    return [row for row in load_punches() if row.get('user') == account]
 
 
 def _own_clock(user):
-    rows = _punches_for(user.get('email'))
+    rows = _punches_for(_punch_owner(user))
     status, since = clock_status(rows)
     today = pacific_date(datetime.now(timezone.utc))
     history_start = today - timedelta(days=13)
@@ -3119,7 +3143,11 @@ def _shop_gate():
     user = current_user()
     if not user or user.get('role') != 'shop':
         return None
-    if request.endpoint in {'punch', 'punch_login', 'my_punches', 'create_punch', 'logout', 'web_manifest', 'service_worker', 'static'}:
+    if request.endpoint in {
+        'punch', 'punch_login', 'my_punches', 'create_punch', 'logout',
+        'web_manifest', 'service_worker', 'static', 'kiosk', 'kiosk_workers',
+        'kiosk_identify', 'kiosk_punch',
+    }:
         return None
     if wants_json():
         return json_error('Access denied', 403)
@@ -3154,6 +3182,82 @@ def punch():
     return render_template('punch.html', user=user, can_manage=can_manage_time(user) if user else False)
 
 
+WORKER_PIN_LIMIT = 5
+KIOSK_PIN_LIMIT = 10
+
+
+def _token_hash(token):
+    return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+
+def _kiosk_from_request():
+    token = request.headers.get('X-Kiosk-Token') or request.cookies.get('kiosk_token') or ''
+    digest = _token_hash(token)
+    for kiosk in load_kiosks():
+        if kiosk.get('revoked'):
+            continue
+        stored = kiosk.get('token_hash') or ''
+        if len(stored) == len(digest) and hmac.compare_digest(stored, digest):
+            return kiosk
+    return None
+
+
+def _save_user(key, user):
+    users = load_users()
+    users[key] = user
+    save_users(users)
+
+
+def _register_pin_failure(user, key, kiosk):
+    if user and key:
+        user['pin_failures'] = int(user.get('pin_failures') or 0) + 1
+        if user['pin_failures'] >= WORKER_PIN_LIMIT:
+            user['pin_locked'] = True
+        _save_user(key, user)
+    if kiosk:
+        kiosks = load_kiosks()
+        for row in kiosks:
+            if row.get('id') == kiosk.get('id'):
+                row['pin_failures'] = int(row.get('pin_failures') or 0) + 1
+                if row['pin_failures'] >= KIOSK_PIN_LIMIT:
+                    row['locked'] = True
+                kiosk.update(row)
+        save_kiosks(kiosks)
+
+
+def _clear_pin_failure(user, key, kiosk):
+    if user and key:
+        user['pin_failures'] = 0
+        user['pin_locked'] = False
+        _save_user(key, user)
+    if kiosk and (kiosk.get('pin_failures') or kiosk.get('locked')):
+        kiosks = load_kiosks()
+        for row in kiosks:
+            if row.get('id') == kiosk.get('id') and not row.get('locked'):
+                row['pin_failures'] = 0
+        save_kiosks(kiosks)
+
+
+def _check_pin(number, pin, kiosk=None):
+    if kiosk and kiosk.get('locked'):
+        return None, None, json_error('This tablet is locked. Ask an administrator to unlock it.', 423)
+    key, user = find_shop_by_number(number)
+    if user and user.get('pin_locked'):
+        return None, None, json_error('This PIN is locked. Ask an administrator to unlock it.', 423)
+    if not user or not user.get('active', True) or not verify_password(user.get('pin_hash'), pin):
+        if user and user.get('active', True):
+            _register_pin_failure(user, key, kiosk)
+            if user.get('pin_locked') or (kiosk and kiosk.get('locked')):
+                return None, None, json_error('Too many PIN attempts. Ask an administrator to unlock it.', 423)
+        elif kiosk:
+            _register_pin_failure(None, None, kiosk)
+            if kiosk.get('locked'):
+                return None, None, json_error('This tablet is locked. Ask an administrator to unlock it.', 423)
+        return None, None, json_error('Invalid employee number or PIN.', 401)
+    _clear_pin_failure(user, key, kiosk)
+    return key, user, None
+
+
 @app.route('/punch/login', methods=['POST'])
 def punch_login():
     number = normalize_employee_number(request.form.get('employee_number'))
@@ -3163,16 +3267,335 @@ def punch_login():
         flash('Too many login attempts. Try again in a few minutes.', 'error')
         return render_template('punch.html', user=None, can_manage=False), 429
     key, user = find_shop_by_number(number)
-    if not user or not user.get('active', True) or not verify_password(user.get('pin_hash'), pin):
+    if user and user.get('pin_locked'):
+        flash('This PIN is locked. Ask an administrator to unlock it.', 'error')
+        return render_template('punch.html', user=None, can_manage=False), 423
+    if not user or not user.get('active', True) or not user.get('allow_phone_punch') or not verify_password(user.get('pin_hash'), pin):
+        if user and user.get('active', True) and user.get('allow_phone_punch'):
+            _register_pin_failure(user, key, None)
+            if user.get('pin_locked'):
+                flash('This PIN is locked. Ask an administrator to unlock it.', 'error')
+                return render_template('punch.html', user=None, can_manage=False), 423
+        elif user and user.get('active', True) and not user.get('allow_phone_punch') and verify_password(user.get('pin_hash'), pin):
+            flash('Use the shop tablet. Phone punch is not enabled for this worker.', 'error')
+            return render_template('punch.html', user=None, can_manage=False), 403
         login_limiter.record_failure('pin:' + number, ip)
         flash('Invalid employee number or PIN.', 'error')
         return render_template('punch.html', user=None, can_manage=False)
+    _clear_pin_failure(user, key, None)
     login_limiter.clear('pin:' + number, ip)
     session.clear()
     session['user'] = key
     session.permanent = True
     session['long_session'] = True
     return redirect(url_for('punch'))
+
+
+def _kiosk_cookie(response, token):
+    response.set_cookie(
+        'kiosk_token',
+        token,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        samesite='Lax',
+        secure=session_cookie_secure(),
+    )
+    return response
+
+
+def _public_kiosk(kiosk):
+    return {
+        'id': kiosk.get('id'),
+        'name': kiosk.get('name') or '',
+        'created_at': kiosk.get('created_at'),
+        'created_by': kiosk.get('created_by'),
+        'revoked': bool(kiosk.get('revoked')),
+        'locked': bool(kiosk.get('locked')),
+    }
+
+
+@app.route('/api/time-clock/kiosks', methods=['GET'])
+@login_required
+def list_kiosks():
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    return jsonify([_public_kiosk(row) for row in load_kiosks()])
+
+
+@app.route('/api/time-clock/kiosks', methods=['POST'])
+@login_required
+def activate_kiosk():
+    actor = current_user()
+    if not can_manage_time(actor):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    name = clean_text(data.get('name') or 'Shop tablet', 80) or 'Shop tablet'
+    token = secrets.token_urlsafe(32)
+    kiosks = load_kiosks()
+    kiosk = {
+        'id': max([row.get('id') or 0 for row in kiosks] or [0]) + 1,
+        'name': name,
+        'token_hash': _token_hash(token),
+        'created_at': stamp(datetime.now(timezone.utc)),
+        'created_by': actor.get('email') or '',
+        'revoked': False,
+        'locked': False,
+        'pin_failures': 0,
+    }
+    kiosks.append(kiosk)
+    save_kiosks(kiosks)
+    session.clear()
+    response = jsonify({'success': True, 'kiosk': _public_kiosk(kiosk), 'token': token})
+    return _kiosk_cookie(response, token)
+
+
+@app.route('/api/time-clock/kiosks/<int:kiosk_id>/revoke', methods=['POST'])
+@login_required
+def revoke_kiosk(kiosk_id):
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    kiosks = load_kiosks()
+    found = None
+    for row in kiosks:
+        if row.get('id') == kiosk_id:
+            row['revoked'] = True
+            row['revoked_at'] = stamp(datetime.now(timezone.utc))
+            found = row
+    if not found:
+        return json_error('Not found', 404)
+    save_kiosks(kiosks)
+    return jsonify(_public_kiosk(found))
+
+
+@app.route('/api/time-clock/kiosks/<int:kiosk_id>/unlock', methods=['POST'])
+@login_required
+def unlock_kiosk(kiosk_id):
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    kiosks = load_kiosks()
+    found = None
+    for row in kiosks:
+        if row.get('id') == kiosk_id:
+            row['locked'] = False
+            row['pin_failures'] = 0
+            found = row
+    if not found:
+        return json_error('Not found', 404)
+    save_kiosks(kiosks)
+    return jsonify(_public_kiosk(found))
+
+
+@app.route('/api/users/<path:account>/pin/unlock', methods=['POST'])
+@admin_required
+def unlock_shop_pin(account):
+    account = normalize_email(account)
+    users = load_users()
+    user = users.get(account)
+    if not user or user.get('role') != 'shop':
+        return json_error('Not found', 404)
+    user['pin_locked'] = False
+    user['pin_failures'] = 0
+    users[account] = user
+    save_users(users)
+    return jsonify({'success': True})
+
+
+def _store_punch_photo(punch_id, raw):
+    try:
+        from io import BytesIO as _Bytes
+        from PIL import Image
+        image = Image.open(_Bytes(raw)).convert('RGB')
+    except Exception:
+        return False
+    image.thumbnail((640, 640))
+    path = os.path.join(punch_photo_dir(), f'{int(punch_id)}.jpg')
+    image.save(path, 'JPEG', quality=70)
+    return True
+
+
+def _purge_old_photos():
+    days = load_time_settings().get('photo_retention_days', 90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    punches = load_punches()
+    changed = False
+    for punch in punches:
+        if not punch.get('photo'):
+            continue
+        try:
+            moment = as_utc(punch.get('at'))
+        except ValueError:
+            continue
+        if moment >= cutoff:
+            continue
+        path = os.path.join(punch_photo_dir(), f"{int(punch.get('id'))}.jpg")
+        if os.path.exists(path):
+            os.remove(path)
+        punch['photo'] = False
+        punch['no_photo'] = True
+        punch['photo_purged'] = True
+        changed = True
+    if changed:
+        save_punches(punches)
+
+
+def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, accuracy):
+    moment = stamp(datetime.now(timezone.utc))
+    existing = _punches_for(key)
+    try:
+        replay(existing + [{'id': 10 ** 9, 'action': action, 'at': moment}])
+    except ValueError as exc:
+        status = 409 if action == 'in' else 400
+        return json_error(str(exc), status)
+    no_location = lat is None or lng is None
+    snapshot = {
+        'action': action,
+        'at': moment,
+        'note': note,
+        'lat': lat,
+        'lng': lng,
+        'accuracy': accuracy,
+        'no_location': no_location,
+        'no_photo': True,
+        'kiosk_id': kiosk.get('id'),
+    }
+    stored = append_punch({
+        'user': key,
+        'photo': False,
+        'corrections': [],
+        'original': dict(snapshot),
+        **snapshot,
+    })
+    if photo_bytes and _store_punch_photo(stored['id'], photo_bytes):
+        punches = load_punches()
+        for row in punches:
+            if row.get('id') == stored['id']:
+                row['photo'] = True
+                row['no_photo'] = False
+                row['original']['no_photo'] = False
+                stored = row
+        save_punches(punches)
+    _purge_old_photos()
+    status, since = clock_status(_punches_for(key))
+    return jsonify({
+        'success': True,
+        'name': user.get('name') or '',
+        'employee_number': user.get('employee_number') or '',
+        'action': action,
+        'action_label': PUNCH_LABELS.get(action, action),
+        'pacific': pacific_label(moment),
+        'status': status,
+        'since_pacific': pacific_clock(since) if since else None,
+        'no_photo': bool(stored.get('no_photo')),
+        'kiosk_id': kiosk.get('id'),
+    })
+
+
+@app.route('/kiosk')
+def kiosk():
+    device = _kiosk_from_request()
+    return render_template('kiosk.html', kiosk=_public_kiosk(device) if device else None)
+
+
+@app.route('/api/kiosk/workers', methods=['GET'])
+def kiosk_workers():
+    device = _kiosk_from_request()
+    if not device:
+        return json_error('This tablet is not an active time clock.', 403)
+    if device.get('locked'):
+        return json_error('This tablet is locked. Ask an administrator to unlock it.', 423)
+    rows = []
+    for _key, user in load_users().items():
+        if user.get('role') == 'shop' and user.get('active', True) and user.get('employee_number'):
+            rows.append({'name': user.get('name') or '', 'employee_number': user.get('employee_number')})
+    rows.sort(key=lambda row: row['name'].lower())
+    return jsonify(rows)
+
+
+@app.route('/api/kiosk/identify', methods=['POST'])
+@csrf.exempt
+def kiosk_identify():
+    device = _kiosk_from_request()
+    if not device:
+        return json_error('This tablet is not an active time clock.', 403)
+    data = json_body() or {}
+    number = normalize_employee_number(data.get('employee_number'))
+    pin = str(data.get('pin') or '').strip()
+    key, user, error = _check_pin(number, pin, device)
+    if error:
+        return error
+    status, since = clock_status(_punches_for(key))
+    today = pacific_date(datetime.now(timezone.utc))
+    return jsonify({
+        'name': user.get('name') or '',
+        'employee_number': user.get('employee_number') or '',
+        'status': status,
+        'since_pacific': pacific_clock(since) if since else None,
+        'today_hours': live_hours(_punches_for(key), today, today),
+    })
+
+
+@app.route('/api/kiosk/punch', methods=['POST'])
+@csrf.exempt
+def kiosk_punch():
+    device = _kiosk_from_request()
+    if not device:
+        return json_error('This tablet is not an active time clock.', 403)
+    number = normalize_employee_number(request.form.get('employee_number') or (json_body() or {}).get('employee_number'))
+    pin = str(request.form.get('pin') or (json_body() or {}).get('pin') or '').strip()
+    action = clean_text(request.form.get('action') or (json_body() or {}).get('action'), 20)
+    note = clean_text(request.form.get('note') or (json_body() or {}).get('note'), 300)
+    if action not in ACTIONS:
+        return json_error('Unknown punch.', 400)
+    key, user, error = _check_pin(number, pin, device)
+    if error:
+        return error
+    lat = lng = accuracy = None
+    raw_lat = request.form.get('lat')
+    raw_lng = request.form.get('lng')
+    if raw_lat not in (None, '') and raw_lng not in (None, ''):
+        try:
+            lat = float(raw_lat)
+            lng = float(raw_lng)
+            raw_accuracy = request.form.get('accuracy')
+            accuracy = None if raw_accuracy in (None, '') else float(raw_accuracy)
+        except (TypeError, ValueError):
+            lat = lng = accuracy = None
+    photo = request.files.get('photo')
+    photo_bytes = photo.read() if photo else b''
+    return _record_kiosk_punch(device, user, key, action, note, photo_bytes, lat, lng, accuracy)
+
+
+@app.route('/api/time-clock/photos/<int:punch_id>', methods=['GET'])
+@login_required
+def punch_photo(punch_id):
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    path = os.path.join(punch_photo_dir(), f'{int(punch_id)}.jpg')
+    punch = next((row for row in load_punches() if row.get('id') == punch_id), None)
+    if not punch or not punch.get('photo') or not os.path.exists(path):
+        return json_error('Not found', 404)
+    return send_file(path, mimetype='image/jpeg')
+
+
+@app.route('/api/time-clock/settings', methods=['GET', 'PUT'])
+@login_required
+def time_clock_settings():
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    if request.method == 'GET':
+        _purge_old_photos()
+        return jsonify(load_time_settings())
+    data = json_body() or {}
+    try:
+        days = int(data.get('photo_retention_days'))
+    except (TypeError, ValueError):
+        return json_error('Photo retention must be a number of days.', 400)
+    if days < 90:
+        return json_error('Photos are kept for at least 90 days.', 400)
+    if days > 3650:
+        return json_error('Photo retention is too long.', 400)
+    save_time_settings({'photo_retention_days': days})
+    return jsonify(load_time_settings())
 
 
 @app.route('/time-clock')
@@ -3208,6 +3631,8 @@ def reset_shop_pin(account):
     if user.get('role') != 'shop':
         return json_error('Only shop workers use a PIN.', 400)
     user['pin_hash'] = hash_password(pin)
+    user['pin_failures'] = 0
+    user['pin_locked'] = False
     users[account] = user
     save_users(users)
     return jsonify({'success': True})
@@ -3219,6 +3644,8 @@ def create_punch():
     user = current_user()
     if not _can_punch(user):
         return json_error('Access denied', 403)
+    if user.get('role') == 'shop' and not user.get('allow_phone_punch'):
+        return json_error('Use the shop tablet. Phone punch is not enabled for this worker.', 403)
     _remember_phone()
     data = json_body() or {}
     action = clean_text(data.get('action'), 20)
@@ -3238,7 +3665,7 @@ def create_punch():
             return json_error('Location is out of range.', 400)
         no_location = False
     moment = stamp(datetime.now(timezone.utc))
-    existing = _punches_for(user.get('email'))
+    existing = _punches_for(_punch_owner(user))
     try:
         replay(existing + [{'id': 10 ** 9, 'action': action, 'at': moment}])
     except ValueError as exc:
@@ -3252,9 +3679,12 @@ def create_punch():
         'lng': lng,
         'accuracy': accuracy,
         'no_location': no_location,
+        'no_photo': True,
+        'kiosk_id': None,
     }
     append_punch({
-        'user': user.get('email'),
+        'user': _punch_owner(user),
+        'photo': False,
         'corrections': [],
         'original': dict(snapshot),
         **snapshot,
@@ -3306,16 +3736,26 @@ def time_clock_data():
     start = _date_arg('from')
     end = _date_arg('to')
     email = normalize_email(request.args.get('user'))
+    _purge_old_photos()
     punches, days, period_hours = _timesheet_rows(email, start, end)
     employees = []
-    for record in load_users().values():
+    for key, record in load_users().items():
         if record.get('role') == 'customer':
             continue
-        employees.append({'email': record.get('email'), 'name': record.get('name') or record.get('email')})
+        label = record.get('name') or key
+        if record.get('employee_number'):
+            label = f"{label} ({record.get('employee_number')})"
+        employees.append({'email': key, 'name': label})
     employees.sort(key=lambda row: (row['name'] or '').lower())
+    names = {key: (record.get('name') or key) for key, record in load_users().items()}
+    punch_rows = []
+    for row in punches:
+        view = _punch_view(row)
+        view['name'] = names.get(row.get('user'), row.get('user'))
+        punch_rows.append(view)
     return jsonify({
         'employees': employees,
-        'punches': [_punch_view(row) for row in punches],
+        'punches': punch_rows,
         'days': days,
         'period_hours': period_hours,
     })

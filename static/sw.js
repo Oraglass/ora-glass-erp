@@ -1,4 +1,4 @@
-const CACHE = 'ora-time-clock-v1';
+const CACHE = 'ora-time-clock-v2';
 const SHELL = [
   '/static/logo.png',
   '/static/icons/icon-192.png',
@@ -25,11 +25,11 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) return;
   event.respondWith(
     fetch(event.request).then((response) => {
-      if (response.ok && (url.pathname === '/punch' || SHELL.indexOf(url.pathname) !== -1)) {
+      if (response.ok && (url.pathname === '/punch' || url.pathname === '/kiosk' || SHELL.indexOf(url.pathname) !== -1)) {
         const copy = response.clone();
         caches.open(CACHE).then((cache) => cache.put(event.request, copy));
       }
       return response;
-    }).catch(() => caches.match(event.request).then((hit) => hit || caches.match('/punch')))
+    }).catch(() => caches.match(event.request).then((hit) => hit || caches.match('/kiosk')))
   );
 });

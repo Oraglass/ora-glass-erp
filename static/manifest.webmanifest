@@ -1,7 +1,7 @@
 {
   "name": "Ora Glass Time Clock",
   "short_name": "Time Clock",
-  "start_url": "/punch",
+  "start_url": "/kiosk",
   "scope": "/",
   "display": "standalone",
   "background_color": "#9f1830",

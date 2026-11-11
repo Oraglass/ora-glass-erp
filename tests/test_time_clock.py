@@ -103,6 +103,7 @@ def test_punch_flow_blocks_a_second_punch_in_and_keeps_location_optional(client)
     assert manifest.get_json()['name'] == 'Ora Glass Time Clock'
     assert manifest.get_json()['display'] == 'standalone'
     assert manifest.get_json()['theme_color'] == '#9f1830'
+    assert manifest.get_json()['start_url'] == '/kiosk'
     assert client.get('/sw.js').status_code == 200
     client.post('/logout')
 
@@ -149,6 +150,13 @@ def test_shop_worker_uses_a_pin_and_cannot_open_other_modules(client):
     assert login(client, 'riley@oraglass.us').status_code == 302
     assert client.get('/punch').status_code in (302, 403)
     assert client.post('/api/punches', json={'action': 'in'}).status_code == 403
+    client.post('/logout')
+
+    denied = client.post('/punch/login', data={'employee_number': '441', 'pin': '98765'})
+    assert denied.status_code == 403
+    assert b'shop tablet' in denied.data
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    assert client.put('/api/users/shop:441', json={'allow_phone_punch': True}).status_code == 200
     client.post('/logout')
 
     gate = client.post('/punch/login', data={'employee_number': '441', 'pin': '1234'})
@@ -233,3 +241,174 @@ def test_manager_corrections_keep_the_original_and_exports(client):
     own = client.get('/api/punches/me').get_json()
     assert len(own['history']) == 1
     assert own['history'][0]['user'] == 'casey@oraglass.us'
+
+
+def _jpeg(width=800, height=600):
+    from io import BytesIO
+    from PIL import Image
+    buf = BytesIO()
+    Image.new('RGB', (width, height), (180, 20, 40)).save(buf, 'JPEG', quality=90)
+    buf.seek(0)
+    return buf
+
+
+def _shop_and_kiosk(client, number='441', pin='1234'):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    created = client.post('/api/users', json={
+        'name': 'Sam Shop',
+        'role': 'shop',
+        'employee_number': number,
+        'pin': pin,
+    })
+    assert created.status_code == 200
+    activated = client.post('/api/time-clock/kiosks', json={'name': 'Shop tablet'})
+    assert activated.status_code == 200
+    body = activated.get_json()
+    assert body['kiosk']['name'] == 'Shop tablet'
+    assert body['token']
+    with client.session_transaction() as sess:
+        assert 'user' not in sess
+    return body['token'], body['kiosk']['id']
+
+
+def test_kiosk_activation_and_revocation(client):
+    token, kiosk_id = _shop_and_kiosk(client)
+    page = client.get('/kiosk')
+    assert page.status_code == 200
+    assert b'Employee number' in page.data
+    assert b'Punch In' in page.data
+    assert b'href="/dashboard"' not in page.data
+    assert b'Activate this device as kiosk' not in page.data
+    workers = client.get('/api/kiosk/workers')
+    assert workers.status_code == 200
+    assert workers.get_json() == [{'name': 'Sam Shop', 'employee_number': '441'}]
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/time-clock/kiosks').get_json()
+    assert listed[0]['id'] == kiosk_id
+    assert listed[0]['revoked'] is False
+    assert 'token' not in listed[0]
+    assert 'token_hash' not in listed[0]
+    assert client.post(f'/api/time-clock/kiosks/{kiosk_id}/revoke').status_code == 200
+    revoked = client.get('/kiosk')
+    assert b'not activated' in revoked.data
+    assert client.get('/api/kiosk/workers', headers={'X-Kiosk-Token': token}).status_code == 403
+    assert client.post('/api/time-clock/kiosks/99/revoke').status_code == 404
+
+
+def test_kiosk_punch_stores_a_private_photo_and_flags_a_missing_one(client, data_dir):
+    import os
+    from io import BytesIO
+    from PIL import Image
+    import app as app_module
+    from storage import punch_photo_dir
+
+    token, kiosk_id = _shop_and_kiosk(client)
+    app_module.app.config['WTF_CSRF_ENABLED'] = True
+    try:
+        fresh = app_module.app.test_client()
+        refused = fresh.post('/login', data={'email': 'admin@oraglass.us', 'password': 'Validpass1'})
+        assert refused.status_code == 302
+        assert refused.headers['Location'].endswith('/login')
+        with fresh.session_transaction() as sess:
+            assert 'user' not in sess
+        punched = fresh.post('/api/kiosk/punch', data={
+            'employee_number': '441',
+            'pin': '1234',
+            'action': 'in',
+            'lat': '48.94',
+            'lng': '-122.48',
+            'photo': (_jpeg(), 'punch.jpg'),
+        }, headers={'X-Kiosk-Token': token})
+        assert punched.status_code == 200
+    finally:
+        app_module.app.config['WTF_CSRF_ENABLED'] = False
+    body = punched.get_json()
+    assert body['name'] == 'Sam Shop'
+    assert body['action'] == 'in'
+    assert body['no_photo'] is False
+    assert body['kiosk_id'] == kiosk_id
+    punch_id = load_punches()[-1]['id']
+    saved = load_punches()[-1]
+    assert saved['user'] == 'shop:441'
+    assert saved['photo'] is True
+    assert saved['kiosk_id'] == kiosk_id
+    path = os.path.join(punch_photo_dir(), f'{punch_id}.jpg')
+    assert os.path.isfile(path)
+    assert Image.open(path).size[0] <= 640
+    assert not str(path).startswith(os.path.join(os.getcwd(), 'static'))
+    assert client.get(f'/static/punch_photos/{punch_id}.jpg').status_code == 404
+    assert client.get(f'/api/time-clock/photos/{punch_id}').status_code == 401
+
+    _employee('payroll@oraglass.us', ['dashboard', 'time-clock'], manage_time=False)
+    _employee('lead@oraglass.us', ['dashboard', 'time-clock'], manage_time=True)
+    assert login(client, 'payroll@oraglass.us').status_code == 302
+    assert client.get(f'/api/time-clock/photos/{punch_id}').status_code == 403
+    client.post('/logout')
+    assert login(client, 'lead@oraglass.us').status_code == 302
+    photo = client.get(f'/api/time-clock/photos/{punch_id}')
+    assert photo.status_code == 200
+    assert photo.mimetype == 'image/jpeg'
+    assert photo.data[:2] == b'\xff\xd8'
+    sheet = client.get('/api/time-clock').get_json()
+    row = next(item for item in sheet['punches'] if item['id'] == punch_id)
+    assert row['has_photo'] is True
+    assert row['name'] == 'Sam Shop'
+    assert row['kiosk_id'] == kiosk_id
+    page = client.get('/time-clock')
+    assert b'No photo' in page.data or b'data-photo' in page.data
+    client.post('/logout')
+
+    missing = client.post('/api/kiosk/punch', data={
+        'employee_number': '441',
+        'pin': '1234',
+        'action': 'out',
+        'photo': (BytesIO(b'not-a-photo'), 'punch.jpg'),
+    }, headers={'X-Kiosk-Token': token})
+    assert missing.status_code == 200
+    assert missing.get_json()['no_photo'] is True
+    bare = load_punches()[-1]
+    assert bare['photo'] is False
+    assert bare['no_photo'] is True
+    assert bare['kiosk_id'] == kiosk_id
+
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    assert client.put('/api/time-clock/settings', json={'photo_retention_days': 30}).status_code == 400
+    assert client.put('/api/time-clock/settings', json={'photo_retention_days': 90}).status_code == 200
+    old = load_punches()
+    for item in old:
+        if item['id'] == punch_id:
+            item['at'] = stamp(datetime.now(timezone.utc) - timedelta(days=91))
+    save_punches(old)
+    assert client.get('/api/time-clock').status_code == 200
+    assert not os.path.exists(path)
+    purged = next(item for item in load_punches() if item['id'] == punch_id)
+    assert purged['photo'] is False
+    assert purged.get('photo_purged') is True
+
+
+def test_kiosk_pin_locks_the_worker_and_the_tablet(client):
+    token, kiosk_id = _shop_and_kiosk(client)
+    headers = {'X-Kiosk-Token': token}
+    for _ in range(4):
+        bad = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '0000'}, headers=headers)
+        assert bad.status_code == 401
+    locked = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '0000'}, headers=headers)
+    assert locked.status_code == 423
+    still = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '1234'}, headers=headers)
+    assert still.status_code == 423
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    assert client.post('/api/users/shop:441/pin/unlock').status_code == 200
+    opened = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '1234'}, headers=headers)
+    assert opened.status_code == 200
+    assert opened.get_json()['name'] == 'Sam Shop'
+    for _ in range(9):
+        miss = client.post('/api/kiosk/identify', json={'employee_number': '999', 'pin': '0000'}, headers=headers)
+        assert miss.status_code == 401
+    tablet = client.post('/api/kiosk/identify', json={'employee_number': '999', 'pin': '0000'}, headers=headers)
+    assert tablet.status_code == 423
+    blocked = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '1234'}, headers=headers)
+    assert blocked.status_code == 423
+    assert client.post(f'/api/time-clock/kiosks/{kiosk_id}/unlock').status_code == 200
+    again = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '1234'}, headers=headers)
+    assert again.status_code == 200
