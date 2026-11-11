@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#9f1830">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ora Glass Time Clock">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<title>Ora Glass Time Clock</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f4f1f2;color:#1a1a1a;min-height:100vh}
+.wrap{max-width:480px;margin:0 auto;padding:20px 16px 32px}
+.logo{display:block;width:min(220px,70vw);height:auto;margin:8px auto 18px;background:#fff;border-radius:12px;padding:10px 14px}
+h1{font-size:22px;text-align:center;margin:0 0 4px}
+.sub{text-align:center;color:#666;font-size:13px;margin-bottom:18px}
+.status{background:#fff;border-radius:16px;padding:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.06);margin-bottom:16px}
+.status strong{display:block;font-size:28px;margin-bottom:4px}
+.status .since{font-size:18px;color:#9f1830}
+.hours{display:flex;gap:10px;margin-bottom:16px}
+.hours div{flex:1;background:#fff;border-radius:12px;padding:12px;text-align:center}
+.hours b{display:block;font-size:22px;color:#9f1830}
+.hours span{font-size:12px;color:#666}
+button{font:600 20px/1.2 'Segoe UI',Arial,sans-serif;border:0;border-radius:14px;padding:18px 12px;width:100%;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+.punch-in{background:#166534;color:#fff;margin-bottom:10px}
+.punch-out{background:#9f1830;color:#fff;margin-bottom:10px}
+.break{background:#fff;color:#1a1a1a;border:1px solid #ddd;font-size:16px;padding:14px}
+.note{width:100%;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:12px;font:16px/1.4 'Segoe UI',Arial,sans-serif}
+.loc{font-size:12px;color:#666;text-align:center;margin-top:8px}
+.links{display:flex;justify-content:space-between;margin-top:18px;font-size:14px}
+.links a{color:#9f1830}
+.history{margin-top:22px}
+.history h2{font-size:16px;margin:0 0 8px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:12px;overflow:hidden}
+th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
+.err{background:#fde8ec;color:#9f1239;padding:10px;border-radius:8px;margin-bottom:10px;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass">
+{% if not user %}
+<h1>Time Clock</h1>
+<p class="sub">Shop workers sign in with an employee number and PIN.</p>
+{% with messages = get_flashed_messages() %}
+{% if messages %}<div class="err">{{ messages[0] }}</div>{% endif %}
+{% endwith %}
+<form method="post" action="{{ url_for('punch_login') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label class="sub" for="employee_number" style="display:block;text-align:left">Employee number</label>
+<input id="employee_number" name="employee_number" class="note" autocomplete="username" inputmode="text" required>
+<label class="sub" for="pin" style="display:block;text-align:left">PIN</label>
+<input id="pin" name="pin" class="note" type="password" inputmode="numeric" autocomplete="current-password" minlength="4" maxlength="6" required>
+<button type="submit" class="punch-in">Sign in</button>
+</form>
+<p class="loc"><a href="{{ url_for('login', next='/punch') }}">Sign in with email</a></p>
+{% else %}
+<h1>Time Clock</h1>
+<p class="sub">{{ user.name }}{% if user.employee_number %} · {{ user.employee_number }}{% endif %}</p>
+<div id="error" class="err" hidden></div>
+<div class="status">
+<strong id="status-label">…</strong>
+<div class="since" id="since"></div>
+</div>
+<div class="hours">
+<div><b id="today-hours">0.00</b><span>Today (hours)</span></div>
+<div><b id="week-hours">0.00</b><span>This week</span></div>
+</div>
+<textarea id="note" class="note" rows="2" placeholder="Optional note"></textarea>
+<button type="button" class="punch-in" id="btn-in">Punch In</button>
+<button type="button" class="punch-out" id="btn-out" disabled>Punch Out</button>
+<button type="button" class="break" id="btn-break" disabled>Start break</button>
+<p class="loc" id="loc">Location is requested when you punch. The punch is saved even if you decline.</p>
+<div class="links">
+{% if user.role != 'shop' %}<a href="{{ url_for('dashboard') }}">Dashboard</a>{% endif %}
+{% if can_manage %}<a href="{{ url_for('time_clock_admin') }}">Timesheets</a>{% endif %}
+<form method="post" action="{{ url_for('logout') }}" style="margin:0">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button type="submit" style="width:auto;background:none;color:#9f1830;font-size:14px;padding:0">Sign out</button>
+</form>
+</div>
+<div class="history">
+<h2>Last 2 weeks</h2>
+<table>
+<thead><tr><th>When (Pacific)</th><th>Action</th><th>Hours</th></tr></thead>
+<tbody id="history"><tr><td colspan="3">Loading…</td></tr></tbody>
+</table>
+</div>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script>
+const token = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+function showError(message) {
+  const box = document.getElementById('error');
+  box.hidden = !message;
+  box.textContent = message || '';
+}
+function render(data) {
+  const labels = {out: 'Clocked out', in: 'Clocked in', break: 'On break'};
+  document.getElementById('status-label').textContent = labels[data.status] || data.status;
+  document.getElementById('since').textContent = data.since_pacific
+    ? (data.status === 'break' ? 'Break since ' : 'In since ') + data.since_pacific
+    : '';
+  document.getElementById('today-hours').textContent = Number(data.today_hours || 0).toFixed(2);
+  document.getElementById('week-hours').textContent = Number(data.week_hours || 0).toFixed(2);
+  document.getElementById('btn-in').disabled = data.status !== 'out';
+  document.getElementById('btn-out').disabled = data.status === 'out';
+  const breakBtn = document.getElementById('btn-break');
+  if (data.status === 'in') { breakBtn.disabled = false; breakBtn.textContent = 'Start break'; breakBtn.dataset.action = 'break_start'; }
+  else if (data.status === 'break') { breakBtn.disabled = false; breakBtn.textContent = 'End break'; breakBtn.dataset.action = 'break_end'; }
+  else { breakBtn.disabled = true; breakBtn.textContent = 'Start break'; breakBtn.dataset.action = 'break_start'; }
+  const rows = data.days || [];
+  const punches = data.history || [];
+  const body = document.getElementById('history');
+  if (!punches.length) { body.innerHTML = '<tr><td colspan="3">No punches yet</td></tr>'; return; }
+  body.innerHTML = punches.map(row => '<tr><td>' + row.pacific + '</td><td>' + row.action_label + (row.no_location ? ' · no location' : '') + '</td><td></td></tr>').join('')
+    + rows.map(day => '<tr><td colspan="2"><b>' + day.date + (day.missing_out ? ' · missing punch-out' : '') + '</b></td><td>' + Number(day.hours).toFixed(2) + '</td></tr>').join('');
+}
+async function load() {
+  const res = await fetch('/api/punches/me');
+  if (res.status === 401) { window.location = '/login?next=/punch'; return; }
+  if (!res.ok) { showError('Could not load the time clock'); return; }
+  render(await res.json());
+}
+function locate() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy}),
+      () => resolve(null),
+      {enableHighAccuracy: true, timeout: 8000, maximumAge: 60000}
+    );
+  });
+}
+async function punch(action) {
+  showError('');
+  const place = await locate();
+  const body = {action, note: document.getElementById('note').value};
+  if (place) { body.lat = place.lat; body.lng = place.lng; body.accuracy = place.accuracy; }
+  const res = await fetch('/api/punches', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': token},
+    body: JSON.stringify(body)
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { showError(payload.error || 'Punch was not saved'); return; }
+  document.getElementById('note').value = '';
+  document.getElementById('loc').textContent = place ? 'Last punch included your location.' : 'Last punch saved with no location.';
+  render(payload);
+}
+document.getElementById('btn-in').addEventListener('click', () => punch('in'));
+document.getElementById('btn-out').addEventListener('click', () => punch('out'));
+document.getElementById('btn-break').addEventListener('click', (event) => punch(event.currentTarget.dataset.action));
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+load();
+</script>
+{% endif %}
+</div>
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+</body>
+</html>

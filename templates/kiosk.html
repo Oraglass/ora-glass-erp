@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#9f1830">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ora Glass Time Clock">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<title>Ora Glass Time Clock</title>
+<style>
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+html,body{margin:0;height:100%;font-family:'Segoe UI',Arial,sans-serif;background:#f4f1f2;color:#1a1a1a}
+body{min-height:100vh}
+.idle,.ready,.confirm{min-height:100vh}
+.top{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#9f1830;color:#fff}
+.top img{height:48px;background:#fff;border-radius:8px;padding:4px 8px}
+.top h1{margin:0;font-size:22px;font-weight:600}
+.stage{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;padding:20px 24px 28px;min-height:calc(100vh - 80px)}
+.panel{background:#fff;border-radius:18px;padding:18px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.display{font-size:40px;letter-spacing:4px;text-align:center;min-height:64px;border-bottom:2px solid #eee;margin-bottom:12px}
+.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.keys button,.act button{font:700 28px/1 'Segoe UI',Arial,sans-serif;border:0;border-radius:14px;background:#f3f3f3;min-height:74px;cursor:pointer}
+.keys button.go{background:#166534;color:#fff}
+.names{display:flex;flex-direction:column;gap:10px}
+.names button{text-align:left;padding:16px 18px;border-radius:14px;border:1px solid #eee;background:#fff;font:600 20px/1.2 'Segoe UI',Arial,sans-serif;cursor:pointer}
+.err{color:#9f1239;min-height:22px;text-align:center;margin:8px 0}
+video{width:100%;max-height:280px;background:#111;border-radius:14px;object-fit:cover;transform:scaleX(-1)}
+.who{font-size:32px;margin:0 0 4px}
+.status{font-size:20px;color:#9f1830;margin-bottom:12px}
+.act{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.act .in{background:#166534;color:#fff}
+.act .out{background:#9f1830;color:#fff}
+.confirm{display:none;position:fixed;inset:0;background:#fff;z-index:5;align-items:center;justify-content:center;text-align:center;flex-direction:column}
+.confirm.show{display:flex}
+.confirm h2{font-size:64px;margin:0 0 8px}
+.confirm p{font-size:28px;color:#9f1830;margin:0}
+.locked{padding:40px;text-align:center}
+@media (max-width:800px){.stage{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+{% if not kiosk %}
+<div class="locked">
+<img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass" style="height:72px;background:#fff;border-radius:12px;padding:8px">
+<h1>This tablet is not activated</h1>
+<p>An administrator signs in on this tablet and chooses Activate this device as kiosk.</p>
+<p><a href="{{ url_for('login', next='/time-clock') }}">Administrator sign in</a></p>
+</div>
+{% else %}
+<div class="top">
+<img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass">
+<h1 id="kiosk-title">{{ kiosk.name }}</h1>
+</div>
+<div id="idle" class="stage">
+<div class="panel">
+<div class="display" id="digits">&nbsp;</div>
+<p class="err" id="error"></p>
+<div class="keys" id="keys"></div>
+</div>
+<div class="panel">
+<h2 style="margin:0 0 12px">Or tap your name</h2>
+<div class="names" id="names"></div>
+</div>
+</div>
+<div id="ready" class="stage" hidden>
+<div class="panel">
+<video id="camera" autoplay playsinline muted></video>
+<p class="err" id="camera-note"></p>
+</div>
+<div class="panel">
+<h2 class="who" id="worker-name"></h2>
+<div class="status" id="worker-status"></div>
+<div class="act">
+<button type="button" class="in" id="do-in">Punch In</button>
+<button type="button" class="out" id="do-out">Punch Out</button>
+<button type="button" id="do-break-start">Break start</button>
+<button type="button" id="do-break-end">Break end</button>
+</div>
+<p class="err" id="punch-error"></p>
+</div>
+</div>
+<div id="confirm" class="confirm">
+<h2 id="confirm-action"></h2>
+<p id="confirm-who"></p>
+</div>
+<script>
+const IDLE_MS = 45000;
+const CONFIRM_MS = 4000;
+let mode = 'number';
+let employeeNumber = '';
+let pin = '';
+let worker = null;
+let idleTimer = null;
+let cameraStream = null;
+const digits = document.getElementById('digits');
+const error = document.getElementById('error');
+function showDigits() {
+  const value = mode === 'pin' ? '•'.repeat(pin.length) : employeeNumber;
+  digits.textContent = value || (mode === 'pin' ? 'PIN' : 'Employee number');
+}
+function resetIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(resetAll, IDLE_MS);
+}
+function resetAll() {
+  mode = 'number';
+  employeeNumber = '';
+  pin = '';
+  worker = null;
+  error.textContent = '';
+  document.getElementById('punch-error').textContent = '';
+  document.getElementById('ready').hidden = true;
+  document.getElementById('idle').hidden = false;
+  document.getElementById('confirm').classList.remove('show');
+  stopCamera();
+  showDigits();
+  resetIdle();
+}
+function stopCamera() {
+  if (!cameraStream) return;
+  cameraStream.getTracks().forEach(track => track.stop());
+  cameraStream = null;
+}
+async function startCamera() {
+  const note = document.getElementById('camera-note');
+  note.textContent = '';
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    note.textContent = 'Camera unavailable. The punch will be flagged no photo.';
+    return;
+  }
+  const attempts = [
+    {video: {facingMode: 'user', width: {ideal: 640}}, audio: false},
+    {video: true, audio: false}
+  ];
+  for (const constraints of attempts) {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      document.getElementById('camera').srcObject = cameraStream;
+      return;
+    } catch (err) {
+      cameraStream = null;
+    }
+  }
+  note.textContent = 'Camera unavailable. The punch will be flagged no photo.';
+}
+function capturePhoto() {
+  const video = document.getElementById('camera');
+  if (!cameraStream || !video.videoWidth) return null;
+  const scale = Math.min(1, 640 / video.videoWidth);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.7));
+}
+function buildKeys() {
+  const box = document.getElementById('keys');
+  const labels = ['1','2','3','4','5','6','7','8','9','Clear','0','OK'];
+  box.innerHTML = labels.map(label => '<button type="button" data-key="' + label + '"' + (label === 'OK' ? ' class="go"' : '') + '>' + label + '</button>').join('');
+}
+async function loadNames() {
+  const res = await fetch('/api/kiosk/workers');
+  const rows = res.ok ? await res.json() : [];
+  document.getElementById('names').innerHTML = rows.map(row => '<button type="button" data-worker="' + row.employee_number + '">' + row.name + '<br><span style="color:#666;font-weight:500">' + row.employee_number + '</span></button>').join('');
+}
+async function submitPin() {
+  error.textContent = '';
+  const res = await fetch('/api/kiosk/identify', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({employee_number: employeeNumber, pin: pin})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { error.textContent = body.error || 'Try again'; pin = ''; showDigits(); return; }
+  worker = body;
+  document.getElementById('worker-name').textContent = body.name;
+  const labels = {out: 'Clocked out', in: 'Clocked in', break: 'On break'};
+  document.getElementById('worker-status').textContent = (labels[body.status] || body.status) + (body.since_pacific ? ' · since ' + body.since_pacific : '');
+  document.getElementById('idle').hidden = true;
+  document.getElementById('ready').hidden = false;
+  startCamera();
+  resetIdle();
+}
+async function punch(action) {
+  resetIdle();
+  const photo = await capturePhoto();
+  const form = new FormData();
+  form.set('employee_number', employeeNumber);
+  form.set('pin', pin);
+  form.set('action', action);
+  if (photo) form.set('photo', photo, 'punch.jpg');
+  const res = await fetch('/api/kiosk/punch', {method: 'POST', body: form});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { document.getElementById('punch-error').textContent = body.error || 'Punch was not saved'; return; }
+  document.getElementById('confirm-action').textContent = body.action_label;
+  document.getElementById('confirm-who').textContent = body.name + ' · ' + body.pacific;
+  document.getElementById('confirm').classList.add('show');
+  setTimeout(resetAll, CONFIRM_MS);
+}
+document.getElementById('keys').addEventListener('click', (event) => {
+  const key = event.target.getAttribute('data-key');
+  if (!key) return;
+  resetIdle();
+  const target = mode === 'pin' ? pin : employeeNumber;
+  if (key === 'Clear') {
+    if (mode === 'pin' && !pin) { mode = 'number'; }
+    else if (mode === 'pin') pin = '';
+    else employeeNumber = '';
+    showDigits();
+    return;
+  }
+  if (key === 'OK') {
+    if (mode === 'number' && employeeNumber) { mode = 'pin'; showDigits(); return; }
+    if (mode === 'pin' && pin.length >= 4) submitPin();
+    return;
+  }
+  if (mode === 'pin' && pin.length >= 6) return;
+  if (mode === 'number' && employeeNumber.length >= 12) return;
+  if (mode === 'pin') pin += key;
+  else employeeNumber += key;
+  showDigits();
+});
+document.getElementById('names').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-worker]');
+  if (!button) return;
+  employeeNumber = button.getAttribute('data-worker');
+  pin = '';
+  mode = 'pin';
+  showDigits();
+  resetIdle();
+});
+document.getElementById('do-in').addEventListener('click', () => punch('in'));
+document.getElementById('do-out').addEventListener('click', () => punch('out'));
+document.getElementById('do-break-start').addEventListener('click', () => punch('break_start'));
+document.getElementById('do-break-end').addEventListener('click', () => punch('break_end'));
+buildKeys();
+showDigits();
+loadNames();
+resetIdle();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+{% endif %}
+</body>
+</html>

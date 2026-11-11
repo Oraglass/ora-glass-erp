@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Time Clock</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
+h1,h2{margin:0 0 10px;color:#333;font-size:20px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
+.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.flag{color:#9f1830;font-weight:600}
+.thumb{width:72px;height:54px;object-fit:cover;border-radius:6px;display:block}
+.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer}
+#photo-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:30}
+#photo-lightbox.open{display:flex}
+#photo-lightbox img{max-width:90vw;max-height:90vh;border-radius:8px}
+.note{color:#666;font-size:13px}
+.correct{display:none;background:#fafafa;padding:8px;border-radius:8px;margin-top:6px}
+.correct.open{display:grid;gap:6px}
+@media (max-width:640px){
+  table,thead,tbody,tr,th,td{display:block}
+  thead{display:none}
+  tr{padding:8px 0;border-bottom:1px solid #eee}
+  td{border:0;padding:2px 0}
+}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>Time Clock</h1>
+<div class="filters" id="kiosk-tools">
+<label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
+<button type="button" id="activate-kiosk">Activate this device as kiosk</button>
+<label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<button type="button" id="save-retention">Save retention</button>
+</div>
+<p class="note">Photos are kept at least 90 days and are visible only to administrators and staff who can manage time.</p>
+<p class="note" id="kiosk-list"></p>
+<p class="note">Times are shown in Pacific. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
+<div class="filters">
+<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<label>From<input type="date" id="filter-from"></label>
+<label>To<input type="date" id="filter-to"></label>
+<button type="button" id="apply">Show</button>
+</div>
+<div class="links">
+<a class="btn" id="csv-link" href="#">Export CSV</a>
+<a class="btn" id="pdf-link" href="#">PDF timesheet</a>
+<a href="{{ url_for('punch') }}">Punch page</a>
+</div>
+</div>
+<div class="card">
+<h2>Hours</h2>
+<p id="week-total" class="note"></p>
+<table>
+<thead><tr><th>Date</th><th>Employee</th><th>Hours</th><th></th></tr></thead>
+<tbody id="day-rows"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Punches</h2>
+<table>
+<thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Photo</th><th>Location</th><th></th></tr></thead>
+<tbody id="punch-rows"></tbody>
+</table>
+</div>
+</div>
+<script>
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function rangeQuery() {
+  const params = new URLSearchParams();
+  const user = document.getElementById('filter-user').value;
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  if (user) params.set('user', user);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  return params;
+}
+function render(data) {
+  const users = document.getElementById('filter-user');
+  const current = users.value;
+  const employees = data.employees || [];
+  users.innerHTML = '<option value="">All employees</option>' + employees.map(row => '<option value="' + esc(row.email) + '">' + esc(row.name) + '</option>').join('');
+  if (employees.some(row => row.email === current)) users.value = current;
+  document.getElementById('week-total').textContent = 'Closed hours in this period: ' + Number(data.period_hours || 0).toFixed(2);
+  const days = document.getElementById('day-rows');
+  const dayRows = data.days || [];
+  const byEmail = {};
+  employees.forEach(emp => { byEmail[emp.email] = emp.name; });
+  days.innerHTML = dayRows.length ? dayRows.map(day => '<tr><td>' + esc(day.date) + '</td><td>' + esc(byEmail[day.user] || day.user) + '</td><td>' + Number(day.hours).toFixed(2) + '</td><td>' + (day.missing_out ? '<span class="flag">Missing punch-out</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="4">No shifts</td></tr>';
+  const punches = document.getElementById('punch-rows');
+  punches.innerHTML = (data.punches || []).map(row => {
+    const loc = row.kiosk_id ? ('Kiosk ' + row.kiosk_id) : (row.no_location ? 'No location' : (row.lat != null ? Number(row.lat).toFixed(5) + ', ' + Number(row.lng).toFixed(5) : ''));
+    const photo = row.has_photo
+      ? '<button type="button" class="thumb-btn" data-photo="' + esc(row.id) + '"><img class="thumb" alt="Punch photo" src="/api/time-clock/photos/' + esc(row.id) + '"></button>'
+      : '<span class="flag">No photo</span>';
+    return '<tr><td>' + esc(row.pacific) + '</td><td>' + esc(row.name || row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + photo + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
+  }).join('') || '<tr><td colspan="6">No punches</td></tr>';
+}
+async function load() {
+  const params = rangeQuery();
+  document.getElementById('csv-link').href = '/api/time-clock/export.csv?' + params.toString();
+  document.getElementById('pdf-link').href = '/api/time-clock/timesheet.pdf?' + params.toString();
+  const res = await fetch('/api/time-clock?' + params.toString());
+  if (res.status === 401) { window.location = '/login'; return; }
+  if (!res.ok) { alert('Could not load timesheets'); return; }
+  render(await res.json());
+}
+document.getElementById('apply').addEventListener('click', load);
+document.getElementById('punch-rows').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-correct]');
+  if (!button) return;
+  const form = document.querySelector('[data-form="' + button.getAttribute('data-correct') + '"]');
+  form.classList.toggle('open');
+});
+document.getElementById('punch-rows').addEventListener('submit', async (event) => {
+  const form = event.target.closest('form');
+  if (!form) return;
+  event.preventDefault();
+  const reason = form.reason.value.trim();
+  if (!reason) { alert('A reason is required'); return; }
+  const body = {reason};
+  if (form.at_pacific.value) body.at_pacific = form.at_pacific.value;
+  if (form.action.value) body.action = form.action.value;
+  if (form.note.value) body.note = form.note.value;
+  const res = await fetch('/api/time-clock/' + form.getAttribute('data-form') + '/correct', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Correction was not saved'); return; }
+  load();
+});
+document.getElementById('punch-rows').addEventListener('click', (event) => {
+  const photo = event.target.closest('[data-photo]');
+  if (!photo) return;
+  const box = document.getElementById('photo-lightbox');
+  box.querySelector('img').src = '/api/time-clock/photos/' + photo.getAttribute('data-photo');
+  box.classList.add('open');
+});
+document.getElementById('activate-kiosk').addEventListener('click', async () => {
+  if (!confirm('Activate this device as the shop time clock? You will be signed out on this tablet.')) return;
+  const res = await fetch('/api/time-clock/kiosks', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: document.getElementById('kiosk-name').value})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not activate the kiosk'); return; }
+  window.location = '/kiosk';
+});
+document.getElementById('save-retention').addEventListener('click', async () => {
+  const res = await fetch('/api/time-clock/settings', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({photo_retention_days: Number(document.getElementById('retention-days').value)})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Retention was not saved'); return; }
+  document.getElementById('retention-days').value = body.photo_retention_days;
+});
+document.getElementById('kiosk-list').addEventListener('click', async (event) => {
+  const revoke = event.target.closest('[data-revoke]');
+  const unlock = event.target.closest('[data-unlock]');
+  const id = (revoke || unlock) && (revoke || unlock).getAttribute(revoke ? 'data-revoke' : 'data-unlock');
+  if (!id) return;
+  const res = await fetch('/api/time-clock/kiosks/' + id + (revoke ? '/revoke' : '/unlock'), {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.error || 'Not saved'); return; }
+  loadKiosks();
+});
+async function loadKiosks() {
+  const [listRes, settingsRes] = await Promise.all([
+    fetch('/api/time-clock/kiosks'),
+    fetch('/api/time-clock/settings')
+  ]);
+  if (settingsRes.ok) {
+    const settings = await settingsRes.json();
+    document.getElementById('retention-days').value = settings.photo_retention_days;
+  }
+  if (!listRes.ok) return;
+  const rows = await listRes.json();
+  document.getElementById('kiosk-list').innerHTML = rows.length ? rows.map(row => {
+    const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
+    const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + esc(row.id) + '">Revoke</button>';
+    const unlock = row.locked ? ' <button type="button" data-unlock="' + esc(row.id) + '">Unlock</button>' : '';
+    return '<span>' + esc(row.name) + ' · ' + state + '</span>' + revoke + unlock;
+  }).join('<br>') : 'No kiosks registered.';
+}
+load();
+loadKiosks();
+</script>
+<div id="photo-lightbox" onclick="this.classList.remove('open')"><img alt="Punch photo" onclick="event.stopPropagation()"></div>
+</body>
+</html>

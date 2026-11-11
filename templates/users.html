@@ -67,6 +67,16 @@ td.actions{width:15.5rem;vertical-align:middle}
 <div class="form-group"><label>Name</label><input type="text" id="u-name"></div>
 <div class="form-group" id="email-group"><label>Email</label><input type="email" id="u-email" autocomplete="off"></div>
 <div class="form-group" id="password-group"><label>Temporary password</label><input type="password" id="u-password" autocomplete="new-password"><p class="help">Optional. Leave blank to create a one-time setup link instead. If you set one, the user must change it at first sign-in.</p></div>
+<div class="form-group" id="shop-fields" style="display:none">
+<label for="u-employee-number">Employee number</label>
+<input type="text" id="u-employee-number" autocomplete="off" maxlength="20">
+<p class="help">Optional if this person has an email. Shop workers sign in on the punch page with this number and a PIN.</p>
+<label for="u-pin">PIN</label>
+<input type="password" id="u-pin" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="4–6 digits">
+<p class="help">Leave blank to keep the current PIN. Set or reset a 4 to 6 digit PIN here.</p>
+<label><input type="checkbox" id="u-allow-phone"> Allow phone punch</label>
+<p class="help">Off by default. Shop workers punch on the shared shop tablet unless this is turned on.</p>
+</div>
 <div class="form-group"><label>Role</label>
 <select id="u-role">
 {% for role_id, role in roles.items() %}
@@ -108,7 +118,15 @@ td.actions{width:15.5rem;vertical-align:middle}
 <div class="form-group" id="module-group">
 <label>Modules</label>
 <div class="tier-checks" id="u-modules"></div>
-<p class="help" id="module-help">Ora Glass employees only see the modules checked here. Customer users can only be given Quotes, Quote History, Orders, Invoices, and Financials.</p>
+<p class="help" id="module-help">Ora Glass employees only see the modules checked here. Time Clock is for employees only. Customer users can only be given Quotes, Quote History, Orders, Invoices, and Financials.</p>
+</div>
+<div class="form-group" id="uses-time-group" style="display:none">
+<label><input type="checkbox" id="u-uses-time-clock"> Uses time clock</label>
+<p class="help">Ora Glass employees do not punch unless this is on. Shop workers always use the punch page and cannot open other modules.</p>
+</div>
+<div class="form-group" id="manage-time-group" style="display:none">
+<label><input type="checkbox" id="u-manage-time"> Manage time</label>
+<p class="help">Lets this Ora Glass employee open timesheets, correct punches, and export payroll. Off unless an admin turns it on.</p>
 </div>
 <div class="form-group" id="staff-privileges" style="display:none">
 <label>Order privileges</label>
@@ -253,12 +271,31 @@ function onRoleChanged() {
   else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders']));
   else renderModuleChecks(new Set());
   syncStaffPrivileges();
+  syncRoleExtras();
   updateTierFields();
+}
+function syncRoleExtras() {
+  const role = document.getElementById('u-role').value;
+  const shop = role === 'shop';
+  const employee = role === 'employee';
+  document.getElementById('shop-fields').style.display = shop ? 'block' : 'none';
+  document.getElementById('uses-time-group').style.display = employee ? 'block' : 'none';
+  document.getElementById('manage-time-group').style.display = employee ? 'block' : 'none';
+  document.getElementById('password-group').style.display = shop ? 'none' : document.getElementById('password-group').style.display;
+  document.getElementById('u-company').closest('.form-group').style.display = shop ? 'none' : 'block';
+  document.getElementById('u-tier').closest('.form-group').style.display = shop ? 'none' : 'block';
+  document.getElementById('allowed-tiers').closest('.form-group').style.display = shop ? 'none' : 'block';
+  if (shop) document.getElementById('module-group').style.display = 'none';
+  if (!employee) {
+    document.getElementById('u-manage-time').checked = false;
+    document.getElementById('u-uses-time-clock').checked = false;
+  }
 }
 function tierFormError() {
   const allowed = new Set(collectAllowed());
   const chosen = document.getElementById('u-tier').value;
   const company = currentCompany();
+  if (document.getElementById('u-role').value === 'shop') return '';
   if (!allowed.size) return 'Choose at least one allowed tier.';
   if (chosen) {
     if (!allowed.has(chosen)) return 'This user\'s tier must be one of the allowed tiers.';
@@ -280,14 +317,16 @@ function render() {
     return;
   }
   tbody.innerHTML = users.map(user => {
-    const email = esc(user.email);
-    const self = user.email === CURRENT_EMAIL;
-    const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + email + '">Delete</button>';
+    const account = user.account || user.email;
+    const key = esc(account);
+    const email = esc(user.email || user.employee_number || account);
+    const self = account === CURRENT_EMAIL;
+    const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + key + '">Delete</button>';
     const actions = CAN_MANAGE
       ? '<td class="actions"><div class="row-actions"><div class="row-actions-main">'
-        + '<button class="act act-primary" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
-        + '<button class="act act-secondary" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
-        + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
+        + '<button class="act act-primary" type="button" data-action="edit" data-email="' + key + '">Edit</button>'
+        + '<button class="act act-secondary" type="button" data-action="invite" data-email="' + key + '">Setup link</button>'
+        + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + key + '">Temp password</button>'
         + '</div>' + del + '</div></td>'
       : '<td></td>';
     const roleText = (user.role_label || user.role) + (user.customer_subrole_label ? ' · ' + user.customer_subrole_label : '');
@@ -355,6 +394,9 @@ async function openAdd() {
   document.getElementById('u-subrole').value = 'sales';
   onRoleChanged();
   document.getElementById('u-tier').value = '';
+  document.getElementById('u-employee-number').value = '';
+  document.getElementById('u-pin').value = '';
+  document.getElementById('u-allow-phone').checked = false;
   setAllowedChecks([]);
   document.getElementById('u-active').checked = true;
   document.getElementById('u-edit-orders').checked = false;
@@ -368,10 +410,10 @@ async function openEdit(user) {
   addingUser = false;
   defaultedCompanyId = '';
   document.getElementById('user-modal-title').textContent = 'Edit User';
-  document.getElementById('u-original').value = user.email;
+  document.getElementById('u-original').value = user.account || user.email;
   document.getElementById('u-name').value = user.name || '';
-  document.getElementById('u-email').value = user.email;
-  document.getElementById('u-email').disabled = true;
+  document.getElementById('u-email').value = user.email || '';
+  document.getElementById('u-email').disabled = user.role !== 'shop';
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'none';
   document.getElementById('u-role').value = user.role;
@@ -381,7 +423,13 @@ async function openEdit(user) {
   document.getElementById('u-edit-orders').checked = !!user.edit_orders;
   document.getElementById('u-update-order-status').checked = !!user.update_order_status;
   document.getElementById('u-record-payments').checked = !!user.record_payments;
+  document.getElementById('u-manage-time').checked = !!user.manage_time;
+  document.getElementById('u-uses-time-clock').checked = !!user.uses_time_clock;
+  document.getElementById('u-employee-number').value = user.employee_number || '';
+  document.getElementById('u-pin').value = '';
+  document.getElementById('u-allow-phone').checked = !!user.allow_phone_punch;
   syncStaffPrivileges();
+  syncRoleExtras();
   document.getElementById('u-tier').value = user.tier_override || '';
   setAllowedChecks(user.allowed_tiers || []);
   document.getElementById('u-active').checked = !!user.active;
@@ -442,6 +490,11 @@ document.getElementById('save-user').addEventListener('click', async () => {
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
+        manage_time: document.getElementById('u-manage-time').checked,
+        uses_time_clock: document.getElementById('u-uses-time-clock').checked,
+        employee_number: document.getElementById('u-employee-number').value,
+        pin: document.getElementById('u-pin').value,
+        allow_phone_punch: document.getElementById('u-allow-phone').checked,
         active: document.getElementById('u-active').checked
       })
     });
@@ -463,7 +516,12 @@ document.getElementById('save-user').addEventListener('click', async () => {
         customer_subrole: document.getElementById('u-subrole').value,
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
-        record_payments: document.getElementById('u-record-payments').checked
+        record_payments: document.getElementById('u-record-payments').checked,
+        manage_time: document.getElementById('u-manage-time').checked,
+        uses_time_clock: document.getElementById('u-uses-time-clock').checked,
+        employee_number: document.getElementById('u-employee-number').value,
+        pin: document.getElementById('u-pin').value,
+        allow_phone_punch: document.getElementById('u-allow-phone').checked
       })
     });
     if (!data) return;
@@ -477,7 +535,7 @@ document.getElementById('user-list').addEventListener('click', async (event) => 
   const button = event.target.closest('button');
   if (!button) return;
   const email = button.getAttribute('data-email');
-  const user = users.find(row => row.email === email);
+  const user = users.find(row => (row.account || row.email) === email);
   if (button.dataset.action === 'edit' && user) openEdit(user);
   if (button.dataset.action === 'delete') {
     if (!confirm('Delete ' + email + '?')) return;
