@@ -15,6 +15,9 @@ def test_header_and_login_use_the_logo_instead_of_the_text_badge(client):
     assert b'alt="Ora Glass"' in quotes.data
     assert b'/static/logo.png' in quotes.data
     assert b'href="/dashboard"' in quotes.data
+    assert b'.header { background: #fff; color: #111;' in quotes.data
+    assert b'.header a.brand { display: inline-flex; align-items: center; background: transparent;' in quotes.data
+    assert b'.header button.linkish { background: none; border: 0; color: #111;' in quotes.data
 
 
 def test_dashboard_renders_the_ora_glass_logo(client):
