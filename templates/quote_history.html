@@ -10,12 +10,23 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .header h1{font-size:22px}.header a{color:white;text-decoration:none}
 .container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
-.filters{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap}
+.filters{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
 .filters select,.filters input{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
+.btn-secondary{background:#fff;color:#333;border:1px solid #ccc}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee}
+.sort-btn{background:none;border:0;font:inherit;font-weight:600;cursor:pointer;padding:0;color:#333}
+.sort-btn:hover,.sort-btn:focus-visible{color:#C41E3A}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:20}
+.modal.active{display:flex}
+.modal-content{background:white;padding:28px;border-radius:8px;width:480px;max-width:92%;max-height:90vh;overflow-y:auto}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:#666;margin-bottom:5px;font-weight:600}
+.form-group input,.form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.help{font-size:12px;color:#666;margin-bottom:14px;line-height:1.4}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}
 </style>
 </head>
 <body>
@@ -25,20 +36,66 @@ td{padding:10px;border-bottom:1px solid #eee}
 <h2 style="margin-bottom:20px;color:#333">Quote History</h2>
 {% if note %}<p style="color:#666;margin-bottom:12px">{{ note }}</p>{% endif %}
 <div class="filters">
+{% if staff_tools %}<select id="filter-customer"><option value="">All customers</option></select>{% endif %}
 <select id="filter-user"><option value="">All Users</option></select>
 <input type="text" id="filter-project" placeholder="Project name">
-<input type="date" id="filter-from">
-<input type="date" id="filter-to">
-<button class="btn" onclick="filterQuotes()">Filter</button>
+<input type="date" id="filter-from" aria-label="From date">
+<input type="date" id="filter-to" aria-label="To date">
+{% if staff_tools %}
+<select id="filter-sort" aria-label="Sort by total">
+<option value="">Sort by total</option>
+<option value="total_asc">Total low to high</option>
+<option value="total_desc">Total high to low</option>
+</select>
+{% endif %}
+<button class="btn" type="button" id="apply-filters">Filter</button>
 </div>
 <table>
-<thead><tr><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th><th>Total</th><th>Type</th><th>Status</th><th></th></tr></thead>
-<tbody id="quote-list"><tr><td colspan="7" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
+<thead><tr>
+<th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th>
+<th>{% if staff_tools %}<button type="button" id="sort-total" class="sort-btn">Total</button>{% else %}Total{% endif %}</th>
+<th>Type</th><th>Status</th><th></th>
+</tr></thead>
+<tbody id="quote-list"><tr><td colspan="11" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
 </div></div>
+{% if staff_order %}
+<div class="modal" id="order-modal">
+<div class="modal-content">
+<h3 style="margin-bottom:8px;color:#333">Order for production</h3>
+<p class="help">The quote keeps its original price. The production order is priced at the selected customer's tier.</p>
+<form id="order-form">
+<div class="form-group">
+<label for="order-customer">Customer</label>
+<select id="order-customer"></select>
+</div>
+<div id="new-customer-fields" hidden>
+<div class="form-group"><label for="new-name">Customer name</label><input type="text" id="new-name" autocomplete="off"></div>
+<div class="form-group"><label for="new-contact">Contact</label><input type="text" id="new-contact" autocomplete="off"></div>
+<div class="form-group"><label for="new-email">Email</label><input type="text" id="new-email" autocomplete="off"></div>
+<div class="form-group"><label for="new-phone">Phone</label><input type="text" id="new-phone" autocomplete="off"></div>
+<div class="form-group"><label for="new-address">Address</label><input type="text" id="new-address" autocomplete="off"></div>
+</div>
+<div class="form-group" id="tier-fields" hidden>
+<label for="order-tier">Pricing tier</label>
+<select id="order-tier"></select>
+<p class="help">Order-only customers have no company tier until you pick one. That tier is saved and used to price the order.</p>
+</div>
+<div class="modal-actions">
+<button type="button" class="btn btn-secondary" id="order-cancel">Cancel</button>
+<button type="submit" class="btn">Create order</button>
+</div>
+</form>
+</div>
+</div>
+{% endif %}
 <script>
 const CAN_ORDER = {{ can_order|tojson }};
-let allQuotes = [];
+const STAFF_ORDER = {{ staff_order|tojson }};
+const STAFF_TOOLS = {{ staff_tools|tojson }};
+const TIERS = {{ order_tiers|tojson }};
+let catalog = [];
+let pendingQuoteId = null;
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -81,29 +138,137 @@ function fillUsers(rows) {
   select.innerHTML = '<option value="">All Users</option>' + names.map(name => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('');
   select.value = names.includes(current) ? current : '';
 }
-async function loadQuotes() {
-  const res = await fetch('/api/quotes');
-  if (res.status === 401) { window.location = '/login'; return; }
-  allQuotes = await res.json();
-  fillUsers(allQuotes);
-  filterQuotes();
+function fillCustomerFilter(rows) {
+  const select = document.getElementById('filter-customer');
+  if (!select) return;
+  const current = select.value;
+  const seen = new Map();
+  rows.forEach(row => {
+    if (!row || !row.id || seen.has(row.id)) return;
+    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    seen.set(row.id, label);
+  });
+  const options = Array.from(seen.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  select.innerHTML = '<option value="">All customers</option>' + options.map(pair => '<option value="' + esc(pair[0]) + '">' + esc(pair[1]) + '</option>').join('');
+  select.value = seen.has(current) ? current : '';
 }
-function filterQuotes() {
+function queryParams() {
+  const params = new URLSearchParams();
   const user = document.getElementById('filter-user').value;
-  const project = document.getElementById('filter-project').value.toLowerCase();
+  const project = document.getElementById('filter-project').value.trim();
   const from = document.getElementById('filter-from').value;
   const to = document.getElementById('filter-to').value;
-  const rows = allQuotes.filter(quote => {
-    if (user && quote.user !== user) return false;
-    if (project && !String(quote.project || '').toLowerCase().includes(project)) return false;
-    if (from && quote.date < from) return false;
-    if (to && quote.date > to) return false;
-    return true;
+  if (user) params.set('user', user);
+  if (project) params.set('project', project);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (STAFF_TOOLS) {
+    const customer = document.getElementById('filter-customer').value;
+    const sort = document.getElementById('filter-sort').value;
+    if (customer) params.set('customer_id', customer);
+    if (sort) params.set('sort', sort);
+  }
+  return params;
+}
+async function loadCatalog() {
+  const res = await fetch('/api/quotes');
+  if (res.status === 401) { window.location = '/login'; return; }
+  catalog = await res.json();
+  fillUsers(catalog);
+  if (STAFF_TOOLS) {
+    const customers = await fetch('/api/order-customers');
+    fillCustomerFilter(customers.ok ? await customers.json() : []);
+  }
+  await applyFilters();
+}
+async function applyFilters() {
+  const res = await fetch('/api/quotes?' + queryParams().toString());
+  if (res.status === 401) { window.location = '/login'; return; }
+  renderQuotes(await res.json());
+}
+function fillTierSelect() {
+  const select = document.getElementById('order-tier');
+  if (!select || select.options.length) return;
+  select.innerHTML = (TIERS || []).map(tier => '<option value="' + esc(tier.id) + '">' + esc(tier.label) + '</option>').join('');
+  select.value = 'T2';
+}
+function syncOrderFields() {
+  const select = document.getElementById('order-customer');
+  const option = select.options[select.selectedIndex];
+  const isNew = select.value === '__new__';
+  const kind = option ? option.getAttribute('data-kind') : '';
+  const tier = option ? option.getAttribute('data-tier') : '';
+  const needsTier = isNew || (kind === 'order_only' && !tier);
+  document.getElementById('new-customer-fields').hidden = !isNew;
+  document.getElementById('tier-fields').hidden = !needsTier;
+  if (needsTier) {
+    const tierSelect = document.getElementById('order-tier');
+    if (!tierSelect.value) tierSelect.value = 'T2';
+  }
+}
+async function openOrderDialog(quoteId) {
+  const quote = catalog.find(item => String(item.id) === String(quoteId));
+  pendingQuoteId = quoteId;
+  fillTierSelect();
+  const res = await fetch('/api/order-customers');
+  const customers = res.ok ? await res.json() : [];
+  const select = document.getElementById('order-customer');
+  const options = ['<option value="">Choose a customer</option>'].concat(customers.map(row => {
+    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '">' + esc(label) + '</option>';
+  })).concat(['<option value="__new__">New customer...</option>']);
+  select.innerHTML = options.join('');
+  if (quote && quote.customer_id && customers.some(row => row.id === quote.customer_id)) {
+    select.value = quote.customer_id;
+  }
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-contact').value = '';
+  document.getElementById('new-email').value = '';
+  document.getElementById('new-phone').value = '';
+  document.getElementById('new-address').value = '';
+  syncOrderFields();
+  document.getElementById('order-modal').classList.add('active');
+}
+function closeOrderDialog() {
+  const modal = document.getElementById('order-modal');
+  if (modal) modal.classList.remove('active');
+  pendingQuoteId = null;
+}
+async function submitOrder(event) {
+  event.preventDefault();
+  const select = document.getElementById('order-customer');
+  const body = {};
+  if (select.value === '__new__') {
+    body.new_customer = {
+      name: document.getElementById('new-name').value,
+      contact: document.getElementById('new-contact').value,
+      email: document.getElementById('new-email').value,
+      phone: document.getElementById('new-phone').value,
+      address: document.getElementById('new-address').value
+    };
+    body.tier = document.getElementById('order-tier').value || 'T2';
+  } else if (select.value) {
+    body.customer_id = select.value;
+    const option = select.options[select.selectedIndex];
+    if (option && option.getAttribute('data-kind') === 'order_only' && !option.getAttribute('data-tier')) {
+      body.tier = document.getElementById('order-tier').value || 'T2';
+    }
+  } else {
+    alert('Choose a customer.');
+    return;
+  }
+  const res = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/order', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
   });
-  renderQuotes(rows);
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
+  closeOrderDialog();
+  loadCatalog();
 }
 async function downloadPDF(id) {
-  const quote = allQuotes.find(item => String(item.id) === String(id));
+  const quote = catalog.find(item => String(item.id) === String(id));
   if (!quote) return;
   const pdfRes = await fetch('/api/export-quote', {
     method: 'POST',
@@ -117,10 +282,26 @@ async function downloadPDF(id) {
   link.download = 'Quote_' + quote.id + '.pdf';
   link.click();
 }
+document.getElementById('apply-filters').addEventListener('click', applyFilters);
+const sortTotal = document.getElementById('sort-total');
+if (sortTotal) {
+  sortTotal.addEventListener('click', () => {
+    const select = document.getElementById('filter-sort');
+    select.value = select.value === 'total_asc' ? 'total_desc' : 'total_asc';
+    sortTotal.textContent = select.value === 'total_asc' ? 'Total ↑' : 'Total ↓';
+    applyFilters();
+  });
+}
+const sortSelect = document.getElementById('filter-sort');
+if (sortSelect) sortSelect.addEventListener('change', applyFilters);
 document.getElementById('quote-list').addEventListener('click', async (event) => {
   const button = event.target.closest('button');
   if (!button) return;
   if (button.dataset.action === 'order') {
+    if (STAFF_ORDER) {
+      openOrderDialog(button.getAttribute('data-id'));
+      return;
+    }
     const res = await fetch('/api/quotes/' + encodeURIComponent(button.getAttribute('data-id')) + '/order', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -128,12 +309,18 @@ document.getElementById('quote-list').addEventListener('click', async (event) =>
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not create the order'); return; }
-    loadQuotes();
+    loadCatalog();
     return;
   }
   if (button.classList.contains('pdf-btn')) downloadPDF(button.getAttribute('data-id'));
 });
-loadQuotes();
+const orderCustomer = document.getElementById('order-customer');
+if (orderCustomer) orderCustomer.addEventListener('change', syncOrderFields);
+const orderForm = document.getElementById('order-form');
+if (orderForm) orderForm.addEventListener('submit', submitOrder);
+const orderCancel = document.getElementById('order-cancel');
+if (orderCancel) orderCancel.addEventListener('click', closeOrderDialog);
+loadCatalog();
 </script>
 </body>
 </html>

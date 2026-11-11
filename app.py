@@ -487,9 +487,30 @@ def quotes_visible_to(user, quotes):
             return own_company
         email = user.get('email')
         return [quote for quote in own_company if quote.get('user') == email]
-    if role in {'admin', 'employee', 'sales', 'viewer'}:
+    if role == 'admin' or role in LEGACY_STAFF_ROLES:
         return list(quotes)
     return [quote for quote in quotes if quote.get('user') == user.get('email')]
+
+
+def is_order_only(customer):
+    return (customer or {}).get('kind') == 'order_only'
+
+
+def staff_can_order(user):
+    """Admins and Ora Glass staff who have the Orders module. Customers never qualify."""
+    if not user or user.get('role') == 'customer':
+        return False
+    return user_has_module(user, 'orders')
+
+
+def account_customer(customer_id, customers):
+    """A full customer account. Order-only records are not companies people can log into."""
+    if not customer_id or not ID_RE.fullmatch(customer_id or ''):
+        return None
+    customer = (customers or {}).get(customer_id)
+    if not customer or is_order_only(customer):
+        return None
+    return customer
 
 
 def blank_customer(customer_id, name, tier):
@@ -985,7 +1006,13 @@ def export_quote():
 @app.route('/orders')
 @module_required('orders')
 def orders():
-    return render_template('orders.html', note=scope_note(), prices_visible=_order_prices_visible(current_user()))
+    user = current_user()
+    return render_template(
+        'orders.html',
+        note=scope_note(),
+        prices_visible=_order_prices_visible(user),
+        staff_view=staff_can_order(user),
+    )
 
 
 @app.route('/orders/<int:order_id>')
@@ -1000,6 +1027,7 @@ def order_detail(order_id):
         'orders.html',
         note=scope_note(),
         prices_visible=_order_prices_visible(user),
+        staff_view=staff_can_order(user),
         focus_id=order_id,
     )
 
@@ -1071,10 +1099,17 @@ def users_page():
 @module_required('quote-history')
 def quote_history():
     user = current_user()
+    staff = staff_can_order(user)
     return render_template(
         'quote_history.html',
         note=scope_note(),
-        can_order=customer_subrole(user) == 'management',
+        can_order=customer_subrole(user) == 'management' or staff,
+        staff_order=staff,
+        staff_tools=user.get('role') != 'customer',
+        order_tiers=[
+            {'id': tid, 'label': (cfg or {}).get('label') or tid}
+            for tid, cfg in ordered_tiers()
+        ] if staff else [],
     )
 
 
@@ -1106,6 +1141,7 @@ def get_customers():
     rows = [
         public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
         for customer_id, customer in customers.items()
+        if not is_order_only(customer)
     ]
     rows.sort(key=lambda row: row['name'].lower())
     return jsonify(rows)
@@ -1143,7 +1179,7 @@ def update_customer(cid):
         return json_error('Expected a JSON object', 400)
     customers = load_customers()
     customer = customers.get(cid)
-    if not customer:
+    if not customer or is_order_only(customer):
         return json_error('Not found', 404)
     error = apply_customer_fields(customer, data, load_tiers(), creating=False)
     if error:
@@ -1160,7 +1196,8 @@ def delete_customer(cid):
     if not ID_RE.fullmatch(cid or ''):
         return json_error('Not found', 404)
     customers = load_customers()
-    if cid not in customers:
+    customer = customers.get(cid)
+    if not customer or is_order_only(customer):
         return json_error('Not found', 404)
     if customer_user_counts().get(cid):
         return json_error("Reassign or delete this customer's users first.", 409)
@@ -1200,9 +1237,8 @@ def add_user():
     customer_id = clean_text(data.get('customer_id'), 64) or None
     if role == 'customer' and not customer_id:
         return json_error('Customer users must be linked to a company.', 400)
-    if customer_id:
-        if not ID_RE.fullmatch(customer_id) or customer_id not in load_customers():
-            return json_error('Unknown customer.', 400)
+    if customer_id and not account_customer(customer_id, load_customers()):
+        return json_error('Unknown customer.', 400)
     tier_override = clean_text(data.get('tier_override'), 20) or None
     tiers = load_tiers()
     if tier_override and tier_override not in tiers:
@@ -1271,9 +1307,8 @@ def update_user(email):
         user['role'] = role
     if 'customer_id' in data:
         customer_id = clean_text(data.get('customer_id'), 64) or None
-        if customer_id:
-            if not ID_RE.fullmatch(customer_id) or customer_id not in load_customers():
-                return json_error('Unknown customer.', 400)
+        if customer_id and not account_customer(customer_id, load_customers()):
+            return json_error('Unknown customer.', 400)
         user['customer_id'] = customer_id
     if 'tier_override' in data:
         tier_override = clean_text(data.get('tier_override'), 20) or None
@@ -1416,21 +1451,150 @@ def clear_quotes():
     return jsonify({'success': True})
 
 
+def _query_date(name):
+    text = clean_text(request.args.get(name), 10)
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+        return text
+    return ''
+
+
+def quote_total(quote):
+    total = 0.0
+    for item in quote.get('items') or []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get('total')
+        if raw in (None, ''):
+            raw = item.get('price')
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def order_total_value(order):
+    try:
+        return round(float(order.get('total') or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def order_day(order):
+    text = str(order.get('date') or order.get('approved_at') or '')
+    return text[:10]
+
+
+def filter_quote_rows(quotes):
+    customer_id = clean_text(request.args.get('customer_id'), 80)
+    user_email = clean_text(request.args.get('user'), 200)
+    project = clean_text(request.args.get('project'), 200).lower()
+    date_from = _query_date('from')
+    date_to = _query_date('to')
+    sort = clean_text(request.args.get('sort'), 20)
+    rows = []
+    for quote in quotes:
+        if customer_id == '__none__':
+            if quote.get('customer_id'):
+                continue
+        elif customer_id and quote.get('customer_id') != customer_id:
+            continue
+        if user_email and (quote.get('user') or '') != user_email:
+            continue
+        if project and project not in str(quote.get('project') or '').lower():
+            continue
+        quote_date = str(quote.get('date') or '')
+        if date_from and quote_date < date_from:
+            continue
+        if date_to and quote_date > date_to:
+            continue
+        rows.append(quote)
+    if sort in {'total_asc', 'total_desc'}:
+        rows.sort(key=lambda row: (quote_total(row), row.get('id') or 0), reverse=sort == 'total_desc')
+    return rows
+
+
+def filter_order_rows(orders):
+    customer_id = clean_text(request.args.get('customer_id'), 80)
+    date_from = _query_date('from')
+    date_to = _query_date('to')
+    sort = clean_text(request.args.get('sort'), 20)
+    rows = []
+    for order in orders:
+        if customer_id and order.get('customer_id') != customer_id:
+            continue
+        day = order_day(order)
+        if date_from and day < date_from:
+            continue
+        if date_to and day > date_to:
+            continue
+        rows.append(order)
+    if sort in {'total_asc', 'total_desc'}:
+        rows.sort(key=lambda row: (order_total_value(row), row.get('id') or 0), reverse=sort == 'total_desc')
+    else:
+        rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
+    return rows
+
+
+def _fallback_tier(tiers):
+    if 'T2' in tiers:
+        return 'T2'
+    return next(iter(tiers), '')
+
+
+def _chosen_tier(raw, tiers):
+    text = clean_text(raw, 20)
+    if not text:
+        return _fallback_tier(tiers), None
+    if text not in tiers:
+        return None, 'Unknown pricing tier.'
+    return text, None
+
+
+def _company_tier(customer, tiers):
+    tier = (customer or {}).get('tier') or ''
+    if tier in tiers:
+        return tier
+    return _fallback_tier(tiers)
+
+
 @app.route('/api/quotes', methods=['GET'])
 @module_required('quote-history')
 def get_quotes():
     user = current_user()
-    quotes = quotes_visible_to(user, load_quotes())
-    if user.get('role') != 'customer':
-        return jsonify(quotes)
     visible = []
-    for quote in quotes:
+    for quote in quotes_visible_to(user, load_quotes()):
         row = dict(quote)
         # The quote keeps the tier and prices it was created with. Do not reprice it.
-        if row.get('order_id'):
+        if row.get('order_id') and not row.get('order_status'):
             row['order_status'] = 'Approved for order'
         visible.append(row)
-    return jsonify(visible)
+    return jsonify(filter_quote_rows(visible))
+
+
+@app.route('/api/order-customers', methods=['GET'])
+@login_required
+def order_customer_choices():
+    """Customers a staff member can attach to a production order, including order-only records."""
+    user = current_user()
+    if user.get('role') == 'customer' or not (
+        user_has_module(user, 'quote-history') or user_has_module(user, 'orders')
+    ):
+        return json_error('Access denied', 403)
+    tiers = load_tiers()
+    rows = []
+    for customer_id, customer in load_customers().items():
+        tier = customer.get('tier') or ''
+        known = tier if tier in tiers else ''
+        rows.append({
+            'id': customer_id,
+            'name': customer.get('name') or '',
+            'tier': known,
+            'tier_label': tier_label(known, tiers) if known else '',
+            'kind': 'order_only' if is_order_only(customer) else 'account',
+        })
+    rows.sort(key=lambda row: (row['name'].lower(), row['id']))
+    return jsonify(rows)
 
 
 def _order_prices_visible(user):
@@ -1481,18 +1645,64 @@ def _usable_size_spec(spec):
     return area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')) > 0
 
 
+def _order_only_from_request(data, customers, tiers):
+    new_customer = data.get('new_customer')
+    if not isinstance(new_customer, dict):
+        return None, None, 'Choose a customer.'
+    name = clean_text(new_customer.get('name'), 200)
+    if not name:
+        return None, None, 'Customer name is required.'
+    tier, error = _chosen_tier(data.get('tier') if data.get('tier') not in (None, '') else new_customer.get('tier'), tiers)
+    if error:
+        return None, None, error
+    customer_id = new_customer_id(name, customers)
+    customer = blank_customer(customer_id, name, tier)
+    customer['kind'] = 'order_only'
+    customer['contact'] = clean_text(new_customer.get('contact'), 120)
+    customer['email'] = clean_text(new_customer.get('email'), 200)
+    customer['phone'] = clean_text(new_customer.get('phone'), 40)
+    customer['address'] = clean_text(new_customer.get('address'), 300)
+    customers[customer_id] = customer
+    save_customers(customers)
+    return customer_id, customer, None
+
+
+def _customer_for_staff_order(data, customers, tiers):
+    """Staff pick a saved customer, or create an order-only record that cannot sign in."""
+    if isinstance(data.get('new_customer'), dict):
+        return _order_only_from_request(data, customers, tiers)
+    customer_id = clean_text(data.get('customer_id'), 64)
+    if not customer_id or not ID_RE.fullmatch(customer_id):
+        return None, None, 'Choose a customer.'
+    customer = customers.get(customer_id)
+    if not customer:
+        return None, None, 'Unknown customer.'
+    if is_order_only(customer) and (customer.get('tier') or '') not in tiers:
+        tier, error = _chosen_tier(data.get('tier'), tiers)
+        if error:
+            return None, None, error
+        customer['tier'] = tier
+        customers[customer_id] = customer
+        save_customers(customers)
+    return customer_id, customer, None
+
+
 @app.route('/api/quotes/<int:quote_id>/order', methods=['POST'])
 @module_required('quote-history')
 def convert_quote_to_order(quote_id):
     user = current_user()
-    if customer_subrole(user) != 'management':
-        return json_error('Only customer management can send a quote to production.', 403)
+    staff = staff_can_order(user)
+    management = customer_subrole(user) == 'management'
+    if not staff and not management:
+        return json_error('Only customer management, or Ora Glass staff with Orders, can send a quote to production.', 403)
     data = json_body()
     if data is None:
         data = {}
     quotes = load_quotes()
     quote = next((row for row in quotes if row.get('id') == quote_id), None)
-    if not quote or quote.get('customer_id') != user.get('customer_id'):
+    if not quote:
+        return json_error('Not found', 404)
+    if management and quote.get('customer_id') != user.get('customer_id'):
         return json_error('Not found', 404)
     if quote.get('type') != 'size':
         return json_error('Only per-size quotes can be sent to production.', 400)
@@ -1502,11 +1712,18 @@ def convert_quote_to_order(quote_id):
     if not items:
         return json_error('This quote has no lines.', 400)
     customers = load_customers()
-    customer = customers.get(user.get('customer_id') or '') or {}
     tiers = load_tiers()
-    company_tier = customer.get('tier') or ''
-    if company_tier not in tiers:
-        company_tier = 'T2' if 'T2' in tiers else next(iter(tiers), '')
+    if management:
+        customer_id = user.get('customer_id')
+        customer = customers.get(customer_id or '') or {}
+        company_tier = _company_tier(customer, tiers)
+        company = customer.get('name') or quote.get('company') or ''
+    else:
+        customer_id, customer, error = _customer_for_staff_order(data, customers, tiers)
+        if error:
+            return json_error(error, 400)
+        company_tier = _company_tier(customer, tiers)
+        company = customer.get('name') or ''
     currency = quote.get('currency') or 'usd'
     priced_items = []
     for item in items:
@@ -1526,8 +1743,8 @@ def convert_quote_to_order(quote_id):
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     order = append_order({
         'quote_id': quote_id,
-        'customer_id': quote.get('customer_id'),
-        'company': quote.get('company'),
+        'customer_id': customer_id,
+        'company': company,
         'project': quote.get('project') or '',
         'currency': currency,
         'tier': company_tier,
@@ -1536,12 +1753,20 @@ def convert_quote_to_order(quote_id):
         'total': round(sum(line['total'] for line in priced_items), 2),
         'approved_by': user.get('email'),
         'approved_at': approved_at,
+        'date': approved_at[:10],
     })
     updated = dict(quote)
     updated['order_id'] = order['id']
     updated['order_status'] = 'Approved for order'
     replace_quote(quote_id, updated)
-    return jsonify({'success': True, 'order_id': order['id'], 'tier': company_tier})
+    return jsonify({
+        'success': True,
+        'order_id': order['id'],
+        'tier': company_tier,
+        'customer_id': customer_id,
+        'customer_name': company,
+        'kind': 'order_only' if is_order_only(customer) else 'account',
+    })
 
 
 @app.route('/api/orders', methods=['GET'])
@@ -1549,8 +1774,7 @@ def convert_quote_to_order(quote_id):
 def get_orders():
     user = current_user()
     rows = [order_for_viewer(order, user) for order in orders_visible_to(user, load_orders())]
-    rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
-    return jsonify(rows)
+    return jsonify(filter_order_rows(rows))
 
 
 @app.route('/api/orders/<int:order_id>', methods=['GET'])
