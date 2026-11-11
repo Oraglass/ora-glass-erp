@@ -51,12 +51,12 @@ td.actions{width:15.5rem;vertical-align:middle}
 <div class="container"><div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="color:#333">Users</h2>
-<button class="btn" type="button" id="add-user">+ Add User</button>
+{% if can_manage %}<button class="btn" type="button" id="add-user">+ Add User</button>{% endif %}
 </div>
 <p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. When you add or edit a user, the company default tier is shown for reference. Allowed tiers are the only prices a customer may see or quote. The company tier starts checked for a new user and can be cleared. This user's tier must be one of the allowed tiers.</p>
 <table>
-<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Company</th><th>Company tier</th><th>This user's tier</th><th>Allowed tiers</th><th>Access</th><th>Actions</th></tr></thead>
-<tbody id="user-list"><tr><td colspan="9" style="text-align:center;color:#666">Loading...</td></tr></tbody>
+<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Modules</th><th>Company</th><th>Company tier</th><th>This user's tier</th><th>Allowed tiers</th><th>Access</th><th>Actions</th></tr></thead>
+<tbody id="user-list"><tr><td colspan="10" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
 
@@ -98,6 +98,11 @@ td.actions{width:15.5rem;vertical-align:middle}
 <p class="help" id="allowed-help">Check every tier this person may quote at. At least one is required. The company tier is not added unless it stays checked. If it is cleared, choose an allowed tier instead of "Use company default". Staff can still quote at any tier.</p>
 <p class="form-error" id="tier-error"></p>
 </div>
+<div class="form-group" id="module-group">
+<label>Modules</label>
+<div class="tier-checks" id="u-modules"></div>
+<p class="help" id="module-help">Ora Glass employees only see the modules checked here. Customer users can only be given Quotes, Quote History, Orders, Invoices, and Financials.</p>
+</div>
 <div class="form-group" id="active-group" style="display:none"><label><input type="checkbox" id="u-active" checked> Account enabled</label></div>
 <div style="display:flex;gap:10px;margin-top:20px">
 <button class="btn" type="button" id="save-user">Save</button>
@@ -131,6 +136,9 @@ td.actions{width:15.5rem;vertical-align:middle}
 </div>
 <script>
 const CURRENT_EMAIL = {{ current_user.email|tojson }};
+const CAN_MANAGE = {{ can_manage|tojson }};
+const MODULE_CATALOG = {{ module_catalog|tojson }};
+const CUSTOMER_MODULES = {{ customer_modules|tojson }};
 let users = [];
 let companies = [];
 let addingUser = false;
@@ -178,6 +186,46 @@ function collectAllowed() {
     .filter(box => box.checked)
     .map(box => box.value);
 }
+function modulesForRole(role) {
+  if (role === 'customer') return CUSTOMER_MODULES;
+  if (role === 'employee') return MODULE_CATALOG;
+  return [];
+}
+function renderModuleChecks(selected) {
+  const role = document.getElementById('u-role').value;
+  const group = document.getElementById('module-group');
+  const box = document.getElementById('u-modules');
+  if (role === 'admin') {
+    group.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  group.style.display = 'block';
+  const chosen = selected || new Set();
+  box.innerHTML = '';
+  modulesForRole(role).forEach(mod => {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = mod.id;
+    input.checked = chosen.has(mod.id);
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(' ' + mod.label));
+    box.appendChild(label);
+  });
+}
+function collectModules() {
+  return Array.from(document.querySelectorAll('#u-modules input[type=checkbox]'))
+    .filter(box => box.checked)
+    .map(box => box.value);
+}
+function onRoleChanged() {
+  const role = document.getElementById('u-role').value;
+  if (role === 'customer') renderModuleChecks(new Set(CUSTOMER_MODULES.map(mod => mod.id)));
+  else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders']));
+  else renderModuleChecks(new Set());
+  updateTierFields();
+}
 function tierFormError() {
   const allowed = new Set(collectAllowed());
   const chosen = document.getElementById('u-tier').value;
@@ -199,18 +247,21 @@ function tierFormError() {
 function render() {
   const tbody = document.getElementById('user-list');
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#666">No users</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#666">No users</td></tr>';
     return;
   }
   tbody.innerHTML = users.map(user => {
     const email = esc(user.email);
     const self = user.email === CURRENT_EMAIL;
     const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + email + '">Delete</button>';
-    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role) + '</span></td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td><td class="actions"><div class="row-actions"><div class="row-actions-main">'
-      + '<button class="act act-primary" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
-      + '<button class="act act-secondary" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
-      + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
-      + '</div>' + del + '</div></td></tr>';
+    const actions = CAN_MANAGE
+      ? '<td class="actions"><div class="row-actions"><div class="row-actions-main">'
+        + '<button class="act act-primary" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
+        + '<button class="act act-secondary" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
+        + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
+        + '</div>' + del + '</div></td>'
+      : '<td></td>';
+    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role_label || user.role) + '</span></td><td>' + esc(user.modules_label || '') + '</td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td>' + actions + '</tr>';
   }).join('');
 }
 async function loadUsers() {
@@ -271,6 +322,7 @@ async function openAdd() {
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'block';
   document.getElementById('u-role').value = 'customer';
+  onRoleChanged();
   document.getElementById('u-tier').value = '';
   setAllowedChecks([]);
   document.getElementById('u-active').checked = true;
@@ -289,6 +341,7 @@ async function openEdit(user) {
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'none';
   document.getElementById('u-role').value = user.role;
+  renderModuleChecks(new Set(user.modules || []));
   document.getElementById('u-tier').value = user.tier_override || '';
   setAllowedChecks(user.allowed_tiers || []);
   document.getElementById('u-active').checked = !!user.active;
@@ -310,9 +363,10 @@ document.getElementById('u-tier').addEventListener('change', () => {
   }
   updateTierFields();
 });
-document.getElementById('u-role').addEventListener('change', updateTierFields);
+document.getElementById('u-role').addEventListener('change', onRoleChanged);
 document.getElementById('allowed-tiers').addEventListener('change', updateTierFields);
-document.getElementById('add-user').addEventListener('click', () => { openAdd(); });
+const addUserButton = document.getElementById('add-user');
+if (addUserButton) addUserButton.addEventListener('click', () => { openAdd(); });
 document.getElementById('close-user').addEventListener('click', () => document.getElementById('user-modal').classList.remove('active'));
 document.getElementById('close-link').addEventListener('click', () => document.getElementById('link-modal').classList.remove('active'));
 document.getElementById('close-temp').addEventListener('click', () => {
@@ -338,6 +392,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         customer_id: document.getElementById('u-company').value,
         tier_override: document.getElementById('u-tier').value,
         allowed_tiers: collectAllowed(),
+        modules: collectModules(),
         active: document.getElementById('u-active').checked
       })
     });
@@ -354,7 +409,8 @@ document.getElementById('save-user').addEventListener('click', async () => {
         role: document.getElementById('u-role').value,
         customer_id: document.getElementById('u-company').value,
         tier_override: document.getElementById('u-tier').value,
-        allowed_tiers: collectAllowed()
+        allowed_tiers: collectAllowed(),
+        modules: collectModules()
       })
     });
     if (!data) return;

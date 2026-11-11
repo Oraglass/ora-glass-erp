@@ -56,27 +56,37 @@ from storage import (
 
 logger = logging.getLogger('ora_glass')
 
+# Every gated area that exists as a page or API. There is no separate
+# Production or Shipping screen; the old production role used Orders and Inventory.
+MODULES = (
+    {'id': 'dashboard', 'label': 'Dashboard', 'short': 'Dashboard', 'endpoint': 'dashboard'},
+    {'id': 'quotes', 'label': 'Quotes', 'short': 'Quotes', 'endpoint': 'quotes'},
+    {'id': 'quote-history', 'label': 'Quote History', 'short': 'History', 'endpoint': 'quote_history'},
+    {'id': 'orders', 'label': 'Orders', 'short': 'Orders', 'endpoint': 'orders'},
+    {'id': 'inventory', 'label': 'Inventory', 'short': 'Inventory', 'endpoint': 'inventory'},
+    {'id': 'pricing', 'label': 'Pricing', 'short': 'Pricing', 'endpoint': 'pricing_admin'},
+    {'id': 'invoices', 'label': 'Invoices', 'short': 'Invoices', 'endpoint': 'invoices'},
+    {'id': 'financial', 'label': 'Financials', 'short': 'Financials', 'endpoint': 'financial'},
+    {'id': 'customers', 'label': 'Customers', 'short': 'Customers', 'endpoint': 'customers_page'},
+    {'id': 'users', 'label': 'Users', 'short': 'Users', 'endpoint': 'users_page'},
+)
+MODULE_IDS = tuple(item['id'] for item in MODULES)
+# Customers may only be given these. Dashboard stays available as their home page.
+CUSTOMER_CEILING = ('quotes', 'quote-history', 'orders', 'invoices', 'financial')
+# Access that existing roles already had, plus Dashboard, which was not gated.
+LEGACY_ROLE_MODULES = {
+    'admin': MODULE_IDS,
+    'sales': ('dashboard', 'quotes', 'quote-history', 'orders', 'customers', 'invoices'),
+    'production': ('dashboard', 'orders', 'inventory'),
+    'viewer': ('dashboard', 'quotes', 'quote-history', 'orders'),
+    'customer': ('dashboard',) + CUSTOMER_CEILING,
+    'employee': ('dashboard',),
+}
+LEGACY_STAFF_ROLES = ('sales', 'production', 'viewer', 'employee')
 ROLES = {
-    'admin': {
-        'name': 'Administrator',
-        'modules': ['quotes', 'quote-history', 'orders', 'customers', 'invoices', 'financial', 'inventory', 'pricing', 'users'],
-    },
-    'sales': {
-        'name': 'Sales',
-        'modules': ['quotes', 'quote-history', 'orders', 'customers', 'invoices'],
-    },
-    'production': {
-        'name': 'Production',
-        'modules': ['orders', 'inventory'],
-    },
-    'viewer': {
-        'name': 'Viewer',
-        'modules': ['quotes', 'quote-history', 'orders'],
-    },
-    'customer': {
-        'name': 'Customer',
-        'modules': ['quotes', 'quote-history', 'orders', 'invoices', 'financial'],
-    },
+    'admin': {'name': 'Admin'},
+    'employee': {'name': 'Ora Glass employee'},
+    'customer': {'name': 'Customer'},
 }
 
 PASSWORD_CHANGE_ENDPOINTS = {'change_password', 'logout'}
@@ -127,7 +137,14 @@ def forbidden():
     if wants_json():
         return json_error('Access denied', 403)
     flash('Access denied.', 'error')
-    return redirect(url_for('dashboard'))
+    user = current_user()
+    if user:
+        for item in MODULES:
+            if item['endpoint'] == request.endpoint:
+                continue
+            if user_has_module(user, item['id']):
+                return redirect(url_for(item['endpoint']))
+    return render_template('module.html', module='Access denied', note='No modules are enabled for this account.'), 403
 
 
 def current_user():
@@ -140,9 +157,78 @@ def current_user():
     return user
 
 
+def effective_module_ids(user):
+    """Modules this account may open. Admins get every module. Missing lists keep the old role access."""
+    if not user:
+        return []
+    role = user.get('role') or ''
+    if role == 'admin':
+        return list(MODULE_IDS)
+    stored = user.get('modules', None)
+    if role == 'customer':
+        if stored is None:
+            chosen = list(CUSTOMER_CEILING)
+        else:
+            chosen = [module_id for module_id in stored if module_id in CUSTOMER_CEILING]
+        if 'dashboard' not in chosen:
+            chosen.insert(0, 'dashboard')
+        return chosen
+    if stored is None:
+        return list(LEGACY_ROLE_MODULES.get(role, ('dashboard',)))
+    return [module_id for module_id in MODULE_IDS if module_id in set(stored)]
+
+
 def user_has_module(user, module):
-    role = ROLES.get((user or {}).get('role') or '')
-    return bool(role) and module in role['modules']
+    return module in effective_module_ids(user)
+
+
+def modules_label(user):
+    if (user or {}).get('role') == 'admin':
+        return 'All modules'
+    labels = [item['short'] for item in MODULES if item['id'] in effective_module_ids(user) and item['id'] != 'dashboard']
+    return ', '.join(labels) if labels else 'Dashboard only'
+
+
+def normalize_role(role):
+    """Map retired staff roles onto Ora Glass employee. Returns (stored role, module preset role)."""
+    if role in LEGACY_STAFF_ROLES:
+        return 'employee', role
+    if role in ROLES:
+        return role, role
+    return None, None
+
+
+def apply_modules(record, data, preset_role=None):
+    """Persist module access. Customers cannot be given anything outside their ceiling."""
+    role = record.get('role')
+    if role == 'admin':
+        record.pop('modules', None)
+        return None
+    if 'modules' not in data:
+        if preset_role in LEGACY_ROLE_MODULES:
+            record['modules'] = list(LEGACY_ROLE_MODULES[preset_role])
+        return None
+    raw = data.get('modules')
+    if not isinstance(raw, list):
+        return 'Modules must be a list.'
+    cleaned = []
+    for item in raw:
+        module_id = clean_text(item, 40)
+        if not module_id or module_id in cleaned:
+            continue
+        if module_id not in MODULE_IDS:
+            return 'Unknown module.'
+        cleaned.append(module_id)
+    if role == 'customer':
+        extra = [module_id for module_id in cleaned if module_id not in CUSTOMER_CEILING]
+        if extra:
+            return 'That module is not available to customer users.'
+        record['modules'] = [module_id for module_id in CUSTOMER_CEILING if module_id in cleaned]
+        return None
+    record['modules'] = [module_id for module_id in MODULE_IDS if module_id in cleaned and module_id != 'dashboard']
+    if 'dashboard' in cleaned:
+        record['modules'].insert(0, 'dashboard')
+    return None
 
 
 def _enforce(module=None, admin=False):
@@ -286,7 +372,8 @@ def public_user(user, customers, tiers):
     return {
         'email': user.get('email'),
         'name': user.get('name') or '',
-        'role': user.get('role'),
+        'role': 'employee' if user.get('role') in LEGACY_STAFF_ROLES else user.get('role'),
+        'role_label': role_display_name(user),
         'customer_id': customer_id,
         'company': customer.get('name') if customer else None,
         'company_tier': customer.get('tier') if customer else None,
@@ -300,6 +387,8 @@ def public_user(user, customers, tiers):
         'must_change_password': bool(user.get('must_change_password')),
         'has_password': bool(user.get('password_hash')),
         'invite_pending': bool(user.get('invite_token_hash')),
+        'modules': effective_module_ids(user),
+        'modules_label': modules_label(user),
     }
 
 
@@ -499,7 +588,13 @@ def _security_headers(response):
 
 @app.context_processor
 def inject_user():
-    return {'current_user': current_user()}
+    user = current_user()
+    allowed = set(effective_module_ids(user)) if user else set()
+    return {
+        'current_user': user,
+        'nav_modules': [item for item in MODULES if item['id'] in allowed],
+        'has_dashboard': 'dashboard' in allowed,
+    }
 
 
 @app.errorhandler(CSRFError)
@@ -633,16 +728,24 @@ def change_password():
     return render_template('change_password.html', must_change=bool(user.get('must_change_password')))
 
 
+def role_display_name(user):
+    role = (user or {}).get('role') or ''
+    if role in ROLES:
+        return ROLES[role]['name']
+    return {'sales': 'Ora Glass employee', 'production': 'Ora Glass employee', 'viewer': 'Ora Glass employee'}.get(role, role)
+
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
     user = current_user()
-    role = ROLES.get(user.get('role', ''), {})
+    if not user_has_module(user, 'dashboard'):
+        return forbidden()
     return render_template(
         'dashboard.html',
         user=user,
-        role_name=role.get('name', ''),
-        modules=role.get('modules', []),
+        role_name=role_display_name(user),
+        modules=effective_module_ids(user),
     )
 
 
@@ -868,8 +971,6 @@ def inventory():
 @app.route('/pricing', methods=['GET', 'POST'])
 @module_required('pricing')
 def pricing_admin():
-    if current_user().get('role') != 'admin':
-        return forbidden()
     tiers = load_tiers()
     if request.method == 'POST':
         errors = []
@@ -902,9 +1003,15 @@ def pricing_admin():
 @app.route('/users')
 @module_required('users')
 def users_page():
-    if current_user().get('role') != 'admin':
-        return forbidden()
-    return render_template('users.html', tiers=ordered_tiers(), roles=ROLES)
+    user = current_user()
+    return render_template(
+        'users.html',
+        tiers=ordered_tiers(),
+        roles=ROLES,
+        can_manage=user.get('role') == 'admin',
+        module_catalog=[{'id': item['id'], 'label': item['label']} for item in MODULES],
+        customer_modules=[{'id': item['id'], 'label': item['label']} for item in MODULES if item['id'] in CUSTOMER_CEILING],
+    )
 
 
 @app.route('/quote-history')
@@ -1005,7 +1112,7 @@ def delete_customer(cid):
 
 
 @app.route('/api/users', methods=['GET'])
-@admin_required
+@module_required('users')
 def get_users():
     customers = load_customers()
     tiers = load_tiers()
@@ -1029,8 +1136,8 @@ def add_user():
     name = clean_text(data.get('name'), 120)
     if not name:
         return json_error('Name is required.', 400)
-    role = clean_text(data.get('role'), 20)
-    if role not in ROLES:
+    role, preset_role = normalize_role(clean_text(data.get('role'), 20))
+    if not role:
         return json_error('Unknown role.', 400)
     customer_id = clean_text(data.get('customer_id'), 64) or None
     if role == 'customer' and not customer_id:
@@ -1053,6 +1160,9 @@ def add_user():
     allowed_error = apply_allowed_tiers(record, data, customers, tiers)
     if allowed_error:
         return json_error(allowed_error, 400)
+    module_error = apply_modules(record, data, preset_role=preset_role)
+    if module_error:
+        return json_error(module_error, 400)
     setup_url = None
     password = data.get('password') or ''
     if password:
@@ -1092,8 +1202,8 @@ def update_user(email):
             return json_error('Name is required.', 400)
         user['name'] = name
     if 'role' in data:
-        role = clean_text(data.get('role'), 20)
-        if role not in ROLES:
+        role, _preset = normalize_role(clean_text(data.get('role'), 20))
+        if not role:
             return json_error('Unknown role.', 400)
         if user.get('role') == 'admin' and role != 'admin' and active_admin_count(users) <= 1:
             return json_error('The last administrator cannot be demoted.', 400)
@@ -1112,6 +1222,9 @@ def update_user(email):
     allowed_error = apply_allowed_tiers(user, data, load_customers(), load_tiers())
     if allowed_error:
         return json_error(allowed_error, 400)
+    module_error = apply_modules(user, data)
+    if module_error:
+        return json_error(module_error, 400)
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:

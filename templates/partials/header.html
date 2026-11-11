@@ -1,5 +1,8 @@
 <style>
 .header button.linkish { background: none; border: 0; color: #fff; cursor: pointer; font: inherit; margin-left: 15px; text-decoration: underline; padding: 0; }
+.module-nav { background: #9f1830; display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 30px; }
+.module-nav a { color: #fff; font-size: 13px; text-decoration: none; }
+.module-nav a:hover, .module-nav a:focus-visible { text-decoration: underline; }
 .header .user-info form { display: inline; }
 .flash-wrap { max-width: 1000px; margin: 16px auto 0; padding: 0 20px; }
 .flash { padding: 10px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
@@ -39,7 +42,7 @@
 <div class="header">
   <h1>ORA GLASS ERP</h1>
   <div class="user-info">
-    {% if show_back %}
+    {% if show_back and has_dashboard %}
     <a href="{{ url_for('dashboard') }}">← Dashboard</a>
     {% elif current_user %}
     {{ current_user.name }}{% if role_name is defined and role_name %} ({{ role_name }}){% endif %}
@@ -52,6 +55,13 @@
     {% endif %}
   </div>
 </div>
+{% if nav_modules %}
+<nav class="module-nav" aria-label="Modules">
+  {% for mod in nav_modules %}
+  <a href="{{ url_for(mod.endpoint) }}">{{ mod.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
 {% with messages = get_flashed_messages(with_categories=true) %}
 {% if messages %}
 <div class="flash-wrap">
