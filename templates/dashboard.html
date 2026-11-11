@@ -11,7 +11,9 @@
         .header h1 { font-size: 22px; letter-spacing: 2px; }
         .user-info { font-size: 13px; }
         .user-info a { color: white; margin-left: 15px; }
-        .container { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
+        .container { max-width: 1000px; margin: 28px auto; padding: 0 20px; }
+        .hero { background: white; border-radius: 12px; padding: 32px 24px 24px; margin-bottom: 28px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .hero img { display: block; width: min(280px, 72vw); height: auto; margin: 0 auto 8px; }
         .welcome { margin-bottom: 30px; }
         .welcome h2 { color: #333; }
         .welcome p { color: #666; margin-top: 5px; }
@@ -25,9 +27,12 @@
 <body>
     {% include 'partials/header.html' %}
     <div class="container">
-        <div class="welcome">
-            <h2>Welcome, {{ user.name }}</h2>
-            <p>Select a module to get started</p>
+        <div class="hero">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="ORA Glass">
+            <div class="welcome">
+                <h2>Welcome, {{ user.name }}</h2>
+                <p>Select a module to get started</p>
+            </div>
         </div>
         <div class="modules">
             {% if 'quotes' in modules %}
