@@ -74,6 +74,13 @@ td.actions{width:15.5rem;vertical-align:middle}
 {% endfor %}
 </select>
 </div>
+<div class="form-group" id="subrole-group" style="display:none"><label for="u-subrole">Customer role</label>
+<select id="u-subrole">
+<option value="sales">Sales force</option>
+<option value="management">Management</option>
+</select>
+<p class="help">Sales force sees only the quotes they created. Management sees every quote from their company and can send a per-size quote to production.</p>
+</div>
 <div class="form-group"><label for="u-company">Company</label><select id="u-company"><option value="">None</option></select><p class="help">Required for customer users. Staff can leave this empty.</p></div>
 <div class="form-group" id="company-tier-group" style="display:none">
 <label id="company-tier-caption">Company default tier</label>
@@ -203,12 +210,14 @@ function renderModuleChecks(selected) {
   group.style.display = 'block';
   const chosen = selected || new Set();
   box.innerHTML = '';
+  const salesForce = role === 'customer' && document.getElementById('u-subrole').value !== 'management';
   modulesForRole(role).forEach(mod => {
     const label = document.createElement('label');
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = mod.id;
-    input.checked = chosen.has(mod.id);
+    input.checked = chosen.has(mod.id) && !(salesForce && mod.id === 'orders');
+    input.disabled = salesForce && mod.id === 'orders';
     label.appendChild(input);
     label.appendChild(document.createTextNode(' ' + mod.label));
     box.appendChild(label);
@@ -221,6 +230,7 @@ function collectModules() {
 }
 function onRoleChanged() {
   const role = document.getElementById('u-role').value;
+  document.getElementById('subrole-group').style.display = role === 'customer' ? 'block' : 'none';
   if (role === 'customer') renderModuleChecks(new Set(CUSTOMER_MODULES.map(mod => mod.id)));
   else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders']));
   else renderModuleChecks(new Set());
@@ -261,7 +271,8 @@ function render() {
         + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
         + '</div>' + del + '</div></td>'
       : '<td></td>';
-    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role_label || user.role) + '</span></td><td>' + esc(user.modules_label || '') + '</td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td>' + actions + '</tr>';
+    const roleText = (user.role_label || user.role) + (user.customer_subrole_label ? ' · ' + user.customer_subrole_label : '');
+    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(roleText) + '</span></td><td>' + esc(user.modules_label || '') + '</td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td>' + actions + '</tr>';
   }).join('');
 }
 async function loadUsers() {
@@ -322,6 +333,7 @@ async function openAdd() {
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'block';
   document.getElementById('u-role').value = 'customer';
+  document.getElementById('u-subrole').value = 'sales';
   onRoleChanged();
   document.getElementById('u-tier').value = '';
   setAllowedChecks([]);
@@ -341,6 +353,8 @@ async function openEdit(user) {
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'none';
   document.getElementById('u-role').value = user.role;
+  document.getElementById('u-subrole').value = user.customer_subrole || 'sales';
+  document.getElementById('subrole-group').style.display = user.role === 'customer' ? 'block' : 'none';
   renderModuleChecks(new Set(user.modules || []));
   document.getElementById('u-tier').value = user.tier_override || '';
   setAllowedChecks(user.allowed_tiers || []);
@@ -364,6 +378,11 @@ document.getElementById('u-tier').addEventListener('change', () => {
   updateTierFields();
 });
 document.getElementById('u-role').addEventListener('change', onRoleChanged);
+document.getElementById('u-subrole').addEventListener('change', () => {
+  const selected = new Set(collectModules());
+  if (document.getElementById('u-subrole').value === 'management') selected.add('orders');
+  renderModuleChecks(selected);
+});
 document.getElementById('allowed-tiers').addEventListener('change', updateTierFields);
 const addUserButton = document.getElementById('add-user');
 if (addUserButton) addUserButton.addEventListener('click', () => { openAdd(); });
@@ -393,6 +412,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         tier_override: document.getElementById('u-tier').value,
         allowed_tiers: collectAllowed(),
         modules: collectModules(),
+        customer_subrole: document.getElementById('u-subrole').value,
         active: document.getElementById('u-active').checked
       })
     });
@@ -410,7 +430,8 @@ document.getElementById('save-user').addEventListener('click', async () => {
         customer_id: document.getElementById('u-company').value,
         tier_override: document.getElementById('u-tier').value,
         allowed_tiers: collectAllowed(),
-        modules: collectModules()
+        modules: collectModules(),
+        customer_subrole: document.getElementById('u-subrole').value
       })
     });
     if (!data) return;

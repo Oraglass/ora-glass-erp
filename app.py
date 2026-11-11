@@ -17,10 +17,12 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from quoting import (
     allowed_tier_ids,
+    area_sqf,
     calculate_price_sqf,
     classify,
     default_quote_tier,
     load_pricing,
+    reprice_size_line,
     resolve_effective_tier,
     sealant_match_map,
     tier_for_request,
@@ -43,11 +45,14 @@ from security import (
 from storage import (
     append_quote,
     data_dir,
+    append_order,
     load_customers,
+    load_orders,
     load_quotes,
     load_tiers,
     load_users,
     ordered_tiers,
+    replace_quote,
     save_customers,
     save_quotes,
     save_tiers,
@@ -172,6 +177,9 @@ def effective_module_ids(user):
             chosen = [module_id for module_id in stored if module_id in CUSTOMER_CEILING]
         if 'dashboard' not in chosen:
             chosen.insert(0, 'dashboard')
+        # Sales force cannot open Orders, even if that checkbox is ticked.
+        if customer_subrole(user) != 'management':
+            chosen = [module_id for module_id in chosen if module_id != 'orders']
         return chosen
     if stored is None:
         return list(LEGACY_ROLE_MODULES.get(role, ('dashboard',)))
@@ -389,6 +397,8 @@ def public_user(user, customers, tiers):
         'invite_pending': bool(user.get('invite_token_hash')),
         'modules': effective_module_ids(user),
         'modules_label': modules_label(user),
+        'customer_subrole': customer_subrole(user) if user.get('role') == 'customer' else None,
+        'customer_subrole_label': customer_subrole_label(user) if user.get('role') == 'customer' else None,
     }
 
 
@@ -439,18 +449,45 @@ def customer_user_counts(users=None):
     return counts
 
 
+def customer_subrole(user):
+    """Customer team role. Missing values stay Sales force so existing accounts do not gain Management."""
+    if (user or {}).get('role') != 'customer':
+        return None
+    value = (user or {}).get('customer_subrole') or 'sales'
+    return value if value in {'management', 'sales'} else 'sales'
+
+
+def customer_subrole_label(user):
+    return 'Management' if customer_subrole(user) == 'management' else 'Sales force'
+
+
+def apply_customer_subrole(record, data):
+    if record.get('role') != 'customer':
+        record['customer_subrole'] = None
+        return None
+    if 'customer_subrole' not in data:
+        if not record.get('customer_subrole'):
+            record['customer_subrole'] = 'sales'
+        return None
+    value = clean_text(data.get('customer_subrole'), 20).lower()
+    if value not in {'management', 'sales'}:
+        return 'Customer role must be Management or Sales force.'
+    record['customer_subrole'] = value
+    if value != 'management' and isinstance(record.get('modules'), list):
+        record['modules'] = [module_id for module_id in record['modules'] if module_id != 'orders']
+    return None
+
+
 def quotes_visible_to(user, quotes):
     role = user.get('role')
     if role == 'customer':
         customer_id = user.get('customer_id')
-        visible = []
-        for quote in quotes:
-            if quote.get('customer_id') == customer_id:
-                visible.append(quote)
-            elif not quote.get('customer_id') and quote.get('user') == user.get('email'):
-                visible.append(quote)
-        return visible
-    if role in {'admin', 'sales', 'viewer'}:
+        own_company = [quote for quote in quotes if quote.get('customer_id') == customer_id]
+        if customer_subrole(user) == 'management':
+            return own_company
+        email = user.get('email')
+        return [quote for quote in own_company if quote.get('user') == email]
+    if role in {'admin', 'employee', 'sales', 'viewer'}:
         return list(quotes)
     return [quote for quote in quotes if quote.get('user') == user.get('email')]
 
@@ -948,7 +985,23 @@ def export_quote():
 @app.route('/orders')
 @module_required('orders')
 def orders():
-    return render_template('module.html', module='Orders', note=scope_note())
+    return render_template('orders.html', note=scope_note(), prices_visible=_order_prices_visible(current_user()))
+
+
+@app.route('/orders/<int:order_id>')
+@module_required('orders')
+def order_detail(order_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        flash('Order not found.', 'error')
+        return redirect(url_for('orders'))
+    return render_template(
+        'orders.html',
+        note=scope_note(),
+        prices_visible=_order_prices_visible(user),
+        focus_id=order_id,
+    )
 
 
 @app.route('/customers')
@@ -1017,7 +1070,12 @@ def users_page():
 @app.route('/quote-history')
 @module_required('quote-history')
 def quote_history():
-    return render_template('quote_history.html', note=scope_note())
+    user = current_user()
+    return render_template(
+        'quote_history.html',
+        note=scope_note(),
+        can_order=customer_subrole(user) == 'management',
+    )
 
 
 @app.route('/invoices')
@@ -1163,6 +1221,9 @@ def add_user():
     module_error = apply_modules(record, data, preset_role=preset_role)
     if module_error:
         return json_error(module_error, 400)
+    subrole_error = apply_customer_subrole(record, data)
+    if subrole_error:
+        return json_error(subrole_error, 400)
     setup_url = None
     password = data.get('password') or ''
     if password:
@@ -1225,6 +1286,9 @@ def update_user(email):
     module_error = apply_modules(user, data)
     if module_error:
         return json_error(module_error, 400)
+    subrole_error = apply_customer_subrole(user, data)
+    if subrole_error:
+        return json_error(subrole_error, 400)
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -1359,16 +1423,144 @@ def get_quotes():
     quotes = quotes_visible_to(user, load_quotes())
     if user.get('role') != 'customer':
         return jsonify(quotes)
-    customers = load_customers()
-    tiers = load_tiers()
-    allowed = set(allowed_tier_ids(user, customers, tiers))
     visible = []
     for quote in quotes:
         row = dict(quote)
-        if row.get('tier') not in allowed:
-            row.pop('tier', None)
+        # The quote keeps the tier and prices it was created with. Do not reprice it.
+        if row.get('order_id'):
+            row['order_status'] = 'Approved for order'
         visible.append(row)
     return jsonify(visible)
+
+
+def _order_prices_visible(user):
+    """Management and Ora Glass see production prices. Sales force never sees company-tier amounts."""
+    if not user or user.get('role') != 'customer':
+        return True
+    return customer_subrole(user) == 'management'
+
+
+def orders_visible_to(user, orders):
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id')
+        return [order for order in orders if order.get('customer_id') == customer_id]
+    return list(orders)
+
+
+def order_for_viewer(order, user):
+    if _order_prices_visible(user):
+        view = dict(order)
+        view['prices_visible'] = True
+        return view
+    items = []
+    for item in order.get('items') or []:
+        items.append({
+            'name': item.get('name') or '',
+            'sqf': item.get('sqf'),
+            'pcs': item.get('pcs'),
+        })
+    return {
+        'id': order.get('id'),
+        'quote_id': order.get('quote_id'),
+        'customer_id': order.get('customer_id'),
+        'company': order.get('company'),
+        'project': order.get('project'),
+        'approved_by': order.get('approved_by'),
+        'approved_at': order.get('approved_at'),
+        'items': items,
+        'prices_visible': False,
+    }
+
+
+def _usable_size_spec(spec):
+    if not isinstance(spec, dict):
+        return False
+    glass = spec.get('glass1') or ''
+    if not glass or glass == 'n/a':
+        return False
+    return area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')) > 0
+
+
+@app.route('/api/quotes/<int:quote_id>/order', methods=['POST'])
+@module_required('quote-history')
+def convert_quote_to_order(quote_id):
+    user = current_user()
+    if customer_subrole(user) != 'management':
+        return json_error('Only customer management can send a quote to production.', 403)
+    data = json_body()
+    if data is None:
+        data = {}
+    quotes = load_quotes()
+    quote = next((row for row in quotes if row.get('id') == quote_id), None)
+    if not quote or quote.get('customer_id') != user.get('customer_id'):
+        return json_error('Not found', 404)
+    if quote.get('type') != 'size':
+        return json_error('Only per-size quotes can be sent to production.', 400)
+    if quote.get('order_id'):
+        return json_error('This quote was already sent to production.', 409)
+    items = quote.get('items') or []
+    if not items:
+        return json_error('This quote has no lines.', 400)
+    customers = load_customers()
+    customer = customers.get(user.get('customer_id') or '') or {}
+    tiers = load_tiers()
+    company_tier = customer.get('tier') or ''
+    if company_tier not in tiers:
+        company_tier = 'T2' if 'T2' in tiers else next(iter(tiers), '')
+    currency = quote.get('currency') or 'usd'
+    priced_items = []
+    for item in items:
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if not _usable_size_spec(spec):
+            return json_error('This quote does not include the size inputs needed to reprice it.', 400)
+        priced = reprice_size_line(spec, item.get('pcs'), company_tier, currency, PRICING, tiers)
+        priced_items.append({
+            'name': item.get('name') or '',
+            'spec': spec,
+            'sqf': priced['sqf'],
+            'price_sqf': priced['price_sqf'],
+            'price_pc': priced['price_pc'],
+            'pcs': priced['pcs'],
+            'total': priced['total'],
+        })
+    approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    order = append_order({
+        'quote_id': quote_id,
+        'customer_id': quote.get('customer_id'),
+        'company': quote.get('company'),
+        'project': quote.get('project') or '',
+        'currency': currency,
+        'tier': company_tier,
+        'tier_label': tier_label(company_tier, tiers),
+        'items': priced_items,
+        'total': round(sum(line['total'] for line in priced_items), 2),
+        'approved_by': user.get('email'),
+        'approved_at': approved_at,
+    })
+    updated = dict(quote)
+    updated['order_id'] = order['id']
+    updated['order_status'] = 'Approved for order'
+    replace_quote(quote_id, updated)
+    return jsonify({'success': True, 'order_id': order['id'], 'tier': company_tier})
+
+
+@app.route('/api/orders', methods=['GET'])
+@module_required('orders')
+def get_orders():
+    user = current_user()
+    rows = [order_for_viewer(order, user) for order in orders_visible_to(user, load_orders())]
+    rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
+    return jsonify(rows)
+
+
+@app.route('/api/orders/<int:order_id>', methods=['GET'])
+@module_required('orders')
+def get_order(order_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        return json_error('Not found', 404)
+    return jsonify(order_for_viewer(order, user))
 
 
 def _upsert_admin(email, name, password):

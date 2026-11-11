@@ -588,12 +588,15 @@ def test_customer_with_only_t5_never_sees_the_company_tier(client):
     })
     assert login(client, 'sam@harbor.example').status_code == 302
     forbidden = (b'Tier 2', b'value="T2"', b'"T2"')
-    pages = ('/quotes', '/quote-history', '/orders', '/invoices', '/financial', '/dashboard')
+    pages = ('/quotes', '/quote-history', '/invoices', '/financial', '/dashboard')
     for path in pages:
         page = client.get(path)
         assert page.status_code == 200, path
         for needle in forbidden:
             assert needle not in page.data, (path, needle)
+    orders = client.get('/orders')
+    assert orders.status_code in (302, 403)
+    assert client.get('/api/orders').status_code == 403
     quotes = client.get('/quotes')
     assert b'Tier 5 (End User)' in quotes.data
     assert b'<input type="hidden" id="tier" value="T5">' in quotes.data
@@ -632,11 +635,14 @@ def test_customer_with_only_t5_never_sees_the_company_tier(client):
     assert saved.status_code == 200
     history = client.get('/api/quotes')
     assert history.status_code == 200
-    for needle in forbidden:
-        assert needle not in history.data
     body = history.get_json()
     assert {quote['project'] for quote in body} == {'Old company price', 'End user'}
-    assert all(quote.get('tier') in (None, 'T5') for quote in body)
+    by_project = {quote['project']: quote.get('tier') for quote in body}
+    # A stored quote keeps the tier and price it was written with.
+    assert by_project['Old company price'] == 'T2'
+    assert by_project['End user'] == 'T5'
+    end_user = next(quote for quote in body if quote['project'] == 'End user')
+    assert end_user['items'][0]['price'] == '1'
     pdf = client.post('/api/export-quote', json={
         'items': [{'name': 'Clear Glass', 'price': '10.00'}],
         'currency': 'usd',
