@@ -75,6 +75,24 @@ td{padding:10px;border-bottom:1px solid #eee}
 <div class="form-group"><label for="new-email">Email</label><input type="text" id="new-email" autocomplete="off"></div>
 <div class="form-group"><label for="new-phone">Phone</label><input type="text" id="new-phone" autocomplete="off"></div>
 <div class="form-group"><label for="new-address">Address</label><input type="text" id="new-address" autocomplete="off"></div>
+<div class="form-group"><label for="new-terms">Payment terms</label>
+<select id="new-terms">
+<option value="Due on receipt">Due on receipt</option>
+<option value="Net 15">Net 15</option>
+<option value="Net 30" selected>Net 30</option>
+<option value="Net 45">Net 45</option>
+<option value="Net 60">Net 60</option>
+<option value="Custom">Custom days</option>
+</select>
+<input id="new-terms-days" type="number" min="0" max="365" placeholder="Days" hidden>
+</div>
+{% if is_admin %}
+<div class="form-group"><label for="new-credit">Credit limit</label>
+<input type="number" id="new-credit" min="0" step="0.01" value="0">
+<select id="new-credit-currency"><option value="usd">USD</option><option value="cad">CAD</option></select>
+<p class="help">Admin only. Staff cannot set a credit limit; it stays 0 until an admin changes it.</p>
+</div>
+{% endif %}
 </div>
 <div class="form-group" id="tier-fields" hidden>
 <label for="order-tier">Pricing tier</label>
@@ -244,8 +262,15 @@ async function submitOrder(event) {
       contact: document.getElementById('new-contact').value,
       email: document.getElementById('new-email').value,
       phone: document.getElementById('new-phone').value,
-      address: document.getElementById('new-address').value
+      address: document.getElementById('new-address').value,
+      payment_terms: document.getElementById('new-terms').value,
+      payment_terms_days: document.getElementById('new-terms-days').value
     };
+    const credit = document.getElementById('new-credit');
+    if (credit) {
+      body.new_customer.credit_limit = credit.value;
+      body.new_customer.credit_currency = document.getElementById('new-credit-currency').value;
+    }
     body.tier = document.getElementById('order-tier').value || 'T2';
   } else if (select.value) {
     body.customer_id = select.value;
@@ -264,6 +289,7 @@ async function submitOrder(event) {
   });
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
+  if (payload.credit_warning) alert(payload.credit_warning);
   closeOrderDialog();
   loadCatalog();
 }
@@ -309,6 +335,7 @@ document.getElementById('quote-list').addEventListener('click', async (event) =>
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not create the order'); return; }
+    if (body.credit_warning) alert(body.credit_warning);
     loadCatalog();
     return;
   }
@@ -318,6 +345,10 @@ const orderCustomer = document.getElementById('order-customer');
 if (orderCustomer) orderCustomer.addEventListener('change', syncOrderFields);
 const orderForm = document.getElementById('order-form');
 if (orderForm) orderForm.addEventListener('submit', submitOrder);
+const newTerms = document.getElementById('new-terms');
+if (newTerms) newTerms.addEventListener('change', () => {
+  document.getElementById('new-terms-days').hidden = newTerms.value !== 'Custom';
+});
 const orderCancel = document.getElementById('order-cancel');
 if (orderCancel) orderCancel.addEventListener('click', closeOrderDialog);
 loadCatalog();

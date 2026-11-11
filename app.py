@@ -2,6 +2,7 @@
 ORA Glass ERP - quoting, customers, and accounts.
 """
 
+import json
 import logging
 import os
 import re
@@ -15,6 +16,29 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, sen
 from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from billing import (
+    CURRENCIES,
+    NEXT_STATUS,
+    PAYMENT_METHODS,
+    STATUS_LABELS,
+    apply_credit_limit,
+    apply_payment_terms,
+    available_credit,
+    conversion_allowed,
+    coverage,
+    credit_message,
+    diff_changes,
+    invoice_balance,
+    allocated_to_target,
+    invoice_status,
+    invoice_status_label,
+    money,
+    order_status,
+    payment_term_days,
+    price_summary,
+    unallocated_amount,
+    unallocated_credit,
+)
 from quoting import (
     allowed_tier_ids,
     area_sqf,
@@ -45,15 +69,22 @@ from security import (
 from storage import (
     append_quote,
     data_dir,
+    append_invoice,
     append_order,
+    append_payment,
     load_customers,
+    load_invoices,
     load_orders,
+    load_payments,
     load_quotes,
     load_tiers,
     load_users,
+    save_customers,
+    save_invoices,
+    save_payments,
+    update_order,
     ordered_tiers,
     replace_quote,
-    save_customers,
     save_quotes,
     save_tiers,
     save_users,
@@ -365,6 +396,9 @@ def public_customer(customer_id, customer, tiers, user_count):
         'email': customer.get('email') or '',
         'credit_approved': bool(customer.get('credit_approved')),
         'payment_terms': customer.get('payment_terms') or 'Net 30',
+        'payment_terms_days': payment_term_days(customer),
+        'credit_limit': money(customer.get('credit_limit') or 0),
+        'credit_currency': str(customer.get('credit_currency') or 'usd').lower(),
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
         'status': customer.get('status') or 'active',
@@ -399,6 +433,9 @@ def public_user(user, customers, tiers):
         'modules_label': modules_label(user),
         'customer_subrole': customer_subrole(user) if user.get('role') == 'customer' else None,
         'customer_subrole_label': customer_subrole_label(user) if user.get('role') == 'customer' else None,
+        'edit_orders': bool(user.get('edit_orders')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
     }
 
 
@@ -503,6 +540,55 @@ def staff_can_order(user):
     return user_has_module(user, 'orders')
 
 
+def _is_ora_staff(user):
+    role = (user or {}).get('role') or ''
+    return role == 'admin' or role in LEGACY_STAFF_ROLES
+
+
+def can_edit_orders(user):
+    """Admins can edit orders. Employees need the Edit orders privilege. Customers never can."""
+    if not _is_ora_staff(user):
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('edit_orders'))
+
+
+def can_update_order_status(user):
+    """Admins can move an order along. Employees need a separate status privilege. Customers never can."""
+    if not _is_ora_staff(user):
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('update_order_status'))
+
+
+def can_record_payments(user):
+    """Admins can record payments. Employees need the Record payments privilege. Customers never can."""
+    if not _is_ora_staff(user):
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('record_payments')) and (
+        user_has_module(user, 'invoices') or user_has_module(user, 'financial')
+    )
+
+
+def apply_order_privileges(record, data):
+    """Store staff-only order privileges. Customers and admins never keep them."""
+    role = record.get('role')
+    if role == 'admin' or role == 'customer' or role not in LEGACY_STAFF_ROLES:
+        record['edit_orders'] = False
+        record['update_order_status'] = False
+        record['record_payments'] = False
+        return
+    for field in ('edit_orders', 'update_order_status', 'record_payments'):
+        if field in data:
+            record[field] = bool(data.get(field))
+        elif field not in record:
+            record[field] = False
+
+
 def account_customer(customer_id, customers):
     """A full customer account. Order-only records are not companies people can log into."""
     if not customer_id or not ID_RE.fullmatch(customer_id or ''):
@@ -555,9 +641,17 @@ def apply_customer_fields(customer, data, tiers, creating):
         if email and not valid_email(email):
             return 'Company email is invalid.'
         customer['email'] = email
-    if creating or 'payment_terms' in data:
-        terms = clean_text(data.get('payment_terms') or 'Net 30', 40)
-        customer['payment_terms'] = terms or 'Net 30'
+    if creating or 'payment_terms' in data or 'payment_terms_days' in data:
+        terms_error = apply_payment_terms(customer, data)
+        if terms_error:
+            return terms_error
+    if creating or 'credit_limit' in data or 'credit_currency' in data:
+        credit_error = apply_credit_limit(customer, data if not creating else {
+            'credit_limit': data.get('credit_limit', 0),
+            'credit_currency': data.get('credit_currency') or 'usd',
+        })
+        if credit_error:
+            return credit_error
     if creating or 'credit_approved' in data:
         customer['credit_approved'] = bool(data.get('credit_approved'))
     if creating or 'tier' in data:
@@ -1012,6 +1106,10 @@ def orders():
         note=scope_note(),
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
+        can_edit=can_edit_orders(user),
+        can_status=can_update_order_status(user),
+        is_admin=user.get('role') == 'admin',
+        glass_names=[item.get('name') for item in GLASS],
     )
 
 
@@ -1028,6 +1126,10 @@ def order_detail(order_id):
         note=scope_note(),
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
+        can_edit=can_edit_orders(user),
+        can_status=can_update_order_status(user),
+        is_admin=user.get('role') == 'admin',
+        glass_names=[item.get('name') for item in GLASS],
         focus_id=order_id,
     )
 
@@ -1110,19 +1212,46 @@ def quote_history():
             {'id': tid, 'label': (cfg or {}).get('label') or tid}
             for tid, cfg in ordered_tiers()
         ] if staff else [],
+        is_admin=user.get('role') == 'admin',
     )
 
 
 @app.route('/invoices')
 @module_required('invoices')
 def invoices():
-    return render_template('invoices.html', note=scope_note())
+    user = current_user()
+    return render_template(
+        'invoices.html',
+        note=scope_note(),
+        staff_view=user.get('role') != 'customer',
+        can_record=can_record_payments(user),
+        focus_id=None,
+    )
+
+
+@app.route('/invoices/<int:invoice_id>')
+@module_required('invoices')
+def invoice_detail(invoice_id):
+    user = current_user()
+    return render_template(
+        'invoices.html',
+        note=scope_note(),
+        staff_view=user.get('role') != 'customer',
+        can_record=can_record_payments(user),
+        focus_id=invoice_id,
+    )
 
 
 @app.route('/financial')
 @module_required('financial')
 def financial():
-    return render_template('financial.html', note=scope_note())
+    user = current_user()
+    return render_template(
+        'financial.html',
+        note=scope_note(),
+        staff_view=user.get('role') != 'customer',
+        can_record=can_record_payments(user),
+    )
 
 
 @app.route('/api/customers', methods=['GET'])
@@ -1260,6 +1389,7 @@ def add_user():
     subrole_error = apply_customer_subrole(record, data)
     if subrole_error:
         return json_error(subrole_error, 400)
+    apply_order_privileges(record, data)
     setup_url = None
     password = data.get('password') or ''
     if password:
@@ -1324,6 +1454,7 @@ def update_user(email):
     subrole_error = apply_customer_subrole(user, data)
     if subrole_error:
         return json_error(subrole_error, 400)
+    apply_order_privileges(user, data)
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -1528,6 +1659,9 @@ def filter_order_rows(orders):
             continue
         if date_to and day > date_to:
             continue
+        status = clean_text(request.args.get('status'), 20).lower()
+        if status in STATUS_LABELS and order_status(order) != status:
+            continue
         rows.append(order)
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (order_total_value(row), row.get('id') or 0), reverse=sort == 'total_desc')
@@ -1579,6 +1713,7 @@ def order_customer_choices():
     user = current_user()
     if user.get('role') == 'customer' or not (
         user_has_module(user, 'quote-history') or user_has_module(user, 'orders')
+        or user_has_module(user, 'invoices') or user_has_module(user, 'financial')
     ):
         return json_error('Access denied', 403)
     tiers = load_tiers()
@@ -1611,28 +1746,124 @@ def orders_visible_to(user, orders):
     return list(orders)
 
 
-def order_for_viewer(order, user):
-    if _order_prices_visible(user):
-        view = dict(order)
-        view['prices_visible'] = True
-        return view
-    items = []
-    for item in order.get('items') or []:
-        items.append({
-            'name': item.get('name') or '',
-            'sqf': item.get('sqf'),
-            'pcs': item.get('pcs'),
-        })
-    return {
+SPEC_KEYS = (
+    'glass1', 'temper1', 'spacer1', 'sealant1',
+    'glass2', 'temper2', 'spacer2', 'sealant2',
+    'glass3', 'temper3', 'width', 'height', 'unit',
+)
+MONEY_LOG_FIELDS = {
+    'discount', 'discount_amount', 'extra_charge', 'total', 'igu_subtotal', 'igu_total', 'extras_total',
+}
+
+
+def _dimension(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if abs(number - round(number)) < 1e-9:
+        return int(round(number))
+    return round(number, 4)
+
+
+def _known_priced_name(name):
+    if not name or name == 'n/a':
+        return True
+    return any(row.get('name') == name for row in PRICING)
+
+
+def order_for_viewer(order, user, with_coverage=False):
+    status = order_status(order)
+    summary, _error = price_summary(
+        order.get('items') or [],
+        order.get('discount') or {'type': 'percent', 'value': 0},
+        order.get('extra_charges') or [],
+    )
+    summary = summary or {}
+    base = {
         'id': order.get('id'),
         'quote_id': order.get('quote_id'),
         'customer_id': order.get('customer_id'),
-        'company': order.get('company'),
-        'project': order.get('project'),
+        'company': order.get('company') or '',
+        'project': order.get('project') or '',
+        'notes': order.get('notes') or '',
         'approved_by': order.get('approved_by'),
         'approved_at': order.get('approved_at'),
-        'items': items,
-        'prices_visible': False,
+        'date': order.get('date'),
+        'currency': order.get('currency') or 'usd',
+        'tier': order.get('tier'),
+        'tier_label': order.get('tier_label'),
+        'status': status,
+        'status_label': STATUS_LABELS[status],
+        'invoice_id': order.get('invoice_id'),
+        'invoice_number': order.get('invoice_number'),
+    }
+    if not _order_prices_visible(user):
+        items = []
+        for item in order.get('items') or []:
+            spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+            items.append({
+                'name': item.get('name') or '',
+                'sqf': item.get('sqf'),
+                'pcs': item.get('pcs'),
+                'spec': {
+                    'width': spec.get('width'),
+                    'height': spec.get('height'),
+                    'unit': spec.get('unit'),
+                    'glass1': spec.get('glass1'),
+                },
+            })
+        changelog = []
+        for entry in order.get('changelog') or []:
+            changes = []
+            for change in entry.get('changes') or []:
+                if change.get('field') in MONEY_LOG_FIELDS:
+                    continue
+                if change.get('field') == 'line':
+                    changes.append({
+                        'field': 'line',
+                        'action': change.get('action'),
+                        'old': _public_line_log(change.get('old'), False),
+                        'new': _public_line_log(change.get('new'), False),
+                    })
+                else:
+                    changes.append(change)
+            if changes:
+                changelog.append({'at': entry.get('at'), 'user': entry.get('user'), 'changes': changes})
+        base.update({'items': items, 'changelog': changelog, 'prices_visible': False})
+        return base
+    view = dict(base)
+    view['items'] = order.get('items') or []
+    view['discount'] = summary.get('discount') or {'type': 'percent', 'value': 0}
+    view['discount_amount'] = summary.get('discount_amount', 0)
+    view['extra_charges'] = summary.get('extra_charges') or []
+    view['igu_subtotal'] = summary.get('igu_subtotal', money(order.get('total')))
+    view['igu_total'] = summary.get('igu_total', view['igu_subtotal'])
+    view['extras_total'] = summary.get('extras_total', 0)
+    view['total'] = summary.get('total', money(order.get('total')))
+    view['changelog'] = list(order.get('changelog') or [])
+    view['prices_visible'] = True
+    if with_coverage:
+        customer = dict(load_customers().get(order.get('customer_id') or '') or {})
+        customer.setdefault('id', order.get('customer_id'))
+        view['coverage'] = coverage(view, customer, load_orders(), load_invoices(), load_payments())
+    return view
+
+
+def _public_line_log(snapshot, prices):
+    if not isinstance(snapshot, dict):
+        return None
+    if prices:
+        return snapshot
+    return {
+        'name': snapshot.get('name') or '',
+        'pcs': snapshot.get('pcs'),
+        'width': snapshot.get('width'),
+        'height': snapshot.get('height'),
+        'unit': snapshot.get('unit') or '',
+        'glass1': snapshot.get('glass1') or '',
     }
 
 
@@ -1645,7 +1876,7 @@ def _usable_size_spec(spec):
     return area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')) > 0
 
 
-def _order_only_from_request(data, customers, tiers):
+def _order_only_from_request(data, customers, tiers, user):
     new_customer = data.get('new_customer')
     if not isinstance(new_customer, dict):
         return None, None, 'Choose a customer.'
@@ -1662,15 +1893,28 @@ def _order_only_from_request(data, customers, tiers):
     customer['email'] = clean_text(new_customer.get('email'), 200)
     customer['phone'] = clean_text(new_customer.get('phone'), 40)
     customer['address'] = clean_text(new_customer.get('address'), 300)
+    terms_error = apply_payment_terms(customer, new_customer)
+    if terms_error:
+        return None, None, terms_error
+    if user.get('role') == 'admin':
+        credit_error = apply_credit_limit(customer, {
+            'credit_limit': new_customer.get('credit_limit', 0),
+            'credit_currency': new_customer.get('credit_currency') or 'usd',
+        })
+        if credit_error:
+            return None, None, credit_error
+    else:
+        customer['credit_limit'] = 0
+        customer['credit_currency'] = 'usd'
     customers[customer_id] = customer
     save_customers(customers)
     return customer_id, customer, None
 
 
-def _customer_for_staff_order(data, customers, tiers):
+def _customer_for_staff_order(data, customers, tiers, user):
     """Staff pick a saved customer, or create an order-only record that cannot sign in."""
     if isinstance(data.get('new_customer'), dict):
-        return _order_only_from_request(data, customers, tiers)
+        return _order_only_from_request(data, customers, tiers, user)
     customer_id = clean_text(data.get('customer_id'), 64)
     if not customer_id or not ID_RE.fullmatch(customer_id):
         return None, None, 'Choose a customer.'
@@ -1719,7 +1963,7 @@ def convert_quote_to_order(quote_id):
         company_tier = _company_tier(customer, tiers)
         company = customer.get('name') or quote.get('company') or ''
     else:
-        customer_id, customer, error = _customer_for_staff_order(data, customers, tiers)
+        customer_id, customer, error = _customer_for_staff_order(data, customers, tiers, user)
         if error:
             return json_error(error, 400)
         company_tier = _company_tier(customer, tiers)
@@ -1740,17 +1984,36 @@ def convert_quote_to_order(quote_id):
             'pcs': priced['pcs'],
             'total': priced['total'],
         })
+    grand = round(sum(line['total'] for line in priced_items), 2)
+    credit_check = conversion_allowed(
+        grand, customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
+    )
+    warning = None
+    if not credit_check['allowed']:
+        message = credit_message(credit_check)
+        if management:
+            return json_error(message, 400)
+        warning = message
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     order = append_order({
         'quote_id': quote_id,
         'customer_id': customer_id,
         'company': company,
         'project': quote.get('project') or '',
+        'notes': '',
         'currency': currency,
         'tier': company_tier,
         'tier_label': tier_label(company_tier, tiers),
         'items': priced_items,
-        'total': round(sum(line['total'] for line in priced_items), 2),
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'igu_subtotal': grand,
+        'igu_total': grand,
+        'extras_total': 0,
+        'total': grand,
+        'status': 'approved',
+        'changelog': [],
         'approved_by': user.get('email'),
         'approved_at': approved_at,
         'date': approved_at[:10],
@@ -1759,14 +2022,18 @@ def convert_quote_to_order(quote_id):
     updated['order_id'] = order['id']
     updated['order_status'] = 'Approved for order'
     replace_quote(quote_id, updated)
-    return jsonify({
+    payload = {
         'success': True,
         'order_id': order['id'],
         'tier': company_tier,
         'customer_id': customer_id,
         'customer_name': company,
         'kind': 'order_only' if is_order_only(customer) else 'account',
-    })
+        'total': grand,
+    }
+    if warning:
+        payload['credit_warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/orders', methods=['GET'])
@@ -1784,7 +2051,755 @@ def get_order(order_id):
     order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not order:
         return json_error('Not found', 404)
-    return jsonify(order_for_viewer(order, user))
+    return jsonify(order_for_viewer(order, user, with_coverage=True))
+
+
+def _stamp_log(order, user, changes):
+    if not changes:
+        return order
+    log = list(order.get('changelog') or [])
+    log.append({
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'user': user.get('email') or '',
+        'changes': changes,
+    })
+    order['changelog'] = log
+    return order
+
+
+def _parse_order_items(raw, tier, currency, tiers):
+    if not isinstance(raw, list) or not raw:
+        return None, 'An order needs at least one line.'
+    items = []
+    for raw_item in raw:
+        if not isinstance(raw_item, dict):
+            return None, 'Each line must be an object.'
+        spec_in = raw_item.get('spec')
+        if not isinstance(spec_in, dict):
+            return None, 'Each line needs a size spec.'
+        spec = {}
+        for key in SPEC_KEYS:
+            if key in {'width', 'height'}:
+                spec[key] = _dimension(spec_in.get(key))
+            elif key == 'unit':
+                unit = clean_text(spec_in.get(key) or 'in', 8).lower()
+                spec[key] = unit if unit in {'in', 'mm'} else 'in'
+            else:
+                spec[key] = clean_text(spec_in.get(key), 120)
+        if not _usable_size_spec(spec):
+            return None, 'Each line needs a glass type and a positive size.'
+        for key in ('glass1', 'glass2', 'glass3', 'spacer1', 'spacer2', 'sealant1', 'sealant2'):
+            if spec.get(key) and not _known_priced_name(spec.get(key)):
+                return None, 'Unknown material on a line.'
+        try:
+            pcs = int(raw_item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            return None, 'Quantity must be a whole number.'
+        if pcs < 1 or pcs > 10000:
+            return None, 'Quantity must be at least 1.'
+        priced = reprice_size_line(spec, pcs, tier, currency, PRICING, tiers)
+        name = clean_text(raw_item.get('name'), 200)
+        if not name:
+            name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
+        items.append({
+            'name': name,
+            'spec': spec,
+            'sqf': priced['sqf'],
+            'price_sqf': priced['price_sqf'],
+            'price_pc': priced['price_pc'],
+            'pcs': priced['pcs'],
+            'total': priced['total'],
+        })
+    return items, None
+
+
+def _parse_charges(raw):
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return None, 'Extra charges must be a list.'
+    if len(raw) > 50:
+        return None, 'Too many extra charges.'
+    charges = []
+    for row in raw:
+        if not isinstance(row, dict):
+            return None, 'Each extra charge needs a label and an amount.'
+        label = clean_text(row.get('label'), 80)
+        if not label:
+            return None, 'Each extra charge needs a label.'
+        try:
+            amount = money(row.get('amount'))
+        except (TypeError, ValueError):
+            return None, 'Extra charge amounts must be numbers.'
+        if amount < 0:
+            return None, 'Extra charge amounts cannot be negative.'
+        charges.append({'label': label, 'amount': amount})
+    return charges, None
+
+
+def _edited_order(order, data, tiers):
+    currency = order.get('currency') or 'usd'
+    tier = order.get('tier')
+    if 'items' in data:
+        items, error = _parse_order_items(data.get('items'), tier, currency, tiers)
+        if error:
+            return None, error
+    else:
+        items = order.get('items') or []
+    if 'extra_charges' in data:
+        charges, error = _parse_charges(data.get('extra_charges'))
+        if error:
+            return None, error
+    else:
+        charges = order.get('extra_charges') or []
+    discount = data.get('discount') if 'discount' in data else (order.get('discount') or {'type': 'percent', 'value': 0})
+    summary, error = price_summary(items, discount, charges)
+    if error:
+        return None, error
+    updated = dict(order)
+    updated['items'] = items
+    updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
+    updated['notes'] = clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or '')
+    updated.update(summary)
+    updated['changelog'] = list(order.get('changelog') or [])
+    return updated, None
+
+
+def _order_is_invoiced(order):
+    return bool(order.get('invoice_id')) or order_status(order) == 'delivered'
+
+
+@app.route('/api/orders/<int:order_id>', methods=['PUT'])
+@module_required('orders')
+def edit_order(order_id):
+    user = current_user()
+    if not can_edit_orders(user):
+        return json_error('You do not have permission to edit orders.', 403)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    if _order_is_invoiced(visible) and user.get('role') != 'admin':
+        return json_error('This order has been invoiced and can only be changed by an administrator.', 403)
+
+    def mutator(order):
+        if _order_is_invoiced(order) and user.get('role') != 'admin':
+            return None, 'This order has been invoiced and can only be changed by an administrator.'
+        updated, error = _edited_order(order, data, load_tiers())
+        if error:
+            return None, error
+        if order_status(order) in {'sent', 'made'}:
+            customer = dict(load_customers().get(order.get('customer_id') or '') or {})
+            customer.setdefault('id', order.get('customer_id'))
+            probe = dict(updated)
+            check = coverage(probe, customer, load_orders(), load_invoices(), load_payments())
+            if not check['can_send']:
+                return None, (
+                    f"This order is not covered. Shortfall {check['currency'].upper()} ${check['shortfall']:.2f}."
+                )
+        changes = diff_changes(order, updated)
+        _stamp_log(updated, user, changes)
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+def _apply_prepayments_to_invoice(order_id, invoice_id, user):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        if payment.get('voided'):
+            continue
+        moved = False
+        allocations = []
+        for row in payment.get('allocations') or []:
+            if row.get('target_type') == 'order' and row.get('target_id') == order_id and not row.get('voided'):
+                allocations.append({
+                    'target_type': 'invoice',
+                    'target_id': invoice_id,
+                    'amount': money(row.get('amount')),
+                    'at': row.get('at'),
+                    'user': row.get('user'),
+                    'applied_from_order': order_id,
+                    'applied_at': now,
+                    'applied_by': user.get('email'),
+                })
+                moved = True
+            else:
+                allocations.append(row)
+        if moved:
+            payment['allocations'] = allocations
+            log = list(payment.get('log') or [])
+            log.append({
+                'at': now,
+                'user': user.get('email') or '',
+                'action': 'applied_to_invoice',
+                'invoice_id': invoice_id,
+                'order_id': order_id,
+            })
+            payment['log'] = log
+            changed = True
+    if changed:
+        save_payments(payments)
+    return payments
+
+
+@app.route('/api/orders/<int:order_id>/status', methods=['POST'])
+@module_required('orders')
+def set_order_status(order_id):
+    user = current_user()
+    if not can_update_order_status(user):
+        return json_error('You do not have permission to update order status.', 403)
+    data = json_body() or {}
+    target = clean_text(data.get('status'), 20).lower()
+    if target not in NEXT_STATUS.values():
+        return json_error('Unknown order status.', 400)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+
+    def mutator(order):
+        current = order_status(order)
+        if NEXT_STATUS.get(current) != target:
+            return None, f'An order that is {STATUS_LABELS[current]} cannot be marked {STATUS_LABELS[target]}.'
+        if target == 'sent':
+            customer = dict(load_customers().get(order.get('customer_id') or '') or {})
+            customer.setdefault('id', order.get('customer_id'))
+            check = coverage(order, customer, load_orders(), load_invoices(), load_payments())
+            if not check['can_send']:
+                return None, (
+                    f"This order is not covered. Shortfall {check['currency'].upper()} ${check['shortfall']:.2f}. "
+                    f"Available credit ${check['available_credit']:.2f}, "
+                    f"prepayments on this order ${check['prepayments']:.2f}."
+                )
+        updated = dict(order)
+        updated['status'] = target
+        changes = [{
+            'field': 'status',
+            'old': STATUS_LABELS[current],
+            'new': STATUS_LABELS[target],
+        }]
+        if target == 'delivered':
+            if updated.get('invoice_id'):
+                return None, 'This order already has an invoice.'
+            invoice = _invoice_from_order(updated, user)
+            stored = append_invoice(invoice)
+            _apply_prepayments_to_invoice(order.get('id'), stored['id'], user)
+            fresh = next((row for row in load_invoices() if row.get('id') == stored['id']), stored)
+            payments = load_payments()
+            fresh['status'] = invoice_status(fresh, payments)
+            fresh['balance'] = invoice_balance(fresh, payments)
+            invoices = load_invoices()
+            for index, row in enumerate(invoices):
+                if row.get('id') == fresh['id']:
+                    invoices[index] = fresh
+            save_invoices(invoices)
+            updated['invoice_id'] = fresh['id']
+            updated['invoice_number'] = fresh['number']
+            changes.append({'field': 'invoice', 'action': 'added', 'new': fresh['number']})
+        _stamp_log(updated, user, changes)
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        status = 400
+        return json_error(error, status)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+def _invoice_from_order(order, user):
+    customer = load_customers().get(order.get('customer_id') or '') or {}
+    days = payment_term_days(customer)
+    invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    due = invoice_day + timedelta(days=days)
+    summary, _error = price_summary(
+        order.get('items') or [],
+        order.get('discount') or {'type': 'percent', 'value': 0},
+        order.get('extra_charges') or [],
+    )
+    summary = summary or {}
+    return {
+        'order_id': order.get('id'),
+        'quote_id': order.get('quote_id'),
+        'customer_id': order.get('customer_id'),
+        'company': order.get('company') or customer.get('name') or '',
+        'project': order.get('project') or '',
+        'currency': order.get('currency') or 'usd',
+        'items': json.loads(json.dumps(order.get('items') or [])),
+        'discount': summary.get('discount') or {'type': 'percent', 'value': 0},
+        'discount_amount': summary.get('discount_amount', 0),
+        'extra_charges': json.loads(json.dumps(summary.get('extra_charges') or [])),
+        'igu_subtotal': summary.get('igu_subtotal', 0),
+        'igu_total': summary.get('igu_total', 0),
+        'extras_total': summary.get('extras_total', 0),
+        'total': summary.get('total', money(order.get('total'))),
+        'invoice_date': invoice_day.isoformat(),
+        'due_date': due.isoformat(),
+        'payment_terms': customer.get('payment_terms') or 'Net 30',
+        'payment_terms_days': days,
+        'status': 'unpaid',
+        'balance': summary.get('total', money(order.get('total'))),
+        'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'created_by': user.get('email') or '',
+    }
+
+
+def _invoices_visible(user):
+    rows = load_invoices()
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id')
+        return [row for row in rows if row.get('customer_id') == customer_id]
+    return rows
+
+
+def _present_invoice(invoice, payments):
+    view = dict(invoice)
+    view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
+    view['balance'] = invoice_balance(invoice, payments)
+    view['status'] = invoice_status(invoice, payments)
+    view['status_label'] = invoice_status_label(view['status'])
+    return view
+
+
+def _can_view_books(user):
+    return user_has_module(user, 'invoices') or user_has_module(user, 'financial')
+
+
+def _scoped_customer_id(user, requested):
+    if user.get('role') == 'customer':
+        return user.get('customer_id'), None
+    customer_id = clean_text(requested, 80)
+    if not customer_id:
+        return None, 'Choose a customer.'
+    if customer_id not in load_customers():
+        return None, 'Unknown customer.'
+    return customer_id, None
+
+
+@app.route('/api/invoices', methods=['GET'])
+@login_required
+def get_invoices():
+    user = current_user()
+    if not user_has_module(user, 'invoices'):
+        return json_error('Access denied', 403)
+    payments = load_payments()
+    rows = [_present_invoice(row, payments) for row in _invoices_visible(user)]
+    customer_id = clean_text(request.args.get('customer_id'), 80)
+    status = clean_text(request.args.get('status'), 20).lower()
+    date_from = _query_date('from')
+    date_to = _query_date('to')
+    filtered = []
+    for row in rows:
+        if user.get('role') != 'customer' and customer_id and row.get('customer_id') != customer_id:
+            continue
+        if status in {'unpaid', 'partial', 'paid'} and row.get('status') != status:
+            continue
+        day = str(row.get('invoice_date') or '')
+        if date_from and day < date_from:
+            continue
+        if date_to and day > date_to:
+            continue
+        filtered.append(row)
+    filtered.sort(key=lambda row: row.get('id') or 0, reverse=True)
+    return jsonify(filtered)
+
+
+@app.route('/api/invoices/<int:invoice_id>', methods=['GET'])
+@module_required('invoices')
+def get_invoice(invoice_id):
+    user = current_user()
+    invoice = next((row for row in _invoices_visible(user) if row.get('id') == invoice_id), None)
+    if not invoice:
+        return json_error('Not found', 404)
+    return jsonify(_present_invoice(invoice, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/pdf', methods=['GET'])
+@module_required('invoices')
+def invoice_pdf(invoice_id):
+    user = current_user()
+    invoice = next((row for row in _invoices_visible(user) if row.get('id') == invoice_id), None)
+    if not invoice:
+        return json_error('Not found', 404)
+    view = _present_invoice(invoice, load_payments())
+    return _render_invoice_pdf(view)
+
+
+def _render_invoice_pdf(invoice):
+    from xml.sax.saxutils import escape
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('InvTitle', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
+    small_style = ParagraphStyle('InvSmall', parent=styles['Normal'], fontSize=8, leading=10)
+    cell_style = ParagraphStyle('InvCell', parent=styles['Normal'], fontSize=8, leading=10)
+    header_cell = ParagraphStyle('InvHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
+    label_style = ParagraphStyle('InvLabel', parent=styles['Normal'], fontSize=9, leading=12)
+    logo_path = 'logo.png' if os.path.exists('logo.png') else None
+    logo = Image(logo_path, width=1.2 * inch, height=0.8 * inch) if logo_path else Paragraph(
+        '<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style,
+    )
+    currency = str(invoice.get('currency') or 'usd').upper()
+    header = [[
+        logo,
+        Paragraph('<b>Invoice</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
+        Paragraph(
+            f"<font size='8'><b>{escape(invoice.get('number') or '')}</b><br/>"
+            f"Invoice date: {escape(invoice.get('invoice_date') or '')}<br/>"
+            f"Due: {escape(invoice.get('due_date') or '')}<br/>"
+            f"Terms: {escape(invoice.get('payment_terms') or 'Net 30')}</font>",
+            small_style,
+        ),
+    ]]
+    elements = []
+    header_table = Table(header, colWidths=[1.5 * inch, 3.2 * inch, 2.6 * inch])
+    header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(
+        f"<b>Customer:</b> {escape(invoice.get('company') or '')}<br/>"
+        f"<b>Project:</b> {escape(invoice.get('project') or '-')}<br/>"
+        f"<b>Order:</b> {escape(str(invoice.get('order_id') or ''))}"
+        f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
+        label_style,
+    ))
+    elements.append(Spacer(1, 10))
+    table_data = [[
+        Paragraph('<b>Item</b>', header_cell),
+        Paragraph('<b>Qty</b>', header_cell),
+        Paragraph(f'<b>{currency}</b>', header_cell),
+    ]]
+    for item in invoice.get('items') or []:
+        table_data.append([
+            Paragraph(escape(str(item.get('name') or '')), cell_style),
+            Paragraph(escape(str(item.get('pcs') or '')), cell_style),
+            Paragraph(f"${money(item.get('total')):.2f}", cell_style),
+        ])
+    items_table = Table(table_data, colWidths=[5.2 * inch, 0.8 * inch, 1.3 * inch])
+    items_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(items_table)
+    elements.append(Spacer(1, 10))
+    discount = invoice.get('discount') or {}
+    discount_label = f"{money(discount.get('value')):.2f}%" if discount.get('type') == 'percent' else 'fixed'
+    summary_rows = [
+        ['IGU subtotal', f"${money(invoice.get('igu_subtotal')):.2f}"],
+        [f"Discount ({discount_label})", f"-${money(invoice.get('discount_amount')):.2f}"],
+        ['IGU total', f"${money(invoice.get('igu_total')):.2f}"],
+    ]
+    for charge in invoice.get('extra_charges') or []:
+        summary_rows.append([charge.get('label') or 'Extra', f"${money(charge.get('amount')):.2f}"])
+    summary_rows.append(['Grand total', f"${money(invoice.get('total')):.2f}"])
+    summary_rows.append(['Payments applied', f"${money(invoice.get('applied')):.2f}"])
+    summary_rows.append(['Balance due', f"${money(invoice.get('balance')):.2f}"])
+    summary = [[Paragraph(escape(label), cell_style), Paragraph(amount, cell_style)] for label, amount in summary_rows]
+    summary_table = Table(summary, colWidths=[5.5 * inch, 1.8 * inch])
+    summary_table.setStyle(TableStyle([
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, -3), (-1, -1), 'Helvetica-Bold'),
+        ('LINEABOVE', (0, -3), (-1, -3), 0.5, colors.black),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 16))
+    elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))
+    doc.build(elements)
+    buffer.seek(0)
+    filename = f"{invoice.get('number') or 'invoice'}.pdf"
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name=filename)
+
+
+def _present_payment(payment):
+    view = dict(payment)
+    view['unallocated'] = unallocated_amount(payment)
+    view['allocated'] = round(money(payment.get('amount')) - view['unallocated'], 2) if not payment.get('voided') else 0
+    return view
+
+
+@app.route('/api/payments', methods=['GET'])
+@login_required
+def get_payments():
+    user = current_user()
+    if not _can_view_books(user):
+        return json_error('Access denied', 403)
+    customer_id, error = _scoped_customer_id(user, request.args.get('customer_id'))
+    if user.get('role') == 'customer':
+        rows = [row for row in load_payments() if row.get('customer_id') == user.get('customer_id')]
+    else:
+        if error and customer_id is None and clean_text(request.args.get('customer_id'), 80):
+            return json_error(error, 400)
+        requested = clean_text(request.args.get('customer_id'), 80)
+        rows = load_payments()
+        if requested:
+            rows = [row for row in rows if row.get('customer_id') == requested]
+    rows = [_present_payment(row) for row in rows]
+    rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
+    return jsonify(rows)
+
+
+@app.route('/api/payments', methods=['POST'])
+@login_required
+def record_payment():
+    user = current_user()
+    if not can_record_payments(user):
+        return json_error('You do not have permission to record payments.', 403)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    customer_id = clean_text(data.get('customer_id'), 80)
+    customer = load_customers().get(customer_id or '')
+    if not customer:
+        return json_error('Unknown customer.', 400)
+    try:
+        amount = money(data.get('amount'))
+    except (TypeError, ValueError):
+        return json_error('Amount must be a number.', 400)
+    if amount <= 0:
+        return json_error('Amount must be greater than zero.', 400)
+    currency = clean_text(data.get('currency'), 8).lower()
+    if currency not in CURRENCIES:
+        return json_error('Currency must be USD or CAD.', 400)
+    method = clean_text(data.get('method'), 20).lower()
+    if method not in PAYMENT_METHODS:
+        return json_error('Unknown payment method.', 400)
+    paid_on = clean_text(data.get('date'), 10)
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', paid_on):
+        return json_error('Payment date is required.', 400)
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    stored = append_payment({
+        'customer_id': customer_id,
+        'company': customer.get('name') or '',
+        'date': paid_on,
+        'amount': amount,
+        'currency': currency,
+        'method': method,
+        'reference': clean_text(data.get('reference'), 80),
+        'notes': clean_text(data.get('notes'), 500),
+        'voided': False,
+        'allocations': [],
+        'recorded_by': user.get('email') or '',
+        'recorded_at': now,
+        'log': [{
+            'at': now,
+            'user': user.get('email') or '',
+            'action': 'recorded',
+            'amount': amount,
+            'currency': currency,
+        }],
+    })
+    return jsonify(_present_payment(stored))
+
+
+@app.route('/api/payments/<int:payment_id>/allocations', methods=['POST'])
+@login_required
+def allocate_payment(payment_id):
+    user = current_user()
+    if not can_record_payments(user):
+        return json_error('You do not have permission to record payments.', 403)
+    data = json_body() or {}
+    requested = data.get('allocations')
+    if not isinstance(requested, list) or not requested:
+        return json_error('Choose at least one allocation.', 400)
+    payments = load_payments()
+    payment = next((row for row in payments if row.get('id') == payment_id), None)
+    if not payment:
+        return json_error('Not found', 404)
+    if payment.get('voided'):
+        return json_error('A voided payment cannot be allocated.', 400)
+    room = unallocated_amount(payment)
+    additions = []
+    for row in requested:
+        if not isinstance(row, dict):
+            return json_error('Each allocation needs a target and an amount.', 400)
+        target_type = clean_text(row.get('target_type'), 20)
+        if target_type not in {'order', 'invoice'}:
+            return json_error('Allocate to an order or an invoice.', 400)
+        try:
+            target_id = int(row.get('target_id'))
+            amount = money(row.get('amount'))
+        except (TypeError, ValueError):
+            return json_error('Each allocation needs a target and an amount.', 400)
+        if amount <= 0:
+            return json_error('Allocation amounts must be greater than zero.', 400)
+        additions.append({'target_type': target_type, 'target_id': target_id, 'amount': amount})
+    if round(sum(item['amount'] for item in additions), 2) - room > 0.009:
+        return json_error('That allocates more than the unallocated balance.', 400)
+    orders = load_orders()
+    invoices = load_invoices()
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    pending = {}
+    for item in additions:
+        if item['target_type'] == 'order':
+            order = next((row for row in orders if row.get('id') == item['target_id']), None)
+            if not order or order.get('customer_id') != payment.get('customer_id'):
+                return json_error('Unknown order for this customer.', 400)
+            if str(order.get('currency') or 'usd').lower() != payment.get('currency'):
+                return json_error('The order currency does not match the payment.', 400)
+            if order_status(order) == 'delivered' or order.get('invoice_id'):
+                return json_error('Allocate a delivered order through its invoice.', 400)
+            covered = allocated_to_target(payments, payment.get('customer_id'), payment.get('currency'), 'order', order.get('id'))
+            covered += pending.get(('order', order.get('id')), 0)
+            if covered + item['amount'] - money(order.get('total')) > 0.009:
+                return json_error('That is more than the order total.', 400)
+            pending[('order', order.get('id'))] = pending.get(('order', order.get('id')), 0) + item['amount']
+        else:
+            invoice = next((row for row in invoices if row.get('id') == item['target_id']), None)
+            if not invoice or invoice.get('customer_id') != payment.get('customer_id'):
+                return json_error('Unknown invoice for this customer.', 400)
+            if str(invoice.get('currency') or 'usd').lower() != payment.get('currency'):
+                return json_error('The invoice currency does not match the payment.', 400)
+            balance = invoice_balance(invoice, payments) - pending.get(('invoice', invoice.get('id')), 0)
+            if item['amount'] - balance > 0.009:
+                return json_error('That is more than the invoice balance.', 400)
+            pending[('invoice', invoice.get('id'))] = pending.get(('invoice', invoice.get('id')), 0) + item['amount']
+        item['at'] = now
+        item['user'] = user.get('email') or ''
+    payment['allocations'] = list(payment.get('allocations') or []) + additions
+    log = list(payment.get('log') or [])
+    log.append({
+        'at': now,
+        'user': user.get('email') or '',
+        'action': 'allocated',
+        'allocations': [{'target_type': item['target_type'], 'target_id': item['target_id'], 'amount': item['amount']} for item in additions],
+    })
+    payment['log'] = log
+    for index, row in enumerate(payments):
+        if row.get('id') == payment_id:
+            payments[index] = payment
+    save_payments(payments)
+    _refresh_invoice_statuses(payments)
+    return jsonify(_present_payment(payment))
+
+
+def _refresh_invoice_statuses(payments):
+    invoices = load_invoices()
+    changed = False
+    for invoice in invoices:
+        status = invoice_status(invoice, payments)
+        balance = invoice_balance(invoice, payments)
+        if invoice.get('status') != status or money(invoice.get('balance')) != balance:
+            invoice['status'] = status
+            invoice['balance'] = balance
+            changed = True
+    if changed:
+        save_invoices(invoices)
+
+
+@app.route('/api/payments/<int:payment_id>/void', methods=['POST'])
+@login_required
+def void_payment(payment_id):
+    user = current_user()
+    if not can_record_payments(user):
+        return json_error('You do not have permission to record payments.', 403)
+    data = json_body() or {}
+    reason = clean_text(data.get('reason'), 300)
+    if not reason:
+        return json_error('A void reason is required.', 400)
+    payments = load_payments()
+    payment = next((row for row in payments if row.get('id') == payment_id), None)
+    if not payment:
+        return json_error('Not found', 404)
+    if payment.get('voided'):
+        return json_error('This payment is already void.', 400)
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    payment['voided'] = True
+    payment['void_reason'] = reason
+    payment['voided_by'] = user.get('email') or ''
+    payment['voided_at'] = now
+    log = list(payment.get('log') or [])
+    log.append({'at': now, 'user': user.get('email') or '', 'action': 'voided', 'reason': reason})
+    payment['log'] = log
+    for index, row in enumerate(payments):
+        if row.get('id') == payment_id:
+            payments[index] = payment
+    save_payments(payments)
+    _refresh_invoice_statuses(payments)
+    return jsonify(_present_payment(payment))
+
+
+@app.route('/api/credit', methods=['GET'])
+@login_required
+def get_credit():
+    user = current_user()
+    if not _can_view_books(user) and not user_has_module(user, 'orders'):
+        return json_error('Access denied', 403)
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id')
+    else:
+        customer_id = clean_text(request.args.get('customer_id'), 80)
+        if not customer_id:
+            return json_error('Choose a customer.', 400)
+    customer = load_customers().get(customer_id or '')
+    if not customer:
+        return json_error('Unknown customer.', 404)
+    if user.get('role') == 'customer' and customer_id != user.get('customer_id'):
+        return json_error('Access denied', 403)
+    currency = clean_text(request.args.get('currency'), 8).lower() or str(customer.get('credit_currency') or 'usd').lower()
+    if currency not in CURRENCIES:
+        return json_error('Currency must be USD or CAD.', 400)
+    orders = load_orders()
+    invoices = load_invoices()
+    payments = load_payments()
+    available, limit, receivables = available_credit(customer, currency, orders, invoices, payments)
+    return jsonify({
+        'customer_id': customer_id,
+        'company': customer.get('name') or '',
+        'credit_limit': limit if str(customer.get('credit_currency') or 'usd').lower() == currency else money(customer.get('credit_limit') or 0),
+        'credit_currency': str(customer.get('credit_currency') or 'usd').lower(),
+        'currency': currency,
+        'open_receivables': receivables,
+        'available_credit': available,
+        'unallocated_payments': unallocated_credit(payments, customer_id, currency),
+        'read_only': user.get('role') == 'customer' or not can_record_payments(user),
+    })
+
+
+@app.route('/api/customers/<cid>/credit', methods=['PUT'])
+@admin_required
+def update_customer_credit(cid):
+    if not ID_RE.fullmatch(cid or ''):
+        return json_error('Not found', 404)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    customers = load_customers()
+    customer = customers.get(cid)
+    if not customer:
+        return json_error('Not found', 404)
+    error = apply_credit_limit(customer, data)
+    if error:
+        return json_error(error, 400)
+    customers[cid] = customer
+    save_customers(customers)
+    return jsonify({
+        'success': True,
+        'credit_limit': customer.get('credit_limit'),
+        'credit_currency': customer.get('credit_currency'),
+    })
 
 
 def _upsert_admin(email, name, password):

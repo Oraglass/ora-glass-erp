@@ -33,6 +33,12 @@ def _company_users(client):
     users = load_users()
     users['staff@oraglass.us']['modules'] = ['quotes', 'quote-history', 'orders']
     save_users(users)
+    from storage import load_customers, save_customers
+    customers = load_customers()
+    if 'harbor-glass' in customers:
+        customers['harbor-glass']['credit_limit'] = 100000
+        customers['harbor-glass']['credit_currency'] = 'usd'
+        save_customers(customers)
 
 
 def _size_item(price='99.99'):
@@ -164,6 +170,11 @@ def test_sales_force_cannot_open_orders_or_see_company_tier_prices(client):
     })
     quote_id = saved.get_json()['id']
     client.post('/logout')
+    from storage import load_customers, save_customers
+    customers = load_customers()
+    customers['harbor-glass']['credit_limit'] = 100000
+    customers['harbor-glass']['credit_currency'] = 'cad'
+    save_customers(customers)
     assert login(client, 'boss@harbor.example').status_code == 302
     created = client.post(f'/api/quotes/{quote_id}/order', json={})
     assert created.status_code == 200

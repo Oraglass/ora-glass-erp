@@ -70,7 +70,17 @@ td.actions{width:11rem}
 <div class="form-group"><label>Email</label><input type="email" id="c-email"></div>
 </div>
 <div class="form-row">
-<div class="form-group"><label>Payment Terms</label><select id="c-terms"><option>Net 30</option><option>Net 15</option><option>COD</option><option>Prepaid</option></select></div>
+<div class="form-group"><label>Payment Terms</label>
+<select id="c-terms">
+<option value="Due on receipt">Due on receipt</option>
+<option value="Net 15">Net 15</option>
+<option value="Net 30">Net 30</option>
+<option value="Net 45">Net 45</option>
+<option value="Net 60">Net 60</option>
+<option value="Custom">Custom days</option>
+</select>
+<input id="c-terms-days" type="number" min="0" max="365" placeholder="Days" style="margin-top:6px">
+</div>
 <div class="form-group"><label>Company default tier</label>
 <select id="c-tier">
 {% for tid, tier in tiers %}
@@ -83,6 +93,13 @@ td.actions{width:11rem}
 <div class="form-row">
 <div class="form-group"><label>Status</label><select id="c-status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
 <div class="form-group"><label><input type="checkbox" id="c-credit"> Credit Approved</label></div>
+</div>
+<div class="form-row">
+<div class="form-group"><label for="c-credit-limit">Credit limit</label><input type="number" id="c-credit-limit" min="0" step="0.01" value="0"></div>
+<div class="form-group"><label for="c-credit-currency">Credit currency</label>
+<select id="c-credit-currency"><option value="usd">USD</option><option value="cad">CAD</option></select>
+<p class="help">Admin only. Available credit is this limit minus open receivables in the same currency. Default 0.</p>
+</div>
 </div>
 <div style="display:flex;gap:10px;margin-top:20px">
 <button class="btn" type="button" id="save-customer">Save</button>
@@ -136,7 +153,15 @@ function openModal(customer) {
   document.getElementById('c-zip').value = customer ? (customer.zip || '') : '';
   document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
   document.getElementById('c-email').value = customer ? (customer.email || '') : '';
-  document.getElementById('c-terms').value = customer ? (customer.payment_terms || 'Net 30') : 'Net 30';
+  const knownTerms = ['Due on receipt', 'Net 15', 'Net 30', 'Net 45', 'Net 60', 'Custom'];
+  let terms = customer ? (customer.payment_terms || 'Net 30') : 'Net 30';
+  if (terms === 'COD' || terms === 'Prepaid') terms = 'Due on receipt';
+  if (!knownTerms.includes(terms)) terms = 'Net 30';
+  document.getElementById('c-terms').value = terms;
+  document.getElementById('c-terms-days').value = customer && customer.payment_terms === 'Custom' ? (customer.payment_terms_days || 0) : '';
+  document.getElementById('c-terms-days').style.display = terms === 'Custom' ? 'block' : 'none';
+  document.getElementById('c-credit-limit').value = customer ? (customer.credit_limit || 0) : 0;
+  document.getElementById('c-credit-currency').value = customer ? (customer.credit_currency || 'usd') : 'usd';
   document.getElementById('c-tier').value = customer ? customer.tier : 'T2';
   document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
@@ -153,6 +178,9 @@ function payload() {
     phone: document.getElementById('c-phone').value,
     email: document.getElementById('c-email').value,
     payment_terms: document.getElementById('c-terms').value,
+    payment_terms_days: document.getElementById('c-terms-days').value,
+    credit_limit: document.getElementById('c-credit-limit').value,
+    credit_currency: document.getElementById('c-credit-currency').value,
     tier: document.getElementById('c-tier').value,
     status: document.getElementById('c-status').value,
     credit_approved: document.getElementById('c-credit').checked
@@ -168,6 +196,9 @@ document.getElementById('customer-list').addEventListener('click', (event) => {
 });
 const addButton = document.getElementById('add-customer');
 if (addButton) addButton.addEventListener('click', () => openModal(null));
+document.getElementById('c-terms').addEventListener('change', () => {
+  document.getElementById('c-terms-days').style.display = document.getElementById('c-terms').value === 'Custom' ? 'block' : 'none';
+});
 document.getElementById('close-customer').addEventListener('click', () => {
   document.getElementById('customer-modal').classList.remove('active');
 });
