@@ -245,6 +245,59 @@ def update_order(order_id, mutator):
     return None, 'Not found'
 
 
+def punches_path():
+    explicit = os.environ.get('PUNCHES_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'punches.json')
+
+
+def load_punches():
+    path = punches_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_punches(punches):
+    if not isinstance(punches, list):
+        raise TypeError('punches must be a list')
+    path = punches_path()
+    with lock_for(path):
+        atomic_write_json(path, punches)
+
+
+def append_punch(punch):
+    path = punches_path()
+    with lock_for(path):
+        punches = read_json(path, [])
+        if not isinstance(punches, list):
+            punches = []
+        stored = dict(punch)
+        stored['id'] = max([item.get('id') or 0 for item in punches] or [0]) + 1
+        punches.append(stored)
+        atomic_write_json(path, punches)
+        return stored
+
+
+def update_punch(punch_id, mutator):
+    """Replace one punch under the file lock. mutator returns (new_punch, error)."""
+    path = punches_path()
+    with lock_for(path):
+        punches = read_json(path, [])
+        if not isinstance(punches, list):
+            punches = []
+        for index, row in enumerate(punches):
+            if row.get('id') == punch_id:
+                updated, error = mutator(dict(row), punches)
+                if error:
+                    return None, error
+                punches[index] = updated
+                atomic_write_json(path, punches)
+                return updated, None
+    return None, 'Not found'
+
+
 def invoices_path():
     explicit = os.environ.get('INVOICES_PATH', '').strip()
     if explicit:
@@ -320,6 +373,7 @@ def append_invoice(invoice):
         invoices.append(stored)
         atomic_write_json(path, invoices)
         return stored
+
 
 
 def append_quote(quote):

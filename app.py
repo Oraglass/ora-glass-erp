@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import click
 from flask import Flask, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask.sessions import SecureCookieSessionInterface
 from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -67,6 +68,7 @@ from security import (
     verify_password,
 )
 from storage import (
+    append_punch,
     append_quote,
     data_dir,
     append_invoice,
@@ -76,6 +78,7 @@ from storage import (
     load_invoices,
     load_orders,
     load_payments,
+    load_punches,
     load_quotes,
     load_tiers,
     load_users,
@@ -88,6 +91,19 @@ from storage import (
     save_quotes,
     save_tiers,
     save_users,
+    update_punch,
+)
+from timeclock import (
+    ACTIONS,
+    as_utc,
+    clock_status,
+    live_hours,
+    pacific_clock,
+    pacific_date,
+    pacific_label,
+    replay,
+    stamp,
+    summarize,
 )
 
 logger = logging.getLogger('ora_glass')
@@ -105,6 +121,7 @@ MODULES = (
     {'id': 'financial', 'label': 'Financials', 'short': 'Financials', 'endpoint': 'financial'},
     {'id': 'customers', 'label': 'Customers', 'short': 'Customers', 'endpoint': 'customers_page'},
     {'id': 'users', 'label': 'Users', 'short': 'Users', 'endpoint': 'users_page'},
+    {'id': 'time-clock', 'label': 'Time Clock', 'short': 'Time Clock', 'endpoint': 'punch'},
 )
 MODULE_IDS = tuple(item['id'] for item in MODULES)
 # Customers may only be given these. Dashboard stays available as their home page.
@@ -141,6 +158,18 @@ app.config.update(
 csrf = CSRFProtect(app)
 if trust_proxy():
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
+class LongPunchSessionInterface(SecureCookieSessionInterface):
+    """The punch page keeps a phone signed in for 30 days. Other pages stay on the normal lifetime."""
+
+    def get_expiration_time(self, app, session):
+        if session.get('long_session'):
+            return datetime.now(timezone.utc) + timedelta(days=30)
+        return super().get_expiration_time(app, session)
+
+
+app.session_interface = LongPunchSessionInterface()
 
 PRICING, PRICING_SOURCE = load_pricing()
 GLASS, SPACERS, SEALANTS = classify(PRICING)
@@ -219,6 +248,26 @@ def effective_module_ids(user):
 
 def user_has_module(user, module):
     return module in effective_module_ids(user)
+
+
+def can_manage_time(user):
+    """Admins manage timesheets. Employees need the Manage time privilege. Customers never can."""
+    if not user or user.get('role') == 'customer':
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('manage_time'))
+
+
+def apply_manage_time(record, data):
+    role = record.get('role')
+    if role == 'admin' or role == 'customer' or role not in LEGACY_STAFF_ROLES:
+        record['manage_time'] = False
+        return
+    if 'manage_time' in data:
+        record['manage_time'] = bool(data.get('manage_time'))
+    elif 'manage_time' not in record:
+        record['manage_time'] = False
 
 
 def modules_label(user):
@@ -436,6 +485,7 @@ def public_user(user, customers, tiers):
         'edit_orders': bool(user.get('edit_orders')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'manage_time': bool(user.get('manage_time')) if user.get('role') in LEGACY_STAFF_ROLES else False,
     }
 
 
@@ -1390,6 +1440,7 @@ def add_user():
     if subrole_error:
         return json_error(subrole_error, 400)
     apply_order_privileges(record, data)
+    apply_manage_time(record, data)
     setup_url = None
     password = data.get('password') or ''
     if password:
@@ -1455,6 +1506,7 @@ def update_user(email):
     if subrole_error:
         return json_error(subrole_error, 400)
     apply_order_privileges(user, data)
+    apply_manage_time(user, data)
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -2823,6 +2875,409 @@ def _upsert_admin(email, name, password):
     users[email] = record
     save_users(users)
     return email
+
+
+PUNCH_LABELS = {
+    'in': 'Punch in',
+    'out': 'Punch out',
+    'break_start': 'Break start',
+    'break_end': 'Break end',
+}
+
+
+def _remember_phone():
+    session.permanent = True
+    session['long_session'] = True
+    session.modified = True
+
+
+def _punch_snapshot(punch):
+    return {
+        'action': punch.get('action'),
+        'at': punch.get('at'),
+        'note': punch.get('note') or '',
+        'lat': punch.get('lat'),
+        'lng': punch.get('lng'),
+        'accuracy': punch.get('accuracy'),
+        'no_location': bool(punch.get('no_location')),
+    }
+
+
+def _punch_view(punch):
+    view = _punch_snapshot(punch)
+    view.update({
+        'id': punch.get('id'),
+        'user': punch.get('user'),
+        'action_label': PUNCH_LABELS.get(punch.get('action'), punch.get('action')),
+        'pacific': pacific_label(punch.get('at')),
+        'corrected': bool(punch.get('corrections')),
+        'original': punch.get('original'),
+        'corrections': punch.get('corrections') or [],
+    })
+    return view
+
+
+def _punches_for(email):
+    return [row for row in load_punches() if row.get('user') == email]
+
+
+def _own_clock(user):
+    rows = _punches_for(user.get('email'))
+    status, since = clock_status(rows)
+    today = pacific_date(datetime.now(timezone.utc))
+    history_start = today - timedelta(days=13)
+    week_start = today - timedelta(days=today.weekday())
+    days, _period = summarize(rows, history_start, today)
+    _week_days, week_hours = summarize(rows, week_start, today)
+    history = [
+        _punch_view(row) for row in sorted(rows, key=lambda row: (row.get('at') or '', row.get('id') or 0), reverse=True)
+        if pacific_date(row.get('at')) >= history_start
+    ]
+    return {
+        'status': status,
+        'since': stamp(since) if since else None,
+        'since_pacific': pacific_clock(since) if since else None,
+        'today_hours': live_hours(rows, today, today),
+        'week_hours': week_hours,
+        'days': days,
+        'history': history,
+    }
+
+
+def _can_punch(user):
+    return bool(user) and user.get('role') != 'customer' and user_has_module(user, 'time-clock')
+
+
+@app.route('/manifest.webmanifest')
+def web_manifest():
+    path = os.path.join(app.root_path, 'static', 'manifest.webmanifest')
+    return send_file(path, mimetype='application/manifest+json')
+
+
+@app.route('/sw.js')
+def service_worker():
+    path = os.path.join(app.root_path, 'static', 'sw.js')
+    response = send_file(path, mimetype='application/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
+@app.route('/punch')
+@module_required('time-clock')
+def punch():
+    user = current_user()
+    if user.get('role') == 'customer':
+        return forbidden()
+    _remember_phone()
+    return render_template('punch.html', user=user, can_manage=can_manage_time(user))
+
+
+@app.route('/time-clock')
+@login_required
+def time_clock_admin():
+    if not can_manage_time(current_user()):
+        return forbidden()
+    return render_template('time_clock.html')
+
+
+@app.route('/api/punches/me', methods=['GET'])
+@module_required('time-clock')
+def my_punches():
+    user = current_user()
+    if not _can_punch(user):
+        return json_error('Access denied', 403)
+    _remember_phone()
+    return jsonify(_own_clock(user))
+
+
+@app.route('/api/punches', methods=['POST'])
+@module_required('time-clock')
+def create_punch():
+    user = current_user()
+    if not _can_punch(user):
+        return json_error('Access denied', 403)
+    _remember_phone()
+    data = json_body() or {}
+    action = clean_text(data.get('action'), 20)
+    if action not in ACTIONS:
+        return json_error('Unknown punch.', 400)
+    note = clean_text(data.get('note'), 300)
+    lat = lng = accuracy = None
+    no_location = True
+    if data.get('lat') not in (None, '') or data.get('lng') not in (None, ''):
+        try:
+            lat = float(data.get('lat'))
+            lng = float(data.get('lng'))
+            accuracy = None if data.get('accuracy') in (None, '') else float(data.get('accuracy'))
+        except (TypeError, ValueError):
+            return json_error('Location must be numbers.', 400)
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            return json_error('Location is out of range.', 400)
+        no_location = False
+    moment = stamp(datetime.now(timezone.utc))
+    existing = _punches_for(user.get('email'))
+    try:
+        replay(existing + [{'id': 10 ** 9, 'action': action, 'at': moment}])
+    except ValueError as exc:
+        status = 409 if action == 'in' else 400
+        return json_error(str(exc), status)
+    snapshot = {
+        'action': action,
+        'at': moment,
+        'note': note,
+        'lat': lat,
+        'lng': lng,
+        'accuracy': accuracy,
+        'no_location': no_location,
+    }
+    append_punch({
+        'user': user.get('email'),
+        'corrections': [],
+        'original': dict(snapshot),
+        **snapshot,
+    })
+    return jsonify(_own_clock(user))
+
+
+def _date_arg(name):
+    text = clean_text(request.args.get(name), 10)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _timesheet_rows(user_email, start, end):
+    punches = load_punches()
+    if user_email:
+        punches = [row for row in punches if row.get('user') == user_email]
+    selected = []
+    for row in punches:
+        day = pacific_date(row.get('at'))
+        if start and day < start:
+            continue
+        if end and day > end:
+            continue
+        selected.append(row)
+    by_user = {}
+    for row in selected:
+        by_user.setdefault(row.get('user'), []).append(row)
+    days = []
+    for email, rows in sorted(by_user.items()):
+        summarized, _total = summarize(rows, start, end)
+        for day in summarized:
+            days.append(dict(day, user=email))
+    period_hours = round(sum(day['hours'] for day in days), 2)
+    selected.sort(key=lambda row: (row.get('at') or '', row.get('id') or 0))
+    return selected, days, period_hours
+
+
+@app.route('/api/time-clock', methods=['GET'])
+@login_required
+def time_clock_data():
+    user = current_user()
+    if not can_manage_time(user):
+        return json_error('Access denied', 403)
+    start = _date_arg('from')
+    end = _date_arg('to')
+    email = normalize_email(request.args.get('user'))
+    punches, days, period_hours = _timesheet_rows(email, start, end)
+    employees = []
+    for record in load_users().values():
+        if record.get('role') == 'customer':
+            continue
+        employees.append({'email': record.get('email'), 'name': record.get('name') or record.get('email')})
+    employees.sort(key=lambda row: (row['name'] or '').lower())
+    return jsonify({
+        'employees': employees,
+        'punches': [_punch_view(row) for row in punches],
+        'days': days,
+        'period_hours': period_hours,
+    })
+
+
+@app.route('/api/time-clock/<int:punch_id>/correct', methods=['POST'])
+@login_required
+def correct_punch(punch_id):
+    actor = current_user()
+    if not can_manage_time(actor):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    reason = clean_text(data.get('reason'), 300)
+    if not reason:
+        return json_error('A reason is required.', 400)
+
+    def mutator(punch, all_rows):
+        updated = dict(punch)
+        if 'action' in data and data.get('action'):
+            action = clean_text(data.get('action'), 20)
+            if action not in ACTIONS:
+                return None, 'Unknown punch.'
+            updated['action'] = action
+        if 'note' in data:
+            updated['note'] = clean_text(data.get('note'), 300)
+        if data.get('at_pacific'):
+            try:
+                updated['at'] = stamp(as_utc(data.get('at_pacific'), naive_is_pacific=True))
+            except ValueError:
+                return None, 'That time is not valid.'
+        if not updated.get('original'):
+            updated['original'] = _punch_snapshot(punch)
+        trial = []
+        for row in all_rows:
+            if row.get('user') != punch.get('user'):
+                continue
+            trial.append(updated if row.get('id') == punch.get('id') else row)
+        try:
+            replay(trial)
+        except ValueError as exc:
+            return None, str(exc)
+        before = _punch_snapshot(punch)
+        after = _punch_snapshot(updated)
+        corrections = list(updated.get('corrections') or [])
+        corrections.append({
+            'at': stamp(datetime.now(timezone.utc)),
+            'by': actor.get('email') or '',
+            'reason': reason,
+            'before': before,
+            'after': after,
+        })
+        updated['corrections'] = corrections
+        return updated, None
+
+    saved, error = update_punch(punch_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify(_punch_view(saved))
+
+
+@app.route('/api/time-clock/export.csv', methods=['GET'])
+@login_required
+def export_time_csv():
+    import csv
+    from io import StringIO
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    email = normalize_email(request.args.get('user'))
+    punches, days, period_hours = _timesheet_rows(email, _date_arg('from'), _date_arg('to'))
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(['id', 'user', 'action', 'at_utc', 'at_pacific', 'note', 'lat', 'lng', 'accuracy', 'no_location', 'corrected'])
+    for row in punches:
+        view = _punch_view(row)
+        writer.writerow([
+            view['id'], view['user'], view['action'], view['at'], view['pacific'], view['note'],
+            '' if view['lat'] is None else view['lat'], '' if view['lng'] is None else view['lng'],
+            '' if view['accuracy'] is None else view['accuracy'], 'yes' if view['no_location'] else 'no',
+            'yes' if view['corrected'] else 'no',
+        ])
+    writer.writerow([])
+    writer.writerow(['date', 'user', 'hours', 'missing_punch_out'])
+    for day in days:
+        writer.writerow([day['date'], day['user'], f"{day['hours']:.2f}", 'yes' if day['missing_out'] else 'no'])
+    writer.writerow(['period_hours', '', f'{period_hours:.2f}', ''])
+    payload = buffer.getvalue().encode('utf-8')
+    return send_file(
+        BytesIO(payload), mimetype='text/csv', as_attachment=True, download_name='timesheet.csv',
+    )
+
+
+@app.route('/api/time-clock/timesheet.pdf', methods=['GET'])
+@login_required
+def export_time_pdf():
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    email = normalize_email(request.args.get('user'))
+    if not email:
+        return json_error('Choose an employee.', 400)
+    start = _date_arg('from')
+    end = _date_arg('to')
+    punches, days, period_hours = _timesheet_rows(email, start, end)
+    users = load_users()
+    name = (users.get(email) or {}).get('name') or email
+    return _timesheet_pdf(name, email, start, end, punches, days, period_hours)
+
+
+def _timesheet_pdf(name, email, start, end, punches, days, period_hours):
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
+    styles = getSampleStyleSheet()
+    small = ParagraphStyle('TsSmall', parent=styles['Normal'], fontSize=8, leading=10)
+    title = ParagraphStyle('TsTitle', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
+    cell = ParagraphStyle('TsCell', parent=styles['Normal'], fontSize=8, leading=10)
+    head = ParagraphStyle('TsHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
+    logo_path = 'logo.png' if os.path.exists('logo.png') else None
+    logo = Image(logo_path, width=1.2 * inch, height=0.8 * inch) if logo_path else Paragraph('ORA GLASS', title)
+    period = f"{start.isoformat() if start else 'start'} to {end.isoformat() if end else 'today'}"
+    elements = []
+    header = Table([[
+        logo,
+        Paragraph('<b>Timesheet</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title),
+        Paragraph(f"<font size='8'><b>{escape(name)}</b><br/>{escape(email)}<br/>{escape(period)}<br/>Pacific time</font>", small),
+    ]], colWidths=[1.5 * inch, 3.1 * inch, 2.7 * inch])
+    header.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+    elements.append(header)
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
+    elements.append(Spacer(1, 8))
+    table_data = [[Paragraph(f'<b>{label}</b>', head) for label in ('Date', 'Hours', 'Missing punch-out')]]
+    for day in days:
+        table_data.append([
+            Paragraph(escape(day['date']), cell),
+            Paragraph(f"{day['hours']:.2f}", cell),
+            Paragraph('Yes' if day['missing_out'] else '', cell),
+        ])
+    table_data.append([
+        Paragraph('<b>Period total</b>', cell),
+        Paragraph(f'<b>{period_hours:.2f}</b>', cell),
+        Paragraph('', cell),
+    ])
+    table = Table(table_data, colWidths=[2.2 * inch, 1.5 * inch, 3.6 * inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#9f1830')),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f6f6f6')),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 12))
+    punch_data = [[Paragraph(f'<b>{label}</b>', head) for label in ('When', 'Action', 'Note', 'Location')]]
+    for row in punches:
+        view = _punch_view(row)
+        place = 'No location' if view['no_location'] else f"{view['lat']}, {view['lng']}"
+        punch_data.append([
+            Paragraph(escape(view['pacific']), cell),
+            Paragraph(escape(view['action_label']), cell),
+            Paragraph(escape(view['note']), cell),
+            Paragraph(escape(place), cell),
+        ])
+    if len(punch_data) == 1:
+        punch_data.append([Paragraph('No punches', cell), '', '', ''])
+    details = Table(punch_data, colWidths=[1.7 * inch, 1.3 * inch, 2.2 * inch, 2.1 * inch])
+    details.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#9f1830')),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(details)
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='timesheet.pdf')
 
 
 @app.cli.command('create-admin')

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Time Clock</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
+h1,h2{margin:0 0 10px;color:#333;font-size:20px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
+.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.flag{color:#9f1830;font-weight:600}
+.note{color:#666;font-size:13px}
+.correct{display:none;background:#fafafa;padding:8px;border-radius:8px;margin-top:6px}
+.correct.open{display:grid;gap:6px}
+@media (max-width:640px){
+  table,thead,tbody,tr,th,td{display:block}
+  thead{display:none}
+  tr{padding:8px 0;border-bottom:1px solid #eee}
+  td{border:0;padding:2px 0}
+}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>Time Clock</h1>
+<p class="note">Times are shown in Pacific. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
+<div class="filters">
+<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<label>From<input type="date" id="filter-from"></label>
+<label>To<input type="date" id="filter-to"></label>
+<button type="button" id="apply">Show</button>
+</div>
+<div class="links">
+<a class="btn" id="csv-link" href="#">Export CSV</a>
+<a class="btn" id="pdf-link" href="#">PDF timesheet</a>
+<a href="{{ url_for('punch') }}">Punch page</a>
+</div>
+</div>
+<div class="card">
+<h2>Hours</h2>
+<p id="week-total" class="note"></p>
+<table>
+<thead><tr><th>Date</th><th>Employee</th><th>Hours</th><th></th></tr></thead>
+<tbody id="day-rows"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Punches</h2>
+<table>
+<thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Location</th><th></th></tr></thead>
+<tbody id="punch-rows"></tbody>
+</table>
+</div>
+</div>
+<script>
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function rangeQuery() {
+  const params = new URLSearchParams();
+  const user = document.getElementById('filter-user').value;
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  if (user) params.set('user', user);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  return params;
+}
+function render(data) {
+  const users = document.getElementById('filter-user');
+  const current = users.value;
+  const names = data.employees || [];
+  users.innerHTML = '<option value="">All employees</option>' + names.map(row => '<option value="' + esc(row.email) + '">' + esc(row.name) + '</option>').join('');
+  if (names.some(row => row.email === current)) users.value = current;
+  document.getElementById('week-total').textContent = 'Closed hours in this period: ' + Number(data.period_hours || 0).toFixed(2);
+  const days = document.getElementById('day-rows');
+  const dayRows = data.days || [];
+  days.innerHTML = dayRows.length ? dayRows.map(day => '<tr><td>' + esc(day.date) + '</td><td>' + esc(day.user) + '</td><td>' + Number(day.hours).toFixed(2) + '</td><td>' + (day.missing_out ? '<span class="flag">Missing punch-out</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="4">No shifts</td></tr>';
+  const punches = document.getElementById('punch-rows');
+  punches.innerHTML = (data.punches || []).map(row => {
+    const loc = row.no_location ? 'No location' : (row.lat != null ? Number(row.lat).toFixed(5) + ', ' + Number(row.lng).toFixed(5) : '');
+    return '<tr><td>' + esc(row.pacific) + '</td><td>' + esc(row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
+  }).join('') || '<tr><td colspan="5">No punches</td></tr>';
+}
+async function load() {
+  const params = rangeQuery();
+  document.getElementById('csv-link').href = '/api/time-clock/export.csv?' + params.toString();
+  document.getElementById('pdf-link').href = '/api/time-clock/timesheet.pdf?' + params.toString();
+  const res = await fetch('/api/time-clock?' + params.toString());
+  if (res.status === 401) { window.location = '/login'; return; }
+  if (!res.ok) { alert('Could not load timesheets'); return; }
+  render(await res.json());
+}
+document.getElementById('apply').addEventListener('click', load);
+document.getElementById('punch-rows').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-correct]');
+  if (!button) return;
+  const form = document.querySelector('[data-form="' + button.getAttribute('data-correct') + '"]');
+  form.classList.toggle('open');
+});
+document.getElementById('punch-rows').addEventListener('submit', async (event) => {
+  const form = event.target.closest('form');
+  if (!form) return;
+  event.preventDefault();
+  const reason = form.reason.value.trim();
+  if (!reason) { alert('A reason is required'); return; }
+  const body = {reason};
+  if (form.at_pacific.value) body.at_pacific = form.at_pacific.value;
+  if (form.action.value) body.action = form.action.value;
+  if (form.note.value) body.note = form.note.value;
+  const res = await fetch('/api/time-clock/' + form.getAttribute('data-form') + '/correct', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Correction was not saved'); return; }
+  load();
+});
+load();
+</script>
+</body>
+</html>

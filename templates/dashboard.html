@@ -89,6 +89,12 @@
                 <p>Manage user accounts</p>
             </a>
             {% endif %}
+            {% if 'time-clock' in modules %}
+            <a href="/punch" class="module">
+                <h3>Time Clock</h3>
+                <p>Punch in and out</p>
+            </a>
+            {% endif %}
         </div>
     </div>
 </body>
