@@ -43,8 +43,24 @@ th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
 <body>
 <div class="wrap">
 <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass">
+{% if not user %}
 <h1>Time Clock</h1>
-<p class="sub">{{ user.name }}</p>
+<p class="sub">Shop workers sign in with an employee number and PIN.</p>
+{% with messages = get_flashed_messages() %}
+{% if messages %}<div class="err">{{ messages[0] }}</div>{% endif %}
+{% endwith %}
+<form method="post" action="{{ url_for('punch_login') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label class="sub" for="employee_number" style="display:block;text-align:left">Employee number</label>
+<input id="employee_number" name="employee_number" class="note" autocomplete="username" inputmode="text" required>
+<label class="sub" for="pin" style="display:block;text-align:left">PIN</label>
+<input id="pin" name="pin" class="note" type="password" inputmode="numeric" autocomplete="current-password" minlength="4" maxlength="6" required>
+<button type="submit" class="punch-in">Sign in</button>
+</form>
+<p class="loc"><a href="{{ url_for('login', next='/punch') }}">Sign in with email</a></p>
+{% else %}
+<h1>Time Clock</h1>
+<p class="sub">{{ user.name }}{% if user.employee_number %} · {{ user.employee_number }}{% endif %}</p>
 <div id="error" class="err" hidden></div>
 <div class="status">
 <strong id="status-label">…</strong>
@@ -60,7 +76,7 @@ th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
 <button type="button" class="break" id="btn-break" disabled>Start break</button>
 <p class="loc" id="loc">Location is requested when you punch. The punch is saved even if you decline.</p>
 <div class="links">
-<a href="{{ url_for('dashboard') }}">Dashboard</a>
+{% if user.role != 'shop' %}<a href="{{ url_for('dashboard') }}">Dashboard</a>{% endif %}
 {% if can_manage %}<a href="{{ url_for('time_clock_admin') }}">Timesheets</a>{% endif %}
 <form method="post" action="{{ url_for('logout') }}" style="margin:0">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -73,7 +89,6 @@ th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
 <thead><tr><th>When (Pacific)</th><th>Action</th><th>Hours</th></tr></thead>
 <tbody id="history"><tr><td colspan="3">Loading…</td></tr></tbody>
 </table>
-</div>
 </div>
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <script>
@@ -142,5 +157,8 @@ document.getElementById('btn-break').addEventListener('click', (event) => punch(
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 load();
 </script>
+{% endif %}
+</div>
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
 </body>
 </html>

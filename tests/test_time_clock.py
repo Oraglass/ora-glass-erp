@@ -7,11 +7,14 @@ from tests.conftest import login, write_user
 from timeclock import pacific_date, replay, stamp, summarize
 
 
-def _employee(email, modules, manage_time=False):
+def _employee(email, modules, manage_time=False, uses_time_clock=False):
     write_user(email, 'employee', password='Validpass1')
     users = load_users()
     users[email]['modules'] = list(modules)
     users[email]['manage_time'] = manage_time
+    users[email]['uses_time_clock'] = uses_time_clock
+    if uses_time_clock and 'time-clock' not in users[email]['modules']:
+        users[email]['modules'].append('time-clock')
     save_users(users)
 
 
@@ -46,8 +49,8 @@ def test_hours_deduct_breaks_and_flag_a_missing_punch_out():
 
 def test_punch_flow_blocks_a_second_punch_in_and_keeps_location_optional(client):
     write_user('admin@oraglass.us', 'admin')
-    _employee('casey@oraglass.us', ['dashboard', 'time-clock'])
     write_user('boss@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor')
+    _employee('casey@oraglass.us', ['dashboard', 'time-clock'], uses_time_clock=True)
     assert login(client, 'admin@oraglass.us').status_code == 302
     rejected = client.post('/api/users', json={
         'name': 'Pat',
@@ -108,11 +111,80 @@ def test_punch_flow_blocks_a_second_punch_in_and_keeps_location_optional(client)
     assert client.post('/api/punches', json={'action': 'in'}).status_code == 403
 
 
+def test_shop_worker_uses_a_pin_and_cannot_open_other_modules(client):
+    write_user('admin@oraglass.us', 'admin')
+    _employee('riley@oraglass.us', ['dashboard', 'quotes', 'time-clock'], uses_time_clock=False)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    blocked = client.post('/api/users', json={
+        'name': 'Sam',
+        'role': 'shop',
+        'employee_number': '441',
+        'pin': '1234',
+        'modules': ['quotes', 'orders'],
+    })
+    assert blocked.status_code == 400
+    created = client.post('/api/users', json={
+        'name': 'Sam Shop',
+        'role': 'shop',
+        'employee_number': '441',
+        'pin': '1234',
+    })
+    assert created.status_code == 200
+    body = created.get_json()
+    assert body['account'] == 'shop:441'
+    assert 'setup_url' not in body
+    emailed = client.post('/api/users', json={
+        'name': 'Pat Shop',
+        'role': 'shop',
+        'email': 'pat.shop@oraglass.us',
+        'employee_number': '442',
+    })
+    assert emailed.status_code == 200
+    assert 'setup_url' in emailed.get_json()
+    reset = client.post('/api/users/shop:441/pin', json={'pin': '98765'})
+    assert reset.status_code == 200
+    assert client.post('/api/users/shop:441/pin', json={'pin': '12'}).status_code == 400
+    client.post('/logout')
+
+    assert login(client, 'riley@oraglass.us').status_code == 302
+    assert client.get('/punch').status_code in (302, 403)
+    assert client.post('/api/punches', json={'action': 'in'}).status_code == 403
+    client.post('/logout')
+
+    gate = client.post('/punch/login', data={'employee_number': '441', 'pin': '1234'})
+    assert gate.status_code == 200
+    assert b'Invalid employee number or PIN' in gate.data
+    signed = client.post('/punch/login', data={'employee_number': '441', 'pin': '98765'})
+    assert signed.status_code == 302
+    assert signed.headers['Location'].endswith('/punch')
+    with client.session_transaction() as sess:
+        assert sess.get('long_session') is True
+        assert sess.get('user') == 'shop:441'
+    page = client.get('/punch')
+    assert page.status_code == 200
+    assert b'href="/dashboard"' not in page.data
+    assert b'Sign out' in page.data
+    assert b'Sam Shop' in page.data
+    home = client.get('/')
+    assert home.status_code == 302
+    assert home.headers['Location'].endswith('/punch')
+    assert client.get('/dashboard').headers['Location'].endswith('/punch')
+    assert client.get('/quotes').headers['Location'].endswith('/punch')
+    assert client.get('/api/quotes').status_code == 403
+    assert client.get('/api/users').status_code == 403
+    assert client.post('/api/punches', json={'action': 'in', 'note': 'Bench'}).status_code == 200
+    assert client.post('/api/punches', json={'action': 'in'}).status_code == 409
+    for _ in range(5):
+        client.post('/punch/login', data={'employee_number': '999', 'pin': '0000'})
+    limited = client.post('/punch/login', data={'employee_number': '999', 'pin': '0000'})
+    assert limited.status_code == 429
+
+
 def test_manager_corrections_keep_the_original_and_exports(client):
     write_user('admin@oraglass.us', 'admin')
-    _employee('casey@oraglass.us', ['dashboard', 'time-clock'])
+    _employee('casey@oraglass.us', ['dashboard', 'time-clock'], uses_time_clock=True)
     _employee('payroll@oraglass.us', ['dashboard', 'time-clock'], manage_time=False)
-    _employee('lead@oraglass.us', ['dashboard', 'time-clock'], manage_time=True)
+    _employee('lead@oraglass.us', ['dashboard', 'time-clock'], manage_time=True, uses_time_clock=True)
     assert login(client, 'casey@oraglass.us').status_code == 302
     assert client.post('/api/punches', json={'action': 'in'}).status_code == 200
     punch_id = load_punches()[-1]['id']

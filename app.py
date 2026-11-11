@@ -139,6 +139,7 @@ LEGACY_STAFF_ROLES = ('sales', 'production', 'viewer', 'employee')
 ROLES = {
     'admin': {'name': 'Admin'},
     'employee': {'name': 'Ora Glass employee'},
+    'shop': {'name': 'Shop worker'},
     'customer': {'name': 'Customer'},
 }
 
@@ -203,6 +204,8 @@ def forbidden():
         return json_error('Access denied', 403)
     flash('Access denied.', 'error')
     user = current_user()
+    if user and user.get('role') == 'shop':
+        return redirect(url_for('punch'))
     if user:
         for item in MODULES:
             if item['endpoint'] == request.endpoint:
@@ -229,6 +232,8 @@ def effective_module_ids(user):
     role = user.get('role') or ''
     if role == 'admin':
         return list(MODULE_IDS)
+    if role == 'shop':
+        return []
     stored = user.get('modules', None)
     if role == 'customer':
         if stored is None:
@@ -261,13 +266,75 @@ def can_manage_time(user):
 
 def apply_manage_time(record, data):
     role = record.get('role')
-    if role == 'admin' or role == 'customer' or role not in LEGACY_STAFF_ROLES:
+    if role == 'admin' or role == 'customer' or role == 'shop' or role not in LEGACY_STAFF_ROLES:
         record['manage_time'] = False
         return
     if 'manage_time' in data:
         record['manage_time'] = bool(data.get('manage_time'))
     elif 'manage_time' not in record:
         record['manage_time'] = False
+
+
+def uses_time_clock(user):
+    """Shop workers and admins can punch. Other staff need Uses time clock."""
+    if not user or user.get('role') == 'customer':
+        return False
+    if user.get('role') in {'shop', 'admin'}:
+        return True
+    if 'uses_time_clock' in user:
+        return bool(user.get('uses_time_clock'))
+    return user_has_module(user, 'time-clock')
+
+
+def apply_uses_time_clock(record, data):
+    """Employees punch only when Uses time clock is on. Shop workers never get modules."""
+    role = record.get('role')
+    if role == 'shop':
+        record['modules'] = []
+        record['uses_time_clock'] = False
+        record['manage_time'] = False
+        return None
+    if role not in LEGACY_STAFF_ROLES:
+        record['uses_time_clock'] = False
+        return None
+    modules = list(record.get('modules') or [])
+    if 'uses_time_clock' in data:
+        enabled = bool(data.get('uses_time_clock'))
+    elif 'uses_time_clock' in record:
+        enabled = bool(record.get('uses_time_clock'))
+    else:
+        enabled = 'time-clock' in modules
+    modules = [module_id for module_id in modules if module_id != 'time-clock']
+    if enabled:
+        modules.append('time-clock')
+    record['modules'] = modules
+    record['uses_time_clock'] = enabled
+    return None
+
+
+def normalize_employee_number(value):
+    return re.sub(r'\s+', '', str(value or '')).strip().upper()
+
+
+def employee_number_ok(number):
+    return bool(number) and len(number) <= 20 and re.fullmatch(r'[A-Z0-9-]+', number) is not None
+
+
+def pin_ok(pin):
+    return isinstance(pin, str) and pin.isdigit() and 4 <= len(pin) <= 6
+
+
+def shop_account_key(number):
+    return 'shop:' + normalize_employee_number(number)
+
+
+def find_shop_by_number(number, users=None):
+    number = normalize_employee_number(number)
+    users = load_users() if users is None else users
+    for key, user in users.items():
+        if user.get('role') == 'shop' and normalize_employee_number(user.get('employee_number')) == number:
+            return key, user
+    return None, None
 
 
 def modules_label(user):
@@ -291,6 +358,11 @@ def apply_modules(record, data, preset_role=None):
     role = record.get('role')
     if role == 'admin':
         record.pop('modules', None)
+        return None
+    if role == 'shop':
+        if isinstance(data.get('modules'), list) and any(str(item or '').strip() for item in data.get('modules')):
+            return 'Shop workers cannot be given modules.'
+        record['modules'] = []
         return None
     if 'modules' not in data:
         if preset_role in LEGACY_ROLE_MODULES:
@@ -486,6 +558,10 @@ def public_user(user, customers, tiers):
         'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'manage_time': bool(user.get('manage_time')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'uses_time_clock': uses_time_clock(user) if user.get('role') != 'shop' else False,
+        'employee_number': user.get('employee_number') or '',
+        'has_pin': bool(user.get('pin_hash')),
+        'account': user.get('account') or user.get('email'),
     }
 
 
@@ -811,15 +887,17 @@ def handle_csrf(_error):
 
 @app.route('/')
 def index():
-    if current_user():
-        return redirect(url_for('dashboard'))
+    user = current_user()
+    if user:
+        return redirect(url_for('punch') if user.get('role') == 'shop' else url_for('dashboard'))
     return redirect(url_for('login'))
 
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user() and request.method == 'GET':
-        return redirect(url_for('dashboard'))
+        user = current_user()
+        return redirect(url_for('punch') if user.get('role') == 'shop' else url_for('dashboard'))
     if request.method == 'POST':
         email = normalize_email(request.form.get('email'))
         password = request.form.get('password') or ''
@@ -851,6 +929,9 @@ def login():
         session.permanent = True
         if user.get('must_change_password'):
             return redirect(url_for('change_password'))
+        if user.get('role') == 'shop':
+            session['long_session'] = True
+            return redirect(url_for('punch'))
         return redirect(next_url or url_for('dashboard'))
     return render_template('login.html', next_url=safe_next(request.args.get('next')) or '')
 
@@ -1242,7 +1323,7 @@ def users_page():
         tiers=ordered_tiers(),
         roles=ROLES,
         can_manage=user.get('role') == 'admin',
-        module_catalog=[{'id': item['id'], 'label': item['label']} for item in MODULES],
+        module_catalog=[{'id': item['id'], 'label': item['label']} for item in MODULES if item['id'] != 'time-clock'],
         customer_modules=[{'id': item['id'], 'label': item['label']} for item in MODULES if item['id'] in CUSTOMER_CEILING],
     )
 
@@ -1390,9 +1471,83 @@ def delete_customer(cid):
 def get_users():
     customers = load_customers()
     tiers = load_tiers()
-    rows = [public_user(user, customers, tiers) for user in load_users().values()]
+    rows = []
+    for key, user in load_users().items():
+        view = dict(user)
+        view['account'] = key
+        rows.append(public_user(view, customers, tiers))
     rows.sort(key=lambda row: (row.get('company') or '', row.get('email') or ''))
     return jsonify(rows)
+
+
+def _apply_shop_fields(user, data, users, current_key=None):
+    """Shop workers have a name and either an employee number, an email, or both. No modules."""
+    if 'employee_number' in data or current_key is None:
+        number = normalize_employee_number(data.get('employee_number'))
+        if number and not employee_number_ok(number):
+            return 'Employee number must be letters, digits, or dashes.'
+        if number:
+            other, _found = find_shop_by_number(number, users)
+            if other and other != current_key:
+                return 'That employee number is already in use.'
+        user['employee_number'] = number or None
+    if 'pin' in data and str(data.get('pin') or '').strip():
+        pin = str(data.get('pin')).strip()
+        if not pin_ok(pin):
+            return 'PIN must be 4 to 6 digits.'
+        user['pin_hash'] = hash_password(pin)
+    if 'email' in data or current_key is None:
+        email = normalize_email(data.get('email'))
+        if email and not valid_email(email):
+            return 'Email is not valid.'
+        if email and email != current_key and email in users:
+            return 'A user with that email already exists.'
+        user['email'] = email or None
+    user['role'] = 'shop'
+    user['customer_id'] = None
+    user['tier_override'] = None
+    user['modules'] = []
+    user['manage_time'] = False
+    user['uses_time_clock'] = False
+    user['customer_subrole'] = None
+    if not user.get('employee_number') and not valid_email(user.get('email')):
+        return 'Enter an employee number or an email.'
+    return None
+
+
+def _add_shop_worker(data):
+    if isinstance(data.get('modules'), list) and any(str(item or '').strip() for item in data.get('modules')):
+        return json_error('Shop workers cannot be given modules.', 400)
+    name = clean_text(data.get('name'), 120)
+    if not name:
+        return json_error('Name is required.', 400)
+    users = load_users()
+    record = new_user(email='', name=name, role='shop')
+    error = _apply_shop_fields(record, data, users, current_key=None)
+    if error:
+        return json_error(error, 400)
+    email = record.get('email') if valid_email(record.get('email')) else ''
+    key = email or shop_account_key(record.get('employee_number'))
+    if key in users:
+        return json_error('A user with that email already exists.', 409)
+    record['account'] = key
+    setup_url = None
+    if email and not record.get('pin_hash') and not data.get('password'):
+        token = attach_invite(record)
+        setup_url = setup_url_for(token)
+    elif data.get('password'):
+        ok, message = password_is_strong(data.get('password'))
+        if not ok:
+            return json_error(message, 400)
+        record['password_hash'] = hash_password(data.get('password'))
+        record['must_change_password'] = bool(data.get('temporary', True))
+    users[key] = record
+    save_users(users)
+    payload = {'success': True, 'email': email, 'account': key}
+    if setup_url:
+        payload['setup_url'] = setup_url
+        payload['expires_in_days'] = 7
+    return jsonify(payload)
 
 
 @app.route('/api/users', methods=['POST'])
@@ -1401,6 +1556,9 @@ def add_user():
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
+    role, _preset = normalize_role(clean_text(data.get('role'), 20))
+    if role == 'shop':
+        return _add_shop_worker(data)
     email = normalize_email(data.get('email'))
     if not valid_email(email):
         return json_error('A valid email is required.', 400)
@@ -1441,6 +1599,7 @@ def add_user():
         return json_error(subrole_error, 400)
     apply_order_privileges(record, data)
     apply_manage_time(record, data)
+    apply_uses_time_clock(record, data)
     setup_url = None
     password = data.get('password') or ''
     if password:
@@ -1496,9 +1655,10 @@ def update_user(email):
         if tier_override and tier_override not in load_tiers():
             return json_error('Unknown pricing tier.', 400)
         user['tier_override'] = tier_override
-    allowed_error = apply_allowed_tiers(user, data, load_customers(), load_tiers())
-    if allowed_error:
-        return json_error(allowed_error, 400)
+    if user.get('role') != 'shop':
+        allowed_error = apply_allowed_tiers(user, data, load_customers(), load_tiers())
+        if allowed_error:
+            return json_error(allowed_error, 400)
     module_error = apply_modules(user, data)
     if module_error:
         return json_error(module_error, 400)
@@ -1507,6 +1667,11 @@ def update_user(email):
         return json_error(subrole_error, 400)
     apply_order_privileges(user, data)
     apply_manage_time(user, data)
+    apply_uses_time_clock(user, data)
+    if user.get('role') == 'shop':
+        pin_error = _apply_shop_fields(user, data, users, current_key=email)
+        if pin_error:
+            return json_error(pin_error, 400)
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -1545,6 +1710,8 @@ def invite_user(email):
     user = users.get(email)
     if not user:
         return json_error('Not found', 404)
+    if user.get('role') == 'shop' and not valid_email(user.get('email')):
+        return json_error('Add an email before sending a setup link.', 400)
     token = attach_invite(user)
     users[email] = user
     save_users(users)
@@ -2945,7 +3112,21 @@ def _own_clock(user):
 
 
 def _can_punch(user):
-    return bool(user) and user.get('role') != 'customer' and user_has_module(user, 'time-clock')
+    return uses_time_clock(user)
+
+
+def _shop_gate():
+    user = current_user()
+    if not user or user.get('role') != 'shop':
+        return None
+    if request.endpoint in {'punch', 'punch_login', 'my_punches', 'create_punch', 'logout', 'web_manifest', 'service_worker', 'static'}:
+        return None
+    if wants_json():
+        return json_error('Access denied', 403)
+    return redirect(url_for('punch'))
+
+
+app.before_request(_shop_gate)
 
 
 @app.route('/manifest.webmanifest')
@@ -2963,14 +3144,35 @@ def service_worker():
     return response
 
 
-@app.route('/punch')
-@module_required('time-clock')
+@app.route('/punch', methods=['GET'])
 def punch():
     user = current_user()
-    if user.get('role') == 'customer':
+    if user and not _can_punch(user):
         return forbidden()
-    _remember_phone()
-    return render_template('punch.html', user=user, can_manage=can_manage_time(user))
+    if user:
+        _remember_phone()
+    return render_template('punch.html', user=user, can_manage=can_manage_time(user) if user else False)
+
+
+@app.route('/punch/login', methods=['POST'])
+def punch_login():
+    number = normalize_employee_number(request.form.get('employee_number'))
+    pin = str(request.form.get('pin') or '').strip()
+    ip = request.remote_addr or ''
+    if login_limiter.is_limited('pin:' + number, ip):
+        flash('Too many login attempts. Try again in a few minutes.', 'error')
+        return render_template('punch.html', user=None, can_manage=False), 429
+    key, user = find_shop_by_number(number)
+    if not user or not user.get('active', True) or not verify_password(user.get('pin_hash'), pin):
+        login_limiter.record_failure('pin:' + number, ip)
+        flash('Invalid employee number or PIN.', 'error')
+        return render_template('punch.html', user=None, can_manage=False)
+    login_limiter.clear('pin:' + number, ip)
+    session.clear()
+    session['user'] = key
+    session.permanent = True
+    session['long_session'] = True
+    return redirect(url_for('punch'))
 
 
 @app.route('/time-clock')
@@ -2982,7 +3184,7 @@ def time_clock_admin():
 
 
 @app.route('/api/punches/me', methods=['GET'])
-@module_required('time-clock')
+@login_required
 def my_punches():
     user = current_user()
     if not _can_punch(user):
@@ -2991,8 +3193,28 @@ def my_punches():
     return jsonify(_own_clock(user))
 
 
+@app.route('/api/users/<path:account>/pin', methods=['POST'])
+@admin_required
+def reset_shop_pin(account):
+    account = normalize_email(account)
+    data = json_body() or {}
+    pin = str(data.get('pin') or '').strip()
+    if not pin_ok(pin):
+        return json_error('PIN must be 4 to 6 digits.', 400)
+    users = load_users()
+    user = users.get(account)
+    if not user:
+        return json_error('Not found', 404)
+    if user.get('role') != 'shop':
+        return json_error('Only shop workers use a PIN.', 400)
+    user['pin_hash'] = hash_password(pin)
+    users[account] = user
+    save_users(users)
+    return jsonify({'success': True})
+
+
 @app.route('/api/punches', methods=['POST'])
-@module_required('time-clock')
+@login_required
 def create_punch():
     user = current_user()
     if not _can_punch(user):
