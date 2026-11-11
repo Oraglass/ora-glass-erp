@@ -744,70 +744,60 @@ def export_quote():
 
     has_size = any(item.get('sqf') for item in items)
     currency = data.get('currency', 'usd')
+    total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
+
+    def amount(value, fallback=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
     if has_size:
-        if currency == 'cad':
-            table_data = [[
-                Paragraph('<b>ID</b>', header_cell),
-                Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-                Paragraph('<b>SQF</b>', header_cell),
-                Paragraph('<b>CAD/SQF</b>', header_cell),
-                Paragraph('<b>CAD/PC</b>', header_cell),
-                Paragraph('<b>TOTAL CAD</b>', header_cell)
-            ]]
-        else:
-            table_data = [[
-                Paragraph('<b>ID</b>', header_cell),
-                Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-                Paragraph('<b>SQF</b>', header_cell),
-                Paragraph('<b>USD/SQF</b>', header_cell),
-                Paragraph('<b>USD/PC</b>', header_cell),
-                Paragraph('<b>TOTAL USD</b>', header_cell)
-            ]]
+        unit = 'CAD' if currency == 'cad' else 'USD'
+        table_data = [[
+            Paragraph('<b>ID</b>', header_cell),
+            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
+            Paragraph('<b>SQF</b>', header_cell),
+            Paragraph(f'<b>{unit}/SQF</b>', header_cell),
+            Paragraph(f'<b>{unit}/PC</b>', header_cell),
+            Paragraph(f'<b>TOTAL {unit}</b>', header_cell)
+        ]]
         total_sqf = 0
         total_pcs = 0
         total_line_sum = 0
         for i, item in enumerate(items, 1):
-            price_sqf = float(item.get('price_sqf', 0))
-            price_pc = float(item.get('price_pc', 0))
-            sqf = float(item.get('sqf', 0))
-            pcs = int(item.get('pcs', 1))
+            price_sqf = amount(item.get('price_sqf', 0))
+            price_pc = amount(item.get('price_pc', 0))
+            sqf = amount(item.get('sqf', 0))
+            try:
+                pcs = int(item.get('pcs', 1) or 1)
+            except (TypeError, ValueError):
+                pcs = 1
+            # Stored line prices are already in the quote currency. Sum them as shown.
+            if item.get('total') not in (None, ''):
+                line_total = amount(item.get('total'))
+            else:
+                line_total = price_pc * pcs
             total_sqf += sqf * pcs
             total_pcs += pcs
-            total_line_sum += price_pc * pcs
-            pcs = int(item.get('pcs', 1))
-            sqf_per_pc = float(item.get('sqf', 0))
-            total_sqf_line = sqf_per_pc * pcs
-            price_pc = float(item.get('price_pc', 0))
-            total_line = price_pc * pcs
+            total_line_sum += line_total
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(escape(str(item.get('name', '') or '')), cell_style),
-                Paragraph(f"{total_sqf_line:.2f}", cell_style),
+                Paragraph(f"{sqf * pcs:.2f}", cell_style),
                 Paragraph(f"${price_sqf:.2f}", cell_style),
                 Paragraph(f"${price_pc:.2f}", cell_style),
-                Paragraph(f"${total_line:.2f}", cell_style)
+                Paragraph(f"${line_total:.2f}", cell_style)
             ])
-        total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
-        if currency == 'cad':
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
-                Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'<b>${total_line_sum*1.4:.2f}</b>', total_style)
-            ])
-            col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
-        else:
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
-                Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
-            ])
-            col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
+        table_data.append([
+            Paragraph('', cell_style),
+            Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
+            Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
+            Paragraph('', cell_style),
+            Paragraph('', cell_style),
+            Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
+        ])
+        col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
     else:
         curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
         table_data = [[
@@ -815,13 +805,21 @@ def export_quote():
             Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
             Paragraph(f'<b>{curr_label}</b>', header_cell)
         ]]
+        total_price = 0.0
         for i, item in enumerate(items, 1):
-            price = escape(str(item.get('price', '0.00')))
+            price_value = amount(item.get('price', 0))
+            total_price += price_value
+            price = escape(f'{price_value:.2f}')
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(escape(str(item.get('name', '') or '')), cell_style),
                 Paragraph(f"${price}", cell_style)
             ])
+        table_data.append([
+            Paragraph('', cell_style),
+            Paragraph('<b>TOTAL</b>', total_style),
+            Paragraph(f'<b>${total_price:.2f}</b>', total_style),
+        ])
         col_widths = [0.4*inch, 5.5*inch, 1.1*inch]
 
     items_table = Table(table_data, colWidths=col_widths)

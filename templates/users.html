@@ -12,10 +12,19 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .card{background:white;border-radius:8px;padding:20px}
 .btn{background:#C41E3A;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer}
 .btn-secondary{background:#333}
-.btn-small{background:none;border:none;color:#C41E3A;cursor:pointer;padding:0 6px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:20px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
+td.actions{width:15.5rem;vertical-align:middle}
+.row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.row-actions-main{display:flex;flex-wrap:wrap;gap:6px}
+.act{white-space:nowrap;font:600 12px/1.2 'Segoe UI',Arial,sans-serif;padding:6px 10px;border-radius:4px;cursor:pointer;background:#fff;border:1px solid #d0d0d0;color:#333}
+.act:hover{background:#f5f5f5;border-color:#bbb}
+.act:focus-visible{outline:2px solid #C41E3A;outline-offset:2px}
+.act-primary{border-color:#C41E3A;color:#C41E3A}
+.act-primary:hover{background:#fde8ec;border-color:#C41E3A}
+.act-danger{border-color:#e7b3bc;color:#9f1239}
+.act-danger:hover{background:#fde8ec;border-color:#C41E3A}
 .role{padding:4px 8px;border-radius:4px;font-size:11px}
 .role.admin{background:#cce5ff;color:#004085}
 .role.sales{background:#d4edda;color:#155724}
@@ -196,12 +205,12 @@ function render() {
   tbody.innerHTML = users.map(user => {
     const email = esc(user.email);
     const self = user.email === CURRENT_EMAIL;
-    const del = self ? '' : '<button class="btn-small" type="button" data-action="delete" data-email="' + email + '">Delete</button>';
-    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role) + '</span></td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td><td>'
-      + '<button class="btn-small" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
-      + '<button class="btn-small" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
-      + '<button class="btn-small" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
-      + del + '</td></tr>';
+    const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + email + '">Delete</button>';
+    return '<tr><td>' + esc(user.name) + '</td><td>' + email + '</td><td><span class="role ' + esc(user.role) + '">' + esc(user.role) + '</span></td><td>' + esc(user.company || '-') + '</td><td>' + esc(user.company_tier_label || '-') + '</td><td>' + userTierLabel(user) + '</td><td>' + allowedLabel(user) + '</td><td>' + esc(accessLabel(user)) + '</td><td class="actions"><div class="row-actions"><div class="row-actions-main">'
+      + '<button class="act act-primary" type="button" data-action="edit" data-email="' + email + '">Edit</button>'
+      + '<button class="act act-secondary" type="button" data-action="invite" data-email="' + email + '">Setup link</button>'
+      + '<button class="act act-secondary" type="button" data-action="temp" data-email="' + email + '">Temp password</button>'
+      + '</div>' + del + '</div></td></tr>';
   }).join('');
 }
 async function loadUsers() {
