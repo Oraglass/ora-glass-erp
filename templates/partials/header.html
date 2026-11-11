@@ -1,4 +1,8 @@
 <style>
+.header { align-items: center; }
+.header a.brand { display: inline-flex; align-items: center; background: #fff; border-radius: 6px; padding: 4px 8px; line-height: 0; text-decoration: none; }
+.header a.brand img { display: block; height: 52px; width: auto; max-height: 52px; }
+.header a.brand:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 .header button.linkish { background: none; border: 0; color: #fff; cursor: pointer; font: inherit; margin-left: 15px; text-decoration: underline; padding: 0; }
 .module-nav { background: #9f1830; display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 30px; }
 .module-nav a { color: #fff; font-size: 13px; text-decoration: none; }
@@ -40,7 +44,7 @@
 })();
 </script>
 <div class="header">
-  <h1>ORA GLASS ERP</h1>
+  <a class="brand" href="{{ url_for('dashboard') }}"><img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass"></a>
   <div class="user-info">
     {% if show_back and has_dashboard %}
     <a href="{{ url_for('dashboard') }}">← Dashboard</a>
