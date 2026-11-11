@@ -6,29 +6,255 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-size:22px}.header a{color:white;text-decoration:none}
-.container{max-width:1200px;margin:20px auto;padding:0 20px}
-.card{background:white;border-radius:8px;padding:20px}
-table{width:100%;border-collapse:collapse;font-size:13px}
+.container{max-width:1100px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:20px;margin-bottom:16px}
+.filters,.row{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin:12px 0}
+.filters select,.filters input,.row input,.row select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee}
-.status{padding:4px 8px;border-radius:4px;font-size:11px}
-.status.paid{background:#d4edda;color:#155724}
-.status.pending{background:#fff3cd;color:#856404}
-.status.overdue{background:#f8d7da;color:#721c24}
+.num{text-align:right}
+a{color:#C41E3A}
+.note{color:#666;font-size:13px;margin-top:6px}
+.badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.unpaid{background:#fff3cd;color:#856404}
+.badge.partial{background:#e7f1ff;color:#1d4ed8}
+.badge.paid{background:#d4edda;color:#155724}
+.badge.void{background:#f8d7da;color:#721c24}
+h2,h3{color:#333}
 </style>
 </head>
 <body>
 {% set show_back = true %}
 {% include 'partials/header.html' %}
-<div class="container"><div class="card">
-<h2 style="margin-bottom:20px;color:#333">Invoices</h2>
-{% if note %}<p style="color:#666;margin-bottom:12px">{{ note }}</p>{% endif %}
+<div class="container">
+<div class="card">
+<h2>Invoices</h2>
+{% if note %}<p class="note">{{ note }}</p>{% endif %}
+<div class="filters">
+{% if staff_view %}<select id="filter-invoice-customer"><option value="">All customers</option></select>{% endif %}
+<input type="date" id="filter-invoice-from" aria-label="From date">
+<input type="date" id="filter-invoice-to" aria-label="To date">
+<select id="filter-invoice-status" aria-label="Invoice status">
+<option value="">All statuses</option>
+<option value="unpaid">Unpaid</option>
+<option value="partial">Partially paid</option>
+<option value="paid">Paid</option>
+</select>
+<button type="button" class="btn" id="invoice-filter">Filter</button>
+</div>
 <table>
-<thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Amount</th><th>Status</th><th>Due Date</th></tr></thead>
-<tbody id="invoice-list"><tr><td colspan="6" style="text-align:center;color:#666">No invoices found</td></tr></tbody>
+<thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
+<tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
 </table>
-</div></div>
+<div id="invoice-detail"></div>
+</div>
+<div class="card" id="payment-screen">
+<h3>Payments</h3>
+<p class="note" id="credit-summary"></p>
+{% if can_record %}
+<form id="payment-form">
+<div class="row">
+<select id="pay-customer" required aria-label="Customer"></select>
+<input type="date" id="pay-date" required aria-label="Payment date">
+<input type="number" id="pay-amount" min="0.01" step="0.01" placeholder="Amount" required aria-label="Amount">
+<select id="pay-currency" aria-label="Currency"><option value="usd">USD</option><option value="cad">CAD</option></select>
+<select id="pay-method" aria-label="Method">
+<option value="cheque">Cheque</option>
+<option value="e-transfer">E-transfer</option>
+<option value="wire">Wire</option>
+<option value="card">Card</option>
+</select>
+<input id="pay-reference" placeholder="Reference" aria-label="Reference">
+</div>
+<textarea id="pay-notes" rows="2" placeholder="Notes" style="width:100%"></textarea>
+<button class="btn" type="submit">Record payment</button>
+</form>
+{% else %}
+<p class="note">Payments and allocations are read-only on this account.</p>
+{% endif %}
+<table>
+<thead><tr><th>Date</th><th>Customer</th><th>Method</th><th class="num">Amount</th><th class="num">Unallocated</th><th>Status</th><th></th></tr></thead>
+<tbody id="payment-list"><tr><td colspan="7" style="color:#666">No payments</td></tr></tbody>
+</table>
+{% if can_record %}
+<div id="allocation-form" class="row">
+<select id="alloc-payment" aria-label="Payment"></select>
+<select id="alloc-type" aria-label="Apply to"><option value="order">Order prepayment</option><option value="invoice">Invoice</option></select>
+<input id="alloc-target" type="number" min="1" placeholder="Order or invoice id" aria-label="Target">
+<input id="alloc-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Allocation amount">
+<button type="button" class="btn" id="alloc-save">Allocate</button>
+</div>
+{% endif %}
+</div>
+</div>
+<script>
+const STAFF = {{ staff_view|tojson }};
+const CAN_RECORD = {{ can_record|tojson }};
+const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function money(currency, amount) {
+  return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
+}
+function query() {
+  const params = new URLSearchParams();
+  if (STAFF) {
+    const customer = document.getElementById('filter-invoice-customer').value;
+    if (customer) params.set('customer_id', customer);
+  }
+  const from = document.getElementById('filter-invoice-from').value;
+  const to = document.getElementById('filter-invoice-to').value;
+  const status = document.getElementById('filter-invoice-status').value;
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (status) params.set('status', status);
+  return params;
+}
+async function loadCustomers() {
+  if (!STAFF) return [];
+  const res = await fetch('/api/order-customers');
+  if (!res.ok) return [];
+  const rows = await res.json();
+  const options = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  const filter = document.getElementById('filter-invoice-customer');
+  if (filter) filter.innerHTML = options;
+  const pay = document.getElementById('pay-customer');
+  if (pay) pay.innerHTML = rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  return rows;
+}
+function renderInvoices(rows) {
+  const body = document.getElementById('invoice-list');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No invoices found</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date) + '</td></tr>').join('');
+}
+function renderDetail(invoice) {
+  const box = document.getElementById('invoice-detail');
+  if (!invoice) { box.innerHTML = ''; return; }
+  const lines = (invoice.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + money(invoice.currency, item.total) + '</td></tr>').join('');
+  const charges = (invoice.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td></td><td class="num">' + money(invoice.currency, charge.amount) + '</td></tr>').join('');
+  box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
+    + '<p class="note">' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + '</p>'
+    + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
+    + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
+    + '<p class="note">IGU subtotal ' + money(invoice.currency, invoice.igu_subtotal) + ' · Discount ' + money(invoice.currency, invoice.discount_amount) + ' · IGU total ' + money(invoice.currency, invoice.igu_total) + ' · Grand total ' + money(invoice.currency, invoice.total) + ' · Balance due ' + money(invoice.currency, invoice.balance) + '</p>';
+}
+async function loadInvoices() {
+  const res = await fetch('/api/invoices?' + query().toString());
+  if (res.status === 401) { window.location = '/login'; return; }
+  if (!res.ok) return;
+  renderInvoices(await res.json());
+}
+function renderPayments(rows) {
+  const body = document.getElementById('payment-list');
+  const select = document.getElementById('alloc-payment');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7" style="color:#666">No payments</td></tr>';
+    if (select) select.innerHTML = '';
+    return;
+  }
+  body.innerHTML = rows.map(row => {
+    const status = row.voided ? '<span class="badge void">Void</span>' : '<span class="badge paid">Open</span>';
+    const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
+    return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + voidButton + '</td></tr>';
+  }).join('');
+  if (select) {
+    select.innerHTML = rows.filter(row => !row.voided && Number(row.unallocated) > 0).map(row => '<option value="' + esc(row.id) + '">#' + esc(row.id) + ' ' + esc(row.company) + ' ' + money(row.currency, row.unallocated) + ' left</option>').join('');
+  }
+}
+async function loadPayments() {
+  const params = new URLSearchParams();
+  if (STAFF) {
+    const customer = document.getElementById('filter-invoice-customer');
+    if (customer && customer.value) params.set('customer_id', customer.value);
+  }
+  const res = await fetch('/api/payments?' + params.toString());
+  if (!res.ok) return;
+  renderPayments(await res.json());
+}
+async function loadCredit() {
+  const params = new URLSearchParams();
+  if (STAFF) {
+    const customer = (document.getElementById('pay-customer') || {}).value || (document.getElementById('filter-invoice-customer') || {}).value;
+    if (!customer) { document.getElementById('credit-summary').textContent = ''; return; }
+    params.set('customer_id', customer);
+  }
+  const res = await fetch('/api/credit?' + params.toString());
+  if (!res.ok) return;
+  const credit = await res.json();
+  document.getElementById('credit-summary').textContent = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit) + '. Available ' + money(credit.currency, credit.available_credit) + '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '.';
+}
+document.getElementById('invoice-filter').addEventListener('click', () => { loadInvoices(); loadPayments(); loadCredit(); });
+document.getElementById('payment-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-void]');
+  if (!button) return;
+  const reason = prompt('Reason for voiding this payment');
+  if (!reason) return;
+  const res = await fetch('/api/payments/' + button.getAttribute('data-void') + '/void', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not void the payment'); return; }
+  loadPayments();
+  loadInvoices();
+  loadCredit();
+});
+const form = document.getElementById('payment-form');
+if (form) {
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const res = await fetch('/api/payments', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        customer_id: document.getElementById('pay-customer').value,
+        date: document.getElementById('pay-date').value,
+        amount: document.getElementById('pay-amount').value,
+        currency: document.getElementById('pay-currency').value,
+        method: document.getElementById('pay-method').value,
+        reference: document.getElementById('pay-reference').value,
+        notes: document.getElementById('pay-notes').value
+      })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not record the payment'); return; }
+    form.reset();
+    loadPayments();
+    loadCredit();
+  });
+}
+const alloc = document.getElementById('alloc-save');
+if (alloc) {
+  alloc.addEventListener('click', async () => {
+    const paymentId = document.getElementById('alloc-payment').value;
+    if (!paymentId) return;
+    const res = await fetch('/api/payments/' + paymentId + '/allocations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({allocations: [{
+        target_type: document.getElementById('alloc-type').value,
+        target_id: Number(document.getElementById('alloc-target').value),
+        amount: Number(document.getElementById('alloc-amount').value)
+      }]})
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not allocate the payment'); return; }
+    loadPayments();
+    loadInvoices();
+    loadCredit();
+    if (FOCUS) loadDetail();
+  });
+}
+async function loadDetail() {
+  if (!FOCUS) return;
+  const res = await fetch('/api/invoices/' + FOCUS);
+  if (res.ok) renderDetail(await res.json());
+}
+loadCustomers().then(() => { loadInvoices(); loadPayments(); loadCredit(); loadDetail(); });
+</script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 
@@ -220,6 +221,104 @@ def append_order(order):
         stored['id'] = max([item.get('id') or 0 for item in orders] or [0]) + 1
         orders.append(stored)
         atomic_write_json(path, orders)
+        return stored
+
+
+def update_order(order_id, mutator):
+    """Replace one order under the file lock.
+
+    mutator(order) returns (new_order, error). An error leaves the file unchanged.
+    """
+    path = orders_path()
+    with lock_for(path):
+        orders = read_json(path, [])
+        if not isinstance(orders, list):
+            orders = []
+        for index, row in enumerate(orders):
+            if row.get('id') == order_id:
+                updated, error = mutator(dict(row))
+                if error:
+                    return None, error
+                orders[index] = updated
+                atomic_write_json(path, orders)
+                return updated, None
+    return None, 'Not found'
+
+
+def invoices_path():
+    explicit = os.environ.get('INVOICES_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'invoices.json')
+
+
+def load_invoices():
+    path = invoices_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_invoices(invoices):
+    if not isinstance(invoices, list):
+        raise TypeError('invoices must be a list')
+    path = invoices_path()
+    with lock_for(path):
+        atomic_write_json(path, invoices)
+
+
+def payments_path():
+    explicit = os.environ.get('PAYMENTS_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'payments.json')
+
+
+def load_payments():
+    path = payments_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_payments(payments):
+    if not isinstance(payments, list):
+        raise TypeError('payments must be a list')
+    path = payments_path()
+    with lock_for(path):
+        atomic_write_json(path, payments)
+
+
+def append_payment(payment):
+    path = payments_path()
+    with lock_for(path):
+        payments = read_json(path, [])
+        if not isinstance(payments, list):
+            payments = []
+        stored = dict(payment)
+        stored['id'] = max([item.get('id') or 0 for item in payments] or [0]) + 1
+        payments.append(stored)
+        atomic_write_json(path, payments)
+        return stored
+
+
+def append_invoice(invoice):
+    path = invoices_path()
+    with lock_for(path):
+        invoices = read_json(path, [])
+        if not isinstance(invoices, list):
+            invoices = []
+        stored = dict(invoice)
+        stored['id'] = max([item.get('id') or 0 for item in invoices] or [0]) + 1
+        highest = 0
+        for item in invoices:
+            match = re.fullmatch(r'INV-(\d+)', str(item.get('number') or ''))
+            if match:
+                highest = max(highest, int(match.group(1)))
+        if not stored.get('number'):
+            stored['number'] = f'INV-{highest + 1:04d}'
+        invoices.append(stored)
+        atomic_write_json(path, invoices)
         return stored
 
 

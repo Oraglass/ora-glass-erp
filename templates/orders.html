@@ -9,14 +9,30 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .container{max-width:1100px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
 .filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
-.filters select,.filters input{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+.btn.small{padding:4px 8px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 .num{text-align:right;white-space:nowrap}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:8px}
+.badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.approved{background:#fff3cd;color:#856404}
+.badge.sent{background:#e7f1ff;color:#1d4ed8}
+.badge.made{background:#efe7ff;color:#6d28d9}
+.badge.delivered{background:#d4edda;color:#155724}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.editor{border:1px solid #eee;border-radius:8px;padding:16px;margin-top:12px;background:#fafafa}
+.edit-grid{display:grid;grid-template-columns:1.4fr repeat(4, .7fr) auto;gap:8px;align-items:end;margin-bottom:8px}
+.totals{max-width:420px;margin-left:auto}
+.totals td{border:0;padding:4px 0}
+.coverage{background:#f7f7f8;border-radius:8px;padding:12px 14px;margin-top:12px}
+.log{margin-top:18px}
+.log li{margin:6px 0}
+@media print {.filters,.actions,.editor,.header,.module-nav{display:none!important}}
 </style>
 </head>
 <body>
@@ -26,8 +42,8 @@ a{color:#C41E3A}
 <h2 style="color:#333">Production orders</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <p class="note" id="price-note"></p>
-{% if staff_view %}
 <div class="filters">
+{% if staff_view %}
 <select id="order-customer"><option value="">All customers</option></select>
 <input type="date" id="order-from" aria-label="From date">
 <input type="date" id="order-to" aria-label="To date">
@@ -36,19 +52,76 @@ a{color:#C41E3A}
 <option value="total_desc">Total high to low</option>
 <option value="total_asc">Total low to high</option>
 </select>
+{% endif %}
+<select id="order-status" aria-label="Status">
+<option value="">All statuses</option>
+<option value="approved">Approved</option>
+<option value="sent">Sent to production</option>
+<option value="made">Made</option>
+<option value="delivered">Delivered</option>
+</select>
 <button type="button" class="btn" id="order-filter">Filter</button>
 </div>
-{% endif %}
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
 </table>
 <div id="order-detail" style="margin-top:24px"></div>
+{% if can_edit %}
+<div id="order-editor" class="editor" hidden>
+<h3 style="color:#333;margin-bottom:8px">Edit order</h3>
+<p class="note" id="edit-lock-note"></p>
+<div class="edit-grid" style="grid-template-columns:1fr 1fr">
+<label>Project<input id="order-project" type="text"></label>
+<label>Customer notes<textarea id="order-notes" rows="2"></textarea></label>
+</div>
+<div id="order-lines"></div>
+<div class="edit-grid">
+<select id="add-glass"></select>
+<input id="add-width" type="number" min="0" step="0.01" placeholder="Width" aria-label="Width">
+<input id="add-height" type="number" min="0" step="0.01" placeholder="Height" aria-label="Height">
+<select id="add-unit" aria-label="Unit"><option value="in">in</option><option value="mm">mm</option></select>
+<input id="add-qty" type="number" min="1" step="1" value="1" aria-label="Quantity">
+<button type="button" class="btn small" id="add-line">Add line</button>
+</div>
+<div class="edit-grid" style="grid-template-columns:160px 140px 1fr">
+<label>Discount
+<select id="order-discount-type"><option value="percent">Percent</option><option value="amount">Fixed amount</option></select>
+</label>
+<label>Value<input id="order-discount-value" type="number" min="0" step="0.01" value="0"></label>
+<span class="note">Line prices are recalculated at this order's tier when you save. The discount applies to the IGU total only.</span>
+</div>
+<h4 style="margin:12px 0 6px">Extra charges</h4>
+<div id="extra-charges"></div>
+<div class="edit-grid" style="grid-template-columns:220px 140px auto">
+<input id="extra-label" list="charge-labels" placeholder="Delivery, Crane, Other" aria-label="Charge label">
+<datalist id="charge-labels"><option value="Delivery"><option value="Crane"><option value="Other"></datalist>
+<input id="extra-amount" type="number" min="0" step="0.01" placeholder="Amount" aria-label="Charge amount">
+<button type="button" class="btn small secondary" id="add-extra">Add charge</button>
+</div>
+<table class="totals">
+<tr><td>IGU subtotal</td><td class="num" id="igu-subtotal"></td></tr>
+<tr><td>Discount</td><td class="num" id="discount-amount"></td></tr>
+<tr><td>IGU total</td><td class="num" id="igu-total"></td></tr>
+<tr><td><b>Grand total</b></td><td class="num"><b id="grand-total"></b></td></tr>
+</table>
+<div class="actions">
+<button type="button" class="btn" id="save-order">Save order</button>
+<button type="button" class="btn secondary" id="cancel-edit">Cancel</button>
+</div>
+</div>
+{% endif %}
 </div></div>
 <script>
 const PRICES = {{ prices_visible|tojson }};
 const STAFF = {{ staff_view|tojson }};
+const CAN_EDIT = {{ can_edit|tojson }};
+const CAN_STATUS = {{ can_status|tojson }};
+const IS_ADMIN = {{ is_admin|tojson }};
+const GLASS = {{ glass_names|tojson }};
 const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
+let currentOrder = null;
+let draft = null;
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -56,50 +129,220 @@ function esc(value) {
 }
 function money(order, amount) {
   if (!PRICES || amount == null) return '';
-  return esc(String(order.currency || '').toUpperCase()) + ' $' + Number(amount).toFixed(2);
+  const currency = String((order && order.currency) || '').toUpperCase();
+  return esc(currency) + ' $' + Number(amount).toFixed(2);
+}
+function moneyText(currency, amount) {
+  return String(currency || '').toUpperCase() + ' $' + Number(amount || 0).toFixed(2);
+}
+function badge(order) {
+  const status = order.status || 'approved';
+  return '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
 }
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
   const body = document.getElementById('order-list');
   if (!orders.length) {
-    body.innerHTML = '<tr><td colspan="7" style="color:#666">No production orders</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No production orders</td></tr>';
     return;
   }
   body.innerHTML = orders.map(order => {
     const priceCells = PRICES
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(order.approved_at || '') + '</td>' + priceCells + '</tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(order.approved_at || '') + '</td>' + priceCells + '</tr>';
   }).join('');
 }
+function totalsTable(order) {
+  if (!PRICES) return '';
+  const discount = order.discount || {type: 'percent', value: 0};
+  const label = discount.type === 'percent' ? esc(discount.value) + '%' : 'fixed';
+  const charges = (order.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td class="num">' + money(order, charge.amount) + '</td></tr>').join('');
+  return '<table class="totals"><tr><td>IGU subtotal</td><td class="num" id="view-igu-subtotal">' + money(order, order.igu_subtotal) + '</td></tr>'
+    + '<tr><td>Discount (' + label + ')</td><td class="num">-' + money(order, order.discount_amount) + '</td></tr>'
+    + '<tr><td>IGU total</td><td class="num" id="view-igu-total">' + money(order, order.igu_total) + '</td></tr>'
+    + charges
+    + '<tr><td><b>Grand total</b></td><td class="num"><b>' + money(order, order.total) + '</b></td></tr></table>';
+}
+function coverageBlock(order) {
+  const cover = order.coverage;
+  if (!PRICES || !cover) return '';
+  return '<div class="coverage" id="coverage-breakdown"><strong>Credit coverage</strong>'
+    + '<p class="note">Order total ' + esc(moneyText(cover.currency, cover.order_total))
+    + '. Credit limit ' + esc(moneyText(cover.credit_currency, cover.credit_limit))
+    + '. Open receivables ' + esc(moneyText(cover.currency, cover.open_receivables))
+    + '. Available credit ' + esc(moneyText(cover.currency, cover.available_credit))
+    + '. Prepayments on this order ' + esc(moneyText(cover.currency, cover.prepayments))
+    + '. Unallocated payments ' + esc(moneyText(cover.currency, cover.unallocated_payments)) + '.</p>'
+    + '<p class="note">Covered by credit ' + esc(moneyText(cover.currency, cover.covered_by_credit))
+    + ', by prepayment ' + esc(moneyText(cover.currency, cover.covered_by_prepayment))
+    + '. Shortfall ' + esc(moneyText(cover.currency, cover.shortfall)) + '.</p></div>';
+}
+function describeChange(change) {
+  const action = change.action;
+  if (action === 'added') return 'Added ' + change.field + ': ' + JSON.stringify(change.new);
+  if (action === 'removed') return 'Removed ' + change.field + ': ' + JSON.stringify(change.old);
+  if (change.old !== undefined) return change.field + ': ' + JSON.stringify(change.old) + ' → ' + JSON.stringify(change.new);
+  return change.field + ' ' + (action || 'updated');
+}
+function changelogBlock(order) {
+  const entries = order.changelog || [];
+  if (!entries.length) return '<div class="log" id="change-log"><h3 style="color:#333">Change log</h3><p class="note">No changes since the order was approved.</p></div>';
+  const items = entries.map(entry => {
+    const when = entry.at ? new Date(entry.at).toLocaleString() : '';
+    const lines = (entry.changes || []).map(change => '<li>' + esc(describeChange(change)) + '</li>').join('');
+    return '<p><strong>' + esc(when) + '</strong> · ' + esc(entry.user || '') + '</p><ul>' + lines + '</ul>';
+  }).join('');
+  return '<div class="log" id="change-log"><h3 style="color:#333">Change log</h3><p class="note">Times are shown in your local timezone.</p>' + items + '</div>';
+}
 function renderDetail(order) {
+  currentOrder = order;
   const box = document.getElementById('order-detail');
   if (!order) { box.innerHTML = ''; return; }
   const rows = (order.items || []).map(item => {
-    const prices = PRICES
-      ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>'
-      : '';
-    return '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const spec = item.spec || {};
+    const size = spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '';
+    const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
-  const banner = PRICES
-    ? '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
-    : '<p class="note">Line prices are hidden. This production order was priced at the company tier, which this account does not show.</p>';
-  box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + '</h3>' + banner
-    + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  let buttons = '';
+  if (CAN_STATUS && order.status === 'approved') buttons += '<button type="button" class="btn" id="mark-sent">Mark sent to production</button>';
+  if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
+  if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
+  if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
+  const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
+  const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';
+  box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
+    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
+    + notes + invoice
+    + '<div class="actions">' + buttons + '</div>'
+    + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
+  const sent = document.getElementById('mark-sent');
+  const made = document.getElementById('mark-made');
+  const delivered = document.getElementById('mark-delivered');
+  const edit = document.getElementById('edit-order');
+  if (sent) sent.addEventListener('click', () => changeStatus('sent', 'Mark this order as sent to production? It will count against the customer credit limit.'));
+  if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
+  if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
+  if (edit) edit.addEventListener('click', () => openEditor(order));
+}
+async function changeStatus(status, message) {
+  if (!confirm(message)) return;
+  const res = await fetch('/api/orders/' + currentOrder.id + '/status', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not update the status'); return; }
+  renderDetail(body);
+  load();
+}
+function blankSpec(glass, width, height, unit) {
+  return {glass1: glass, temper1: 'n/a', spacer1: 'n/a', sealant1: 'n/a', glass2: 'n/a', temper2: 'n/a', spacer2: 'n/a', sealant2: 'n/a', glass3: 'n/a', temper3: 'n/a', width: Number(width), height: Number(height), unit: unit || 'in'};
+}
+function openEditor(order) {
+  const editor = document.getElementById('order-editor');
+  if (!editor) return;
+  draft = JSON.parse(JSON.stringify(order));
+  draft.extra_charges = draft.extra_charges || [];
+  draft.discount = draft.discount || {type: 'percent', value: 0};
+  document.getElementById('order-project').value = draft.project || '';
+  document.getElementById('order-notes').value = draft.notes || '';
+  document.getElementById('order-discount-type').value = draft.discount.type || 'percent';
+  document.getElementById('order-discount-value').value = draft.discount.value || 0;
+  document.getElementById('edit-lock-note').textContent = order.status === 'delivered'
+    ? 'This order is invoiced. Saving changes the order and the change log. The issued invoice stays as it was.'
+    : '';
+  const glass = document.getElementById('add-glass');
+  if (!glass.options.length) {
+    glass.innerHTML = GLASS.map(name => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('');
+  }
+  renderLines();
+  renderCharges();
+  refreshPreview();
+  editor.hidden = false;
+  editor.scrollIntoView({block: 'start'});
+}
+function renderLines() {
+  const box = document.getElementById('order-lines');
+  box.innerHTML = (draft.items || []).map((item, index) => {
+    const spec = item.spec || {};
+    return '<div class="edit-grid"><input data-line="' + index + '" data-field="name" value="' + esc(item.name || '') + '" aria-label="Line name">'
+      + '<input data-line="' + index + '" data-field="width" type="number" step="0.01" value="' + esc(spec.width || '') + '" aria-label="Width">'
+      + '<input data-line="' + index + '" data-field="height" type="number" step="0.01" value="' + esc(spec.height || '') + '" aria-label="Height">'
+      + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
+      + '<input data-line="' + index + '" data-field="pcs" type="number" min="1" step="1" value="' + esc(item.pcs || 1) + '" aria-label="Quantity">'
+      + '<button type="button" class="btn small secondary" data-remove="' + index + '">Remove</button></div>';
+  }).join('');
+}
+function renderCharges() {
+  const box = document.getElementById('extra-charges');
+  box.innerHTML = (draft.extra_charges || []).map((charge, index) => '<div class="note">' + esc(charge.label) + ' · ' + Number(charge.amount).toFixed(2) + ' <button type="button" data-remove-charge="' + index + '">Remove</button></div>').join('');
+}
+function refreshPreview() {
+  const subtotal = (draft.items || []).reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const type = document.getElementById('order-discount-type').value;
+  const value = Number(document.getElementById('order-discount-value').value || 0);
+  let amount = type === 'percent' ? subtotal * value / 100 : value;
+  amount = Math.round(amount * 100) / 100;
+  if (amount > subtotal) amount = subtotal;
+  if (amount < 0) amount = 0;
+  const igu = Math.round((subtotal - amount) * 100) / 100;
+  const extras = (draft.extra_charges || []).reduce((sum, charge) => sum + Number(charge.amount || 0), 0);
+  document.getElementById('igu-subtotal').textContent = subtotal.toFixed(2);
+  document.getElementById('discount-amount').textContent = '-' + amount.toFixed(2);
+  document.getElementById('igu-total').textContent = igu.toFixed(2);
+  document.getElementById('grand-total').textContent = (igu + extras).toFixed(2);
+}
+function collectItems() {
+  const items = (draft.items || []).map((item, index) => {
+    const spec = Object.assign({}, item.spec || {});
+    document.querySelectorAll('[data-line="' + index + '"]').forEach(input => {
+      const field = input.getAttribute('data-field');
+      if (field === 'name') item.name = input.value;
+      else if (field === 'pcs') item.pcs = Number(input.value);
+      else spec[field] = field === 'unit' ? input.value : Number(input.value);
+    });
+    return {name: item.name, pcs: item.pcs, spec: spec};
+  });
+  return items;
+}
+async function saveOrder() {
+  const body = {
+    project: document.getElementById('order-project').value,
+    notes: document.getElementById('order-notes').value,
+    discount: {
+      type: document.getElementById('order-discount-type').value,
+      value: Number(document.getElementById('order-discount-value').value || 0)
+    },
+    extra_charges: draft.extra_charges,
+    items: collectItems()
+  };
+  const res = await fetch('/api/orders/' + currentOrder.id, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not save the order'); return; }
+  document.getElementById('order-editor').hidden = true;
+  renderDetail(payload);
+  load();
 }
 function orderQuery() {
   const params = new URLSearchParams();
-  if (!STAFF) return params;
-  const customer = document.getElementById('order-customer').value;
-  const from = document.getElementById('order-from').value;
-  const to = document.getElementById('order-to').value;
-  const sort = document.getElementById('order-sort').value;
-  if (customer) params.set('customer_id', customer);
-  if (from) params.set('from', from);
-  if (to) params.set('to', to);
-  if (sort) params.set('sort', sort);
+  if (STAFF) {
+    const customer = document.getElementById('order-customer').value;
+    const from = document.getElementById('order-from').value;
+    const to = document.getElementById('order-to').value;
+    const sort = document.getElementById('order-sort').value;
+    if (customer) params.set('customer_id', customer);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    if (sort) params.set('sort', sort);
+  }
+  const status = document.getElementById('order-status').value;
+  if (status) params.set('status', status);
   return params;
 }
 async function loadCustomers() {
@@ -119,19 +362,52 @@ async function load() {
   const res = await fetch('/api/orders?' + orderQuery().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   const orders = await res.json();
-  document.getElementById('price-note').textContent = PRICES
-    ? ''
-    : 'Prices are not shown. Production orders use the company tier, and sales force accounts do not see those amounts.';
+  document.getElementById('price-note').textContent = PRICES ? '' : 'Prices are not shown on this account.';
   render(orders);
-  if (FOCUS) {
+  if (FOCUS && !currentOrder) {
     const detail = await fetch('/api/orders/' + FOCUS);
     if (detail.ok) renderDetail(await detail.json());
   }
 }
-const orderFilter = document.getElementById('order-filter');
-if (orderFilter) orderFilter.addEventListener('click', load);
+document.getElementById('order-filter').addEventListener('click', load);
 const orderSort = document.getElementById('order-sort');
 if (orderSort) orderSort.addEventListener('change', load);
+document.getElementById('order-status').addEventListener('change', load);
+const editor = document.getElementById('order-editor');
+if (editor) {
+  document.getElementById('order-lines').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove]');
+    if (!button) return;
+    draft.items.splice(Number(button.getAttribute('data-remove')), 1);
+    renderLines();
+    refreshPreview();
+  });
+  document.getElementById('extra-charges').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove-charge]');
+    if (!button) return;
+    draft.extra_charges.splice(Number(button.getAttribute('data-remove-charge')), 1);
+    renderCharges();
+    refreshPreview();
+  });
+  document.getElementById('add-line').addEventListener('click', () => {
+    draft.items.push({name: '', pcs: Number(document.getElementById('add-qty').value || 1), total: 0, spec: blankSpec(document.getElementById('add-glass').value, document.getElementById('add-width').value, document.getElementById('add-height').value, document.getElementById('add-unit').value)});
+    renderLines();
+  });
+  document.getElementById('add-extra').addEventListener('click', () => {
+    const label = document.getElementById('extra-label').value.trim();
+    const amount = Number(document.getElementById('extra-amount').value || 0);
+    if (!label) return;
+    draft.extra_charges.push({label, amount});
+    document.getElementById('extra-label').value = '';
+    document.getElementById('extra-amount').value = '';
+    renderCharges();
+    refreshPreview();
+  });
+  document.getElementById('order-discount-type').addEventListener('change', refreshPreview);
+  document.getElementById('order-discount-value').addEventListener('input', refreshPreview);
+  document.getElementById('save-order').addEventListener('click', saveOrder);
+  document.getElementById('cancel-edit').addEventListener('click', () => { editor.hidden = true; });
+}
 loadCustomers().then(load);
 </script>
 </body>

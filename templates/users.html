@@ -110,6 +110,15 @@ td.actions{width:15.5rem;vertical-align:middle}
 <div class="tier-checks" id="u-modules"></div>
 <p class="help" id="module-help">Ora Glass employees only see the modules checked here. Customer users can only be given Quotes, Quote History, Orders, Invoices, and Financials.</p>
 </div>
+<div class="form-group" id="staff-privileges" style="display:none">
+<label>Order privileges</label>
+<div class="tier-checks">
+<label><input type="checkbox" id="u-edit-orders"> Edit orders</label>
+<label><input type="checkbox" id="u-update-order-status"> Update order status</label>
+<label><input type="checkbox" id="u-record-payments"> Record payments</label>
+</div>
+<p class="help">Off unless an admin turns them on. Edit orders changes lines, discounts, and extra charges. Update order status moves an order from Approved to Sent to production, Made, and Delivered. Record payments enters and allocates customer payments. Customer users cannot do any of these.</p>
+</div>
 <div class="form-group" id="active-group" style="display:none"><label><input type="checkbox" id="u-active" checked> Account enabled</label></div>
 <div style="display:flex;gap:10px;margin-top:20px">
 <button class="btn" type="button" id="save-user">Save</button>
@@ -228,12 +237,22 @@ function collectModules() {
     .filter(box => box.checked)
     .map(box => box.value);
 }
+function syncStaffPrivileges() {
+  const show = document.getElementById('u-role').value === 'employee';
+  document.getElementById('staff-privileges').style.display = show ? 'block' : 'none';
+  if (!show) {
+    document.getElementById('u-edit-orders').checked = false;
+    document.getElementById('u-update-order-status').checked = false;
+    document.getElementById('u-record-payments').checked = false;
+  }
+}
 function onRoleChanged() {
   const role = document.getElementById('u-role').value;
   document.getElementById('subrole-group').style.display = role === 'customer' ? 'block' : 'none';
   if (role === 'customer') renderModuleChecks(new Set(CUSTOMER_MODULES.map(mod => mod.id)));
   else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders']));
   else renderModuleChecks(new Set());
+  syncStaffPrivileges();
   updateTierFields();
 }
 function tierFormError() {
@@ -338,6 +357,9 @@ async function openAdd() {
   document.getElementById('u-tier').value = '';
   setAllowedChecks([]);
   document.getElementById('u-active').checked = true;
+  document.getElementById('u-edit-orders').checked = false;
+  document.getElementById('u-update-order-status').checked = false;
+  document.getElementById('u-record-payments').checked = false;
   document.getElementById('active-group').style.display = 'none';
   await loadCompanies('');
   document.getElementById('user-modal').classList.add('active');
@@ -356,6 +378,10 @@ async function openEdit(user) {
   document.getElementById('u-subrole').value = user.customer_subrole || 'sales';
   document.getElementById('subrole-group').style.display = user.role === 'customer' ? 'block' : 'none';
   renderModuleChecks(new Set(user.modules || []));
+  document.getElementById('u-edit-orders').checked = !!user.edit_orders;
+  document.getElementById('u-update-order-status').checked = !!user.update_order_status;
+  document.getElementById('u-record-payments').checked = !!user.record_payments;
+  syncStaffPrivileges();
   document.getElementById('u-tier').value = user.tier_override || '';
   setAllowedChecks(user.allowed_tiers || []);
   document.getElementById('u-active').checked = !!user.active;
@@ -413,6 +439,9 @@ document.getElementById('save-user').addEventListener('click', async () => {
         allowed_tiers: collectAllowed(),
         modules: collectModules(),
         customer_subrole: document.getElementById('u-subrole').value,
+        edit_orders: document.getElementById('u-edit-orders').checked,
+        update_order_status: document.getElementById('u-update-order-status').checked,
+        record_payments: document.getElementById('u-record-payments').checked,
         active: document.getElementById('u-active').checked
       })
     });
@@ -431,7 +460,10 @@ document.getElementById('save-user').addEventListener('click', async () => {
         tier_override: document.getElementById('u-tier').value,
         allowed_tiers: collectAllowed(),
         modules: collectModules(),
-        customer_subrole: document.getElementById('u-subrole').value
+        customer_subrole: document.getElementById('u-subrole').value,
+        edit_orders: document.getElementById('u-edit-orders').checked,
+        update_order_status: document.getElementById('u-update-order-status').checked,
+        record_payments: document.getElementById('u-record-payments').checked
       })
     });
     if (!data) return;
