@@ -8,6 +8,9 @@
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .container{max-width:1100px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
+.filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
+.filters select,.filters input{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
@@ -23,6 +26,19 @@ a{color:#C41E3A}
 <h2 style="color:#333">Production orders</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <p class="note" id="price-note"></p>
+{% if staff_view %}
+<div class="filters">
+<select id="order-customer"><option value="">All customers</option></select>
+<input type="date" id="order-from" aria-label="From date">
+<input type="date" id="order-to" aria-label="To date">
+<select id="order-sort" aria-label="Sort by total">
+<option value="">Newest</option>
+<option value="total_desc">Total high to low</option>
+<option value="total_asc">Total low to high</option>
+</select>
+<button type="button" class="btn" id="order-filter">Filter</button>
+</div>
+{% endif %}
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
@@ -31,6 +47,7 @@ a{color:#C41E3A}
 </div></div>
 <script>
 const PRICES = {{ prices_visible|tojson }};
+const STAFF = {{ staff_view|tojson }};
 const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value)
@@ -43,7 +60,7 @@ function money(order, amount) {
 }
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Company</th><th>Project</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
   const body = document.getElementById('order-list');
   if (!orders.length) {
     body.innerHTML = '<tr><td colspan="7" style="color:#666">No production orders</td></tr>';
@@ -72,8 +89,34 @@ function renderDetail(order) {
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + '</h3>' + banner
     + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
+function orderQuery() {
+  const params = new URLSearchParams();
+  if (!STAFF) return params;
+  const customer = document.getElementById('order-customer').value;
+  const from = document.getElementById('order-from').value;
+  const to = document.getElementById('order-to').value;
+  const sort = document.getElementById('order-sort').value;
+  if (customer) params.set('customer_id', customer);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (sort) params.set('sort', sort);
+  return params;
+}
+async function loadCustomers() {
+  if (!STAFF) return;
+  const res = await fetch('/api/order-customers');
+  if (!res.ok) return;
+  const rows = await res.json();
+  const select = document.getElementById('order-customer');
+  const current = select.value;
+  select.innerHTML = '<option value="">All customers</option>' + rows.map(row => {
+    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    return '<option value="' + esc(row.id) + '">' + esc(label) + '</option>';
+  }).join('');
+  if (rows.some(row => row.id === current)) select.value = current;
+}
 async function load() {
-  const res = await fetch('/api/orders');
+  const res = await fetch('/api/orders?' + orderQuery().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   const orders = await res.json();
   document.getElementById('price-note').textContent = PRICES
@@ -85,7 +128,11 @@ async function load() {
     if (detail.ok) renderDetail(await detail.json());
   }
 }
-load();
+const orderFilter = document.getElementById('order-filter');
+if (orderFilter) orderFilter.addEventListener('click', load);
+const orderSort = document.getElementById('order-sort');
+if (orderSort) orderSort.addEventListener('change', load);
+loadCustomers().then(load);
 </script>
 </body>
 </html>

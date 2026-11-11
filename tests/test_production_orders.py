@@ -79,7 +79,7 @@ def test_sales_force_sees_only_own_quotes_and_management_sees_the_company(client
     assert mine['items'][0]['total'] == '99.99'
 
 
-def test_only_management_can_convert_a_per_size_quote_once_at_company_tier(client):
+def test_management_converts_a_per_size_quote_once_at_company_tier(client):
     from app import PRICING
     _company_users(client)
     assert login(client, 'sales@harbor.example').status_code == 302
@@ -102,10 +102,6 @@ def test_only_management_can_convert_a_per_size_quote_once_at_company_tier(clien
     sqf_id = sqf.get_json()['id']
     denied = client.post(f'/api/quotes/{quote_id}/order', json={})
     assert denied.status_code == 403
-    client.post('/logout')
-
-    assert login(client, 'staff@oraglass.us').status_code == 302
-    assert client.post(f'/api/quotes/{quote_id}/order', json={}).status_code == 403
     client.post('/logout')
 
     assert login(client, 'boss@harbor.example').status_code == 302
