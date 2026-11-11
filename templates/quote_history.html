@@ -32,11 +32,12 @@ td{padding:10px;border-bottom:1px solid #eee}
 <button class="btn" onclick="filterQuotes()">Filter</button>
 </div>
 <table>
-<thead><tr><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th><th>Total</th><th>Type</th><th>PDF</th></tr></thead>
+<thead><tr><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th><th>Total</th><th>Type</th><th>Status</th><th></th></tr></thead>
 <tbody id="quote-list"><tr><td colspan="7" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
 </div></div>
 <script>
+const CAN_ORDER = {{ can_order|tojson }};
 let allQuotes = [];
 function esc(value) {
   return String(value == null ? '' : value)
@@ -53,12 +54,24 @@ function productLabel(quote) {
 function renderQuotes(rows) {
   const tbody = document.getElementById('quote-list');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#666">No quotes found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#666">No quotes found</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(quote => {
     const total = (quote.items || []).reduce((sum, item) => sum + parseFloat(item.total || item.price || 0), 0);
-    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td><button type="button" data-id="' + esc(quote.id) + '" class="pdf-btn" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button></td></tr>';
+    let status = '-';
+    if (quote.order_id) {
+      status = 'Approved for order. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
+    }
+    let action = '<button type="button" data-id="' + esc(quote.id) + '" class="pdf-btn" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button>';
+    if (CAN_ORDER && !quote.order_id) {
+      if (quote.type === 'size') {
+        action += ' <button type="button" class="order-btn" data-action="order" data-id="' + esc(quote.id) + '" style="background:#fff;color:#C41E3A;border:1px solid #C41E3A;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Order for production</button>';
+      } else {
+        action += ' <button type="button" disabled style="background:#f5f5f5;color:#999;border:1px solid #ddd;padding:4px 8px;border-radius:4px;font-size:11px">Order for production</button>';
+      }
+    }
+    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -104,10 +117,21 @@ async function downloadPDF(id) {
   link.download = 'Quote_' + quote.id + '.pdf';
   link.click();
 }
-document.getElementById('quote-list').addEventListener('click', (event) => {
+document.getElementById('quote-list').addEventListener('click', async (event) => {
   const button = event.target.closest('button');
   if (!button) return;
-  downloadPDF(button.getAttribute('data-id'));
+  if (button.dataset.action === 'order') {
+    const res = await fetch('/api/quotes/' + encodeURIComponent(button.getAttribute('data-id')) + '/order', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}'
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not create the order'); return; }
+    loadQuotes();
+    return;
+  }
+  if (button.classList.contains('pdf-btn')) downloadPDF(button.getAttribute('data-id'));
 });
 loadQuotes();
 </script>

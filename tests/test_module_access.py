@@ -19,9 +19,13 @@ def test_migration_preserves_existing_role_access():
     assert 'pricing' not in effective_module_ids(viewer)
     customer_modules = effective_module_ids(customer)
     assert customer_modules[0] == 'dashboard'
-    assert set(CUSTOMER_CEILING) <= set(customer_modules)
+    # Existing customers default to Sales force, so Orders is not included.
+    assert set(CUSTOMER_CEILING) - {'orders'} <= set(customer_modules)
+    assert 'orders' not in customer_modules
     assert 'users' not in customer_modules
     assert 'pricing' not in customer_modules
+    management = dict(customer, customer_subrole='management')
+    assert 'orders' in effective_module_ids(management)
     assert effective_module_ids({'role': 'admin'}) == list(MODULE_IDS)
 
 

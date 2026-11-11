@@ -297,6 +297,45 @@ def sealant_match_map(spacers, sealants):
     return mapping
 
 
+CAD_RATE = 1.4
+
+
+def area_sqf(width, height, unit):
+    """Square feet from a width and height. Millimetres use the same divisor as the size calculator."""
+    try:
+        wide = float(width)
+        high = float(height)
+    except (TypeError, ValueError):
+        return 0.0
+    if wide <= 0 or high <= 0:
+        return 0.0
+    if str(unit or 'in').lower() == 'mm':
+        return (wide * high) / 92903.04
+    return (wide * high) / 144
+
+
+def reprice_size_line(spec, pcs, tier, currency, pricing, tiers):
+    """Price one per-size line in the quote currency. CAD applies the 1.40 rate once."""
+    usd = calculate_price_sqf(spec, tier, pricing, tiers)
+    rate = CAD_RATE if str(currency or 'usd').lower() == 'cad' else 1.0
+    sqf = area_sqf((spec or {}).get('width'), (spec or {}).get('height'), (spec or {}).get('unit'))
+    price_sqf = round(usd * rate, 2)
+    price_pc = round(usd * sqf * rate, 2)
+    try:
+        pieces = int(pcs or 1)
+    except (TypeError, ValueError):
+        pieces = 1
+    if pieces < 1:
+        pieces = 1
+    return {
+        'sqf': round(sqf, 2),
+        'price_sqf': price_sqf,
+        'price_pc': price_pc,
+        'pcs': pieces,
+        'total': round(price_pc * pieces, 2),
+    }
+
+
 def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
     """Per-square-foot sell price. Sealants use the spacer markup, matching the existing engine."""
     temper_prices = TEMPER_PRICES if temper_prices is None else temper_prices

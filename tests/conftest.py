@@ -42,7 +42,7 @@ def client(data_dir):
 
 def write_user(email, role, password='Validpass1', customer_id=None, tier_override=None,
                must_change_password=False, active=True, customer_tier='T2', customer_name=None,
-               allowed_tiers=None):
+               allowed_tiers=None, customer_subrole=None):
     if customer_id:
         customers = load_customers()
         customers.setdefault(customer_id, {
@@ -79,6 +79,8 @@ def write_user(email, role, password='Validpass1', customer_id=None, tier_overri
     }
     if allowed_tiers is not None:
         users[email]['allowed_tiers'] = list(allowed_tiers)
+    if customer_subrole:
+        users[email]['customer_subrole'] = customer_subrole
     save_users(users)
     return password
 

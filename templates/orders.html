@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ORA Glass ERP - Orders</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.container{max-width:1100px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:20px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
+td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
+.num{text-align:right;white-space:nowrap}
+a{color:#C41E3A}
+.note{color:#666;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container"><div class="card">
+<h2 style="color:#333">Production orders</h2>
+{% if note %}<p class="note">{{ note }}</p>{% endif %}
+<p class="note" id="price-note"></p>
+<table>
+<thead><tr id="order-head"></tr></thead>
+<tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
+</table>
+<div id="order-detail" style="margin-top:24px"></div>
+</div></div>
+<script>
+const PRICES = {{ prices_visible|tojson }};
+const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function money(order, amount) {
+  if (!PRICES || amount == null) return '';
+  return esc(String(order.currency || '').toUpperCase()) + ' $' + Number(amount).toFixed(2);
+}
+function render(orders) {
+  const head = document.getElementById('order-head');
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Company</th><th>Project</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
+  const body = document.getElementById('order-list');
+  if (!orders.length) {
+    body.innerHTML = '<tr><td colspan="7" style="color:#666">No production orders</td></tr>';
+    return;
+  }
+  body.innerHTML = orders.map(order => {
+    const priceCells = PRICES
+      ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
+      : '';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(order.approved_at || '') + '</td>' + priceCells + '</tr>';
+  }).join('');
+}
+function renderDetail(order) {
+  const box = document.getElementById('order-detail');
+  if (!order) { box.innerHTML = ''; return; }
+  const rows = (order.items || []).map(item => {
+    const prices = PRICES
+      ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>'
+      : '';
+    return '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+  }).join('');
+  const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
+  const banner = PRICES
+    ? '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
+    : '<p class="note">Line prices are hidden. This production order was priced at the company tier, which this account does not show.</p>';
+  box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + '</h3>' + banner
+    + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+async function load() {
+  const res = await fetch('/api/orders');
+  if (res.status === 401) { window.location = '/login'; return; }
+  const orders = await res.json();
+  document.getElementById('price-note').textContent = PRICES
+    ? ''
+    : 'Prices are not shown. Production orders use the company tier, and sales force accounts do not see those amounts.';
+  render(orders);
+  if (FOCUS) {
+    const detail = await fetch('/api/orders/' + FOCUS);
+    if (detail.ok) renderDetail(await detail.json());
+  }
+}
+load();
+</script>
+</body>
+</html>

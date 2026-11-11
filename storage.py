@@ -65,6 +65,13 @@ def tiers_path():
     return os.path.join(data_dir(), 'tiers.json')
 
 
+def orders_path():
+    explicit = os.environ.get('ORDERS_PATH', '').strip()
+    if explicit:
+        return explicit
+    return os.path.join(data_dir(), 'orders.json')
+
+
 def pricing_search_paths(base_dir=None, data_directory=None):
     """Absolute paths, in order: PRICING_PATH, next to app.py, then DATA_DIR.
 
@@ -174,6 +181,46 @@ def save_quotes(quotes):
     path = quotes_path()
     with lock_for(path):
         atomic_write_json(path, quotes)
+
+
+def replace_quote(quote_id, quote):
+    path = quotes_path()
+    with lock_for(path):
+        quotes = _read_quote_list(path) if os.path.exists(path) else load_quotes()
+        for index, row in enumerate(quotes):
+            if row.get('id') == quote_id:
+                quotes[index] = quote
+                atomic_write_json(path, quotes)
+                return quote
+    return None
+
+
+def load_orders():
+    path = orders_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_orders(orders):
+    if not isinstance(orders, list):
+        raise TypeError('orders must be a list')
+    path = orders_path()
+    with lock_for(path):
+        atomic_write_json(path, orders)
+
+
+def append_order(order):
+    path = orders_path()
+    with lock_for(path):
+        orders = read_json(path, [])
+        if not isinstance(orders, list):
+            orders = []
+        stored = dict(order)
+        stored['id'] = max([item.get('id') or 0 for item in orders] or [0]) + 1
+        orders.append(stored)
+        atomic_write_json(path, orders)
+        return stored
 
 
 def append_quote(quote):
