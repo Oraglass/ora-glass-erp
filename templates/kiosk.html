@@ -47,7 +47,7 @@ video{width:100%;max-height:280px;background:#111;border-radius:14px;object-fit:
 <img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass" style="height:72px;background:#fff;border-radius:12px;padding:8px">
 <h1>This tablet is not activated</h1>
 <p>An administrator signs in on this tablet and chooses Activate this device as kiosk.</p>
-<p><a href="{{ url_for('login', next='/time-clock') }}">Administrator sign in</a></p>
+<p><a href="{{ url_for('login', next='/kiosk/setup') }}">Administrator sign in</a></p>
 </div>
 {% else %}
 <div class="top">

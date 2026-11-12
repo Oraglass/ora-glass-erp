@@ -133,6 +133,9 @@ def test_users_list_shows_module_summary_and_only_admin_edits_access(client):
     assert admin['modules_label'] == 'All modules'
     page = client.get('/users')
     assert b'id="u-modules"' in page.data
+    assert b'id="filter-company"' in page.data
+    assert b'Ora Glass (internal staff/admins)' in page.data
+    assert b'Shop workers' in page.data
     assert b'Ora Glass employee' in page.data
     client.post('/logout')
     login(client, 'sales@oraglass.us')

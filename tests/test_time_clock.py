@@ -233,9 +233,9 @@ def test_manager_corrections_keep_the_original_and_exports(client):
     assert pdf.status_code == 200
     assert pdf.data.startswith(b'%PDF')
     assert b'Lynden' in pdf.data or b'Casey' in pdf.data or len(pdf.data) > 1000
-    page = client.get('/time-clock')
+    page = client.get('/payroll')
     assert page.status_code == 200
-    assert b'Time Clock' in page.data
+    assert b'Time & Kiosk' in page.data
     client.post('/logout')
     assert login(client, 'casey@oraglass.us').status_code == 302
     own = client.get('/api/punches/me').get_json()
@@ -355,7 +355,7 @@ def test_kiosk_punch_stores_a_private_photo_and_flags_a_missing_one(client, data
     assert row['has_photo'] is True
     assert row['name'] == 'Sam Shop'
     assert row['kiosk_id'] == kiosk_id
-    page = client.get('/time-clock')
+    page = client.get('/payroll')
     assert b'No photo' in page.data or b'data-photo' in page.data
     client.post('/logout')
 
@@ -412,3 +412,34 @@ def test_kiosk_pin_locks_the_worker_and_the_tablet(client):
     assert client.post(f'/api/time-clock/kiosks/{kiosk_id}/unlock').status_code == 200
     again = client.post('/api/kiosk/identify', json={'employee_number': '441', 'pin': '1234'}, headers=headers)
     assert again.status_code == 200
+
+
+def test_time_clock_stays_off_the_office_nav_and_setup_is_a_bare_page(client):
+    write_user('admin@oraglass.us', 'admin')
+    write_user('boss@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor', customer_subrole='management')
+    _employee('lead@oraglass.us', ['dashboard', 'invoices'], manage_time=True)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    assert b'>Time Clock<' not in dashboard.data
+    assert b'href="/punch"' not in dashboard.data
+    users = client.get('/users')
+    assert b'value="time-clock"' not in users.data
+    payroll = client.get('/payroll')
+    assert b'Set up shop kiosk' in payroll.data
+    assert b'Time & Kiosk' in payroll.data
+    setup = client.get('/kiosk/setup')
+    assert setup.status_code == 200
+    assert b'Set up shop kiosk' in setup.data
+    assert b'class="module-nav"' not in setup.data
+    client.post('/logout')
+
+    assert login(client, 'boss@harbor.example').status_code == 302
+    customer_home = client.get('/dashboard')
+    assert b'>Time Clock<' not in customer_home.data
+    client.post('/logout')
+
+    assert client.get('/kiosk/setup').status_code == 302
+    assert login(client, 'lead@oraglass.us').status_code == 302
+    assert b'Set up shop kiosk' in client.get('/kiosk/setup').data
+    assert b'Set up shop kiosk' in client.get('/payroll').data

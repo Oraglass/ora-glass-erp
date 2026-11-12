@@ -126,12 +126,12 @@ def test_staff_can_create_an_order_only_customer_without_an_account(client):
     })
     assert created.status_code == 200
     body = created.get_json()
-    assert body['kind'] == 'order_only'
+    assert body['kind'] == 'account'
     assert body['tier'] == 'T4'
     customer_id = body['customer_id']
     assert set(load_users()) == before_users
     record = load_customers()[customer_id]
-    assert record['kind'] == 'order_only'
+    assert record['kind'] == 'account'
     assert record['name'] == 'Walk-up Counter'
     assert record['contact'] == 'Pat Lee'
     assert record['email'] == 'pat@walkup.example'
@@ -143,7 +143,7 @@ def test_staff_can_create_an_order_only_customer_without_an_account(client):
     assert client.get('/api/customers').status_code == 403
     choices = client.get('/api/order-customers').get_json()
     listed = next(row for row in choices if row['id'] == customer_id)
-    assert listed['kind'] == 'order_only'
+    assert listed['kind'] == 'account'
     assert listed['tier'] == 'T4'
     assert client.get(f'/api/orders/{body["order_id"]}').get_json()['company'] == 'Walk-up Counter'
 
@@ -159,18 +159,10 @@ def test_staff_can_create_an_order_only_customer_without_an_account(client):
 
     assert login(client, 'admin@oraglass.us').status_code == 302
     visible = [row['id'] for row in client.get('/api/customers').get_json()]
-    assert customer_id not in visible
+    assert customer_id in visible
     assert 'harbor-glass' in visible
-    rejected = client.post('/api/users', json={
-        'email': 'pat@walkup.example',
-        'name': 'Pat Lee',
-        'role': 'customer',
-        'customer_id': customer_id,
-    })
-    assert rejected.status_code == 400
-    assert 'pat@walkup.example' not in load_users()
-    assert client.put(f'/api/customers/{customer_id}', json={'name': 'Renamed'}).status_code == 404
-    assert client.delete(f'/api/customers/{customer_id}').status_code == 404
+    renamed = client.put(f'/api/customers/{customer_id}', json={'name': 'Walk-up Counter'})
+    assert renamed.status_code == 200
 
 
 def test_order_only_customer_without_a_tier_uses_the_tier_staff_pick(client):
@@ -284,3 +276,129 @@ def test_staff_see_every_quote_and_order_and_can_filter_and_sort(client):
     assert login(client, 'two@summit.example').status_code == 302
     assert client.get('/api/orders').status_code == 403
     assert client.get('/api/order-customers').status_code == 403
+
+
+def test_new_customer_defaults_to_the_quote_tier_and_matches_the_quote_price(client):
+    write_user('admin@oraglass.us', 'admin')
+    _customer('sales@harbor.example', 'harbor-glass', 'Harbor Glass')
+    _employee('staff@oraglass.us', ['dashboard', 'quotes', 'quote-history', 'orders'])
+    priced = reprice_size_line(SPEC, 2, 'T5', 'usd', PRICING, load_tiers())
+    item = _size_item(priced['total'])
+    item.update({
+        'pcs': priced['pcs'],
+        'sqf': priced['sqf'],
+        'price_sqf': priced['price_sqf'],
+        'price_pc': priced['price_pc'],
+        'total': priced['total'],
+    })
+    assert login(client, 'sales@harbor.example').status_code == 302
+    saved = client.post('/api/quotes', json={
+        'items': [item],
+        'currency': 'usd',
+        'project': 'Quoted at five',
+        'type': 'size',
+        'tier': 'T5',
+    })
+    assert saved.status_code == 200
+    quote_id = saved.get_json()['id']
+    quote = next(row for row in load_quotes() if row['id'] == quote_id)
+    quote_total = round(sum(float(line['total']) for line in quote['items']), 2)
+    client.post('/logout')
+
+    assert login(client, 'staff@oraglass.us').status_code == 302
+    page = client.get('/quote-history')
+    assert b'function suggestedTier' in page.data
+    assert b'quote.tier' in page.data
+    assert b'(order only)' not in page.data
+    created = client.post(f'/api/quotes/{quote_id}/order', json={
+        'new_customer': {'name': 'Same Price Glass', 'payment_terms': 'Net 30'},
+    })
+    assert created.status_code == 200
+    body = created.get_json()
+    assert body['tier'] == 'T5'
+    assert body['kind'] == 'account'
+    assert body['total'] == quote_total
+    order = client.get(f'/api/orders/{body["order_id"]}').get_json()
+    assert order['total'] == quote_total
+    assert order['customer_id'] == body['customer_id']
+    saved_customer = load_customers()[body['customer_id']]
+    assert saved_customer['tier'] == 'T5'
+    assert saved_customer['kind'] == 'account'
+
+
+def test_a_quote_without_a_tier_falls_back_to_tier_2(client):
+    write_user('admin@oraglass.us', 'admin')
+    _customer('sales@harbor.example', 'harbor-glass', 'Harbor Glass')
+    _employee('staff@oraglass.us', ['dashboard', 'quotes', 'quote-history', 'orders'])
+    assert login(client, 'sales@harbor.example').status_code == 302
+    quote_id = _save_size_quote(client, 'No stored tier')
+    client.post('/logout')
+    quotes = load_quotes()
+    for quote in quotes:
+        if quote['id'] == quote_id:
+            quote.pop('tier', None)
+    save_quotes(quotes)
+    assert login(client, 'staff@oraglass.us').status_code == 302
+    created = client.post(f'/api/quotes/{quote_id}/order', json={
+        'new_customer': {'name': 'Fallback Glass'},
+    })
+    assert created.status_code == 200
+    assert created.get_json()['tier'] == 'T2'
+    assert load_customers()[created.get_json()['customer_id']]['tier'] == 'T2'
+
+
+def test_quote_customers_show_in_the_customer_list_and_can_take_a_user(client):
+    write_user('admin@oraglass.us', 'admin')
+    _customer('sales@harbor.example', 'harbor-glass', 'Harbor Glass')
+    _employee('staff@oraglass.us', ['dashboard', 'quotes', 'quote-history', 'orders'])
+    customers = load_customers()
+    customers['legacy-counter'] = {
+        'id': 'legacy-counter',
+        'name': 'Legacy Counter',
+        'kind': 'order_only',
+        'tier': 'T3',
+        'status': 'active',
+        'payment_terms': 'Net 30',
+    }
+    save_customers_quietly(customers)
+    assert load_customers()['legacy-counter']['kind'] == 'account'
+
+    assert login(client, 'sales@harbor.example').status_code == 302
+    quote_id = _save_size_quote(client, 'New account')
+    client.post('/logout')
+    assert login(client, 'staff@oraglass.us').status_code == 302
+    created = client.post(f'/api/quotes/{quote_id}/order', json={
+        'new_customer': {
+            'name': 'Walk-in Glass',
+            'contact': 'Ada',
+            'payment_terms': 'Net 15',
+        },
+    })
+    assert created.status_code == 200
+    customer_id = created.get_json()['customer_id']
+    order_id = created.get_json()['order_id']
+    client.post('/logout')
+
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/customers').get_json()
+    ids = {row['id'] for row in listed}
+    assert customer_id in ids
+    assert 'legacy-counter' in ids
+    edited = client.put(f'/api/customers/{customer_id}', json={'name': 'Walk-in Glass Co', 'tier': 'T5'})
+    assert edited.status_code == 200
+    assert load_customers()[customer_id]['name'] == 'Walk-in Glass Co'
+    added = client.post('/api/users', json={
+        'name': 'Ada Sales',
+        'email': 'ada@walkin.example',
+        'role': 'customer',
+        'customer_id': customer_id,
+        'customer_subrole': 'sales',
+        'allowed_tiers': ['T5'],
+        'modules': ['quotes', 'quote-history'],
+        'password': 'Validpass1',
+        'temporary': False,
+    })
+    assert added.status_code == 200
+    assert load_users()['ada@walkin.example']['customer_id'] == customer_id
+    assert load_users()['ada@walkin.example']['customer_subrole'] == 'sales'
+    assert client.get(f'/api/orders/{order_id}').get_json()['customer_id'] == customer_id

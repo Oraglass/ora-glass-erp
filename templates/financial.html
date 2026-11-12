@@ -56,7 +56,9 @@ async function load(customerId) {
   box.innerHTML = '<div class="stat"><h3>' + money(credit.credit_currency, credit.credit_limit) + '</h3><p>Credit limit</p></div>'
     + '<div class="stat"><h3>' + money(credit.currency, credit.available_credit) + '</h3><p>Available credit</p></div>'
     + '<div class="stat"><h3>' + money(credit.currency, credit.open_receivables) + '</h3><p>Open receivables</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.unallocated_payments) + '</h3><p>Unallocated payments</p></div>';
+    + '<div class="stat"><h3>' + money(credit.currency, credit.unallocated_payments) + '</h3><p>Unallocated payments</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.unapplied_credits) + '</h3><p>Unapplied credits</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.balance) + '</h3><p>Balance</p></div>';
   const payParams = new URLSearchParams();
   if (customerId) payParams.set('customer_id', customerId);
   const payments = await fetch('/api/payments?' + payParams.toString());

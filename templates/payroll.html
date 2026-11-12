@@ -26,6 +26,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 {% set show_back = true %}
 {% include 'partials/header.html' %}
 <div class="wrap">
+{% if can_payroll %}
 <div class="card">
 <h1>Payroll</h1>
 <p class="banner" id="gross-label">Gross pay (before taxes)</p>
@@ -95,7 +96,47 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <a class="btn" id="stub-pdf" href="#">Paystub PDF</a>
 </div>
 </div>
+{% endif %}
+{% if can_time %}
+<div class="card" id="time-kiosk">
+<h2>Time & Kiosk</h2>
+<p class="note">Timesheets, punch photos, and corrections stay here. The shop tablet is the only punch screen.</p>
+<div class="filters">
+<label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
+<button type="button" id="activate-kiosk">Set up shop kiosk</button>
+<label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<button type="button" id="save-retention">Save retention</button>
 </div>
+<p class="note">Opening this on the tablet signs you out there and turns that device into the kiosk. You can also open /kiosk/setup on the tablet.</p>
+<p class="note" id="kiosk-list"></p>
+<div class="filters">
+<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<label>From<input type="date" id="filter-from"></label>
+<label>To<input type="date" id="filter-to"></label>
+<button type="button" id="apply">Show</button>
+</div>
+<div class="filters">
+<a class="btn" id="csv-link" href="#">Export CSV</a>
+<a class="btn" id="pdf-link" href="#">PDF timesheet</a>
+</div>
+</div>
+<div class="card">
+<h2>Scheduled and actual</h2>
+<table>
+<thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Scheduled</th><th>Actual</th><th>Paid</th><th></th></tr></thead>
+<tbody id="attendance-rows"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Punches</h2>
+<table>
+<thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Photo</th><th>Location</th><th></th></tr></thead>
+<tbody id="punch-rows"></tbody>
+</table>
+</div>
+{% endif %}
+</div>
+{% if can_payroll %}
 <script>
 const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 let periodStart = '';
@@ -257,5 +298,113 @@ document.getElementById('next-period').addEventListener('click', () => {
 dayChecks();
 load();
 </script>
+{% endif %}
+{% if can_time %}
+<script>
+function escTime(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function rangeQuery() {
+  const params = new URLSearchParams();
+  const user = document.getElementById('filter-user').value;
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  if (user) params.set('user', user);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  return params;
+}
+function renderTime(data) {
+  const users = document.getElementById('filter-user');
+  const current = users.value;
+  const employees = data.employees || [];
+  users.innerHTML = '<option value="">All employees</option>' + employees.map(row => '<option value="' + escTime(row.email) + '">' + escTime(row.name) + '</option>').join('');
+  if (employees.some(row => row.email === current)) users.value = current;
+  const byEmail = {};
+  employees.forEach(emp => { byEmail[emp.email] = emp.name; });
+  const attendance = document.getElementById('attendance-rows');
+  attendance.innerHTML = (data.attendance || []).map(row => '<tr><td>' + escTime(row.date) + '</td><td>' + escTime(row.name || row.user) + '</td><td>' + escTime(row.shift_name) + '</td><td>' + escTime(row.scheduled_hours) + '</td><td>' + escTime(row.actual_hours) + '</td><td>' + escTime(row.paid_hours) + '</td><td>' + escTime((row.flags || []).join(', ')) + '</td></tr>').join('') || '<tr><td colspan="7">No scheduled or worked days</td></tr>';
+  const punches = document.getElementById('punch-rows');
+  punches.innerHTML = (data.punches || []).map(row => {
+    const loc = row.kiosk_id ? ('Kiosk ' + row.kiosk_id) : (row.no_location ? 'No location' : '');
+    const photo = row.has_photo
+      ? '<button type="button" class="thumb-btn" data-photo="' + escTime(row.id) + '"><img alt="Punch photo" src="/api/time-clock/photos/' + escTime(row.id) + '" style="width:72px;height:54px;object-fit:cover"></button>'
+      : '<span>No photo</span>';
+    return '<tr><td>' + escTime(row.pacific) + '</td><td>' + escTime(row.name || row.user) + '</td><td>' + escTime(row.action_label) + (row.corrected ? ' · corrected' : '') + '</td><td>' + photo + '</td><td>' + escTime(loc) + '</td><td><button type="button" data-correct="' + escTime(row.id) + '">Correct</button></td></tr>';
+  }).join('') || '<tr><td colspan="6">No punches</td></tr>';
+}
+async function loadTime() {
+  const params = rangeQuery();
+  document.getElementById('csv-link').href = '/api/time-clock/export.csv?' + params.toString();
+  document.getElementById('pdf-link').href = '/api/time-clock/timesheet.pdf?' + params.toString();
+  const res = await fetch('/api/time-clock?' + params.toString());
+  if (!res.ok) return;
+  renderTime(await res.json());
+}
+document.getElementById('apply').addEventListener('click', loadTime);
+document.getElementById('punch-rows').addEventListener('click', async (event) => {
+  const photo = event.target.closest('[data-photo]');
+  if (photo) { window.open('/api/time-clock/photos/' + photo.getAttribute('data-photo'), '_blank'); return; }
+  const button = event.target.closest('[data-correct]');
+  if (!button) return;
+  const reason = prompt('Reason for this correction');
+  if (!reason) return;
+  const res = await fetch('/api/time-clock/' + button.getAttribute('data-correct') + '/correct', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Correction was not saved'); return; }
+  loadTime();
+});
+document.getElementById('activate-kiosk').addEventListener('click', async () => {
+  if (!confirm('Set up this device as the shop kiosk? You will be signed out on this tablet.')) return;
+  const res = await fetch('/api/time-clock/kiosks', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: document.getElementById('kiosk-name').value})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not activate the kiosk'); return; }
+  window.location = '/kiosk';
+});
+document.getElementById('save-retention').addEventListener('click', async () => {
+  const res = await fetch('/api/time-clock/settings', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({photo_retention_days: Number(document.getElementById('retention-days').value)})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Retention was not saved'); return; }
+  document.getElementById('retention-days').value = body.photo_retention_days;
+});
+document.getElementById('kiosk-list').addEventListener('click', async (event) => {
+  const revoke = event.target.closest('[data-revoke]');
+  const unlock = event.target.closest('[data-unlock]');
+  const id = (revoke || unlock) && (revoke || unlock).getAttribute(revoke ? 'data-revoke' : 'data-unlock');
+  if (!id) return;
+  const res = await fetch('/api/time-clock/kiosks/' + id + (revoke ? '/revoke' : '/unlock'), {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.error || 'Not saved'); return; }
+  loadKiosks();
+});
+async function loadKiosks() {
+  const [listRes, settingsRes] = await Promise.all([
+    fetch('/api/time-clock/kiosks'),
+    fetch('/api/time-clock/settings')
+  ]);
+  if (settingsRes.ok) {
+    const settings = await settingsRes.json();
+    document.getElementById('retention-days').value = settings.photo_retention_days;
+  }
+  if (!listRes.ok) return;
+  const rows = await listRes.json();
+  document.getElementById('kiosk-list').innerHTML = rows.length ? rows.map(row => {
+    const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
+    const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + escTime(row.id) + '">Revoke</button>';
+    const unlock = row.locked ? ' <button type="button" data-unlock="' + escTime(row.id) + '">Unlock</button>' : '';
+    return '<span>' + escTime(row.name) + ' · ' + state + '</span>' + revoke + unlock;
+  }).join('<br>') : 'No kiosks registered.';
+}
+loadTime();
+loadKiosks();
+</script>
+{% endif %}
 </body>
 </html>
