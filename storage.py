@@ -423,13 +423,15 @@ def append_invoice(invoice):
             invoices = []
         stored = dict(invoice)
         stored['id'] = max([item.get('id') or 0 for item in invoices] or [0]) + 1
+        prefix = 'CN' if stored.get('doc_type') == 'credit_note' else 'INV'
+        pattern = re.compile(rf'{prefix}-(\d+)')
         highest = 0
         for item in invoices:
-            match = re.fullmatch(r'INV-(\d+)', str(item.get('number') or ''))
+            match = pattern.fullmatch(str(item.get('number') or ''))
             if match:
                 highest = max(highest, int(match.group(1)))
         if not stored.get('number'):
-            stored['number'] = f'INV-{highest + 1:04d}'
+            stored['number'] = f'{prefix}-{highest + 1:04d}'
         invoices.append(stored)
         atomic_write_json(path, invoices)
         return stored

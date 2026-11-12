@@ -42,15 +42,58 @@ h2,h3{color:#333}
 <option value="unpaid">Unpaid</option>
 <option value="partial">Partially paid</option>
 <option value="paid">Paid</option>
+<option value="open">Unapplied credit</option>
+<option value="applied">Applied credit</option>
+<option value="void">Void</option>
+</select>
+<select id="filter-invoice-type" aria-label="Document type">
+<option value="">All types</option>
+<option value="invoice">Invoices</option>
+<option value="credit_note">Credit notes</option>
 </select>
 <button type="button" class="btn" id="invoice-filter">Filter</button>
+{% if can_issue %}
+<button type="button" class="btn" id="show-invoice-form">Create invoice</button>
+<button type="button" class="btn secondary" id="show-credit-form">Create credit note</button>
+{% endif %}
 </div>
 <table>
-<thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
+<thead><tr><th>Number</th><th>Type</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
 <tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
 </table>
 <div id="invoice-detail"></div>
 </div>
+{% if can_issue %}
+<div class="card" id="create-invoice" hidden>
+<h3>Create invoice</h3>
+<p class="note">Additional services. The total is a tax-free subtotal. Link an order to fill the customer, or choose a customer for a standalone invoice. The due date starts from that customer's payment terms and can be changed.</p>
+<form id="invoice-form">
+<div class="row">
+<select id="inv-order" aria-label="Order"><option value="">No order</option></select>
+<select id="inv-customer" aria-label="Customer"></select>
+<input id="inv-due" type="date" aria-label="Due date">
+</div>
+<div id="inv-lines"></div>
+<button type="button" class="btn secondary" id="inv-add-line">Add line</button>
+<button class="btn" type="submit">Save invoice</button>
+</form>
+</div>
+<div class="card" id="create-credit" hidden>
+<h3>Create credit note</h3>
+<p class="note">A credit note reduces the customer's balance and increases available credit until it is applied to an open invoice.</p>
+<form id="credit-form">
+<div class="row">
+<select id="cn-order" aria-label="Order"><option value="">No order</option></select>
+<select id="cn-invoice" aria-label="Invoice"><option value="">No invoice</option></select>
+<select id="cn-customer" aria-label="Customer"></select>
+<input id="cn-reason" placeholder="Reason" required aria-label="Reason">
+</div>
+<div id="cn-lines"></div>
+<button type="button" class="btn secondary" id="cn-add-line">Add line</button>
+<button class="btn" type="submit">Save credit note</button>
+</form>
+</div>
+{% endif %}
 <div class="card" id="payment-screen">
 <h3>Payments</h3>
 <p class="note" id="credit-summary"></p>
@@ -93,6 +136,7 @@ h2,h3{color:#333}
 <script>
 const STAFF = {{ staff_view|tojson }};
 const CAN_RECORD = {{ can_record|tojson }};
+const CAN_ISSUE = {{ can_issue|tojson }};
 const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -109,9 +153,11 @@ function query() {
   const from = document.getElementById('filter-invoice-from').value;
   const to = document.getElementById('filter-invoice-to').value;
   const status = document.getElementById('filter-invoice-status').value;
+  const type = document.getElementById('filter-invoice-type').value;
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (status) params.set('status', status);
+  if (type) params.set('type', type);
   return params;
 }
 async function loadCustomers() {
@@ -129,10 +175,10 @@ async function loadCustomers() {
 function renderInvoices(rows) {
   const body = document.getElementById('invoice-list');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="8" style="color:#666">No invoices found</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" style="color:#666">No invoices found</td></tr>';
     return;
   }
-  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date) + '</td></tr>').join('');
+  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
 }
 function renderDetail(invoice) {
   const box = document.getElementById('invoice-detail');
@@ -143,7 +189,28 @@ function renderDetail(invoice) {
     + '<p class="note">' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + '</p>'
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
-    + '<p class="note">IGU subtotal ' + money(invoice.currency, invoice.igu_subtotal) + ' · Discount ' + money(invoice.currency, invoice.discount_amount) + ' · IGU total ' + money(invoice.currency, invoice.igu_total) + ' · Grand total ' + money(invoice.currency, invoice.total) + ' · Balance due ' + money(invoice.currency, invoice.balance) + '</p>';
+    + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
+    + (invoice.reason ? '<p class="note">Reason: ' + esc(invoice.reason) + '</p>' : '')
+    + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')
+    + (CAN_ISSUE && invoice.doc_type === 'credit_note' && !invoice.voided ? '<div class="row"><input id="apply-invoice" type="number" min="1" placeholder="Invoice id" aria-label="Invoice id"><input id="apply-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Amount"><button type="button" class="btn" id="apply-credit">Apply to invoice</button></div>' : '');
+  const voidButton = document.getElementById('void-doc');
+  if (voidButton) voidButton.addEventListener('click', async () => {
+    const reason = prompt('Why void this document?');
+    if (!reason) return;
+    const res = await fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Not voided'); return; }
+    loadInvoices();
+    renderDetail(body);
+  });
+  const apply = document.getElementById('apply-credit');
+  if (apply) apply.addEventListener('click', async () => {
+    const res = await fetch('/api/invoices/' + invoice.id + '/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invoice_id: document.getElementById('apply-invoice').value, amount: document.getElementById('apply-amount').value})});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Not applied'); return; }
+    loadInvoices();
+    renderDetail(body);
+  });
 }
 async function loadInvoices() {
   const res = await fetch('/api/invoices?' + query().toString());
@@ -188,7 +255,88 @@ async function loadCredit() {
   const res = await fetch('/api/credit?' + params.toString());
   if (!res.ok) return;
   const credit = await res.json();
-  document.getElementById('credit-summary').textContent = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit) + '. Available ' + money(credit.currency, credit.available_credit) + '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '.';
+  document.getElementById('credit-summary').textContent = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit) + '. Available ' + money(credit.currency, credit.available_credit) + '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '. Unapplied credits ' + money(credit.currency, credit.unapplied_credits) + '. Balance ' + money(credit.currency, credit.balance) + '.';
+}
+function lineRow() {
+  return '<div class="row line"><input placeholder="Description" aria-label="Description" class="desc"><input type="number" min="0.01" step="0.01" value="1" aria-label="Quantity" class="qty"><input type="number" min="0" step="0.01" placeholder="Unit price" aria-label="Unit price" class="price"></div>';
+}
+function readLines(box) {
+  return Array.from(box.querySelectorAll('.line')).map(row => ({
+    description: row.querySelector('.desc').value,
+    qty: row.querySelector('.qty').value,
+    unit_price: row.querySelector('.price').value
+  }));
+}
+async function loadOrders() {
+  if (!CAN_ISSUE) return;
+  const res = await fetch('/api/orders');
+  const orders = res.ok ? await res.json() : [];
+  const options = '<option value="">No order</option>' + orders.map(order => '<option value="' + esc(order.id) + '" data-customer="' + esc(order.customer_id) + '">' + esc(order.id) + ' ' + esc(order.company) + '</option>').join('');
+  document.getElementById('inv-order').innerHTML = options;
+  document.getElementById('cn-order').innerHTML = options;
+  const invoices = await fetch('/api/invoices?type=invoice');
+  const rows = invoices.ok ? await invoices.json() : [];
+  document.getElementById('cn-invoice').innerHTML = '<option value="">No invoice</option>' + rows.filter(row => !row.voided).map(row => '<option value="' + esc(row.id) + '" data-customer="' + esc(row.customer_id) + '">' + esc(row.number) + ' ' + esc(row.company) + '</option>').join('');
+  const customers = await fetch('/api/order-customers');
+  const people = customers.ok ? await customers.json() : [];
+  const customerOptions = people.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  document.getElementById('inv-customer').innerHTML = customerOptions;
+  document.getElementById('cn-customer').innerHTML = customerOptions;
+}
+if (CAN_ISSUE) {
+  document.getElementById('inv-lines').innerHTML = lineRow();
+  document.getElementById('cn-lines').innerHTML = lineRow();
+  document.getElementById('show-invoice-form').addEventListener('click', () => { document.getElementById('create-invoice').hidden = false; });
+  document.getElementById('show-credit-form').addEventListener('click', () => { document.getElementById('create-credit').hidden = false; });
+  document.getElementById('inv-add-line').addEventListener('click', () => { document.getElementById('inv-lines').insertAdjacentHTML('beforeend', lineRow()); });
+  document.getElementById('cn-add-line').addEventListener('click', () => { document.getElementById('cn-lines').insertAdjacentHTML('beforeend', lineRow()); });
+  document.getElementById('inv-order').addEventListener('change', () => {
+    const option = document.getElementById('inv-order').selectedOptions[0];
+    if (option && option.getAttribute('data-customer')) document.getElementById('inv-customer').value = option.getAttribute('data-customer');
+  });
+  document.getElementById('cn-order').addEventListener('change', () => {
+    const option = document.getElementById('cn-order').selectedOptions[0];
+    if (option && option.getAttribute('data-customer')) document.getElementById('cn-customer').value = option.getAttribute('data-customer');
+  });
+  document.getElementById('cn-invoice').addEventListener('change', () => {
+    const option = document.getElementById('cn-invoice').selectedOptions[0];
+    if (option && option.getAttribute('data-customer')) document.getElementById('cn-customer').value = option.getAttribute('data-customer');
+  });
+  document.getElementById('invoice-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const orderId = document.getElementById('inv-order').value;
+    const res = await fetch('/api/invoices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      doc_type: 'invoice',
+      order_id: orderId || null,
+      customer_id: orderId ? null : document.getElementById('inv-customer').value,
+      due_date: document.getElementById('inv-due').value,
+      lines: readLines(document.getElementById('inv-lines'))
+    })});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Invoice was not saved'); return; }
+    document.getElementById('create-invoice').hidden = true;
+    loadInvoices();
+    renderDetail(body);
+  });
+  document.getElementById('credit-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const orderId = document.getElementById('cn-order').value;
+    const invoiceId = document.getElementById('cn-invoice').value;
+    const res = await fetch('/api/invoices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      doc_type: 'credit_note',
+      order_id: orderId || null,
+      invoice_id: invoiceId || null,
+      customer_id: (orderId || invoiceId) ? null : document.getElementById('cn-customer').value,
+      reason: document.getElementById('cn-reason').value,
+      lines: readLines(document.getElementById('cn-lines'))
+    })});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Credit note was not saved'); return; }
+    document.getElementById('create-credit').hidden = true;
+    loadInvoices();
+    renderDetail(body);
+  });
+  loadOrders();
 }
 document.getElementById('invoice-filter').addEventListener('click', () => { loadInvoices(); loadPayments(); loadCredit(); });
 document.getElementById('payment-list').addEventListener('click', async (event) => {
