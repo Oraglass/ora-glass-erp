@@ -337,9 +337,15 @@ def reprice_size_line(spec, pcs, tier, currency, pricing, tiers):
 
 
 def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
-    """Per-square-foot sell price. Sealants use the spacer markup, matching the existing engine."""
+    """Per-square-foot sell price. Sealants use the spacer markup, matching the existing engine.
+
+    Tier 5 is exactly twice the Tier 2 price of each glass, spacer, and sealant line.
+    Temper add-ons stay the same flat amount at every tier.
+    """
     temper_prices = TEMPER_PRICES if temper_prices is None else temper_prices
-    cfg = (tiers or {}).get(tier) or (tiers or {}).get('T2') or {}
+    source = 'T2' if tier == 'T5' else tier
+    scale = 2 if tier == 'T5' else 1
+    cfg = (tiers or {}).get(source) or (tiers or {}).get('T2') or {}
     glass_markup = _markup(cfg, 'glass_markup', 0.40)
     spacer_markup = _markup(cfg, 'spacer_markup', 0.40)
     total = 0.0
@@ -350,7 +356,7 @@ def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
         item = next((row for row in pricing if row['name'] == name), None)
         if not item:
             continue
-        total += round(float(item['base_price']) * (1 + glass_markup), 2)
+        total += round(float(item['base_price']) * (1 + glass_markup), 2) * scale
         if data.get(key.replace('glass', 'temper')) == 'yes':
             thick = name.split()[-1] if name else ''
             total += temper_prices.get(thick, 0.65)
@@ -361,7 +367,7 @@ def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
         item = next((row for row in pricing if row['name'] == name), None)
         if not item:
             continue
-        total += round(float(item['base_price']) * (1 + spacer_markup), 2)
+        total += round(float(item['base_price']) * (1 + spacer_markup), 2) * scale
     return round(total, 2)
 
 

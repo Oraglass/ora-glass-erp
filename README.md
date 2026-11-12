@@ -66,7 +66,7 @@ The password is read from `ADMIN_PASSWORD` or from a prompt. It is not accepted 
 On startup (`AUTO_SEED` defaults to `1`) the app creates, if missing:
 
 - Customer **Open Windows** (`open-windows.ca`), company default tier **T2**
-- `alex@open-windows.ca`, `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca`, each with a per-user override to **T5 (Tier 5 (End User), 425%)**. Until an admin edits Allowed tiers, each of them can quote at the company tier (T2) or that T5 override. The calculator opens on T5.
+- `alex@open-windows.ca`, `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca`, each with a per-user override to **Tier 5**. Until an admin edits Allowed tiers, each of them can quote at the company tier (T2) or that T5 override. The calculator opens on T5. Tier 5 prices are twice Tier 2.
 
 No password is stored for them. To activate someone:
 
@@ -85,7 +85,7 @@ Display names are taken from the email (Alex, Kiu, Vlad, Open Windows Support) b
 
 ## Tier markups
 
-T1–T4 keep their previous markups. **Tier 5 (End User)** is the existing T5 tier at 425% glass and 425% spacer. There is no separate tier. The Pricing page is admin-only and saves markups to `tiers.json`. A company has one default tier. An admin sets a user's default tier when adding or editing that person, and checks the tiers that customer may choose on the calculator. The company tier is not forced into that list. Users saved before this field existed keep the company tier and their override, so their default price does not change.
+T1–T4 keep their previous markups. **Tier 5** is twice the Tier 2 price of each glass, spacer, and sealant. Its markup is derived when tiers are loaded or saved, including tiers already stored on the data disk. Saved quotes and orders keep the prices they were written with. The Pricing page is admin-only and saves markups to `tiers.json`. A company has one default tier. An admin sets a user's default tier when adding or editing that person, and checks the tiers that customer may choose on the calculator. The company tier is not forced into that list. Users saved before this field existed keep the company tier and their override, so their default price does not change.
 
 ## Render
 

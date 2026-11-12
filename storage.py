@@ -11,13 +11,13 @@ logger = logging.getLogger('ora_glass.storage')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# T5 is the existing end-user tier (425% glass and spacer). The quote screen shows it as Tier 5 (End User).
+# Tier 5 sell prices are exactly twice Tier 2. 40% markup is a 1.40 multiplier, so Tier 5 is a 180% markup.
 DEFAULT_TIERS = {
     'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
     'T2': {'label': 'Tier 2', 'glass_markup': 0.40, 'spacer_markup': 0.40},
     'T3': {'label': 'Tier 3', 'glass_markup': 0.60, 'spacer_markup': 0.60},
     'T4': {'label': 'Tier 4', 'glass_markup': 0.75, 'spacer_markup': 0.75},
-    'T5': {'label': 'Tier 5 (End User)', 'glass_markup': 4.25, 'spacer_markup': 4.25},
+    'T5': {'label': 'Tier 5', 'glass_markup': 1.80, 'spacer_markup': 1.80},
 }
 TIER_ORDER = ('T1', 'T2', 'T3', 'T4', 'T5')
 
@@ -488,6 +488,39 @@ def default_tiers():
     return json.loads(json.dumps(DEFAULT_TIERS))
 
 
+def tier5_markup(tier2_markup):
+    """Markup whose multiplier is twice Tier 2's multiplier."""
+    try:
+        markup = float(tier2_markup)
+    except (TypeError, ValueError):
+        markup = 0.40
+    return round(2 * (1 + markup) - 1, 6)
+
+
+def apply_tier5_from_tier2(tiers):
+    """Point Tier 5 at twice Tier 2 and name it Tier 5. Returns True when the record changed."""
+    if not isinstance(tiers, dict):
+        return False
+    tier2 = tiers.get('T2') if isinstance(tiers.get('T2'), dict) else {}
+    tier5 = tiers.get('T5')
+    if not isinstance(tier5, dict):
+        tier5 = {}
+        tiers['T5'] = tier5
+    glass = tier5_markup(tier2.get('glass_markup', 0.40))
+    spacer = tier5_markup(tier2.get('spacer_markup', 0.40))
+    changed = False
+    if tier5.get('label') != 'Tier 5':
+        tier5['label'] = 'Tier 5'
+        changed = True
+    if tier5.get('glass_markup') != glass:
+        tier5['glass_markup'] = glass
+        changed = True
+    if tier5.get('spacer_markup') != spacer:
+        tier5['spacer_markup'] = spacer
+        changed = True
+    return changed
+
+
 def load_tiers():
     path = tiers_path()
     with lock_for(path):
@@ -511,10 +544,7 @@ def load_tiers():
                 if field not in current:
                     current[field] = fallback
                     changed = True
-        # Earlier builds labeled T5 "Tier 5" or "End User". The displayed name is "Tier 5 (End User)".
-        t5 = stored.get('T5')
-        if isinstance(t5, dict) and t5.get('label') in {None, '', 'Tier 5', 'End User'}:
-            t5['label'] = 'Tier 5 (End User)'
+        if apply_tier5_from_tier2(stored):
             changed = True
         if changed:
             atomic_write_json(path, stored)
@@ -524,6 +554,7 @@ def load_tiers():
 def save_tiers(tiers):
     if not isinstance(tiers, dict):
         raise TypeError('tiers must be an object')
+    apply_tier5_from_tier2(tiers)
     path = tiers_path()
     with lock_for(path):
         atomic_write_json(path, tiers)

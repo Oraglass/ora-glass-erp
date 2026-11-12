@@ -64,11 +64,41 @@ def test_end_user_is_existing_t5_markup(data_dir):
     tiers = load_tiers()
     assert 'EU' not in tiers
     assert set(tiers) == {'T1', 'T2', 'T3', 'T4', 'T5'}
-    assert tiers['T5']['label'] == 'Tier 5 (End User)'
-    assert tiers['T5']['glass_markup'] == 4.25
-    assert tiers['T5']['spacer_markup'] == 4.25
+    assert tiers['T5']['label'] == 'Tier 5'
+    assert tiers['T5']['glass_markup'] == 1.8
+    assert tiers['T5']['spacer_markup'] == 1.8
     assert tiers['T1']['glass_markup'] == 0.30
     assert tiers['T1']['spacer_markup'] == 0.20
+
+
+def test_tier5_prices_are_exactly_twice_tier2_and_follow_edits(data_dir):
+    from app import PRICING
+    from storage import save_quotes, save_tiers
+    payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a'}
+    tiers = load_tiers()
+    tier2 = calculate_price_sqf(payload, 'T2', PRICING, tiers)
+    tier5 = calculate_price_sqf(payload, 'T5', PRICING, tiers)
+    assert tier5 == round(tier2 * 2, 2)
+    bronze = {'glass1': 'Bronze 6mm', 'temper1': 'n/a'}
+    assert calculate_price_sqf(bronze, 'T5', PRICING, tiers) == round(calculate_price_sqf(bronze, 'T2', PRICING, tiers) * 2, 2)
+    tempered = {'glass1': 'Clear Glass 6mm', 'temper1': 'yes'}
+    plain = calculate_price_sqf({'glass1': 'Clear Glass 6mm', 'temper1': 'n/a'}, 'T2', PRICING, tiers)
+    temper_addon = round(calculate_price_sqf(tempered, 'T2', PRICING, tiers) - plain, 2)
+    assert calculate_price_sqf(tempered, 'T5', PRICING, tiers) == round(plain * 2 + temper_addon, 2)
+    save_quotes([{'id': 1, 'tier': 'T5', 'items': [{'total': 12.34}], 'project': 'Already saved'}])
+    save_tiers({
+        'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
+        'T2': {'label': 'Tier 2', 'glass_markup': 0.50, 'spacer_markup': 0.25},
+        'T3': {'label': 'Tier 3', 'glass_markup': 0.60, 'spacer_markup': 0.60},
+        'T4': {'label': 'Tier 4', 'glass_markup': 0.75, 'spacer_markup': 0.75},
+        'T5': {'label': 'Tier 5 (End User)', 'glass_markup': 4.25, 'spacer_markup': 4.25},
+    })
+    updated = load_tiers()
+    assert updated['T5']['label'] == 'Tier 5'
+    assert updated['T5']['glass_markup'] == 2.0
+    assert updated['T5']['spacer_markup'] == 1.5
+    assert calculate_price_sqf(payload, 'T5', PRICING, updated) == round(calculate_price_sqf(payload, 'T2', PRICING, updated) * 2, 2)
+    assert load_quotes()[0]['items'][0]['total'] == 12.34
 
 
 def test_seed_has_no_passwords_and_assigns_tiers(data_dir):
@@ -90,7 +120,7 @@ def test_seed_has_no_passwords_and_assigns_tiers(data_dir):
     assert resolve_effective_tier(users['support@open-windows.ca'], customers, tiers) == 'T5'
     for seeded in SEED_USERS:
         assert allowed_tier_ids(users[seeded['email']], customers, tiers) == ['T2', 'T5']
-    assert tiers['T5']['label'] == 'Tier 5 (End User)'
+    assert tiers['T5']['label'] == 'Tier 5'
     for spec in SEED_USERS:
         user = users[spec['email']]
         assert user['password_hash'] is None
@@ -208,7 +238,7 @@ def test_staff_can_choose_tier_including_end_user(client):
     assert login(client, 'admin@oraglass.us').status_code == 302
     page = client.get('/quotes')
     assert b'<select id="tier">' in page.data
-    assert b'Tier 5 (End User)' in page.data
+    assert b'Tier 5' in page.data
     assert b'value="T5"' in page.data
     payload = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'}
     response = client.post('/api/calculate', json=payload)
@@ -347,10 +377,10 @@ def test_create_customer_user_with_tier_override(client):
     assert row['company_tier_label'] == 'Tier 3'
     assert row['tier_override'] == 'T5'
     assert row['effective_tier'] == 'T5'
-    assert row['effective_tier_label'] == 'Tier 5 (End User)'
+    assert row['effective_tier_label'] == 'Tier 5'
     assert 'allowed_tiers' not in stored
     assert row['allowed_tiers'] == ['T3', 'T5']
-    assert row['allowed_tier_labels'] == ['Tier 3', 'Tier 5 (End User)']
+    assert row['allowed_tier_labels'] == ['Tier 3', 'Tier 5']
     client.post('/logout')
     assert login(client, 'pat@north.example').status_code == 302
     blocked = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'})
@@ -482,7 +512,7 @@ def test_staff_without_company_uses_tier_as_quoting_default(client):
     assert page.status_code == 200
     assert page.data.count(b'value="T1" selected') == 2
     assert b'value="T5"' in page.data
-    assert b'Tier 5 (End User)' in page.data
+    assert b'Tier 5' in page.data
     default_price = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a'})
     assert default_price.get_json()['tier'] == 'T1'
     chosen = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'})
@@ -501,13 +531,13 @@ def test_users_form_includes_company_default_and_user_tier(client):
     assert b'aria-readonly="true"' in body
     assert b'id="u-tier"' in body
     assert b'<option value="">Use company default</option>' in body
-    assert b'<option value="T5">Tier 5 (End User)</option>' in body
+    assert b'<option value="T5">Tier 5</option>' in body
     assert b'<option value="T1">Tier 1</option>' in body
     assert body.count(b"tier_override: document.getElementById('u-tier').value") == 2
     assert body.count(b'allowed_tiers: collectAllowed()') == 2
     assert b'<th>Allowed tiers</th>' in body
     assert b'id="allowed-tiers"' in body
-    assert b'<label><input type="checkbox" value="T5"> Tier 5 (End User)</label>' in body
+    assert b'<label><input type="checkbox" value="T5"> Tier 5</label>' in body
     assert b"label.textContent = company.tier_label || company.tier || ''" in body
     assert b'Choose at least one allowed tier.' in body
     assert b'The company tier is not allowed. Choose one of the allowed tiers for this user.' in body
@@ -598,7 +628,7 @@ def test_customer_with_only_t5_never_sees_the_company_tier(client):
     assert orders.status_code in (302, 403)
     assert client.get('/api/orders').status_code == 403
     quotes = client.get('/quotes')
-    assert b'Tier 5 (End User)' in quotes.data
+    assert b'Tier 5' in quotes.data
     assert b'<input type="hidden" id="tier" value="T5">' in quotes.data
     assert b'<input type="hidden" id="s-tier" value="T5">' in quotes.data
     customers = client.get('/api/customers')
@@ -702,8 +732,8 @@ def test_admin_sets_allowed_tiers_when_creating_and_editing(client):
     assert load_users()['pat@west.example']['allowed_tiers'] == ['T1', 'T5']
     row = next(item for item in client.get('/api/users').get_json() if item['email'] == 'pat@west.example')
     assert row['company_tier_label'] == 'Tier 3'
-    assert row['effective_tier_label'] == 'Tier 5 (End User)'
-    assert row['allowed_tier_labels'] == ['Tier 1', 'Tier 5 (End User)']
+    assert row['effective_tier_label'] == 'Tier 5'
+    assert row['allowed_tier_labels'] == ['Tier 1', 'Tier 5']
     bad = client.put('/api/users/pat@west.example', json={'allowed_tiers': ['T4', 'NOPE']})
     assert bad.status_code == 400
     assert b'Unknown pricing tier' in bad.data
