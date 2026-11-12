@@ -54,6 +54,14 @@ td.actions{width:15.5rem;vertical-align:middle}
 {% if can_manage %}<button class="btn" type="button" id="add-user">+ Add User</button>{% endif %}
 </div>
 <p class="help" style="margin-top:8px">Logins are email addresses. Leave the password blank to get a one-time setup link, or set a temporary password that must be changed at first sign-in. When you add or edit a user, the company default tier is shown for reference. Allowed tiers are the only prices a customer may see or quote. The company tier starts checked for a new user and can be cleared. This user's tier must be one of the allowed tiers.</p>
+<div style="margin-top:14px">
+<label for="filter-company" style="font-size:12px;color:#666;font-weight:600">Filter by company</label>
+<select id="filter-company" style="display:block;margin-top:4px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px;min-width:280px">
+<option value="">All</option>
+<option value="ora">Ora Glass (internal staff/admins)</option>
+<option value="shop">Shop workers</option>
+</select>
+</div>
 <table>
 <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Modules</th><th>Company</th><th>Company tier</th><th>This user's tier</th><th>Allowed tiers</th><th>Access</th><th>Actions</th></tr></thead>
 <tbody id="user-list"><tr><td colspan="10" style="text-align:center;color:#666">Loading...</td></tr></tbody>
@@ -316,13 +324,38 @@ function tierFormError() {
   }
   return '';
 }
+function userCompanyGroup(user) {
+  if (user.role === 'shop') return 'shop';
+  if (user.role === 'customer') return 'customer:' + (user.customer_id || '');
+  return 'ora';
+}
+function visibleUsers() {
+  const filter = document.getElementById('filter-company').value;
+  if (!filter) return users;
+  return users.filter(user => userCompanyGroup(user) === filter);
+}
+function fillCompanyFilter() {
+  const select = document.getElementById('filter-company');
+  const current = select.value;
+  const options = [
+    '<option value="">All</option>',
+    '<option value="ora">Ora Glass (internal staff/admins)</option>',
+    '<option value="shop">Shop workers</option>'
+  ];
+  companies.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(company => {
+    options.push('<option value="customer:' + esc(company.id) + '">' + esc(company.name) + '</option>');
+  });
+  select.innerHTML = options.join('');
+  if (Array.from(select.options).some(option => option.value === current)) select.value = current;
+}
 function render() {
   const tbody = document.getElementById('user-list');
-  if (!users.length) {
+  const rows = visibleUsers();
+  if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#666">No users</td></tr>';
     return;
   }
-  tbody.innerHTML = users.map(user => {
+  tbody.innerHTML = rows.map(user => {
     const account = user.account || user.email;
     const key = esc(account);
     const email = esc(user.email || user.employee_number || account);
@@ -343,6 +376,8 @@ async function loadUsers() {
   const data = await api('/api/users');
   if (!data) return;
   users = data;
+  if (!companies.length) await loadCompanies('');
+  fillCompanyFilter();
   render();
 }
 function updateTierFields() {
@@ -385,6 +420,7 @@ async function loadCompanies(selected) {
   });
   sel.value = selected || '';
   onCompanyChanged();
+  fillCompanyFilter();
 }
 async function openAdd() {
   addingUser = true;
@@ -581,6 +617,7 @@ document.getElementById('save-temp').addEventListener('click', async () => {
   loadUsers();
   alert('Temporary password saved. The user must change it at next sign-in.');
 });
+document.getElementById('filter-company').addEventListener('change', render);
 loadUsers();
 </script>
 </body>
