@@ -711,10 +711,6 @@ def quotes_visible_to(user, quotes):
     return [quote for quote in quotes if quote.get('user') == user.get('email')]
 
 
-def is_order_only(customer):
-    return (customer or {}).get('kind') == 'order_only'
-
-
 def staff_can_order(user):
     """Admins and Ora Glass staff who have the Orders module. Customers never qualify."""
     if not user or user.get('role') == 'customer':
@@ -772,11 +768,11 @@ def apply_order_privileges(record, data):
 
 
 def account_customer(customer_id, customers):
-    """A full customer account. Order-only records are not companies people can log into."""
+    """A customer company a person can be linked to."""
     if not customer_id or not ID_RE.fullmatch(customer_id or ''):
         return None
     customer = (customers or {}).get(customer_id)
-    if not customer or is_order_only(customer):
+    if not customer:
         return None
     return customer
 
@@ -1458,7 +1454,6 @@ def get_customers():
     rows = [
         public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
         for customer_id, customer in customers.items()
-        if not is_order_only(customer)
     ]
     rows.sort(key=lambda row: row['name'].lower())
     return jsonify(rows)
@@ -1496,7 +1491,7 @@ def update_customer(cid):
         return json_error('Expected a JSON object', 400)
     customers = load_customers()
     customer = customers.get(cid)
-    if not customer or is_order_only(customer):
+    if not customer:
         return json_error('Not found', 404)
     error = apply_customer_fields(customer, data, load_tiers(), creating=False)
     if error:
@@ -1514,7 +1509,7 @@ def delete_customer(cid):
         return json_error('Not found', 404)
     customers = load_customers()
     customer = customers.get(cid)
-    if not customer or is_order_only(customer):
+    if not customer:
         return json_error('Not found', 404)
     if customer_user_counts().get(cid):
         return json_error("Reassign or delete this customer's users first.", 409)
@@ -1970,6 +1965,25 @@ def _chosen_tier(raw, tiers):
     return text, None
 
 
+def suggested_order_tier(quote, tiers):
+    """Tier to offer when a customer is created from this quote. Falls back to the usual default."""
+    stored = clean_text((quote or {}).get('tier'), 20)
+    if stored and stored in (tiers or {}):
+        return stored
+    return _fallback_tier(tiers)
+
+
+def _tier_for_new_customer(data, new_customer, tiers, suggested):
+    raw = None
+    if data.get('tier') not in (None, ''):
+        raw = data.get('tier')
+    elif isinstance(new_customer, dict) and new_customer.get('tier') not in (None, ''):
+        raw = new_customer.get('tier')
+    else:
+        raw = suggested
+    return _chosen_tier(raw, tiers)
+
+
 def _company_tier(customer, tiers):
     tier = (customer or {}).get('tier') or ''
     if tier in tiers:
@@ -1994,7 +2008,7 @@ def get_quotes():
 @app.route('/api/order-customers', methods=['GET'])
 @login_required
 def order_customer_choices():
-    """Customers a staff member can attach to a production order, including order-only records."""
+    """Customers a staff member can attach to a production order."""
     user = current_user()
     if user.get('role') == 'customer' or not (
         user_has_module(user, 'quote-history') or user_has_module(user, 'orders')
@@ -2011,7 +2025,7 @@ def order_customer_choices():
             'name': customer.get('name') or '',
             'tier': known,
             'tier_label': tier_label(known, tiers) if known else '',
-            'kind': 'order_only' if is_order_only(customer) else 'account',
+            'kind': 'account',
         })
     rows.sort(key=lambda row: (row['name'].lower(), row['id']))
     return jsonify(rows)
@@ -2161,19 +2175,19 @@ def _usable_size_spec(spec):
     return area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')) > 0
 
 
-def _order_only_from_request(data, customers, tiers, user):
+def _order_only_from_request(data, customers, tiers, user, suggested=None):
     new_customer = data.get('new_customer')
     if not isinstance(new_customer, dict):
         return None, None, 'Choose a customer.'
     name = clean_text(new_customer.get('name'), 200)
     if not name:
         return None, None, 'Customer name is required.'
-    tier, error = _chosen_tier(data.get('tier') if data.get('tier') not in (None, '') else new_customer.get('tier'), tiers)
+    tier, error = _tier_for_new_customer(data, new_customer, tiers, suggested)
     if error:
         return None, None, error
     customer_id = new_customer_id(name, customers)
     customer = blank_customer(customer_id, name, tier)
-    customer['kind'] = 'order_only'
+    customer['kind'] = 'account'
     customer['contact'] = clean_text(new_customer.get('contact'), 120)
     customer['email'] = clean_text(new_customer.get('email'), 200)
     customer['phone'] = clean_text(new_customer.get('phone'), 40)
@@ -2196,17 +2210,17 @@ def _order_only_from_request(data, customers, tiers, user):
     return customer_id, customer, None
 
 
-def _customer_for_staff_order(data, customers, tiers, user):
-    """Staff pick a saved customer, or create an order-only record that cannot sign in."""
+def _customer_for_staff_order(data, customers, tiers, user, suggested=None):
+    """Staff pick a saved customer, or create a normal customer from the quote."""
     if isinstance(data.get('new_customer'), dict):
-        return _order_only_from_request(data, customers, tiers, user)
+        return _order_only_from_request(data, customers, tiers, user, suggested)
     customer_id = clean_text(data.get('customer_id'), 64)
     if not customer_id or not ID_RE.fullmatch(customer_id):
         return None, None, 'Choose a customer.'
     customer = customers.get(customer_id)
     if not customer:
         return None, None, 'Unknown customer.'
-    if is_order_only(customer) and (customer.get('tier') or '') not in tiers:
+    if (customer.get('tier') or '') not in tiers and data.get('tier') not in (None, ''):
         tier, error = _chosen_tier(data.get('tier'), tiers)
         if error:
             return None, None, error
@@ -2248,7 +2262,8 @@ def convert_quote_to_order(quote_id):
         company_tier = _company_tier(customer, tiers)
         company = customer.get('name') or quote.get('company') or ''
     else:
-        customer_id, customer, error = _customer_for_staff_order(data, customers, tiers, user)
+        suggested = suggested_order_tier(quote, tiers)
+        customer_id, customer, error = _customer_for_staff_order(data, customers, tiers, user, suggested)
         if error:
             return json_error(error, 400)
         company_tier = _company_tier(customer, tiers)
@@ -2313,7 +2328,7 @@ def convert_quote_to_order(quote_id):
         'tier': company_tier,
         'customer_id': customer_id,
         'customer_name': company,
-        'kind': 'order_only' if is_order_only(customer) else 'account',
+        'kind': 'account',
         'total': grand,
     }
     if warning:

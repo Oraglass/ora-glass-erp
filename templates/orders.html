@@ -353,7 +353,7 @@ async function loadCustomers() {
   const select = document.getElementById('order-customer');
   const current = select.value;
   select.innerHTML = '<option value="">All customers</option>' + rows.map(row => {
-    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    const label = row.name;
     return '<option value="' + esc(row.id) + '">' + esc(label) + '</option>';
   }).join('');
   if (rows.some(row => row.id === current)) select.value = current;

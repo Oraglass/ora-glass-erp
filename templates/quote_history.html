@@ -97,7 +97,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 <div class="form-group" id="tier-fields" hidden>
 <label for="order-tier">Pricing tier</label>
 <select id="order-tier"></select>
-<p class="help">Order-only customers have no company tier until you pick one. That tier is saved and used to price the order.</p>
+<p class="help">Starts at the tier this quote was priced at. You can change it. The tier you leave selected is saved on the customer and used to price the order.</p>
 </div>
 <div class="modal-actions">
 <button type="button" class="btn btn-secondary" id="order-cancel">Cancel</button>
@@ -163,7 +163,7 @@ function fillCustomerFilter(rows) {
   const seen = new Map();
   rows.forEach(row => {
     if (!row || !row.id || seen.has(row.id)) return;
-    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    const label = row.name;
     seen.set(row.id, label);
   });
   const options = Array.from(seen.entries()).sort((a, b) => a[1].localeCompare(b[1]));
@@ -204,11 +204,23 @@ async function applyFilters() {
   if (res.status === 401) { window.location = '/login'; return; }
   renderQuotes(await res.json());
 }
-function fillTierSelect() {
+function pendingQuote() {
+  return catalog.find(item => String(item.id) === String(pendingQuoteId)) || null;
+}
+function suggestedTier(quote) {
+  const stored = quote && quote.tier;
+  if (stored && (TIERS || []).some(tier => tier.id === stored)) return stored;
+  if ((TIERS || []).some(tier => tier.id === 'T2')) return 'T2';
+  return (TIERS && TIERS[0] && TIERS[0].id) || '';
+}
+function fillTierSelect(preferred) {
   const select = document.getElementById('order-tier');
-  if (!select || select.options.length) return;
-  select.innerHTML = (TIERS || []).map(tier => '<option value="' + esc(tier.id) + '">' + esc(tier.label) + '</option>').join('');
-  select.value = 'T2';
+  if (!select) return;
+  if (!select.options.length) {
+    select.innerHTML = (TIERS || []).map(tier => '<option value="' + esc(tier.id) + '">' + esc(tier.label) + '</option>').join('');
+  }
+  const choice = preferred || suggestedTier(pendingQuote());
+  if (Array.from(select.options).some(option => option.value === choice)) select.value = choice;
 }
 function syncOrderFields() {
   const select = document.getElementById('order-customer');
@@ -216,13 +228,10 @@ function syncOrderFields() {
   const isNew = select.value === '__new__';
   const kind = option ? option.getAttribute('data-kind') : '';
   const tier = option ? option.getAttribute('data-tier') : '';
-  const needsTier = isNew || (kind === 'order_only' && !tier);
+  const needsTier = isNew || (select.value && !tier);
   document.getElementById('new-customer-fields').hidden = !isNew;
   document.getElementById('tier-fields').hidden = !needsTier;
-  if (needsTier) {
-    const tierSelect = document.getElementById('order-tier');
-    if (!tierSelect.value) tierSelect.value = 'T2';
-  }
+  if (needsTier) fillTierSelect(suggestedTier(pendingQuote()));
 }
 async function openOrderDialog(quoteId) {
   const quote = catalog.find(item => String(item.id) === String(quoteId));
@@ -232,7 +241,7 @@ async function openOrderDialog(quoteId) {
   const customers = res.ok ? await res.json() : [];
   const select = document.getElementById('order-customer');
   const options = ['<option value="">Choose a customer</option>'].concat(customers.map(row => {
-    const label = row.name + (row.kind === 'order_only' ? ' (order only)' : '');
+    const label = row.name;
     return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '">' + esc(label) + '</option>';
   })).concat(['<option value="__new__">New customer...</option>']);
   select.innerHTML = options.join('');
@@ -271,12 +280,12 @@ async function submitOrder(event) {
       body.new_customer.credit_limit = credit.value;
       body.new_customer.credit_currency = document.getElementById('new-credit-currency').value;
     }
-    body.tier = document.getElementById('order-tier').value || 'T2';
+    body.tier = document.getElementById('order-tier').value || suggestedTier(pendingQuote());
   } else if (select.value) {
     body.customer_id = select.value;
     const option = select.options[select.selectedIndex];
-    if (option && option.getAttribute('data-kind') === 'order_only' && !option.getAttribute('data-tier')) {
-      body.tier = document.getElementById('order-tier').value || 'T2';
+    if (option && !option.getAttribute('data-tier')) {
+      body.tier = document.getElementById('order-tier').value || suggestedTier(pendingQuote());
     }
   } else {
     alert('Choose a customer.');
