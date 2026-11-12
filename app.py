@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from io import BytesIO
@@ -56,7 +57,30 @@ from quoting import (
     reprice_size_line,
     resolve_effective_tier,
     sealant_match_map,
+    suggest_sealant,
     tier_for_request,
+)
+from order_import import (
+    OrderImportError,
+    add_import,
+    add_request,
+    check_upload,
+    choose_template,
+    company_mappings,
+    load_imports,
+    load_requests,
+    load_templates,
+    open_request_count,
+    parse_upload,
+    public_request,
+    public_template,
+    remember_mappings,
+    replace_import,
+    safe_filename,
+    save_requests,
+    save_templates,
+    store_upload,
+    upload_abspath,
 )
 from seed_data import apply_seed, new_user
 from security import (
@@ -187,7 +211,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=session_cookie_secure(),
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
-    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=9 * 1024 * 1024,
     WTF_CSRF_TIME_LIMIT=None,
 )
 csrf = CSRFProtect(app)
@@ -1093,6 +1117,7 @@ def dashboard():
         modules=effective_module_ids(user),
         can_payroll=can_manage_payroll(user),
         can_time=can_manage_time(user),
+        template_requests=open_request_count() if user.get('role') == 'admin' else 0,
     )
 
 
@@ -1119,6 +1144,15 @@ def quote_template_context(user):
         'locked_tier': locked_id,
         'locked_tier_label': tier_label(locked_id, tiers),
         'sealant_matches': sealant_match_map(SPACERS, SEALANTS),
+        'import_admin': user.get('role') == 'admin',
+        'import_customer': user.get('role') == 'customer',
+        'import_customer_id': user.get('customer_id') or '',
+        'import_companies': [
+            {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
+            for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
+        ] if user.get('role') != 'customer' else [],
+        'import_glass': [item.get('name') for item in GLASS],
+        'import_spacers': [item.get('name') for item in SPACERS],
     }
 
 
@@ -1866,6 +1900,698 @@ def save_quote():
     }
     stored = append_quote(quote)
     return jsonify({'success': True, 'id': stored['id']})
+
+
+_IMPORT_COLUMNS = ('width', 'height', 'qty', 'glass', 'spacer', 'mark')
+
+
+def _catalog_names():
+    return [item['name'] for item in GLASS], [item['name'] for item in SPACERS]
+
+
+def _known_product(name, names):
+    token = str(name or '').strip()
+    if not token:
+        return ''
+    folded = {item.casefold(): item for item in names}
+    return folded.get(token.casefold(), '')
+
+
+def _import_company(user, requested):
+    customers = load_customers()
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id') or ''
+        customer = customers.get(customer_id)
+        if not customer:
+            return None, None, 'Your account is not linked to a customer.'
+        return customer_id, customer, None
+    customer_id = clean_text(requested, 64)
+    customer = customers.get(customer_id)
+    if not customer_id or not customer:
+        return None, None, 'Choose a customer company.'
+    return customer_id, customer, None
+
+
+def _templates_visible(user, customer_id):
+    rows = load_templates()
+    if user.get('role') == 'customer':
+        own = user.get('customer_id') or ''
+        return [row for row in rows if row.get('customer_id') == own]
+    if user.get('role') != 'admin':
+        if not customer_id:
+            return None
+        return [row for row in rows if row.get('customer_id') == customer_id]
+    if customer_id:
+        return [row for row in rows if row.get('customer_id') == customer_id]
+    return rows
+
+
+def _owned_import(user, import_id):
+    """Customers only reach their company's upload. Staff with Quotes can open any company import."""
+    record = next((row for row in load_imports() if row.get('id') == import_id), None)
+    if not record or user.get('role') == 'shop':
+        return None
+    if user.get('role') == 'customer' and record.get('customer_id') != user.get('customer_id'):
+        return None
+    return record
+
+
+def _template_payload(data, existing=None):
+    customer_id = clean_text(data.get('customer_id'), 64)
+    if customer_id not in load_customers():
+        return None, 'Choose a customer company.'
+    name = clean_text(data.get('name'), 120)
+    if not name:
+        return None, 'Template name is required.'
+    kind = clean_text(data.get('kind'), 20)
+    if kind not in {'excel', 'pdf'}:
+        return None, 'Template type must be excel or pdf.'
+    unit = clean_text(data.get('unit') or 'auto', 10)
+    if unit not in {'auto', 'mm', 'in'}:
+        return None, 'Unit must be auto, mm, or in.'
+    try:
+        header_row = int(data.get('header_row') or 1)
+    except (TypeError, ValueError):
+        return None, 'Header row must be a number.'
+    if header_row < 1 or header_row > 100:
+        return None, 'Header row must be between 1 and 100.'
+    incoming = data.get('columns') if isinstance(data.get('columns'), dict) else {}
+    columns = {key: clean_text(incoming.get(key), 80) for key in _IMPORT_COLUMNS}
+    pdf_mode = clean_text(data.get('pdf_mode') or 'table', 20)
+    if pdf_mode not in {'table', 'regex'}:
+        return None, 'PDF mode must be table or regex.'
+    pattern = str(data.get('line_pattern') or '')[:300]
+    if kind == 'pdf' and pdf_mode == 'regex':
+        if not pattern:
+            return None, 'A PDF line pattern is required.'
+    else:
+        for key in ('width', 'height', 'qty', 'glass'):
+            if not columns[key]:
+                return None, 'Map the width, height, quantity, and glass columns.'
+    record = {
+        'customer_id': customer_id,
+        'name': name,
+        'kind': kind,
+        'unit': unit,
+        'match': clean_text(data.get('match'), 80),
+        'sheet': clean_text(data.get('sheet'), 80),
+        'header_row': header_row,
+        'columns': columns,
+        'pdf_mode': pdf_mode,
+        'line_pattern': pattern if kind == 'pdf' else '',
+        'active': data.get('active', True) is not False,
+    }
+    if existing:
+        record['id'] = existing.get('id')
+    return record, None
+
+
+def _trim_num(value):
+    number = round(float(value), 4)
+    if number == int(number):
+        return str(int(number))
+    text = f'{number:.4f}'.rstrip('0').rstrip('.')
+    return text
+
+
+def _import_spec(line):
+    spacer = line.get('spacer_product') or ''
+    sealant = ''
+    if spacer:
+        sealant = suggest_sealant(spacer, SEALANTS).get('selected') or ''
+    return {
+        'glass1': line.get('glass_product') or '',
+        'temper1': 'n/a',
+        'spacer1': spacer,
+        'sealant1': sealant,
+        'glass2': '',
+        'temper2': 'n/a',
+        'spacer2': '',
+        'sealant2': '',
+        'glass3': '',
+        'temper3': 'n/a',
+        'width': line.get('width'),
+        'height': line.get('height'),
+        'unit': 'in',
+    }
+
+
+def _price_import_line(line, tier, currency):
+    line['price_sqf'] = None
+    line['price_pc'] = None
+    line['sqf'] = None
+    line['total'] = None
+    if line.get('errors') or not line.get('glass_product') or not line.get('width') or not line.get('height') or not line.get('qty'):
+        return
+    priced = reprice_size_line(_import_spec(line), line.get('qty'), tier, currency, PRICING, load_tiers())
+    line.update(priced)
+
+
+def _apply_saved_mappings(parsed, customer_id, tier, currency, extra_glass=None, extra_spacer=None):
+    glass_names, spacer_names = _catalog_names()
+    saved = company_mappings(customer_id)
+    glass_map = {}
+    spacer_map = {}
+    for source, product in (saved.get('glass') or {}).items():
+        known = _known_product(product, glass_names)
+        if source and known:
+            glass_map[str(source).casefold()] = known
+    for source, product in (extra_glass or {}).items():
+        known = _known_product(product, glass_names)
+        if source and known:
+            glass_map[str(source).casefold()] = known
+    for source, product in (saved.get('spacer') or {}).items():
+        known = _known_product(product, spacer_names)
+        if source and known:
+            spacer_map[str(source).casefold()] = known
+    for source, product in (extra_spacer or {}).items():
+        known = _known_product(product, spacer_names)
+        if source and known:
+            spacer_map[str(source).casefold()] = known
+    exact_glass = {name.casefold(): name for name in glass_names}
+    exact_spacer = {name.casefold(): name for name in spacer_names}
+    unmatched_glass = []
+    unmatched_spacer = []
+    for line in parsed.get('lines') or []:
+        errors = [error for error in (line.get('errors') or []) if not str(error).startswith('Unmatched')]
+        raw_glass = line.get('glass_name') or ''
+        product = glass_map.get(raw_glass.casefold()) or exact_glass.get(raw_glass.casefold(), '') if raw_glass else ''
+        line['glass_product'] = product or ''
+        if raw_glass and not product:
+            errors.append('Unmatched glass')
+            if raw_glass not in unmatched_glass:
+                unmatched_glass.append(raw_glass)
+        raw_spacer = line.get('spacer_name') or ''
+        if raw_spacer:
+            spacer = spacer_map.get(raw_spacer.casefold()) or exact_spacer.get(raw_spacer.casefold(), '')
+            line['spacer_product'] = spacer or ''
+            if not spacer:
+                errors.append('Unmatched spacer')
+                if raw_spacer not in unmatched_spacer:
+                    unmatched_spacer.append(raw_spacer)
+        else:
+            line['spacer_product'] = ''
+        line['errors'] = errors
+        _price_import_line(line, tier, currency)
+    return unmatched_glass, unmatched_spacer
+
+
+def _import_tier(user, requested):
+    tiers = load_tiers()
+    tier = tier_for_request(user, clean_text(requested, 20), load_customers(), tiers)
+    return tier
+
+
+def _present_import(record, template, user, currency='usd', extra_glass=None, extra_spacer=None, tier_requested=''):
+    currency = currency if currency in {'usd', 'cad'} else 'usd'
+    tier = _import_tier(user, tier_requested)
+    if not tier:
+        return {'id': record['id'], 'status': 'failed', 'error': 'That pricing tier is not available.', 'lines': [], 'currency': currency, 'tier': ''}
+    path = upload_abspath(record.get('stored'))
+    if not path:
+        record['status'] = 'failed'
+        replace_import(record['id'], record)
+        return {'id': record['id'], 'status': 'failed', 'error': 'The uploaded file is missing.', 'lines': [], 'currency': currency, 'tier': tier}
+    ext = os.path.splitext(path)[1].lower().lstrip('.')
+    try:
+        parsed = parse_upload(path, ext, template)
+    except OrderImportError as exc:
+        record['status'] = 'failed'
+        record['template_id'] = template.get('id')
+        replace_import(record['id'], record)
+        return {
+            'id': record['id'],
+            'status': 'failed',
+            'error': str(exc),
+            'lines': [],
+            'looks_wrong': True,
+            'template': public_template(template),
+            'currency': currency,
+            'tier': tier or '',
+        }
+    unmatched_glass, unmatched_spacer = _apply_saved_mappings(
+        parsed, record.get('customer_id'), tier, currency, extra_glass, extra_spacer,
+    )
+    if parsed.get('error') or parsed.get('looks_wrong'):
+        status = 'needs_review'
+    elif unmatched_glass or unmatched_spacer:
+        status = 'needs_mapping'
+    else:
+        status = 'preview'
+    record['status'] = status
+    record['template_id'] = template.get('id')
+    replace_import(record['id'], record)
+    return {
+        'id': record['id'],
+        'status': status,
+        'error': parsed.get('error') or '',
+        'looks_wrong': bool(parsed.get('looks_wrong')),
+        'unit_used': parsed.get('unit_used') or 'in',
+        'template': public_template(template),
+        'lines': parsed.get('lines') or [],
+        'unmatched_glass': unmatched_glass,
+        'unmatched_spacer': unmatched_spacer,
+        'currency': currency,
+        'tier': tier or '',
+        'company': record.get('company') or '',
+        'filename': record.get('filename') or '',
+    }
+
+
+def _find_template(template_id, customer_id):
+    return next(
+        (row for row in load_templates() if row.get('id') == template_id and row.get('customer_id') == customer_id),
+        None,
+    )
+
+
+@app.route('/api/order-templates', methods=['GET'])
+@module_required('quotes')
+def list_order_templates():
+    user = current_user()
+    customer_id = user.get('customer_id') if user.get('role') == 'customer' else clean_text(request.args.get('customer_id'), 64)
+    if user.get('role') not in {'admin', 'customer'} and not customer_id:
+        return json_error('Choose a customer company.', 400)
+    rows = _templates_visible(user, customer_id)
+    return jsonify([public_template(row) for row in rows])
+
+
+@app.route('/api/order-templates', methods=['POST'])
+@admin_required
+def create_order_template():
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    record, error = _template_payload(data)
+    if error:
+        return json_error(error, 400)
+    rows = load_templates()
+    record['id'] = max([int(row.get('id') or 0) for row in rows] or [0]) + 1
+    rows.append(record)
+    save_templates(rows)
+    return jsonify(public_template(record))
+
+
+@app.route('/api/order-templates/<int:template_id>', methods=['PUT'])
+@admin_required
+def update_order_template(template_id):
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    rows = load_templates()
+    existing = next((row for row in rows if row.get('id') == template_id), None)
+    if not existing:
+        return json_error('Not found', 404)
+    record, error = _template_payload(data, existing)
+    if error:
+        return json_error(error, 400)
+    for index, row in enumerate(rows):
+        if row.get('id') == template_id:
+            rows[index] = record
+    save_templates(rows)
+    return jsonify(public_template(record))
+
+
+@app.route('/api/order-templates/<int:template_id>', methods=['DELETE'])
+@admin_required
+def delete_order_template(template_id):
+    rows = [row for row in load_templates() if row.get('id') != template_id]
+    if len(rows) == len(load_templates()):
+        return json_error('Not found', 404)
+    save_templates(rows)
+    return jsonify({'success': True})
+
+
+@app.route('/api/order-templates/preview', methods=['POST'])
+@admin_required
+def preview_order_template():
+    raw = request.form.get('template') or ''
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return json_error('Template details must be JSON.', 400)
+    if not isinstance(data, dict):
+        return json_error('Template details must be JSON.', 400)
+    record, error = _template_payload(data)
+    if error:
+        return json_error(error, 400)
+    request_id = clean_text(request.form.get('request_id'), 20)
+    filename = 'sample'
+    temp_path = None
+    try:
+        if request_id:
+            found = next((row for row in load_requests() if str(row.get('id')) == request_id), None)
+            if not found:
+                return json_error('That template request was not found.', 404)
+            path = upload_abspath(found.get('stored'))
+            filename = found.get('filename') or filename
+            if not path:
+                return json_error('The sample file is missing.', 404)
+            ext = os.path.splitext(path)[1].lower().lstrip('.')
+        else:
+            upload = request.files.get('file')
+            if not upload or not upload.filename:
+                return json_error('Choose a sample file.', 400)
+            payload = upload.read(9 * 1024 * 1024)
+            _kind, ext = check_upload(upload.filename, payload)
+            filename = safe_filename(upload.filename)
+            fd, temp_path = tempfile.mkstemp(suffix='.' + ext)
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(payload)
+            path = temp_path
+        parsed = parse_upload(path, ext, record)
+    except OrderImportError as exc:
+        return jsonify({'status': 'failed', 'error': str(exc), 'lines': [], 'looks_wrong': True})
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+    return jsonify({
+        'status': 'needs_review' if parsed.get('looks_wrong') or parsed.get('error') else 'preview',
+        'error': parsed.get('error') or '',
+        'looks_wrong': bool(parsed.get('looks_wrong')),
+        'unit_used': parsed.get('unit_used') or 'in',
+        'filename': filename,
+        'lines': parsed.get('lines') or [],
+    })
+
+
+@app.route('/api/order-mappings', methods=['GET'])
+@module_required('quotes')
+def list_order_mappings():
+    user = current_user()
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id') or ''
+    else:
+        customer_id = clean_text(request.args.get('customer_id'), 64)
+        if not customer_id:
+            return json_error('Choose a customer company.', 400)
+        if customer_id not in load_customers():
+            return json_error('Unknown customer.', 404)
+    if user.get('role') == 'customer' and not customer_id:
+        return json_error('Your account is not linked to a customer.', 400)
+    return jsonify(company_mappings(customer_id))
+
+
+@app.route('/api/order-imports', methods=['GET'])
+@module_required('quotes')
+def list_order_imports():
+    user = current_user()
+    customer_id = user.get('customer_id') if user.get('role') == 'customer' else clean_text(request.args.get('customer_id'), 64)
+    if user.get('role') != 'admin' and not customer_id:
+        return json_error('Choose a customer company.', 400)
+    rows = []
+    for row in load_imports():
+        if user.get('role') == 'customer' and row.get('customer_id') != customer_id:
+            continue
+        if user.get('role') != 'admin' and user.get('role') != 'customer' and row.get('customer_id') != customer_id:
+            continue
+        if user.get('role') == 'admin' and customer_id and row.get('customer_id') != customer_id:
+            continue
+        rows.append({
+            'id': row.get('id'),
+            'customer_id': row.get('customer_id') or '',
+            'company': row.get('company') or '',
+            'filename': row.get('filename') or '',
+            'status': row.get('status') or '',
+            'created_at': row.get('created_at') or '',
+            'user': row.get('user') or '',
+        })
+    return jsonify(rows)
+
+
+@app.route('/api/order-imports', methods=['POST'])
+@module_required('quotes')
+def create_order_import():
+    user = current_user()
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return json_error('Choose a file.', 400)
+    payload = upload.read(9 * 1024 * 1024)
+    try:
+        check_upload(upload.filename, payload)
+    except OrderImportError as exc:
+        return json_error(str(exc), 400)
+    customer_id, customer, error = _import_company(user, request.form.get('customer_id'))
+    if error:
+        return json_error(error, 400)
+    stored = store_upload(upload.filename, payload)
+    record = add_import({
+        'customer_id': customer_id,
+        'company': customer.get('name') or '',
+        'user': user.get('email'),
+        'filename': safe_filename(upload.filename),
+        'stored': stored,
+        'status': 'uploaded',
+        'template_id': None,
+        'project': clean_text(request.form.get('project'), 200),
+    })
+    templates = [row for row in load_templates() if row.get('customer_id') == customer_id and row.get('active', True)]
+    requested = clean_text(request.form.get('template_id'), 20)
+    currency = clean_text(request.form.get('currency') or 'usd', 8).lower()
+    if requested:
+        template = next((row for row in templates if str(row.get('id')) == requested), None)
+        if not template:
+            return json_error('That template is not for this company.', 400)
+        return jsonify(_present_import(record, template, user, currency))
+    path = upload_abspath(stored)
+    ext = os.path.splitext(path)[1].lower().lstrip('.')
+    chosen, options, reason = choose_template(templates, upload.filename, ext, path)
+    if reason == 'needs_template':
+        record['status'] = 'needs_template'
+        replace_import(record['id'], record)
+        return jsonify({'id': record['id'], 'status': 'needs_template', 'templates': [], 'lines': [], 'company': record['company'], 'filename': record['filename']})
+    if reason == 'choose':
+        record['status'] = 'choose_template'
+        replace_import(record['id'], record)
+        return jsonify({
+            'id': record['id'],
+            'status': 'choose_template',
+            'templates': [public_template(row) for row in options],
+            'lines': [],
+            'company': record['company'],
+            'filename': record['filename'],
+        })
+    return jsonify(_present_import(record, chosen, user, currency))
+
+
+@app.route('/api/order-imports/<int:import_id>/parse', methods=['POST'])
+@module_required('quotes')
+def parse_order_import(import_id):
+    user = current_user()
+    record = _owned_import(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    template = _find_template(int(data.get('template_id') or 0), record.get('customer_id'))
+    if not template:
+        return json_error('Choose a template for this company.', 400)
+    currency = clean_text(data.get('currency') or 'usd', 8).lower()
+    return jsonify(_present_import(record, template, user, currency, tier_requested=data.get('tier')))
+
+
+@app.route('/api/order-imports/<int:import_id>/map', methods=['POST'])
+@module_required('quotes')
+def map_order_import(import_id):
+    user = current_user()
+    record = _owned_import(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    template = _find_template(int(record.get('template_id') or 0), record.get('customer_id'))
+    if not template:
+        return json_error('Choose a template before matching names.', 400)
+    glass_names, spacer_names = _catalog_names()
+    glass = data.get('glass') if isinstance(data.get('glass'), dict) else {}
+    spacer = data.get('spacer') if isinstance(data.get('spacer'), dict) else {}
+    valid_glass = {str(source): _known_product(product, glass_names) for source, product in glass.items()}
+    valid_spacer = {str(source): _known_product(product, spacer_names) for source, product in spacer.items()}
+    if any(source and not product for source, product in list(valid_glass.items()) + list(valid_spacer.items())):
+        return json_error('Each name has to match one of our products.', 400)
+    if data.get('remember', True):
+        remember_mappings(record.get('customer_id'), valid_glass, valid_spacer)
+        extra_glass, extra_spacer = None, None
+    else:
+        extra_glass, extra_spacer = valid_glass, valid_spacer
+    currency = clean_text(data.get('currency') or 'usd', 8).lower()
+    return jsonify(_present_import(record, template, user, currency, extra_glass, extra_spacer, data.get('tier')))
+
+
+def _normalize_import_lines(raw_lines):
+    if not isinstance(raw_lines, list) or not raw_lines or len(raw_lines) > 200:
+        return None, 'Add at least one line, and no more than 200.'
+    glass_names, spacer_names = _catalog_names()
+    lines = []
+    blocked = False
+    for raw in raw_lines:
+        if not isinstance(raw, dict):
+            return None, 'Each line must be an object.'
+        errors = []
+        try:
+            width = round(float(raw.get('width')), 4)
+            height = round(float(raw.get('height')), 4)
+        except (TypeError, ValueError):
+            width = height = 0
+        if width <= 0 or height <= 0 or width > 300 or height > 300:
+            errors.append('Size must be a positive number of inches.')
+        try:
+            qty = int(raw.get('qty'))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty < 1 or qty > 10000:
+            errors.append('Quantity must be a whole number.')
+        glass = _known_product(raw.get('glass_product'), glass_names)
+        if not glass:
+            errors.append('Choose one of our glass products.')
+        spacer_raw = raw.get('spacer_product') or ''
+        spacer = _known_product(spacer_raw, spacer_names) if spacer_raw else ''
+        if spacer_raw and not spacer:
+            errors.append('Choose one of our spacers.')
+        if errors:
+            blocked = True
+        line = {
+            'mark': clean_text(raw.get('mark'), 80),
+            'width': width,
+            'height': height,
+            'unit': 'in',
+            'qty': qty,
+            'glass_name': clean_text(raw.get('glass_name'), 200),
+            'spacer_name': clean_text(raw.get('spacer_name'), 200),
+            'glass_product': glass,
+            'spacer_product': spacer,
+            'errors': errors,
+        }
+        lines.append(line)
+    if blocked:
+        return lines, 'Fix the highlighted lines before creating the quote.'
+    return lines, None
+
+
+@app.route('/api/order-imports/<int:import_id>/quote', methods=['POST'])
+@module_required('quotes')
+def quote_from_import(import_id):
+    user = current_user()
+    record = _owned_import(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    lines, error = _normalize_import_lines(data.get('lines'))
+    if error:
+        return json_error(error, 400)
+    currency = clean_text(data.get('currency') or 'usd', 8).lower()
+    if currency not in {'usd', 'cad'}:
+        return json_error('Currency must be usd or cad.', 400)
+    tier = _import_tier(user, data.get('tier'))
+    if not tier:
+        return json_error('That pricing tier is not available.', 400)
+    items = []
+    for line in lines:
+        _price_import_line(line, tier, currency)
+        spec = _import_spec(line)
+        size = f"{_trim_num(line['width'])} x {_trim_num(line['height'])} in"
+        parts = [line.get('mark') or '', line.get('glass_product') or '']
+        if line.get('spacer_product'):
+            parts.append(line['spacer_product'])
+        parts.append(size)
+        items.append({
+            'name': ' - '.join(part for part in parts if part),
+            'sqf': line.get('sqf'),
+            'price_sqf': line.get('price_sqf'),
+            'price_pc': line.get('price_pc'),
+            'total': line.get('total'),
+            'pcs': line.get('qty'),
+            'spec': spec,
+            'mark': line.get('mark') or '',
+            'source_glass': line.get('glass_name') or '',
+        })
+    if user.get('role') == 'customer':
+        company = record.get('company') or 'Customer'
+        customer_id = record.get('customer_id')
+    else:
+        company = record.get('company') or 'ORA'
+        customer_id = record.get('customer_id')
+    quote = {
+        'date': date.today().isoformat(),
+        'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
+        'user': user.get('email'),
+        'company': company,
+        'customer_id': customer_id,
+        'project': clean_text(data.get('project') or record.get('project'), 200),
+        'items': items,
+        'currency': currency,
+        'type': 'size',
+        'tier': tier,
+        'import_id': record.get('id'),
+    }
+    stored = append_quote(quote)
+    record['status'] = 'quoted'
+    record['quote_id'] = stored['id']
+    replace_import(record['id'], record)
+    return jsonify({'success': True, 'id': stored['id'], 'items': items, 'tier': tier, 'currency': currency})
+
+
+@app.route('/api/order-imports/<int:import_id>/request', methods=['POST'])
+@module_required('quotes')
+def request_order_template(import_id):
+    user = current_user()
+    record = _owned_import(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    note = clean_text(data.get('note'), 2000)
+    created = add_request({
+        'import_id': record.get('id'),
+        'customer_id': record.get('customer_id'),
+        'company': record.get('company') or '',
+        'user': user.get('email'),
+        'filename': record.get('filename') or '',
+        'stored': record.get('stored') or '',
+        'note': note,
+    })
+    record['status'] = 'requested'
+    record['request_id'] = created['id']
+    replace_import(record['id'], record)
+    return jsonify(public_request(created))
+
+
+@app.route('/api/order-template-requests', methods=['GET'])
+@admin_required
+def list_template_requests():
+    return jsonify([public_request(row) for row in load_requests()])
+
+
+@app.route('/api/order-template-requests/<int:request_id>/file', methods=['GET'])
+@admin_required
+def download_template_request(request_id):
+    found = next((row for row in load_requests() if row.get('id') == request_id), None)
+    if not found:
+        return json_error('Not found', 404)
+    path = upload_abspath(found.get('stored'))
+    if not path:
+        return json_error('The sample file is missing.', 404)
+    return send_file(path, as_attachment=True, download_name=found.get('filename') or 'order')
+
+
+@app.route('/api/order-template-requests/<int:request_id>/done', methods=['POST'])
+@admin_required
+def finish_template_request(request_id):
+    rows = load_requests()
+    found = None
+    for row in rows:
+        if row.get('id') == request_id:
+            row['status'] = 'done'
+            row['done_by'] = current_user().get('email')
+            found = row
+    if not found:
+        return json_error('Not found', 404)
+    save_requests(rows)
+    return jsonify(public_request(found))
 
 
 @app.route('/api/quotes/clear', methods=['POST'])

@@ -22,6 +22,8 @@
         .module:hover { transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
         .module h3 { color: #C41E3A; margin-bottom: 8px; }
         .module p { font-size: 13px; color: #666; }
+        .import-notice { background: #fff6f7; border: 1px solid #f0c9d0; color: #9f1830; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; }
+        .import-notice a { color: #9f1830; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -34,6 +36,12 @@
                 <p>Select a module to get started</p>
             </div>
         </div>
+        {% if template_requests %}
+        <div class="import-notice">
+            <a href="/quotes#import">{{ template_requests }} order form{% if template_requests != 1 %}s{% endif %} waiting for an import template.</a>
+            This notice stays in the app. No email is sent.
+        </div>
+        {% endif %}
         <div class="modules">
             {% if 'quotes' in modules %}
             <a href="/quotes" class="module">

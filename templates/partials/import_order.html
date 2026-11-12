@@ -1,0 +1,450 @@
+<div id="tab-import" class="tab-content">
+<h3 style="color:#333;margin-bottom:8px">Import order</h3>
+<p class="import-note">Upload an order form exported from production software (PDF, Excel, or CSV). Sizes in millimetres or inches, including fractions such as 23 1/2, are converted to inches and priced as a normal per-size quote.</p>
+<div class="import-grid">
+{% if not import_customer %}
+<div class="form-group"><label for="import-company">Customer company</label>
+<select id="import-company"><option value="">Select...</option></select></div>
+{% endif %}
+<div class="form-group"><label for="import-template">Template</label>
+<select id="import-template"><option value="">Automatic</option></select></div>
+<div class="form-group"><label for="import-file">Order file</label>
+<input type="file" id="import-file" accept=".pdf,.xlsx,.xls,.csv,application/pdf"></div>
+<button type="button" class="btn" id="import-upload">Read file</button>
+</div>
+<div id="import-message"></div>
+<div id="import-send" style="display:none">
+<p class="import-note">No template matched this file, or the read looks wrong. Send the file to Ora Glass and an admin will build a template from it.</p>
+<label for="import-note" style="font-size:12px;color:#666;font-weight:600">Note</label>
+<textarea id="import-note" rows="3" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;margin-top:4px" placeholder="What should Ora Glass know about this order form?"></textarea>
+<button type="button" class="btn" id="import-request" style="margin-top:8px">Send this order to Ora Glass</button>
+<p id="import-request-done" class="import-note"></p>
+</div>
+<div id="import-preview" style="display:none">
+<h3 style="color:#333;margin:16px 0 8px">Preview</h3>
+<p class="import-note" id="import-unit"></p>
+<table class="import-table">
+<thead><tr><th>Mark</th><th>Width (in)</th><th>Height (in)</th><th>Pieces</th><th>Their glass</th><th>Our glass</th><th>Spacer</th><th>Price</th><th></th></tr></thead>
+<tbody id="import-lines"></tbody>
+</table>
+<button type="button" class="btn" id="import-create" style="margin-top:12px">Create quote</button>
+<p id="import-created" class="import-note"></p>
+</div>
+
+<div class="map-modal" id="map-modal">
+<div class="map-card">
+<h3 style="margin-bottom:8px">Match names</h3>
+<p class="import-note">Connect each name from the order form to one of ours. The quote cannot be created until every line is matched.</p>
+<div id="map-fields"></div>
+<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:12px 0"><input type="checkbox" id="map-remember" checked> Remember these matches for this company</label>
+<button type="button" class="btn" id="map-save">Save matches</button>
+<p id="map-error" class="import-error" style="display:none"></p>
+</div>
+</div>
+
+{% if import_admin %}
+<div id="template-editor" style="margin-top:28px">
+<h3 style="color:#333;margin-bottom:8px">Template editor</h3>
+<p class="import-note">Templates are per customer company. Test a sample before saving. Building one from a template request uses that request's file.</p>
+<input type="hidden" id="tpl-id" value="">
+<input type="hidden" id="tpl-request" value="">
+<div class="import-grid">
+<div class="form-group"><label for="tpl-company">Company</label><select id="tpl-company"></select></div>
+<div class="form-group"><label for="tpl-name">Template name</label><input id="tpl-name" type="text"></div>
+<div class="form-group"><label for="tpl-match">Filename contains</label><input id="tpl-match" type="text" placeholder="optional"></div>
+<div class="form-group"><label for="tpl-kind">File type</label><select id="tpl-kind"><option value="excel">Excel or CSV</option><option value="pdf">PDF</option></select></div>
+<div class="form-group"><label for="tpl-unit">Size unit</label><select id="tpl-unit"><option value="auto">Auto-detect</option><option value="mm">Millimetres</option><option value="in">Inches</option></select></div>
+<div class="form-group" id="tpl-sheet-wrap"><label for="tpl-sheet">Sheet name</label><input id="tpl-sheet" type="text" placeholder="first sheet if blank"></div>
+<div class="form-group"><label for="tpl-header">Header row</label><input id="tpl-header" type="number" min="1" value="1"></div>
+<div class="form-group" id="tpl-pdf-wrap" style="display:none"><label for="tpl-pdf-mode">PDF reading</label><select id="tpl-pdf-mode"><option value="table">Text table</option><option value="regex">Line pattern</option></select></div>
+</div>
+<div class="import-grid" id="tpl-columns">
+<div class="form-group"><label>Width column</label><input id="tpl-width" type="text"></div>
+<div class="form-group"><label>Height column</label><input id="tpl-height" type="text"></div>
+<div class="form-group"><label>Qty column</label><input id="tpl-qty" type="text"></div>
+<div class="form-group"><label>Glass column</label><input id="tpl-glass" type="text"></div>
+<div class="form-group"><label>Spacer column</label><input id="tpl-spacer" type="text" placeholder="optional"></div>
+<div class="form-group"><label>Mark column</label><input id="tpl-mark" type="text" placeholder="optional"></div>
+</div>
+<div class="form-group" id="tpl-pattern-wrap" style="display:none"><label for="tpl-pattern">Line pattern</label>
+<input id="tpl-pattern" type="text" placeholder="(?P&lt;width&gt;...)" style="width:100%"></div>
+<div class="import-grid">
+<button type="button" class="btn" id="tpl-save">Save template</button>
+<button type="button" class="mini" id="tpl-new" type="button">New template</button>
+<input type="file" id="tpl-file" accept=".pdf,.xlsx,.xls,.csv">
+<button type="button" class="mini primary" id="tpl-test">Test parse</button>
+</div>
+<p id="tpl-message" class="import-note"></p>
+<div id="tpl-preview"></div>
+<h4 style="margin:16px 0 8px">Saved templates</h4>
+<div id="tpl-list" class="import-note">Loading…</div>
+</div>
+<div id="template-requests" style="margin-top:28px">
+<h3 style="color:#333;margin-bottom:8px">Template requests</h3>
+<p class="import-note">New requests show on the admin dashboard. No email is sent.</p>
+<div id="request-list" class="import-note">Loading…</div>
+</div>
+{% endif %}
+</div>
+<script id="import-data" type="application/json">{{ {'admin': import_admin, 'customer': import_customer, 'customerId': import_customer_id, 'companies': import_companies, 'glass': import_glass, 'spacers': import_spacers}|tojson }}</script>
+<script>
+(function () {
+  const IMPORT = JSON.parse(document.getElementById('import-data').textContent);
+  let importId = null;
+  let fillingTemplates = false;
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function companyId() {
+    if (IMPORT.customer) return IMPORT.customerId;
+    const el = document.getElementById('import-company');
+    return el ? el.value : '';
+  }
+  function currency() {
+    return (typeof selectedCurrency !== 'undefined' && selectedCurrency) ? selectedCurrency : 'usd';
+  }
+  function tier() {
+    const el = document.getElementById('s-tier') || document.getElementById('tier');
+    return el ? el.value : '';
+  }
+  async function api(url, options) {
+    const res = await fetch(url, options || {});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(data.error || 'Request failed');
+      error.payload = data;
+      throw error;
+    }
+    return data;
+  }
+  function message(text, bad) {
+    const el = document.getElementById('import-message');
+    el.className = bad ? 'import-error' : 'import-note';
+    el.textContent = text || '';
+  }
+  function optionList(names, selected) {
+    return '<option value=""></option>' + names.map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+  }
+  function fillCompanies(select, selected) {
+    if (!select) return;
+    select.innerHTML = '<option value="">Select...</option>' + IMPORT.companies.map(company => '<option value="' + esc(company.id) + '">' + esc(company.name) + '</option>').join('');
+    if (selected) select.value = selected;
+  }
+  async function loadTemplates() {
+    const select = document.getElementById('import-template');
+    const id = companyId();
+    fillingTemplates = true;
+    select.innerHTML = '<option value="">Automatic</option>';
+    if (!id) { fillingTemplates = false; return; }
+    const url = '/api/order-templates' + (IMPORT.customer ? '' : ('?customer_id=' + encodeURIComponent(id)));
+    try {
+      const rows = await api(url);
+      select.innerHTML = '<option value="">Automatic</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    } catch (error) {
+      message(error.message, true);
+    }
+    fillingTemplates = false;
+  }
+  function renderLines(data) {
+    const body = document.getElementById('import-lines');
+    const lines = data.lines || [];
+    document.getElementById('import-preview').style.display = lines.length ? 'block' : 'none';
+    const unit = data.unit_used === 'mm' ? 'millimetres' : 'inches';
+    document.getElementById('import-unit').textContent = lines.length ? ('Sizes were read as ' + unit + ' and converted to inches. Edit a line if the read is wrong. Prices use your tier.') : '';
+    body.innerHTML = lines.map((line, index) => {
+      const bad = (line.errors || []).length ? ' class="line-bad"' : '';
+      const price = line.total == null ? '' : (currency().toUpperCase() + ' $' + Number(line.total).toFixed(2));
+      return '<tr' + bad + ' data-index="' + index + '" data-glass="' + esc(line.glass_name || '') + '" data-spacer="' + esc(line.spacer_name || '') + '">'
+        + '<td><input data-field="mark" value="' + esc(line.mark || '') + '" style="width:5rem"></td>'
+        + '<td><input data-field="width" value="' + esc(line.width == null ? '' : line.width) + '" style="width:5rem"></td>'
+        + '<td><input data-field="height" value="' + esc(line.height == null ? '' : line.height) + '" style="width:5rem"></td>'
+        + '<td><input data-field="qty" value="' + esc(line.qty || '') + '" style="width:4rem"></td>'
+        + '<td>' + esc(line.glass_name || '') + (line.spacer_name ? '<div class="import-note">' + esc(line.spacer_name) + '</div>' : '') + '</td>'
+        + '<td><select data-field="glass" style="width:150px">' + optionList(IMPORT.glass, line.glass_product || '') + '</select></td>'
+        + '<td><select data-field="spacer" style="width:150px">' + optionList(IMPORT.spacers, line.spacer_product || '') + '</select></td>'
+        + '<td class="import-price">' + esc(price) + '</td>'
+        + '<td><button type="button" class="mini" data-remove="' + index + '">Remove</button><div class="import-note">' + esc((line.errors || []).join(' ')) + '</div></td></tr>';
+    }).join('');
+  }
+  function showResult(data) {
+    importId = data.id || importId;
+    const send = ['needs_template', 'failed', 'needs_review', 'choose_template'].indexOf(data.status) !== -1 || data.looks_wrong;
+    document.getElementById('import-send').style.display = send ? 'block' : 'none';
+    if (data.status === 'choose_template') {
+      const select = document.getElementById('import-template');
+      fillingTemplates = true;
+      select.innerHTML = '<option value="">Choose a template</option>' + (data.templates || []).map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+      fillingTemplates = false;
+      message('Several templates match. Choose one.', true);
+      return;
+    }
+    if (data.error) message(data.error, true);
+    else if (data.status === 'needs_template') message('This company has no template for this file.', true);
+    else if (data.status === 'needs_mapping') message('Match the highlighted names before creating the quote.', true);
+    else if (data.status === 'needs_review') message('Check the preview. You can still send the file to Ora Glass.', true);
+    else message('');
+    if ((data.lines || []).length) renderLines(data);
+    const unmatched = (data.unmatched_glass || []).length || (data.unmatched_spacer || []).length;
+    if (unmatched) openMap(data);
+  }
+  function mapRow(kind, name) {
+    const names = kind === 'glass' ? IMPORT.glass : IMPORT.spacers;
+    const options = names.map(item => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
+    return '<div class="map-row"><strong>' + esc(name) + '</strong><div class="import-note">' + (kind === 'glass' ? 'Glass' : 'Spacer') + '</div>'
+      + '<input class="map-search" placeholder="Search" style="width:100%;margin-top:4px;padding:6px">'
+      + '<select class="map-choice" data-kind="' + kind + '" data-raw="' + esc(name) + '" size="5"><option value="">Select...</option>' + options + '</select></div>';
+  }
+  function openMap(data) {
+    const rows = (data.unmatched_glass || []).map(name => mapRow('glass', name)).concat((data.unmatched_spacer || []).map(name => mapRow('spacer', name)));
+    document.getElementById('map-fields').innerHTML = rows.join('');
+    document.getElementById('map-error').style.display = 'none';
+    document.getElementById('map-modal').classList.add('open');
+  }
+  document.getElementById('map-fields').addEventListener('input', (event) => {
+    if (!event.target.classList.contains('map-search')) return;
+    const select = event.target.nextElementSibling;
+    const query = event.target.value.toLowerCase();
+    Array.from(select.options).forEach(option => {
+      option.hidden = !!(option.value && option.text.toLowerCase().indexOf(query) === -1);
+    });
+  });
+  document.getElementById('map-save').addEventListener('click', async () => {
+    const glass = {};
+    const spacer = {};
+    let missing = false;
+    document.querySelectorAll('.map-choice').forEach(select => {
+      if (!select.value) missing = true;
+      const bucket = select.getAttribute('data-kind') === 'spacer' ? spacer : glass;
+      bucket[select.getAttribute('data-raw')] = select.value;
+    });
+    if (missing) {
+      const err = document.getElementById('map-error');
+      err.style.display = 'block';
+      err.textContent = 'Choose a product for every name.';
+      return;
+    }
+    try {
+      const data = await api('/api/order-imports/' + importId + '/map', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          glass: glass,
+          spacer: spacer,
+          remember: document.getElementById('map-remember').checked,
+          currency: currency(),
+          tier: tier()
+        })
+      });
+      document.getElementById('map-modal').classList.remove('open');
+      showResult(data);
+    } catch (error) {
+      const err = document.getElementById('map-error');
+      err.style.display = 'block';
+      err.textContent = error.message;
+    }
+  });
+  document.getElementById('import-upload').addEventListener('click', async () => {
+    const file = document.getElementById('import-file').files[0];
+    if (!file) { message('Choose a file.', true); return; }
+    if (!companyId()) { message('Choose a customer company.', true); return; }
+    const body = new FormData();
+    body.append('file', file);
+    body.append('customer_id', companyId());
+    body.append('template_id', document.getElementById('import-template').value);
+    body.append('currency', currency());
+    body.append('project', document.getElementById('project-name').value);
+    try {
+      showResult(await api('/api/order-imports', {method: 'POST', body: body}));
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+  document.getElementById('import-template').addEventListener('change', async () => {
+    if (fillingTemplates || !importId || !document.getElementById('import-template').value) return;
+    try {
+      showResult(await api('/api/order-imports/' + importId + '/parse', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({template_id: Number(document.getElementById('import-template').value), currency: currency(), tier: tier()})
+      }));
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+  document.getElementById('import-lines').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove]');
+    if (!button) return;
+    button.closest('tr').remove();
+  });
+  document.getElementById('import-create').addEventListener('click', async () => {
+    const lines = Array.from(document.querySelectorAll('#import-lines tr')).map(row => ({
+      mark: row.querySelector('[data-field=mark]').value,
+      width: row.querySelector('[data-field=width]').value,
+      height: row.querySelector('[data-field=height]').value,
+      qty: row.querySelector('[data-field=qty]').value,
+      glass_product: row.querySelector('[data-field=glass]').value,
+      spacer_product: row.querySelector('[data-field=spacer]').value,
+      glass_name: row.getAttribute('data-glass') || '',
+      spacer_name: row.getAttribute('data-spacer') || ''
+    }));
+    try {
+      const data = await api('/api/order-imports/' + importId + '/quote', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({lines: lines, currency: currency(), tier: tier(), project: document.getElementById('project-name').value})
+      });
+      document.getElementById('import-created').textContent = 'Quote ' + data.id + ' was saved as a per-size quote.';
+      message('');
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+  document.getElementById('import-request').addEventListener('click', async () => {
+    if (!importId) { message('Read a file first.', true); return; }
+    try {
+      const data = await api('/api/order-imports/' + importId + '/request', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({note: document.getElementById('import-note').value})
+      });
+      document.getElementById('import-request-done').textContent = 'Sent to Ora Glass as request ' + data.id + '.';
+      if (IMPORT.admin) loadRequests();
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+  function templateBody() {
+    return {
+      id: document.getElementById('tpl-id').value,
+      customer_id: document.getElementById('tpl-company').value,
+      name: document.getElementById('tpl-name').value,
+      match: document.getElementById('tpl-match').value,
+      kind: document.getElementById('tpl-kind').value,
+      unit: document.getElementById('tpl-unit').value,
+      sheet: document.getElementById('tpl-sheet').value,
+      header_row: document.getElementById('tpl-header').value,
+      pdf_mode: document.getElementById('tpl-pdf-mode').value,
+      line_pattern: document.getElementById('tpl-pattern').value,
+      columns: {
+        width: document.getElementById('tpl-width').value,
+        height: document.getElementById('tpl-height').value,
+        qty: document.getElementById('tpl-qty').value,
+        glass: document.getElementById('tpl-glass').value,
+        spacer: document.getElementById('tpl-spacer').value,
+        mark: document.getElementById('tpl-mark').value
+      }
+    };
+  }
+  function applyTemplate(row) {
+    document.getElementById('tpl-id').value = row.id || '';
+    document.getElementById('tpl-company').value = row.customer_id || '';
+    document.getElementById('tpl-name').value = row.name || '';
+    document.getElementById('tpl-match').value = row.match || '';
+    document.getElementById('tpl-kind').value = row.kind || 'excel';
+    document.getElementById('tpl-unit').value = row.unit || 'auto';
+    document.getElementById('tpl-sheet').value = row.sheet || '';
+    document.getElementById('tpl-header').value = row.header_row || 1;
+    document.getElementById('tpl-pdf-mode').value = row.pdf_mode || 'table';
+    document.getElementById('tpl-pattern').value = row.line_pattern || '';
+    const columns = row.columns || {};
+    document.getElementById('tpl-width').value = columns.width || '';
+    document.getElementById('tpl-height').value = columns.height || '';
+    document.getElementById('tpl-qty').value = columns.qty || '';
+    document.getElementById('tpl-glass').value = columns.glass || '';
+    document.getElementById('tpl-spacer').value = columns.spacer || '';
+    document.getElementById('tpl-mark').value = columns.mark || '';
+    toggleTemplateKind();
+  }
+  function toggleTemplateKind() {
+    const pdf = document.getElementById('tpl-kind').value === 'pdf';
+    document.getElementById('tpl-pdf-wrap').style.display = pdf ? 'block' : 'none';
+    document.getElementById('tpl-sheet-wrap').style.display = pdf ? 'none' : 'block';
+    const regex = pdf && document.getElementById('tpl-pdf-mode').value === 'regex';
+    document.getElementById('tpl-pattern-wrap').style.display = regex ? 'block' : 'none';
+    document.getElementById('tpl-columns').style.display = regex ? 'none' : 'flex';
+  }
+  function renderTemplateList(rows) {
+    const el = document.getElementById('tpl-list');
+    if (!el) return;
+    el.innerHTML = rows.length ? rows.map(row => '<div><button type="button" class="mini" data-edit="' + esc(row.id) + '">' + esc(row.name) + '</button> ' + esc(row.kind) + ' · ' + esc(row.customer_id) + ' <button type="button" class="mini" data-delete="' + esc(row.id) + '">Delete</button></div>').join('') : 'No templates yet.';
+    el.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
+      const row = rows.find(item => String(item.id) === button.getAttribute('data-edit'));
+      if (row) applyTemplate(row);
+    }));
+    el.querySelectorAll('[data-delete]').forEach(button => button.addEventListener('click', async () => {
+      await api('/api/order-templates/' + button.getAttribute('data-delete'), {method: 'DELETE'});
+      await loadTemplates();
+      renderTemplateList(await api('/api/order-templates'));
+    }));
+  }
+  async function loadRequests() {
+    const el = document.getElementById('request-list');
+    if (!el) return;
+    const rows = await api('/api/order-template-requests');
+    el.innerHTML = rows.length ? '<table class="import-table"><thead><tr><th>Company</th><th>File</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>' + rows.map(row => '<tr><td>' + esc(row.company) + '</td><td><a href="/api/order-template-requests/' + esc(row.id) + '/file">' + esc(row.filename) + '</a></td><td>' + esc(row.note) + '</td><td>' + esc(row.status) + '</td><td>'
+      + '<button type="button" class="mini" data-build="' + esc(row.id) + '" data-company="' + esc(row.customer_id) + '">Build template</button> '
+      + (row.status === 'open' ? '<button type="button" class="mini" data-done="' + esc(row.id) + '">Mark done</button>' : '')
+      + '</td></tr>').join('') + '</tbody></table>' : 'No template requests.';
+    el.querySelectorAll('[data-build]').forEach(button => button.addEventListener('click', () => {
+      document.getElementById('tpl-request').value = button.getAttribute('data-build');
+      document.getElementById('tpl-company').value = button.getAttribute('data-company');
+      document.getElementById('template-editor').scrollIntoView();
+      document.getElementById('tpl-message').textContent = 'Test parse will use the sample from request ' + button.getAttribute('data-build') + '.';
+    }));
+    el.querySelectorAll('[data-done]').forEach(button => button.addEventListener('click', async () => {
+      await api('/api/order-template-requests/' + button.getAttribute('data-done') + '/done', {method: 'POST'});
+      loadRequests();
+    }));
+  }
+  const companySelect = document.getElementById('import-company');
+  if (companySelect) {
+    fillCompanies(companySelect, '');
+    companySelect.addEventListener('change', loadTemplates);
+  }
+  if (IMPORT.admin) {
+    fillCompanies(document.getElementById('tpl-company'), '');
+    document.getElementById('tpl-kind').addEventListener('change', toggleTemplateKind);
+    document.getElementById('tpl-pdf-mode').addEventListener('change', toggleTemplateKind);
+    document.getElementById('tpl-new').addEventListener('click', () => applyTemplate({kind: 'excel', unit: 'auto', header_row: 1, pdf_mode: 'table', columns: {}}));
+    document.getElementById('tpl-save').addEventListener('click', async () => {
+      const body = templateBody();
+      const id = document.getElementById('tpl-id').value;
+      try {
+        const saved = await api(id ? '/api/order-templates/' + id : '/api/order-templates', {
+          method: id ? 'PUT' : 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        document.getElementById('tpl-id').value = saved.id;
+        document.getElementById('tpl-message').textContent = 'Template saved.';
+        await loadTemplates();
+        renderTemplateList(await api('/api/order-templates'));
+      } catch (error) {
+        document.getElementById('tpl-message').textContent = error.message;
+      }
+    });
+    document.getElementById('tpl-test').addEventListener('click', async () => {
+      const body = new FormData();
+      body.append('template', JSON.stringify(templateBody()));
+      const requestId = document.getElementById('tpl-request').value;
+      if (requestId) body.append('request_id', requestId);
+      const file = document.getElementById('tpl-file').files[0];
+      if (file) body.append('file', file);
+      try {
+        const data = await api('/api/order-templates/preview', {method: 'POST', body: body});
+        const lines = data.lines || [];
+        document.getElementById('tpl-preview').innerHTML = data.error ? '<p class="import-error">' + esc(data.error) + '</p>' : '<p class="import-note">Test parse: ' + lines.length + ' lines, read as ' + esc(data.unit_used) + '.</p><table class="import-table"><tbody>' + lines.map(line => '<tr class="' + ((line.errors || []).length ? 'line-bad' : '') + '"><td>' + esc(line.mark) + '</td><td>' + esc(line.width_raw) + ' → ' + esc(line.width) + ' in</td><td>' + esc(line.height_raw) + ' → ' + esc(line.height) + ' in</td><td>' + esc(line.qty) + '</td><td>' + esc(line.glass_name) + '</td><td>' + esc((line.errors || []).join(' ')) + '</td></tr>').join('') + '</tbody></table>';
+      } catch (error) {
+        document.getElementById('tpl-preview').innerHTML = '<p class="import-error">' + esc(error.message) + '</p>';
+      }
+    });
+    loadRequests().catch(error => { document.getElementById('request-list').textContent = error.message; });
+    const all = api('/api/order-templates');
+    all.then(renderTemplateList).catch(() => {});
+  }
+  if (IMPORT.customer) loadTemplates();
+  window.addEventListener('load', () => {
+    if (location.hash === '#import') showTab('import');
+  });
+})();
+</script>
