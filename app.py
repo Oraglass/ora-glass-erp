@@ -31,6 +31,8 @@ from billing import (
     conversion_allowed,
     coverage,
     credit_message,
+    credit_note_applied,
+    document_type,
     diff_changes,
     invoice_balance,
     allocated_to_target,
@@ -42,6 +44,7 @@ from billing import (
     price_summary,
     unallocated_amount,
     unallocated_credit,
+    unapplied_credits,
 )
 from quoting import (
     allowed_tier_ids,
@@ -610,6 +613,7 @@ def public_user(user, customers, tiers):
         'edit_orders': bool(user.get('edit_orders')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
+        'issue_invoices': bool(user.get('issue_invoices')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'manage_time': bool(user.get('manage_time')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'manage_payroll': bool(user.get('manage_payroll')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'uses_time_clock': uses_time_clock(user) if user.get('role') != 'shop' else False,
@@ -752,6 +756,15 @@ def can_record_payments(user):
     )
 
 
+def can_issue_invoices(user):
+    """Admins can create invoices and credit notes. Employees need Issue invoices."""
+    if not _is_ora_staff(user):
+        return False
+    if user.get('role') == 'admin':
+        return True
+    return bool(user.get('issue_invoices'))
+
+
 def apply_order_privileges(record, data):
     """Store staff-only order privileges. Customers and admins never keep them."""
     role = record.get('role')
@@ -759,8 +772,9 @@ def apply_order_privileges(record, data):
         record['edit_orders'] = False
         record['update_order_status'] = False
         record['record_payments'] = False
+        record['issue_invoices'] = False
         return
-    for field in ('edit_orders', 'update_order_status', 'record_payments'):
+    for field in ('edit_orders', 'update_order_status', 'record_payments', 'issue_invoices'):
         if field in data:
             record[field] = bool(data.get(field))
         elif field not in record:
@@ -1409,6 +1423,7 @@ def invoices():
         note=scope_note(),
         staff_view=user.get('role') != 'customer',
         can_record=can_record_payments(user),
+        can_issue=can_issue_invoices(user),
         focus_id=None,
     )
 
@@ -1422,6 +1437,7 @@ def invoice_detail(invoice_id):
         note=scope_note(),
         staff_view=user.get('role') != 'customer',
         can_record=can_record_payments(user),
+        can_issue=can_issue_invoices(user),
         focus_id=invoice_id,
     )
 
@@ -2098,6 +2114,17 @@ def order_for_viewer(order, user, with_coverage=False):
         'status_label': STATUS_LABELS[status],
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
+        'documents': [
+            {
+                'id': row.get('id'),
+                'number': row.get('number'),
+                'doc_type': document_type(row),
+                'total': money(row.get('total')),
+                'voided': bool(row.get('voided')),
+            }
+            for row in load_invoices()
+            if row.get('order_id') == order.get('id')
+        ],
     }
     if not _order_prices_visible(user):
         items = []
@@ -2664,9 +2691,27 @@ def _invoices_visible(user):
 
 def _present_invoice(invoice, payments):
     view = dict(invoice)
+    view['doc_type'] = document_type(invoice)
+    view['type_label'] = 'Credit note' if view['doc_type'] == 'credit_note' else 'Invoice'
+    view['audit'] = list(invoice.get('audit') or [])
+    if view['doc_type'] == 'credit_note':
+        applied = credit_note_applied(invoice)
+        view['applied'] = applied
+        view['unapplied'] = 0.0 if invoice.get('voided') else round(max(0.0, money(invoice.get('total')) - applied), 2)
+        view['balance'] = view['unapplied']
+        if invoice.get('voided'):
+            view['status'] = 'void'
+        elif view['unapplied'] <= 0.009:
+            view['status'] = 'applied'
+        elif applied > 0.009:
+            view['status'] = 'partial'
+        else:
+            view['status'] = 'open'
+        view['status_label'] = invoice_status_label(view['status'])
+        return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
-    view['status'] = invoice_status(invoice, payments)
+    view['status'] = 'void' if invoice.get('voided') else invoice_status(invoice, payments)
     view['status_label'] = invoice_status_label(view['status'])
     return view
 
@@ -2696,13 +2741,16 @@ def get_invoices():
     rows = [_present_invoice(row, payments) for row in _invoices_visible(user)]
     customer_id = clean_text(request.args.get('customer_id'), 80)
     status = clean_text(request.args.get('status'), 20).lower()
+    doc_type = clean_text(request.args.get('type'), 20).lower()
     date_from = _query_date('from')
     date_to = _query_date('to')
     filtered = []
     for row in rows:
         if user.get('role') != 'customer' and customer_id and row.get('customer_id') != customer_id:
             continue
-        if status in {'unpaid', 'partial', 'paid'} and row.get('status') != status:
+        if doc_type in {'invoice', 'credit_note'} and row.get('doc_type') != doc_type:
+            continue
+        if status in {'unpaid', 'partial', 'paid', 'void', 'open', 'applied'} and row.get('status') != status:
             continue
         day = str(row.get('invoice_date') or '')
         if date_from and day < date_from:
@@ -2712,6 +2760,280 @@ def get_invoices():
         filtered.append(row)
     filtered.sort(key=lambda row: row.get('id') or 0, reverse=True)
     return jsonify(filtered)
+
+
+def _audit(user, action, detail):
+    return {
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'by': user.get('email') or '',
+        'action': action,
+        'detail': detail or '',
+    }
+
+
+def _manual_lines(data):
+    raw = data.get('lines')
+    if not isinstance(raw, list) or not raw:
+        return None, 'Add at least one line.'
+    lines = []
+    for row in raw:
+        if not isinstance(row, dict):
+            return None, 'Each line needs a description, quantity, and unit price.'
+        description = clean_text(row.get('description'), 200)
+        if not description:
+            return None, 'Each line needs a description.'
+        try:
+            qty = money(row.get('qty'))
+            price = money(row.get('unit_price'))
+        except (TypeError, ValueError):
+            return None, 'Quantity and unit price must be numbers.'
+        if qty <= 0:
+            return None, 'Quantity must be greater than zero.'
+        if price < 0:
+            return None, 'Unit price cannot be negative.'
+        total = round(qty * price, 2)
+        lines.append({
+            'description': description,
+            'qty': qty,
+            'unit_price': price,
+            'total': total,
+            'name': description,
+            'pcs': qty,
+            'price_pc': price,
+        })
+    return lines, None
+
+
+@app.route('/api/invoices', methods=['POST'])
+@module_required('invoices')
+def create_document():
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body()
+    if data is None:
+        return json_error('Expected a JSON object', 400)
+    doc_type = clean_text(data.get('doc_type') or 'invoice', 20)
+    if doc_type not in {'invoice', 'credit_note'}:
+        return json_error('Type must be an invoice or a credit note.', 400)
+    lines, error = _manual_lines(data)
+    if error:
+        return json_error(error, 400)
+    orders = load_orders()
+    invoices = load_invoices()
+    customers = load_customers()
+    order = None
+    linked_invoice = None
+    if data.get('order_id') not in (None, ''):
+        try:
+            order_id = int(data.get('order_id'))
+        except (TypeError, ValueError):
+            return json_error('Unknown order.', 400)
+        order = next((row for row in orders if row.get('id') == order_id), None)
+        if not order:
+            return json_error('Unknown order.', 400)
+        customer_id = order.get('customer_id')
+        currency = str(order.get('currency') or 'usd').lower()
+    else:
+        customer_id = clean_text(data.get('customer_id'), 80)
+        currency = None
+    if data.get('invoice_id') not in (None, '') and doc_type == 'credit_note':
+        try:
+            linked_id = int(data.get('invoice_id'))
+        except (TypeError, ValueError):
+            return json_error('Unknown invoice.', 400)
+        linked_invoice = next((row for row in invoices if row.get('id') == linked_id and document_type(row) == 'invoice'), None)
+        if not linked_invoice or linked_invoice.get('voided'):
+            return json_error('Unknown invoice.', 400)
+        if order and linked_invoice.get('customer_id') != order.get('customer_id'):
+            return json_error('That invoice belongs to a different customer.', 400)
+        customer_id = linked_invoice.get('customer_id')
+        currency = str(linked_invoice.get('currency') or 'usd').lower()
+    customer = customers.get(customer_id or '')
+    if not customer:
+        return json_error('Choose a customer.', 400)
+    if not currency:
+        currency = str(customer.get('credit_currency') or 'usd').lower()
+    if currency not in CURRENCIES:
+        return json_error('Currency must be USD or CAD.', 400)
+    reason = clean_text(data.get('reason'), 300)
+    if doc_type == 'credit_note' and not reason:
+        return json_error('A credit note needs a reason.', 400)
+    total = round(sum(line['total'] for line in lines), 2)
+    if total <= 0:
+        return json_error('The total must be greater than zero.', 400)
+    today = datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    days = payment_term_days(customer)
+    due_text = clean_text(data.get('due_date'), 10)
+    if due_text:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', due_text):
+            return json_error('Due date is not a date.', 400)
+        due = due_text
+    else:
+        due = (today + timedelta(days=days)).isoformat()
+    document = {
+        'doc_type': doc_type,
+        'source': 'manual',
+        'order_id': order.get('id') if order else (linked_invoice.get('order_id') if linked_invoice else None),
+        'related_invoice_id': linked_invoice.get('id') if linked_invoice else None,
+        'related_invoice_number': linked_invoice.get('number') if linked_invoice else '',
+        'quote_id': order.get('quote_id') if order else None,
+        'customer_id': customer_id,
+        'company': customer.get('name') or (order.get('company') if order else ''),
+        'project': (order.get('project') if order else '') or clean_text(data.get('project'), 200),
+        'currency': currency,
+        'lines': lines,
+        'items': lines,
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'igu_subtotal': total,
+        'igu_total': total,
+        'extras_total': 0,
+        'subtotal': total,
+        'tax_free': True,
+        'total': total,
+        'reason': reason,
+        'applications': [],
+        'invoice_date': today.isoformat(),
+        'due_date': due if doc_type == 'invoice' else '',
+        'payment_terms': customer.get('payment_terms') or 'Net 30',
+        'payment_terms_days': days,
+        'status': 'unpaid' if doc_type == 'invoice' else 'open',
+        'balance': total,
+        'voided': False,
+        'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'created_by': user.get('email') or '',
+    }
+    document['audit'] = [_audit(user, 'created', document['doc_type'])]
+    stored = append_invoice(document)
+    return jsonify(_present_invoice(stored, load_payments()))
+
+
+@app.route('/api/invoices/<int:note_id>/apply', methods=['POST'])
+@module_required('invoices')
+def apply_credit_note(note_id):
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body() or {}
+    invoices = load_invoices()
+    note = next((row for row in invoices if row.get('id') == note_id), None)
+    if not note or document_type(note) != 'credit_note':
+        return json_error('Not found', 404)
+    if note.get('voided'):
+        return json_error('This credit note is void.', 400)
+    try:
+        invoice_id = int(data.get('invoice_id'))
+        amount = money(data.get('amount'))
+    except (TypeError, ValueError):
+        return json_error('Choose an invoice and an amount.', 400)
+    if amount <= 0:
+        return json_error('Amount must be greater than zero.', 400)
+    invoice = next((row for row in invoices if row.get('id') == invoice_id and document_type(row) == 'invoice'), None)
+    if not invoice or invoice.get('voided'):
+        return json_error('Unknown invoice.', 400)
+    if invoice.get('customer_id') != note.get('customer_id'):
+        return json_error('That invoice belongs to a different customer.', 400)
+    if str(invoice.get('currency') or 'usd').lower() != str(note.get('currency') or 'usd').lower():
+        return json_error('That invoice uses a different currency.', 400)
+    remaining = round(money(note.get('total')) - credit_note_applied(note), 2)
+    if amount - remaining > 0.009:
+        return json_error('That is more than the unapplied credit.', 400)
+    payments = load_payments()
+    balance = invoice_balance(invoice, payments)
+    if amount - balance > 0.009:
+        return json_error('That is more than the invoice balance.', 400)
+    payment = append_payment({
+        'customer_id': note.get('customer_id'),
+        'amount': amount,
+        'currency': note.get('currency'),
+        'method': 'credit_note',
+        'reference': note.get('number') or '',
+        'credit_note_id': note.get('id'),
+        'date': datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat(),
+        'notes': f"Applied {note.get('number') or 'credit note'}",
+        'allocations': [{'target_type': 'invoice', 'target_id': invoice_id, 'amount': amount}],
+        'voided': False,
+        'created_by': user.get('email') or '',
+    })
+    applications = list(note.get('applications') or [])
+    applications.append({
+        'invoice_id': invoice_id,
+        'invoice_number': invoice.get('number') or '',
+        'amount': amount,
+        'payment_id': payment.get('id'),
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'by': user.get('email') or '',
+    })
+    note['applications'] = applications
+    audit = list(note.get('audit') or [])
+    audit.append(_audit(user, 'applied', f"{invoice.get('number') or invoice_id} ${amount:.2f}"))
+    note['audit'] = audit
+    for index, row in enumerate(invoices):
+        if row.get('id') == note.get('id'):
+            invoices[index] = note
+    save_invoices(invoices)
+    _refresh_invoice_statuses(load_payments())
+    fresh = next(row for row in load_invoices() if row.get('id') == note.get('id'))
+    return jsonify(_present_invoice(fresh, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/void', methods=['POST'])
+@module_required('invoices')
+def void_document(invoice_id):
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body() or {}
+    reason = clean_text(data.get('reason'), 300)
+    if not reason:
+        return json_error('A void reason is required.', 400)
+    invoices = load_invoices()
+    document = next((row for row in invoices if row.get('id') == invoice_id), None)
+    if not document:
+        return json_error('Not found', 404)
+    if document.get('voided'):
+        return json_error('This document is already void.', 400)
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    document['voided'] = True
+    document['void_reason'] = reason
+    document['voided_by'] = user.get('email') or ''
+    document['voided_at'] = now
+    audit = list(document.get('audit') or [])
+    audit.append(_audit(user, 'voided', reason))
+    document['audit'] = audit
+    payments = load_payments()
+    if document_type(document) == 'credit_note':
+        for payment in payments:
+            if payment.get('credit_note_id') == document.get('id') and not payment.get('voided'):
+                payment['voided'] = True
+                payment['void_reason'] = reason
+                payment['voided_by'] = user.get('email') or ''
+                payment['voided_at'] = now
+        for application in document.get('applications') or []:
+            application['voided'] = True
+    else:
+        for note in invoices:
+            if document_type(note) != 'credit_note':
+                continue
+            for application in note.get('applications') or []:
+                if application.get('invoice_id') == document.get('id') and not application.get('voided'):
+                    application['voided'] = True
+                    payment_id = application.get('payment_id')
+                    payment = next((row for row in payments if row.get('id') == payment_id), None)
+                    if payment and not payment.get('voided'):
+                        payment['voided'] = True
+                        payment['void_reason'] = reason
+                        payment['voided_at'] = now
+    for index, row in enumerate(invoices):
+        if row.get('id') == document.get('id'):
+            invoices[index] = document
+    save_invoices(invoices)
+    save_payments(payments)
+    _refresh_invoice_statuses(payments)
+    fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
+    return jsonify(_present_invoice(fresh, load_payments()))
 
 
 @app.route('/api/invoices/<int:invoice_id>', methods=['GET'])
@@ -2758,7 +3080,11 @@ def _render_invoice_pdf(invoice):
     currency = str(invoice.get('currency') or 'usd').upper()
     header = [[
         logo,
-        Paragraph('<b>Invoice</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
+        Paragraph(
+            f"<b>{'Credit Note' if document_type(invoice) == 'credit_note' else 'Invoice'}</b>"
+            '<br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>',
+            title_style,
+        ),
         Paragraph(
             f"<font size='8'><b>{escape(invoice.get('number') or '')}</b><br/>"
             f"Invoice date: {escape(invoice.get('invoice_date') or '')}<br/>"
@@ -2781,6 +3107,10 @@ def _render_invoice_pdf(invoice):
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
         label_style,
     ))
+    if document_type(invoice) == 'credit_note' and invoice.get('reason'):
+        elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
+    if invoice.get('tax_free'):
+        elements.append(Paragraph('Tax-free subtotal. No tax is added on this document.', label_style))
     elements.append(Spacer(1, 10))
     table_data = [[
         Paragraph('<b>Item</b>', header_cell),
@@ -2807,16 +3137,21 @@ def _render_invoice_pdf(invoice):
     elements.append(Spacer(1, 10))
     discount = invoice.get('discount') or {}
     discount_label = f"{money(discount.get('value')):.2f}%" if discount.get('type') == 'percent' else 'fixed'
+    subtotal_label = 'Tax-free subtotal' if invoice.get('tax_free') else 'IGU subtotal'
     summary_rows = [
-        ['IGU subtotal', f"${money(invoice.get('igu_subtotal')):.2f}"],
+        [subtotal_label, f"${money(invoice.get('subtotal') or invoice.get('igu_subtotal')):.2f}"],
         [f"Discount ({discount_label})", f"-${money(invoice.get('discount_amount')):.2f}"],
-        ['IGU total', f"${money(invoice.get('igu_total')):.2f}"],
+        ['Total before extras' if invoice.get('tax_free') else 'IGU total', f"${money(invoice.get('igu_total')):.2f}"],
     ]
     for charge in invoice.get('extra_charges') or []:
         summary_rows.append([charge.get('label') or 'Extra', f"${money(charge.get('amount')):.2f}"])
     summary_rows.append(['Grand total', f"${money(invoice.get('total')):.2f}"])
-    summary_rows.append(['Payments applied', f"${money(invoice.get('applied')):.2f}"])
-    summary_rows.append(['Balance due', f"${money(invoice.get('balance')):.2f}"])
+    if document_type(invoice) == 'credit_note':
+        summary_rows.append(['Applied to invoices', f"${money(invoice.get('applied')):.2f}"])
+        summary_rows.append(['Unapplied credit', f"${money(invoice.get('balance')):.2f}"])
+    else:
+        summary_rows.append(['Payments applied', f"${money(invoice.get('applied')):.2f}"])
+        summary_rows.append(['Balance due', f"${money(invoice.get('balance')):.2f}"])
     summary = [[Paragraph(escape(label), cell_style), Paragraph(amount, cell_style)] for label, amount in summary_rows]
     summary_table = Table(summary, colWidths=[5.5 * inch, 1.8 * inch])
     summary_table.setStyle(TableStyle([
@@ -3074,6 +3409,8 @@ def get_credit():
         'open_receivables': receivables,
         'available_credit': available,
         'unallocated_payments': unallocated_credit(payments, customer_id, currency),
+        'unapplied_credits': unapplied_credits(invoices, customer_id, currency),
+        'balance': round(receivables - unapplied_credits(invoices, customer_id, currency), 2),
         'read_only': user.get('role') == 'customer' or not can_record_payments(user),
     })
 

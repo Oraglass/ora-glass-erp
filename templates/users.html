@@ -146,8 +146,9 @@ td.actions{width:15.5rem;vertical-align:middle}
 <label><input type="checkbox" id="u-edit-orders"> Edit orders</label>
 <label><input type="checkbox" id="u-update-order-status"> Update order status</label>
 <label><input type="checkbox" id="u-record-payments"> Record payments</label>
+<label><input type="checkbox" id="u-issue-invoices"> Issue invoices</label>
 </div>
-<p class="help">Off unless an admin turns them on. Edit orders changes lines, discounts, and extra charges. Update order status moves an order from Approved to Sent to production, Made, and Delivered. Record payments enters and allocates customer payments. Customer users cannot do any of these.</p>
+<p class="help">Off unless an admin turns them on. Edit orders changes lines, discounts, and extra charges. Update order status moves an order from Approved to Sent to production, Made, and Delivered. Record payments enters and allocates customer payments. Issue invoices creates and voids invoices and credit notes. Customer users cannot do any of these.</p>
 </div>
 <div class="form-group" id="active-group" style="display:none"><label><input type="checkbox" id="u-active" checked> Account enabled</label></div>
 <div style="display:flex;gap:10px;margin-top:20px">
@@ -274,6 +275,7 @@ function syncStaffPrivileges() {
     document.getElementById('u-edit-orders').checked = false;
     document.getElementById('u-update-order-status').checked = false;
     document.getElementById('u-record-payments').checked = false;
+    document.getElementById('u-issue-invoices').checked = false;
   }
 }
 function onRoleChanged() {
@@ -444,6 +446,7 @@ async function openAdd() {
   document.getElementById('u-edit-orders').checked = false;
   document.getElementById('u-update-order-status').checked = false;
   document.getElementById('u-record-payments').checked = false;
+  document.getElementById('u-issue-invoices').checked = false;
   document.getElementById('active-group').style.display = 'none';
   await loadCompanies('');
   document.getElementById('user-modal').classList.add('active');
@@ -465,6 +468,7 @@ async function openEdit(user) {
   document.getElementById('u-edit-orders').checked = !!user.edit_orders;
   document.getElementById('u-update-order-status').checked = !!user.update_order_status;
   document.getElementById('u-record-payments').checked = !!user.record_payments;
+  document.getElementById('u-issue-invoices').checked = !!user.issue_invoices;
   document.getElementById('u-manage-time').checked = !!user.manage_time;
   document.getElementById('u-manage-payroll').checked = !!user.manage_payroll;
   document.getElementById('u-uses-time-clock').checked = !!user.uses_time_clock;
@@ -533,6 +537,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
+        issue_invoices: document.getElementById('u-issue-invoices').checked,
         manage_time: document.getElementById('u-manage-time').checked,
         manage_payroll: document.getElementById('u-manage-payroll').checked,
         uses_time_clock: document.getElementById('u-uses-time-clock').checked,
@@ -561,6 +566,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
+        issue_invoices: document.getElementById('u-issue-invoices').checked,
         manage_time: document.getElementById('u-manage-time').checked,
         manage_payroll: document.getElementById('u-manage-payroll').checked,
         uses_time_clock: document.getElementById('u-uses-time-clock').checked,

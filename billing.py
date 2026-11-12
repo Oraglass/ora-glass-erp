@@ -194,11 +194,20 @@ def invoice_applied(invoice, payments):
     )
 
 
+def document_type(row):
+    value = str((row or {}).get('doc_type') or 'invoice')
+    return value if value in {'invoice', 'credit_note'} else 'invoice'
+
+
 def invoice_balance(invoice, payments):
+    if (invoice or {}).get('voided') or document_type(invoice) == 'credit_note':
+        return 0.0
     return round(money(invoice.get('total')) - invoice_applied(invoice, payments), 2)
 
 
 def invoice_status(invoice, payments):
+    if (invoice or {}).get('voided'):
+        return 'void'
     applied = invoice_applied(invoice, payments)
     balance = round(money(invoice.get('total')) - applied, 2)
     if balance <= 0.009:
@@ -209,7 +218,39 @@ def invoice_status(invoice, payments):
 
 
 def invoice_status_label(status):
-    return {'paid': 'Paid', 'partial': 'Partially paid', 'unpaid': 'Unpaid'}.get(status, 'Unpaid')
+    return {
+        'paid': 'Paid',
+        'partial': 'Partially paid',
+        'unpaid': 'Unpaid',
+        'void': 'Void',
+        'open': 'Unapplied',
+        'applied': 'Applied',
+    }.get(status, 'Unpaid')
+
+
+def credit_note_applied(note):
+    total = 0.0
+    for row in (note or {}).get('applications') or []:
+        if row.get('voided'):
+            continue
+        total += money(row.get('amount'))
+    return round(total, 2)
+
+
+def unapplied_credits(invoices, customer_id, currency):
+    """Credit notes not yet applied to an invoice. They increase available credit."""
+    total = 0.0
+    for note in invoices or []:
+        if document_type(note) != 'credit_note' or note.get('voided'):
+            continue
+        if note.get('customer_id') != customer_id:
+            continue
+        if str(note.get('currency') or 'usd').lower() != currency:
+            continue
+        remaining = round(money(note.get('total')) - credit_note_applied(note), 2)
+        if remaining > 0:
+            total += remaining
+    return round(total, 2)
 
 
 def open_receivables(customer_id, currency, orders, invoices, payments, exclude_order_id=None):
@@ -217,11 +258,13 @@ def open_receivables(customer_id, currency, orders, invoices, payments, exclude_
     total = 0.0
     invoiced_orders = set()
     for invoice in invoices or []:
+        if document_type(invoice) != 'invoice' or invoice.get('voided'):
+            continue
         if invoice.get('customer_id') != customer_id:
             continue
         if str(invoice.get('currency') or 'usd').lower() != currency:
             continue
-        if invoice.get('order_id'):
+        if invoice.get('order_id') and invoice.get('source') != 'manual':
             invoiced_orders.add(invoice.get('order_id'))
         balance = invoice_balance(invoice, payments)
         if balance > 0:
@@ -251,7 +294,8 @@ def available_credit(customer, currency, orders, invoices, payments, exclude_ord
     receivables = open_receivables(
         customer.get('id'), currency, orders, invoices, payments, exclude_order_id=exclude_order_id,
     )
-    return round(limit - receivables, 2), limit, receivables
+    credits = unapplied_credits(invoices, customer.get('id'), currency)
+    return round(limit - receivables + credits, 2), limit, receivables
 
 
 def coverage(order, customer, orders, invoices, payments):
