@@ -77,7 +77,7 @@ th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
 <p class="loc" id="loc">Location is requested when you punch. The punch is saved even if you decline.</p>
 <div class="links">
 {% if user.role != 'shop' %}<a href="{{ url_for('dashboard') }}">Dashboard</a>{% endif %}
-{% if can_manage %}<a href="{{ url_for('time_clock_admin') }}">Timesheets</a>{% endif %}
+{% if can_manage %}<a href="{{ url_for('payroll_page') }}#time-kiosk">Timesheets</a>{% endif %}
 <form method="post" action="{{ url_for('logout') }}" style="margin:0">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <button type="submit" style="width:auto;background:none;color:#9f1830;font-size:14px;padding:0">Sign out</button>

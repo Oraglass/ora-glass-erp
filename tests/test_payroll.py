@@ -160,7 +160,10 @@ def test_approval_locks_hours_until_the_period_is_reopened(client):
     assert login(client, 'clerk@oraglass.us').status_code == 302
     blocked = client.get('/api/payroll/period')
     assert blocked.status_code == 403
-    assert client.get('/payroll').status_code in (302, 403)
+    clock_page = client.get('/payroll')
+    assert clock_page.status_code == 200
+    assert b'Time & Kiosk' in clock_page.data
+    assert b'Save settings' not in clock_page.data
     client.post('/logout')
 
     assert login(client, 'admin@oraglass.us').status_code == 302

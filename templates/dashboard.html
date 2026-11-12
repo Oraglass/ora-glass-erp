@@ -89,16 +89,15 @@
                 <p>Manage user accounts</p>
             </a>
             {% endif %}
-            {% if 'time-clock' in modules %}
-            <a href="/punch" class="module">
-                <h3>Time Clock</h3>
-                <p>Punch in and out</p>
-            </a>
-            {% endif %}
             {% if can_payroll %}
             <a href="/payroll" class="module">
                 <h3>Payroll</h3>
-                <p>Gross pay from hours and shifts</p>
+                <p>Gross pay, timesheets, and the shop kiosk</p>
+            </a>
+            {% elif can_time %}
+            <a href="/payroll#time-kiosk" class="module">
+                <h3>Time & Kiosk</h3>
+                <p>Timesheets and the shop tablet</p>
             </a>
             {% endif %}
         </div>
