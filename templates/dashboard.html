@@ -97,6 +97,12 @@
                 <p>Manage user accounts</p>
             </a>
             {% endif %}
+            {% if user.role == 'admin' %}
+            <a href="/settings/quickbooks" class="module">
+                <h3>QuickBooks</h3>
+                <p>Connect QuickBooks and sync customers, invoices, and payments</p>
+            </a>
+            {% endif %}
             {% if can_payroll %}
             <a href="/payroll" class="module">
                 <h3>Payroll</h3>
