@@ -449,7 +449,16 @@ def append_quote(quote):
 
 def load_customers():
     data = read_json(customers_path(), {})
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    changed = False
+    for customer in data.values():
+        if isinstance(customer, dict) and customer.get('kind') == 'order_only':
+            customer['kind'] = 'account'
+            changed = True
+    if changed:
+        save_customers(data)
+    return data
 
 
 def save_customers(customers):
