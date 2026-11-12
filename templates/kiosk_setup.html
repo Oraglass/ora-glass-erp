@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#9f1830">
+<title>Set up shop kiosk</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;font-family:'Segoe UI',Arial,sans-serif;background:#f4f1f2;color:#1a1a1a;display:flex;align-items:center;justify-content:center}
+.card{background:#fff;border-radius:16px;padding:28px;width:min(440px,92vw);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+img{display:block;height:64px;margin:0 auto 16px;background:#fff}
+h1{font-size:24px;margin:0 0 8px;text-align:center}
+p{color:#555;font-size:14px;line-height:1.4}
+label{display:block;font-size:13px;color:#666;margin:16px 0 6px}
+input{width:100%;font:16px 'Segoe UI',Arial,sans-serif;padding:12px;border:1px solid #ddd;border-radius:10px}
+button{width:100%;margin-top:16px;background:#9f1830;color:#fff;border:0;border-radius:12px;padding:14px;font:600 16px 'Segoe UI',Arial,sans-serif;cursor:pointer}
+.err{color:#9f1239;min-height:1.2em}
+</style>
+</head>
+<body>
+<div class="card">
+<img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass">
+<h1>Set up shop kiosk</h1>
+<p>This signs you out on this tablet and opens the shop punch screen. Workers then use their employee number and PIN. No office menu stays on the device.</p>
+<label for="kiosk-name">Tablet name</label>
+<input id="kiosk-name" value="Shop tablet">
+<p class="err" id="setup-error"></p>
+<button type="button" id="activate-kiosk">Set up shop kiosk</button>
+</div>
+<script>
+document.getElementById('activate-kiosk').addEventListener('click', async () => {
+  const res = await fetch('/api/time-clock/kiosks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}'},
+    body: JSON.stringify({name: document.getElementById('kiosk-name').value})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { document.getElementById('setup-error').textContent = body.error || 'Could not activate the kiosk'; return; }
+  window.location = '/kiosk';
+});
+</script>
+</body>
+</html>

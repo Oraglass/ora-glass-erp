@@ -156,7 +156,6 @@ MODULES = (
     {'id': 'financial', 'label': 'Financials', 'short': 'Financials', 'endpoint': 'financial'},
     {'id': 'customers', 'label': 'Customers', 'short': 'Customers', 'endpoint': 'customers_page'},
     {'id': 'users', 'label': 'Users', 'short': 'Users', 'endpoint': 'users_page'},
-    {'id': 'time-clock', 'label': 'Time Clock', 'short': 'Time Clock', 'endpoint': 'punch'},
 )
 MODULE_IDS = tuple(item['id'] for item in MODULES)
 # Customers may only be given these. Dashboard stays available as their home page.
@@ -331,14 +330,14 @@ def apply_manage_payroll(record, data):
 
 
 def uses_time_clock(user):
-    """Shop workers and admins can punch. Other staff need Uses time clock."""
-    if not user or user.get('role') == 'customer':
+    """Shop workers punch on the tablet. Other staff punch only when Uses time clock is on."""
+    if not user or user.get('role') in {'customer', 'admin'}:
         return False
-    if user.get('role') in {'shop', 'admin'}:
+    if user.get('role') == 'shop':
         return True
     if 'uses_time_clock' in user:
         return bool(user.get('uses_time_clock'))
-    return user_has_module(user, 'time-clock')
+    return 'time-clock' in (user.get('modules') or [])
 
 
 def apply_uses_time_clock(record, data):
@@ -360,10 +359,7 @@ def apply_uses_time_clock(record, data):
         enabled = bool(record.get('uses_time_clock'))
     else:
         enabled = 'time-clock' in modules
-    modules = [module_id for module_id in modules if module_id != 'time-clock']
-    if enabled:
-        modules.append('time-clock')
-    record['modules'] = modules
+    record['modules'] = [module_id for module_id in modules if module_id != 'time-clock']
     record['uses_time_clock'] = enabled
     return None
 
@@ -1096,6 +1092,7 @@ def dashboard():
         role_name=role_display_name(user),
         modules=effective_module_ids(user),
         can_payroll=can_manage_payroll(user),
+        can_time=can_manage_time(user),
     )
 
 
@@ -1390,7 +1387,7 @@ def users_page():
         tiers=ordered_tiers(),
         roles=ROLES,
         can_manage=user.get('role') == 'admin',
-        module_catalog=[{'id': item['id'], 'label': item['label']} for item in MODULES if item['id'] != 'time-clock'],
+        module_catalog=[{'id': item['id'], 'label': item['label']} for item in MODULES],
         customer_modules=[{'id': item['id'], 'label': item['label']} for item in MODULES if item['id'] in CUSTOMER_CEILING],
     )
 
@@ -4009,7 +4006,15 @@ def time_clock_settings():
 def time_clock_admin():
     if not can_manage_time(current_user()):
         return forbidden()
-    return render_template('time_clock.html', can_payroll=can_manage_payroll(current_user()))
+    return redirect(url_for('payroll_page') + '#time-kiosk')
+
+
+@app.route('/kiosk/setup')
+@login_required
+def kiosk_setup():
+    if not can_manage_time(current_user()):
+        return forbidden()
+    return render_template('kiosk_setup.html')
 
 
 @app.route('/api/punches/me', methods=['GET'])
@@ -4557,9 +4562,14 @@ def _money_ok(value):
 @app.route('/payroll')
 @login_required
 def payroll_page():
-    if not can_manage_payroll(current_user()):
+    user = current_user()
+    if not can_manage_payroll(user) and not can_manage_time(user):
         return forbidden()
-    return render_template('payroll.html')
+    return render_template(
+        'payroll.html',
+        can_payroll=can_manage_payroll(user),
+        can_time=can_manage_time(user),
+    )
 
 
 @app.route('/api/payroll/period', methods=['GET'])
