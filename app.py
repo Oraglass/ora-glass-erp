@@ -1387,6 +1387,8 @@ def pricing_admin():
     if request.method == 'POST':
         errors = []
         for key, cfg in list(tiers.items()):
+            if key == 'T5':
+                continue
             glass_raw = request.form.get(f'glass_{key}', '')
             spacer_raw = request.form.get(f'spacer_{key}', '')
             label = clean_text(request.form.get(f'label_{key}'), 40)
@@ -1406,10 +1408,18 @@ def pricing_admin():
             flash('Check markup values for: ' + ', '.join(errors), 'error')
         else:
             save_tiers(tiers)
-            flash('Tier markups saved.', 'success')
+            flash('Tier markups saved. Tier 5 is twice Tier 2.', 'success')
             return redirect(url_for('pricing_admin'))
         tiers = load_tiers()
-    return render_template('pricing.html', tiers=ordered_tiers(tiers))
+    samples = []
+    for name in ('Clear Glass 4mm', 'Clear Glass 6mm', 'Bronze 6mm'):
+        payload = {'glass1': name, 'temper1': 'n/a'}
+        samples.append({
+            'name': name,
+            'tier2': calculate_price_sqf(payload, 'T2', PRICING, tiers),
+            'tier5': calculate_price_sqf(payload, 'T5', PRICING, tiers),
+        })
+    return render_template('pricing.html', tiers=ordered_tiers(tiers), sample_prices=samples)
 
 
 @app.route('/users')
@@ -2832,7 +2842,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'date': order.get('date'),
         'currency': order.get('currency') or 'usd',
         'tier': order.get('tier'),
-        'tier_label': order.get('tier_label'),
+        'tier_label': tier_label(order.get('tier')) or order.get('tier_label'),
         'status': status,
         'status_label': STATUS_LABELS[status],
         'invoice_id': order.get('invoice_id'),
