@@ -246,6 +246,15 @@ def json_error(message, status):
     return jsonify({'error': message}), status
 
 
+def _qbo(action, *args):
+    """QuickBooks sync never rolls back an ERP save. Failures stay in the sync log."""
+    try:
+        import quickbooks
+        getattr(quickbooks, action)(*args)
+    except Exception:
+        logger.exception('QuickBooks %s failed', action)
+
+
 def wants_json():
     return request.path.startswith('/api/') or request.is_json
 
@@ -938,6 +947,11 @@ def bootstrap_once():
 @app.before_request
 def _bootstrap_before_request():
     bootstrap_once()
+    try:
+        import quickbooks
+        quickbooks.maybe_poll()
+    except Exception:
+        logger.exception('QuickBooks poll failed')
 
 
 @app.after_request
@@ -1154,6 +1168,148 @@ def quote_template_context(user):
         'import_glass': [item.get('name') for item in GLASS],
         'import_spacers': [item.get('name') for item in SPACERS],
     }
+
+
+@app.route('/settings/quickbooks')
+@admin_required
+def quickbooks_settings():
+    import quickbooks
+    return render_template('quickbooks.html', status=quickbooks.status_view())
+
+
+@app.route('/quickbooks/connect')
+@admin_required
+def quickbooks_connect():
+    import secrets as token_secrets
+    import quickbooks
+    try:
+        state = token_secrets.token_urlsafe(24)
+        session['qbo_state'] = state
+        return redirect(quickbooks.authorize_url(state))
+    except quickbooks.QuickBooksError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('quickbooks_settings'))
+
+
+@app.route('/quickbooks/callback')
+@admin_required
+def quickbooks_callback():
+    import quickbooks
+    if request.args.get('error'):
+        flash('QuickBooks authorization was cancelled.', 'error')
+        return redirect(url_for('quickbooks_settings'))
+    state = request.args.get('state') or ''
+    if not state or state != session.get('qbo_state'):
+        flash('QuickBooks authorization could not be verified.', 'error')
+        return redirect(url_for('quickbooks_settings'))
+    code = request.args.get('code') or ''
+    realm_id = request.args.get('realmId') or ''
+    if not code or not realm_id:
+        flash('QuickBooks did not return a company.', 'error')
+        return redirect(url_for('quickbooks_settings'))
+    try:
+        quickbooks.exchange_code(code, realm_id)
+    except quickbooks.QuickBooksError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('quickbooks_settings'))
+    session.pop('qbo_state', None)
+    flash('QuickBooks is connected.', 'success')
+    return redirect(url_for('quickbooks_settings'))
+
+
+@app.route('/api/quickbooks/status', methods=['GET'])
+@admin_required
+def quickbooks_status():
+    import quickbooks
+    return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/disconnect', methods=['POST'])
+@admin_required
+def quickbooks_disconnect():
+    import quickbooks
+    quickbooks.disconnect()
+    return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/settings', methods=['PUT'])
+@admin_required
+def quickbooks_save_settings():
+    import quickbooks
+    data = json_body() or {}
+    settings = quickbooks.load_settings()
+    default_item = clean_text(data.get('default_item') or settings.get('default_item'), 120)
+    tax_code = clean_text(data.get('tax_code') or settings.get('tax_code'), 40)
+    extra = data.get('extra_items') if isinstance(data.get('extra_items'), dict) else settings.get('extra_items') or {}
+    cleaned = {}
+    for key, value in extra.items():
+        label = clean_text(key, 80)
+        item = clean_text(value, 120)
+        if label and item:
+            cleaned[label] = item
+    settings['default_item'] = default_item or 'Insulated Glass Units'
+    settings['tax_code'] = tax_code or 'NON'
+    settings['extra_items'] = cleaned
+    quickbooks.save_settings(settings)
+    return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/sync', methods=['POST'])
+@admin_required
+def quickbooks_sync():
+    import quickbooks
+    if not quickbooks.connected():
+        return json_error('QuickBooks is not connected.', 400)
+    try:
+        result = quickbooks.poll_cdc()
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['result'] = result
+    return jsonify(body)
+
+
+@app.route('/api/quickbooks/import/preview', methods=['POST'])
+@admin_required
+def quickbooks_import_preview():
+    import quickbooks
+    if not quickbooks.connected():
+        return json_error('QuickBooks is not connected.', 400)
+    try:
+        rows = quickbooks.preview_import()
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    return jsonify({'customers': rows})
+
+
+@app.route('/api/quickbooks/import/apply', methods=['POST'])
+@admin_required
+def quickbooks_import_apply():
+    import quickbooks
+    data = json_body() or {}
+    decisions = data.get('decisions') if isinstance(data.get('decisions'), dict) else {}
+    try:
+        result = quickbooks.apply_import(decisions)
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    return jsonify(result)
+
+
+@app.route('/quickbooks/webhook', methods=['POST'])
+@csrf.exempt
+def quickbooks_webhook():
+    import quickbooks
+    payload = request.get_data() or b''
+    signature = request.headers.get('intuit-signature', '')
+    if not quickbooks.verify_webhook(payload, signature):
+        return json_error('Invalid signature', 401)
+    if not quickbooks.connected():
+        return jsonify({'ok': True})
+    try:
+        return jsonify(quickbooks.handle_webhook(payload))
+    except quickbooks.QuickBooksError as exc:
+        quickbooks.log('error', str(exc))
+        return json_error(str(exc), 400)
 
 
 @app.route('/quotes')
@@ -1535,6 +1691,7 @@ def add_customer():
     customer['id'] = customer_id
     customers[customer_id] = customer
     save_customers(customers)
+    _qbo('push_customer', customer_id)
     return jsonify({'success': True, 'id': customer_id})
 
 
@@ -1556,6 +1713,7 @@ def update_customer(cid):
     customer['id'] = cid
     customers[cid] = customer
     save_customers(customers)
+    _qbo('push_customer', cid)
     return jsonify({'success': True})
 
 
@@ -1572,6 +1730,7 @@ def delete_customer(cid):
         return json_error("Reassign or delete this customer's users first.", 409)
     del customers[cid]
     save_customers(customers)
+    _qbo('deactivate_customer', cid)
     return jsonify({'success': True})
 
 
@@ -3374,6 +3533,8 @@ def set_order_status(order_id):
     if error:
         status = 400
         return json_error(error, status)
+    if target == 'delivered' and saved and saved.get('invoice_id'):
+        _qbo('push_document_id', saved.get('invoice_id'))
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
@@ -3640,6 +3801,7 @@ def create_document():
     }
     document['audit'] = [_audit(user, 'created', document['doc_type'])]
     stored = append_invoice(document)
+    _qbo('push_document', stored)
     return jsonify(_present_invoice(stored, load_payments()))
 
 
@@ -3709,6 +3871,7 @@ def apply_credit_note(note_id):
     save_invoices(invoices)
     _refresh_invoice_statuses(load_payments())
     fresh = next(row for row in load_invoices() if row.get('id') == note.get('id'))
+    _qbo('push_payment', payment)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 
@@ -3766,6 +3929,7 @@ def void_document(invoice_id):
     save_payments(payments)
     _refresh_invoice_statuses(payments)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
+    _qbo('void_document', fresh)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 
@@ -3979,6 +4143,7 @@ def record_payment():
             'currency': currency,
         }],
     })
+    _qbo('push_payment', stored)
     return jsonify(_present_payment(stored))
 
 
@@ -4060,6 +4225,7 @@ def allocate_payment(payment_id):
             payments[index] = payment
     save_payments(payments)
     _refresh_invoice_statuses(payments)
+    _qbo('push_payment', payment)
     return jsonify(_present_payment(payment))
 
 
@@ -4106,6 +4272,7 @@ def void_payment(payment_id):
             payments[index] = payment
     save_payments(payments)
     _refresh_invoice_statuses(payments)
+    _qbo('void_payment', payment)
     return jsonify(_present_payment(payment))
 
 

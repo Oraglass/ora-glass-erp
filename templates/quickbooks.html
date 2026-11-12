@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - QuickBooks</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:1000px;margin:0 auto;padding:20px}
+.card{background:#fff;border-radius:10px;padding:18px;margin-bottom:14px}
+h1{margin:0 0 8px;font-size:22px}
+h2{margin:0 0 8px;font-size:16px}
+.note{color:#555;font-size:13px;line-height:1.45}
+button,.btn{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px 'Segoe UI',Arial,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
+button.secondary{background:#fff;color:#333;border:1px solid #ccc}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+input{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.error{color:#9f1239}
+.ok{color:#166534}
+select{padding:6px;border:1px solid #ddd;border-radius:4px}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>Settings · QuickBooks</h1>
+<p class="note">Direct connection to QuickBooks Online. Client ID, secret, redirect URI, environment, and the webhook verifier come from the server environment, not from this page.</p>
+<div id="connection"></div>
+</div>
+<div class="card">
+<h2>Item mapping</h2>
+<p class="note">Invoice lines use the QuickBooks item below. Tax defaults to NON. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.</p>
+<div class="row">
+<label>Default item<input id="default-item" value="Insulated Glass Units"></label>
+<label>Tax code<input id="tax-code" value="NON"></label>
+</div>
+<label style="margin-top:8px">Extra charge items<textarea id="extra-items" rows="4" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px" placeholder="Delivery = Delivery&#10;Crane = Crane"></textarea></label>
+<button type="button" id="save-mapping" style="margin-top:8px">Save mapping</button>
+</div>
+<div class="card">
+<h2>Import from QuickBooks</h2>
+<p class="note">Customers are matched to existing ERP companies by name or email. New companies start at tier T2. Nothing is written until you apply the review.</p>
+<button type="button" id="preview-import">Review QuickBooks customers</button>
+<div id="review"></div>
+</div>
+<div class="card">
+<h2>Sync log</h2>
+<div id="log" class="note">No sync activity yet.</div>
+</div>
+</div>
+<script>
+const INITIAL = {{ status|tojson }};
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function render(status) {
+  const box = document.getElementById('connection');
+  if (!status.configured) {
+    box.innerHTML = '<p class="error">Missing environment variables: ' + esc((status.missing || []).join(', ')) + '</p>';
+  } else if (!status.connected) {
+    box.innerHTML = '<p class="note">Not connected. Environment: ' + esc(status.environment) + '.</p><p><a class="btn" id="connect-qbo" href="/quickbooks/connect">Connect to QuickBooks</a></p>';
+  } else {
+    box.innerHTML = '<p class="ok"><strong>' + esc(status.company_name || 'Connected company') + '</strong> · realm ' + esc(status.realm_id) + ' · ' + esc(status.environment) + '</p>'
+      + '<p class="note">Last sync: ' + esc(status.last_sync || 'not yet') + '</p>'
+      + '<p><button type="button" id="sync-now">Sync now</button> <button type="button" class="secondary" id="disconnect">Disconnect</button></p>';
+  }
+  document.getElementById('default-item').value = status.default_item || 'Insulated Glass Units';
+  document.getElementById('tax-code').value = status.tax_code || 'NON';
+  const extras = status.extra_items || {};
+  document.getElementById('extra-items').value = Object.keys(extras).map(key => key + ' = ' + extras[key]).join('\n');
+  const log = status.log || [];
+  document.getElementById('log').innerHTML = log.length ? '<table><tbody>' + log.map(row => '<tr><td>' + esc(row.at) + '</td><td class="' + (row.level === 'error' ? 'error' : '') + '">' + esc(row.message) + '</td></tr>').join('') + '</tbody></table>' : 'No sync activity yet.';
+}
+async function api(url, options) {
+  const res = await fetch(url, options || {});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+function renderReview(rows) {
+  const box = document.getElementById('review');
+  if (!rows.length) { box.innerHTML = '<p class="note">QuickBooks returned no customers.</p>'; return; }
+  box.innerHTML = '<table id="import-review"><thead><tr><th>QuickBooks customer</th><th>Id</th><th>Currency</th><th>Open balance</th><th>ERP match</th><th>Action</th></tr></thead><tbody>'
+    + rows.map(row => '<tr data-qbo="' + esc(row.qbo_id) + '"><td>' + esc(row.name) + '<div class="note">' + esc(row.email) + '</div></td><td>' + esc(row.qbo_id) + '</td><td>' + esc(row.currency).toUpperCase() + '</td><td>' + Number(row.open_balance || 0).toLocaleString(undefined, {style:'currency', currency:(row.currency || 'usd').toUpperCase()}) + '</td><td>' + esc(row.suggested_customer_id || 'New company, tier T2') + (row.match_reason ? ' · ' + esc(row.match_reason) : '') + '</td><td><select data-action><option value="link"' + (row.action === 'link' ? ' selected' : '') + '>Link</option><option value="create"' + (row.action === 'create' ? ' selected' : '') + '>Create</option><option value="skip">Skip</option></select></td></tr>').join('')
+    + '</tbody></table><p><button type="button" id="apply-import">Apply import</button></p><p id="import-result" class="note"></p>';
+  document.getElementById('apply-import').addEventListener('click', async () => {
+    const decisions = {};
+    document.querySelectorAll('#import-review tbody tr').forEach(tr => {
+      decisions[tr.getAttribute('data-qbo')] = {
+        action: tr.querySelector('[data-action]').value,
+        customer_id: tr.querySelector('[data-action]').value === 'link' ? (rows.find(row => String(row.qbo_id) === tr.getAttribute('data-qbo')) || {}).suggested_customer_id : ''
+      };
+    });
+    try {
+      const result = await api('/api/quickbooks/import/apply', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({decisions})});
+      document.getElementById('import-result').textContent = 'Imported ' + result.customers + ' customers, ' + result.invoices + ' invoices, and ' + result.payments + ' payments.';
+      render(await api('/api/quickbooks/status'));
+    } catch (error) {
+      document.getElementById('import-result').textContent = error.message;
+    }
+  });
+}
+document.getElementById('connection').addEventListener('click', async (event) => {
+  if (event.target.id === 'sync-now') {
+    try { render(await api('/api/quickbooks/sync', {method:'POST'})); }
+    catch (error) { alert(error.message); }
+  }
+  if (event.target.id === 'disconnect') {
+    render(await api('/api/quickbooks/disconnect', {method:'POST'}));
+  }
+});
+document.getElementById('save-mapping').addEventListener('click', async () => {
+  const extra = {};
+  document.getElementById('extra-items').value.split('\n').forEach(line => {
+    const parts = line.split('=');
+    if (parts.length >= 2 && parts[0].trim()) extra[parts[0].trim()] = parts.slice(1).join('=').trim();
+  });
+  render(await api('/api/quickbooks/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+    default_item: document.getElementById('default-item').value,
+    tax_code: document.getElementById('tax-code').value,
+    extra_items: extra
+  })}));
+});
+document.getElementById('preview-import').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/quickbooks/import/preview', {method:'POST'});
+    renderReview(data.customers || []);
+  } catch (error) {
+    document.getElementById('review').innerHTML = '<p class="error">' + esc(error.message) + '</p>';
+  }
+});
+render(INITIAL);
+</script>
+</body>
+</html>

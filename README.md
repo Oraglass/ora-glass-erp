@@ -95,4 +95,30 @@ The service already has a 1 GB disk mounted at `/data`. `render.yaml` does not d
 
 Optional `BASE_URL` (for example `https://ora-glass-erp.onrender.com`) is used when an admin generates a setup link. If it is empty, the link uses the request host.
 
+## QuickBooks Online
+
+The ERP talks to Intuit's QuickBooks Online Accounting API directly. There is no third-party sync product. An administrator opens **QuickBooks** on the dashboard (`/settings/quickbooks`), connects the company, reviews the customer match list, and applies the import. After that, invoices, credit notes, voids, payments, and customer edits made in the ERP are sent to QuickBooks, and QuickBooks changes come back through webhooks plus a change-data poll at least every 15 minutes while the app is awake. Records that started in QuickBooks are not sent back.
+
+Set these in the Render dashboard. Do not commit them.
+
+| Variable | Purpose |
+| --- | --- |
+| `QBO_CLIENT_ID` | Intuit app client id |
+| `QBO_CLIENT_SECRET` | Intuit app client secret |
+| `QBO_REDIRECT_URI` | Must be `https://<render-host>/quickbooks/callback` |
+| `QBO_ENVIRONMENT` | `sandbox` or `production` |
+| `QBO_WEBHOOK_VERIFIER` | Intuit webhook verifier token |
+
+Access and refresh tokens are written under `DATA_DIR` (`qbo_tokens.json`) and refreshed automatically.
+
+### What to do in the Intuit developer portal
+
+1. Sign in at [developer.intuit.com](https://developer.intuit.com).
+2. Create an app and choose **QuickBooks Online** with the **Accounting** scope. Do not add a middleman app.
+3. Open **Keys & credentials**. Copy the Client ID and Client Secret into `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET` on Render.
+4. Add the redirect URI `https://<render-host>/quickbooks/callback` (for this service, `https://ora-glass-erp.onrender.com/quickbooks/callback` once that host is the public URL) and set the same value as `QBO_REDIRECT_URI`.
+5. Open **Webhooks**. Set the endpoint to `https://<render-host>/quickbooks/webhook`. Subscribe to Customer, Invoice, Payment, and CreditMemo. Copy the verifier token into `QBO_WEBHOOK_VERIFIER`.
+6. Leave `QBO_ENVIRONMENT=sandbox` until Intuit has approved the app for production, then switch it to `production` and reconnect.
+7. In the ERP, sign in as an administrator, open **QuickBooks**, and click **Connect to QuickBooks**. Choose the company, then **Review QuickBooks customers** and apply the matches. New companies are created at tier T2 unless you link them to an existing ERP customer.
+
 Quote history that was previously written to `quotes.json` in the app directory was not on the persistent disk, because `QUOTES_PATH` was ignored. If a copy of that file still exists, place it at `/data/quotes.json`. New reads and writes use `QUOTES_PATH`.
