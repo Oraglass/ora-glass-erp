@@ -108,7 +108,9 @@ def _connect(client, fake):
     state = urllib.parse.parse_qs(urllib.parse.urlparse(start.headers['Location']).query)['state'][0]
     callback = client.get(f'/quickbooks/callback?code=auth-code&realmId=123456&state={state}')
     assert callback.status_code == 302
-    assert callback.headers['Location'].endswith('/settings/quickbooks')
+    parsed = urllib.parse.urlparse(callback.headers['Location'])
+    assert parsed.path == '/settings/quickbooks'
+    assert urllib.parse.parse_qs(parsed.query).get('company') == ['us']
 
 
 def test_settings_are_admin_only_and_oauth_stores_the_company(client, monkeypatch):
@@ -124,6 +126,12 @@ def test_settings_are_admin_only_and_oauth_stores_the_company(client, monkeypatc
     page = client.get('/settings/quickbooks')
     assert page.status_code == 200
     assert b'Connect to QuickBooks' in page.data
+    assert b'Ora Glass Inc (US)' in page.data
+    assert b'Ora Glass (Canada) Inc' in page.data
+    assert b'9341456057091137' in page.data
+    assert b'123146408064299' in page.data
+    assert b'data-tab="us"' in page.data
+    assert b'data-tab="ca"' in page.data
     fake = FakeQBO()
     try:
         _connect(client, fake)

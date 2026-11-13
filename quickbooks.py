@@ -270,6 +270,7 @@ def log(level, message):
         'level': level,
         'message': message,
         'connection': _connection_key(),
+        'realm_id': str((load_tokens() or {}).get('realm_id') or ''),
     }
     rows.append(entry)
     _save('qbo_log.json', rows[-200:])

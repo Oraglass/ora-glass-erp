@@ -97,3 +97,40 @@ if (cardOf(ca.unlink).attrs['data-connection'] !== 'ca') {
   throw new Error('Canada unlink resolved the wrong card');
 }
 console.log('both cards read their own link and import fields');
+
+const tabStart = html.indexOf('const REALMS');
+const tabEnd = html.indexOf('function cardBody');
+const locationState = {search: '', hash: '', pathname: '/settings/quickbooks'};
+global.location = locationState;
+global.history = {
+  replaceState(_state, _title, url) {
+    const hashAt = url.indexOf('#');
+    locationState.hash = hashAt >= 0 ? url.slice(hashAt) : '';
+    const queryAt = url.indexOf('?');
+    locationState.search = queryAt >= 0 ? url.slice(queryAt, hashAt >= 0 ? hashAt : url.length) : '';
+  },
+};
+eval(html.slice(tabStart, tabEnd));
+if (companyKey() !== 'us') throw new Error('the page should open on the US tab');
+locationState.hash = '#ca';
+if (companyKey() !== 'ca') throw new Error('hash should select the Canada tab');
+locationState.search = '?company=us';
+locationState.hash = '#ca';
+if (companyKey() !== 'us') throw new Error('query param should win over the hash');
+rememberCompany('ca');
+if (locationState.search !== '?company=ca' || locationState.hash !== '#ca') {
+  throw new Error('rememberCompany did not keep the Canada tab: ' + locationState.search + locationState.hash);
+}
+if (companyKey() !== 'ca') throw new Error('remembered Canada tab was not read back');
+const shown = visibleLog({
+  key: 'us',
+  realm_id: '9341456057091137',
+  log: [
+    {connection: 'us', realm_id: '9341456057091137', message: 'US line'},
+    {connection: 'ca', realm_id: '123146408064299', message: 'Canada line'},
+    {connection: 'us', realm_id: '123146408064299', message: 'wrong realm'},
+    {message: 'legacy'},
+  ],
+}).map(row => row.message);
+if (shown.join('|') !== 'US line|legacy') throw new Error('log filter kept ' + shown.join('|'));
+console.log('tabs default to US, remember the selection, and filter the sync log');
