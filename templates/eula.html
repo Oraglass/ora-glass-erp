@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - End-User License Agreement</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 48px}
+article{background:#fff;border-radius:10px;padding:28px 24px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+h1{margin:0 0 8px;font-size:24px;color:#111}
+h2{margin:22px 0 8px;font-size:16px;color:#9f1830}
+p,li{font-size:14px;line-height:1.55;color:#333}
+ul{margin:8px 0 0 18px;padding:0}
+.meta{color:#666;font-size:13px;margin-bottom:8px}
+.links{margin-top:18px;font-size:13px}
+.links a{color:#9f1830;margin-right:14px}
+</style>
+</head>
+<body>
+{% set show_back = false %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<article>
+<p class="meta">Ora Glass ERP · operated by Ora Glass</p>
+<h1>End-User License Agreement</h1>
+<p>This agreement covers use of the Ora Glass ERP software provided by Ora Glass at oraglass.us. By signing in or using the ERP, you agree to these terms.</p>
+<h2>License</h2>
+<p>Ora Glass grants you a limited, non-exclusive, non-transferable license to use the ERP for Ora Glass business, or for the customer account an administrator has assigned to you. The software stays the property of Ora Glass.</p>
+<h2>Acceptable use</h2>
+<ul>
+<li>Use only the account issued to you. Do not share passwords or shop PINs.</li>
+<li>Do not attempt to bypass access controls, copy the software, or use it for anyone other than Ora Glass and its customers.</li>
+<li>Do not upload unlawful content or interfere with the service.</li>
+</ul>
+<h2>Accounts</h2>
+<p>Administrators control who can sign in and which modules they can open. Ora Glass may disable an account that is unused, compromised, or misused.</p>
+<h2>QuickBooks</h2>
+<p>If an administrator connects QuickBooks Online, that connection is only for Ora Glass's own books. Disconnecting QuickBooks, in the ERP or from QuickBooks, ends that access. The ERP itself remains available.</p>
+<h2>Availability</h2>
+<p>The ERP is provided as a business tool. Ora Glass may change, suspend, or retire features. Saved quotes and orders keep the prices they were written with unless someone edits them.</p>
+<h2>Contact</h2>
+<p>Questions about this agreement: Ora Glass, <a href="https://oraglass.us">oraglass.us</a>.</p>
+</article>
+<p class="links"><a href="{{ url_for('privacy') }}">Privacy</a><a href="{{ url_for('login') }}">Sign in</a><a href="https://oraglass.us">oraglass.us</a></p>
+</div>
+</body>
+</html>

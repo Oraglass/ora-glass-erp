@@ -121,4 +121,17 @@ Access and refresh tokens are written under `DATA_DIR` (`qbo_tokens.json`) and r
 6. Leave `QBO_ENVIRONMENT=sandbox` until Intuit has approved the app for production, then switch it to `production` and reconnect.
 7. In the ERP, sign in as an administrator, open **QuickBooks**, and click **Connect to QuickBooks**. Choose the company, then **Review QuickBooks customers** and apply the matches. New companies are created at tier T2 unless you link them to an existing ERP customer.
 
+Public URLs for the Intuit production-key questionnaire, on `https://ora-glass-erp.onrender.com`:
+
+| Intuit field | URL |
+| --- | --- |
+| Host domain | `https://ora-glass-erp.onrender.com` |
+| EULA | `https://ora-glass-erp.onrender.com/eula` |
+| Privacy policy | `https://ora-glass-erp.onrender.com/privacy` |
+| Launch | `https://ora-glass-erp.onrender.com/quickbooks/launch` |
+| Connect / reconnect | `https://ora-glass-erp.onrender.com/quickbooks/connect` |
+| Disconnect | `https://ora-glass-erp.onrender.com/quickbooks/disconnected` |
+| Redirect URI | `https://ora-glass-erp.onrender.com/quickbooks/callback` |
+| Webhook | `https://ora-glass-erp.onrender.com/quickbooks/webhook` |
+
 Quote history that was previously written to `quotes.json` in the app directory was not on the persistent disk, because `QUOTES_PATH` was ignored. If a copy of that file still exists, place it at `/data/quotes.json`. New reads and writes use `QUOTES_PATH`.
