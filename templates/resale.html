@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Resale certificate</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:900px;margin:0 auto;padding:20px}
+.card{background:#fff;border-radius:10px;padding:18px;margin-bottom:14px}
+h1{margin:0 0 8px;font-size:22px}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+input,select{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+button,.btn{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px 'Segoe UI',Arial,sans-serif;cursor:pointer;text-decoration:none;display:inline-block}
+button.secondary{background:#fff;color:#333;border:1px solid #ccc}
+.note{color:#555;font-size:13px;line-height:1.45}
+.error{color:#9f1239}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.pending{color:#9a6700}
+.verified{color:#166534}
+.rejected,.expired{color:#9f1239}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>{{ company }}</h1>
+<p class="note">Resale certificate for invoices from Ora Glass Inc. A customer upload stays pending until Ora Glass verifies it. A verified certificate that has not expired means those invoices are not taxed.</p>
+{% if warning %}<p class="error" id="resale-warning">{{ warning }}</p>{% endif %}
+</div>
+<div class="card">
+<h2>Upload a certificate</h2>
+<form id="resale-form">
+<div class="row">
+<label>Certificate number<input name="number" id="cert-number" required></label>
+<label>Issuing state
+<select name="state" id="cert-state" required>
+<option value="">State</option>
+{% for code, name in states %}<option value="{{ code }}">{{ code }} — {{ name }}</option>{% endfor %}
+</select>
+</label>
+<label>Expiry date (optional)<input name="expires" id="cert-expires" type="date"></label>
+<label>File<input name="file" id="cert-file" type="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required></label>
+</div>
+{% if can_review %}<label style="margin-top:8px"><span style="display:flex;flex-direction:row;align-items:center;gap:6px"><input type="checkbox" name="verified" id="cert-verified" value="1"> Mark verified</span></label>{% endif %}
+<p><button type="submit" id="upload-certificate">Upload certificate</button></p>
+<p class="note" id="upload-result"></p>
+</form>
+</div>
+<div class="card">
+<h2>History</h2>
+<table id="certificate-history">
+<thead><tr><th>Uploaded</th><th>Number</th><th>State</th><th>Expires</th><th>Status</th><th>By</th><th>File</th>{% if can_review %}<th>Review</th>{% endif %}</tr></thead>
+<tbody>
+{% for row in certificates %}
+<tr data-id="{{ row.id }}">
+<td>{{ row.uploaded_at }}</td>
+<td>{{ row.number }}</td>
+<td>{{ row.state }}</td>
+<td>{{ row.expires or 'No expiry' }}</td>
+<td class="{{ row.status }}" id="status-{{ row.id }}">{{ row.status }}</td>
+<td>{{ row.uploaded_by }}</td>
+<td><a href="/api/customers/{{ customer_id }}/resale/{{ row.id }}/file">{{ row.filename }}</a></td>
+{% if can_review %}
+<td>
+{% if row.status == 'pending' %}
+<button type="button" data-review="verified" data-id="{{ row.id }}">Verify</button>
+<button type="button" class="secondary" data-review="rejected" data-id="{{ row.id }}">Reject</button>
+{% else %}
+{{ row.reviewed_by }}
+{% endif %}
+</td>
+{% endif %}
+</tr>
+{% else %}
+<tr><td colspan="8" class="note">No certificates yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</div>
+<script>
+const CUSTOMER = {{ customer_id|tojson }};
+document.getElementById('resale-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const res = await fetch('/api/customers/' + encodeURIComponent(CUSTOMER) + '/resale', {method: 'POST', body: new FormData(form)});
+  const body = await res.json().catch(() => ({}));
+  const note = document.getElementById('upload-result');
+  if (!res.ok) { note.textContent = body.error || 'Not uploaded'; return; }
+  note.textContent = 'Uploaded. Status: ' + body.status;
+  window.location.reload();
+});
+document.getElementById('certificate-history').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-review]');
+  if (!button) return;
+  const res = await fetch('/api/customers/' + encodeURIComponent(CUSTOMER) + '/resale/' + encodeURIComponent(button.getAttribute('data-id')), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: button.getAttribute('data-review')})
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Not updated'); return; }
+  window.location.reload();
+});
+</script>
+</body>
+</html>

@@ -469,6 +469,24 @@ PROVINCES = (
     ('YT', 'Yukon', 'GST'),
 )
 PROVINCE_CODES = {code for code, _name, _regime in PROVINCES}
+US_STATES = (
+    ('AL', 'Alabama'), ('AK', 'Alaska'), ('AZ', 'Arizona'), ('AR', 'Arkansas'),
+    ('CA', 'California'), ('CO', 'Colorado'), ('CT', 'Connecticut'), ('DE', 'Delaware'),
+    ('DC', 'District of Columbia'), ('FL', 'Florida'), ('GA', 'Georgia'), ('HI', 'Hawaii'),
+    ('ID', 'Idaho'), ('IL', 'Illinois'), ('IN', 'Indiana'), ('IA', 'Iowa'),
+    ('KS', 'Kansas'), ('KY', 'Kentucky'), ('LA', 'Louisiana'), ('ME', 'Maine'),
+    ('MD', 'Maryland'), ('MA', 'Massachusetts'), ('MI', 'Michigan'), ('MN', 'Minnesota'),
+    ('MS', 'Mississippi'), ('MO', 'Missouri'), ('MT', 'Montana'), ('NE', 'Nebraska'),
+    ('NV', 'Nevada'), ('NH', 'New Hampshire'), ('NJ', 'New Jersey'), ('NM', 'New Mexico'),
+    ('NY', 'New York'), ('NC', 'North Carolina'), ('ND', 'North Dakota'), ('OH', 'Ohio'),
+    ('OK', 'Oklahoma'), ('OR', 'Oregon'), ('PA', 'Pennsylvania'), ('RI', 'Rhode Island'),
+    ('SC', 'South Carolina'), ('SD', 'South Dakota'), ('TN', 'Tennessee'), ('TX', 'Texas'),
+    ('UT', 'Utah'), ('VT', 'Vermont'), ('VA', 'Virginia'), ('WA', 'Washington'),
+    ('WV', 'West Virginia'), ('WI', 'Wisconsin'), ('WY', 'Wyoming'),
+)
+US_STATE_CODES = {code for code, _name in US_STATES}
+_US_STATE_NAMES = {name.lower(): code for code, name in US_STATES}
+_EXPORT_NAMES = {'open windows', 'open windows inc'}
 _PROVINCE_ALIASES = {
     'AB': ('ab', 'alta', 'alberta'),
     'BC': ('bc', 'b.c.', 'british columbia'),
@@ -535,6 +553,17 @@ def inferred_province(customer):
     return ''
 
 
+def inferred_us_state(customer):
+    customer = customer or {}
+    current = str(customer.get('us_state') or '').strip().upper()
+    if current in US_STATE_CODES:
+        return current
+    state = str(customer.get('state') or '').strip()
+    if state.upper() in US_STATE_CODES:
+        return state.upper()
+    return _US_STATE_NAMES.get(state.lower(), '')
+
+
 def load_customers():
     data = read_json(customers_path(), {})
     if not isinstance(data, dict):
@@ -553,6 +582,17 @@ def load_customers():
             province = inferred_province(customer)
             if province:
                 customer['province'] = province
+                changed = True
+        if 'export_no_tax' not in customer:
+            identity = str(customer.get('id') or '').strip().lower()
+            name = str(customer.get('name') or '').strip().lower()
+            if identity == 'open-windows' or name in _EXPORT_NAMES:
+                customer['export_no_tax'] = True
+                changed = True
+        if customer.get('country') != 'Canada' and str(customer.get('us_state') or '').strip().upper() not in US_STATE_CODES:
+            state = inferred_us_state(customer)
+            if state:
+                customer['us_state'] = state
                 changed = True
     if changed:
         save_customers(data)

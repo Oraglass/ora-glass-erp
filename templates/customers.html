@@ -49,7 +49,7 @@ td.actions{width:11rem}
 </div>
 <p class="help" style="margin-top:8px">The tier on this page is the company default. On the Users page, set a different tier for an individual person when they should not use that default.</p>
 <table>
-<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Province</th><th>QBO tax code</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>State / Province</th><th>QBO tax code</th><th>Resale</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
 <tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
@@ -69,6 +69,10 @@ td.actions{width:11rem}
 <option value="United States">United States</option>
 <option value="Canada">Canada</option>
 </select>
+</div>
+<div class="form-group"><label for="c-us-state">State</label>
+<select id="c-us-state" aria-label="State"></select>
+<p class="help">Used for Ora Glass Inc sales tax. A state suggestion fills an empty QBO tax code.</p>
 </div>
 <div class="form-group"><label>Province</label>
 <select id="c-province" aria-label="Province">
@@ -120,6 +124,10 @@ td.actions{width:11rem}
 </div>
 <div class="form-row">
 <div class="form-group"><label>Status</label><select id="c-status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+<div class="form-group"><label><input type="checkbox" id="c-export"> Export / no tax</label>
+<p class="help">Invoices from Ora Glass Inc are never taxed. Open Windows is set this way. The intercompany invoice is always untaxed.</p>
+<p class="help" id="resale-link"></p>
+</div>
 <div class="form-group"><label><input type="checkbox" id="c-tax-exempt"> Tax exempt in Canada</label>
 <p class="help">Uses the exempt tax code. Choosing Exempt in QBO tax code does the same thing.</p>
 </div>
@@ -155,7 +163,7 @@ async function api(url, options) {
 }
 function render() {
   const tbody = document.getElementById('customer-list');
-  const cols = CAN_MANAGE ? 10 : 9;
+  const cols = CAN_MANAGE ? 11 : 10;
   if (!customers.length) {
     tbody.innerHTML = '<tr><td colspan="' + cols + '" style="text-align:center;color:#666">No customers</td></tr>';
     return;
@@ -164,7 +172,7 @@ function render() {
     const actions = CAN_MANAGE
       ? '<td class="actions"><div class="row-actions"><div class="row-actions-main"><button class="act act-primary" type="button" data-action="edit" data-id="' + esc(c.id) + '">Edit</button></div><button class="act act-danger" type="button" data-action="delete" data-id="' + esc(c.id) + '">Delete</button></div></td>'
       : '';
-    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.province || '—') + '</td><td>' + esc(taxLabel(c)) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
+    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.country === 'Canada' ? (c.province || '—') : (c.us_state || '—')) + '</td><td>' + esc(c.export_no_tax ? 'Export' : taxLabel(c)) + '</td><td>' + esc(c.resale_label || '—') + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
   }).join('');
 }
 async function loadCustomers() {
@@ -184,9 +192,13 @@ function openModal(customer) {
   document.getElementById('c-zip').value = customer ? (customer.zip || '') : '';
   document.getElementById('c-country').value = customer && customer.country === 'Canada' ? 'Canada' : 'United States';
   document.getElementById('c-province').value = customer && customer.province ? customer.province : '';
+  document.getElementById('c-us-state').value = customer && customer.us_state ? customer.us_state : '';
+  document.getElementById('c-export').checked = customer ? !!customer.export_no_tax : false;
   document.getElementById('c-tax-exempt').checked = customer ? !!customer.tax_exempt : false;
   fillTaxCodes(customer ? (customer.qbo_tax_code || '') : '');
   if (!customer || !customer.qbo_tax_code) suggestTaxCode();
+  const resale = document.getElementById('resale-link');
+  if (resale) resale.innerHTML = customer ? '<a href="/customers/' + encodeURIComponent(customer.id) + '/resale">Resale certificates</a>' : '';
   document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
   document.getElementById('c-email').value = customer ? (customer.email || '') : '';
   const knownTerms = ['Due on receipt', 'Net 15', 'Net 30', 'Net 45', 'Net 60', 'Custom'];
@@ -213,6 +225,8 @@ function payload() {
     zip: document.getElementById('c-zip').value,
     country: document.getElementById('c-country').value,
     province: document.getElementById('c-province').value,
+    us_state: document.getElementById('c-us-state').value,
+    export_no_tax: document.getElementById('c-export').checked,
     tax_exempt: document.getElementById('c-tax-exempt').checked,
     qbo_tax_code: document.getElementById('c-tax-code').value,
     phone: document.getElementById('c-phone').value,
@@ -237,11 +251,24 @@ document.getElementById('customer-list').addEventListener('click', (event) => {
 const addButton = document.getElementById('add-customer');
 if (addButton) addButton.addEventListener('click', () => openModal(null));
 let taxCodes = [];
+let usTaxCodes = [];
 let provinceTax = {};
+let stateTax = {};
 let exemptCode = '';
+let usStates = [];
+function activeTaxCodes() {
+  return document.getElementById('c-country').value === 'Canada' ? taxCodes : usTaxCodes;
+}
+function fillStateOptions() {
+  const select = document.getElementById('c-us-state');
+  const current = select.value;
+  select.innerHTML = '<option value="">No US state</option>' + usStates.map(row => '<option value="' + esc(row.code) + '">' + esc(row.code) + ' — ' + esc(row.name) + '</option>').join('');
+  select.value = current;
+}
 function fillTaxCodes(selected) {
   const select = document.getElementById('c-tax-code');
-  select.innerHTML = '<option value="">No tax code</option>' + taxCodes.map(code => '<option value="' + esc(code.id) + '">' + esc(code.name) + '</option>').join('');
+  const codes = activeTaxCodes();
+  select.innerHTML = '<option value="">No tax code</option>' + codes.map(code => '<option value="' + esc(code.id) + '">' + esc(code.name) + '</option>').join('');
   select.value = selected || '';
   if (selected && select.value !== String(selected)) {
     select.insertAdjacentHTML('beforeend', '<option value="' + esc(selected) + '">' + esc(selected) + '</option>');
@@ -250,13 +277,18 @@ function fillTaxCodes(selected) {
 }
 function suggestTaxCode() {
   const select = document.getElementById('c-tax-code');
-  if (select.value) return;
-  if (document.getElementById('c-tax-exempt').checked && exemptCode) {
-    select.value = exemptCode;
+  if (select.value || document.getElementById('c-export').checked) return;
+  if (document.getElementById('c-country').value === 'Canada') {
+    if (document.getElementById('c-tax-exempt').checked && exemptCode) {
+      select.value = exemptCode;
+      return;
+    }
+    const province = document.getElementById('c-province').value;
+    if (province && provinceTax[province]) select.value = provinceTax[province];
     return;
   }
-  const province = document.getElementById('c-province').value;
-  if (province && provinceTax[province]) select.value = provinceTax[province];
+  const state = document.getElementById('c-us-state').value;
+  if (state && stateTax[state]) select.value = stateTax[state];
 }
 function taxLabel(customer) {
   if (customer.tax_exempt) {
@@ -269,6 +301,12 @@ function taxLabel(customer) {
   return match ? match.name : (customer.qbo_tax_code_label || customer.qbo_tax_code);
 }
 document.getElementById('c-province').addEventListener('change', suggestTaxCode);
+document.getElementById('c-us-state').addEventListener('change', suggestTaxCode);
+document.getElementById('c-country').addEventListener('change', () => {
+  const selected = document.getElementById('c-tax-code').value;
+  fillTaxCodes(selected);
+  suggestTaxCode();
+});
 document.getElementById('c-tax-exempt').addEventListener('change', suggestTaxCode);
 document.getElementById('c-terms').addEventListener('change', () => {
   document.getElementById('c-terms-days').style.display = document.getElementById('c-terms').value === 'Custom' ? 'block' : 'none';
@@ -299,8 +337,12 @@ async function loadTaxCodes() {
   if (!res.ok) return;
   const data = await res.json().catch(() => ({}));
   taxCodes = data.tax_codes || [];
+  usTaxCodes = data.us_tax_codes || [];
   provinceTax = data.province_tax || {};
+  stateTax = data.state_tax || {};
   exemptCode = data.tax_exempt_code || '';
+  usStates = data.states || [];
+  fillStateOptions();
 }
 loadTaxCodes().then(loadCustomers);
 </script>

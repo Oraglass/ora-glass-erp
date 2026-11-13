@@ -52,6 +52,16 @@ function taxOptions(codes, selected) {
   html += (codes || []).map(code => '<option value="' + esc(code.id) + '"' + (String(code.id) === String(selected) ? ' selected' : '') + '>' + esc(code.name) + '</option>').join('');
   return html;
 }
+function stateTaxTable(card) {
+  const codes = card.tax_codes || [];
+  const mapping = card.state_tax || {};
+  const ast = card.automated_sales_tax
+    ? '<p class="note">Automated Sales Tax is on in this company. Taxable invoices are sent as TAX and untaxed invoices as NON, with the customer ship-to address.</p>'
+    : '<p class="note">Automated Sales Tax is off. Invoices use the tax code saved on the customer. Exports and a verified resale certificate are sent as NON.</p>';
+  const rows = (card.states || []).map(row => '<tr><td>' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td><select data-state-tax="' + esc(row.code) + '" aria-label="' + esc(row.name) + ' tax code">' + taxOptions(codes, mapping[row.code] || '') + '</select></td></tr>').join('');
+  return ast + '<h2>Suggested state tax codes</h2><p class="note">These defaults only fill an empty QBO tax code when a US customer\'s state is set. A verified, unexpired resale certificate, and Export / no tax, are invoiced with no tax.</p>'
+    + '<div style="max-height:320px;overflow:auto"><table id="state-tax"><thead><tr><th>Code</th><th>State</th><th>Suggested QuickBooks tax code</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
 function provinceTaxTable(card) {
   const codes = card.tax_codes || [];
   const mapping = card.province_tax || {};
@@ -79,7 +89,9 @@ function cardBody(card, status) {
       + '<p class="note">Last sync: ' + esc(card.last_sync || 'not yet') + '</p>'
       + '<p><button type="button" data-action="sync" data-connection="' + esc(key) + '">Sync now</button> <button type="button" class="secondary" data-action="disconnect" data-connection="' + esc(key) + '">Disconnect</button></p>';
   }
-  const taxChoice = key === 'ca' ? provinceTaxTable(card) : '<label>Tax code<input data-field="tax-code" value="' + esc(card.tax_code || 'NON') + '"></label>';
+  const taxChoice = key === 'ca'
+    ? provinceTaxTable(card)
+    : '<label>Non-taxable code<input data-field="tax-code" value="' + esc(card.tax_code || 'NON') + '"></label>';
   const extras = extrasText(card.extra_items);
   const log = card.log || [];
   const logHtml = log.length ? '<table><tbody>' + log.map(row => '<tr><td>' + esc(row.at) + '</td><td class="' + (row.level === 'error' ? 'error' : '') + '">' + esc(row.message) + '</td></tr>').join('') + '</tbody></table>' : 'No sync activity yet.';
@@ -87,9 +99,9 @@ function cardBody(card, status) {
   return '<div class="card" data-connection="' + esc(key) + '"><h2>' + esc(card.label) + '</h2>' + head
     + '<h2>Item mapping</h2><p class="note">' + (key === 'ca'
       ? 'Invoice lines use the QuickBooks item below. Canadian invoices use the tax code saved on the customer. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.'
-      : 'Invoice lines use the QuickBooks item below. Tax defaults to NON. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
+      : 'Invoice lines use the QuickBooks item below. US invoices use the tax code saved on the customer. Exports and a verified resale certificate are not taxed. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
     + '<div class="row"><label>Default item<input data-field="default-item" value="' + esc(card.default_item || 'Insulated Glass Units') + '"></label>' + (key === 'ca' ? '' : taxChoice) + '</div>'
-    + (key === 'ca' ? taxChoice : '')
+    + (key === 'ca' ? taxChoice : stateTaxTable(card))
     + '<label style="margin-top:8px">Extra charge items<textarea data-field="extra-items" rows="4" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px">' + esc(extras) + '</textarea></label>'
     + '<p><button type="button" data-action="save-mapping" data-connection="' + esc(key) + '">Save mapping</button></p>'
     + intercompany
@@ -151,6 +163,11 @@ document.getElementById('connections').addEventListener('click', async (event) =
         else provinceTax[code] = select.value;
       });
       if (card.querySelector('[data-tax]')) body.province_tax = provinceTax;
+      const stateTax = {};
+      card.querySelectorAll('[data-state-tax]').forEach(select => {
+        stateTax[select.getAttribute('data-state-tax')] = select.value;
+      });
+      if (card.querySelector('[data-state-tax]')) body.state_tax = stateTax;
       render(await api('/api/quickbooks/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}));
     }
     if (action === 'preview') {

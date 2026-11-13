@@ -21,6 +21,7 @@ from storage import (
     atomic_write_json,
     data_dir,
     PROVINCES,
+    US_STATES,
     load_customers,
     load_invoices,
     load_payments,
@@ -460,7 +461,10 @@ def _card(key, label, currency):
             'tax_code': settings.get('tax_code') or DEFAULT_TAX,
             'province_tax': dict(settings.get('province_tax') or {}),
             'tax_exempt_code': settings.get('tax_exempt_code') or '',
-            'tax_codes': _tax_code_choices(settings) if key == 'ca' else [],
+            'tax_codes': _tax_code_choices(settings),
+            'automated_sales_tax': detect_automated_sales_tax(settings) if key == 'us' else False,
+            'state_tax': dict(settings.get('state_tax') or {}) if key == 'us' else {},
+            'states': [{'code': code, 'name': name} for code, name in US_STATES] if key == 'us' else [],
             'provinces': [
                 {'code': code, 'name': name, 'regime': regime}
                 for code, name, regime in PROVINCES
@@ -1117,6 +1121,25 @@ def _tax_code_choices(settings):
     return choices
 
 
+def detect_automated_sales_tax(settings=None):
+    """US Automated Sales Tax is Preferences.TaxPrefs.PartnerTaxEnabled. Read-only."""
+    settings = settings if settings is not None else load_settings()
+    if not connected():
+        return bool(settings.get('automated_sales_tax'))
+    try:
+        rows = query('select * from Preferences')
+    except QuickBooksError as exc:
+        log('error', f'Could not read QuickBooks tax preferences. {exc}')
+        return bool(settings.get('automated_sales_tax'))
+    prefs = rows[0] if rows else {}
+    enabled = bool((prefs.get('TaxPrefs') or {}).get('PartnerTaxEnabled'))
+    if bool(settings.get('automated_sales_tax')) != enabled:
+        fresh = load_settings()
+        fresh['automated_sales_tax'] = enabled
+        save_settings(fresh)
+    return enabled
+
+
 def suggested_tax_code(province, tax_exempt=False):
     """Province defaults on the Canada card are suggestions. They are not used at posting time."""
     with connection_scope('ca'):
@@ -1126,30 +1149,52 @@ def suggested_tax_code(province, tax_exempt=False):
     return str((settings.get('province_tax') or {}).get(province or '') or '').strip()
 
 
-def canada_tax_choices():
-    """Tax codes from the Canada company, plus the suggestion table. Read-only."""
-    with connection_scope('ca'):
+def suggested_us_tax_code(state):
+    """State defaults on the US card are suggestions. They are not used at posting time."""
+    with connection_scope('us'):
+        settings = load_settings()
+    return str((settings.get('state_tax') or {}).get(state or '') or '').strip()
+
+
+def _choices_for(key):
+    with connection_scope(key):
         settings = load_settings()
         try:
             codes = _tax_code_choices(settings)
         except QuickBooksError:
             codes = list(settings.get('tax_code_choices') or [])
         fresh = load_settings()
+    return codes, fresh
+
+
+def canada_tax_choices():
+    """Tax codes from both companies, plus the suggestion tables. Read-only."""
+    ca_codes, ca_settings = _choices_for('ca')
+    us_codes, us_settings = _choices_for('us')
+    with connection_scope('us'):
+        ast = detect_automated_sales_tax(load_settings())
     return {
-        'tax_codes': codes,
-        'province_tax': dict(fresh.get('province_tax') or {}),
-        'tax_exempt_code': fresh.get('tax_exempt_code') or '',
+        'tax_codes': ca_codes,
+        'province_tax': dict(ca_settings.get('province_tax') or {}),
+        'tax_exempt_code': ca_settings.get('tax_exempt_code') or '',
+        'us_tax_codes': us_codes,
+        'state_tax': dict(us_settings.get('state_tax') or {}),
+        'states': [{'code': code, 'name': name} for code, name in US_STATES],
+        'automated_sales_tax': ast,
     }
 
 
 def tax_code_name(code_id):
     if not code_id:
         return ''
-    with connection_scope('ca'):
-        choices = load_settings().get('tax_code_choices') or []
-    for row in choices:
-        if str(row.get('id')) == str(code_id):
-            return row.get('name') or str(code_id)
+    for key in ('ca', 'us'):
+        with connection_scope(key):
+            choices = load_settings().get('tax_code_choices') or []
+        for row in choices:
+            if str(row.get('id')) == str(code_id):
+                return row.get('name') or str(code_id)
+    if str(code_id).upper() in {'TAX', 'NON'}:
+        return str(code_id).upper()
     return str(code_id)
 
 
@@ -1174,6 +1219,42 @@ def canada_tax_code(customer):
         f'{name} has no QuickBooks tax code. Set QBO tax code on the customer. '
         'The invoice was kept in the ERP and was not posted.'
     )
+
+
+def _customer_is_export(customer):
+    if not isinstance(customer, dict):
+        return False
+    if customer.get('books_entity') == 'ca':
+        return True
+    return bool(customer.get('export_no_tax'))
+
+
+def us_invoice_tax(customer):
+    """Tax code for an Ora Glass Inc invoice, and whether Automated Sales Tax needs a ship-to address."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import resale
+    customer = customer or {}
+    name = customer.get('name') or 'This customer'
+    today = datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    ast = detect_automated_sales_tax()
+    untaxed = _customer_is_export(customer) or resale.resale_covers_tax(customer, today)
+    if untaxed:
+        return 'NON', '', ast
+    code = str(customer.get('qbo_tax_code') or '').strip()
+    if not code:
+        return '', (
+            f'{name} is taxable and has no QuickBooks tax code. '
+            'Add a verified resale certificate or set QBO tax code on the customer. '
+            'The invoice was kept in the ERP and was not posted.'
+        ), ast
+    if ast:
+        label = tax_code_name(code).upper()
+        if code.upper() == 'NON' or label == 'NON':
+            return 'NON', '', True
+        return 'TAX', '', True
+    return code, '', False
 
 
 def _stamp_invoice_warning(invoice, message):
@@ -1341,9 +1422,16 @@ def push_document(invoice):
     if find_link(kind, erp_id=invoice.get('id')):
         return None
     tax_code = None
+    ship_to = False
+    selling = load_customers().get(invoice.get('customer_id') or '') or {}
     if _connection_key() == 'ca':
-        selling = load_customers().get(invoice.get('customer_id') or '') or {}
         tax_code, warning = canada_tax_code(selling)
+        if warning:
+            _stamp_invoice_warning(invoice, warning)
+            log('error', warning)
+            return None
+    elif _connection_key() == 'us':
+        tax_code, warning, ship_to = us_invoice_tax(selling)
         if warning:
             _stamp_invoice_warning(invoice, warning)
             log('error', warning)
@@ -1372,6 +1460,14 @@ def push_document(invoice):
     if kind == 'invoice' and invoice.get('due_date'):
         payload['DueDate'] = invoice['due_date']
     customer = load_customers().get(invoice.get('customer_id') or '') or {}
+    if ship_to:
+        payload['ShipAddr'] = {
+            'Line1': customer.get('address') or '',
+            'City': customer.get('city') or '',
+            'CountrySubDivisionCode': customer.get('us_state') or customer.get('state') or '',
+            'PostalCode': customer.get('zip') or '',
+            'Country': 'USA',
+        }
     term = _term_ref(invoice.get('payment_terms') or customer.get('payment_terms') or 'Net 30')
     if term:
         payload['SalesTermRef'] = term

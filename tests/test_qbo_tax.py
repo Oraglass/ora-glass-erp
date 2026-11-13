@@ -204,6 +204,10 @@ def test_customer_tax_code_is_suggested_then_used_on_the_canada_invoice(client, 
         assert exempt_body['Line'][0]['SalesItemLineDetail']['TaxCodeRef']['value'] == '9'
 
         write_user('lee@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor Glass')
+        customers = load_customers()
+        customers['harbor']['country'] = 'United States'
+        customers['harbor']['qbo_tax_code'] = 'NON'
+        save_customers(customers)
         us_invoice = client.post('/api/invoices', json={
             'customer_id': 'harbor',
             'lines': [{'description': 'US glass', 'qty': 1, 'unit_price': 40}],
