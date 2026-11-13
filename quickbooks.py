@@ -10,6 +10,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 from billing import TERM_DAYS, invoice_balance, invoice_status, money
@@ -41,6 +43,13 @@ TRANSPORT = None
 SLEEP = time.sleep
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRY_DELAYS = (1, 2, 4)
+US_REALM = '9341456057091137'
+CANADA_COMPANY_NAME = 'Ora Glass (Canada) Inc'
+CONNECTIONS = (
+    ('us', 'Ora Glass Inc', 'usd'),
+    ('ca', 'Ora Glass (Canada) Inc', 'cad'),
+)
+_CURRENT = ContextVar('qbo_connection', default='us')
 
 
 class QuickBooksError(Exception):
@@ -91,13 +100,64 @@ def api_host():
     return 'https://sandbox-quickbooks.api.intuit.com'
 
 
+def _connection_key():
+    return _CURRENT.get() or 'us'
+
+
+@contextmanager
+def connection_scope(key):
+    token = _CURRENT.set(key if key in {'us', 'ca'} else 'us')
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
+def _read_token_store():
+    raw = _load('qbo_tokens.json', {})
+    if not isinstance(raw, dict):
+        raw = {}
+    connections = raw.get('connections')
+    if isinstance(connections, dict):
+        return raw
+    if raw.get('refresh_token') or raw.get('realm_id'):
+        legacy = dict(raw)
+        legacy.pop('connections', None)
+        raw = {'connections': {'us': legacy}}
+        _save('qbo_tokens.json', raw)
+    else:
+        raw = {'connections': {}}
+    return raw
+
+
 def load_tokens():
-    data = _load('qbo_tokens.json', {})
-    return data if isinstance(data, dict) else {}
+    store = _read_token_store()
+    row = (store.get('connections') or {}).get(_connection_key()) or {}
+    return dict(row) if isinstance(row, dict) else {}
 
 
 def save_tokens(tokens):
-    _save('qbo_tokens.json', tokens)
+    store = _read_token_store()
+    connections = store.setdefault('connections', {})
+    key = _connection_key()
+    if tokens:
+        connections[key] = dict(tokens)
+    else:
+        connections.pop(key, None)
+    _save('qbo_tokens.json', store)
+
+
+def connection_for_realm(realm_id):
+    realm_id = str(realm_id or '')
+    if not realm_id:
+        return None
+    if realm_id == US_REALM:
+        return 'us'
+    store = _read_token_store()
+    for key, row in (store.get('connections') or {}).items():
+        if isinstance(row, dict) and str(row.get('realm_id') or '') == realm_id:
+            return key
+    return None
 
 
 def disconnect():
@@ -105,7 +165,7 @@ def disconnect():
     settings = load_settings()
     settings['connection_expired'] = False
     save_settings(settings)
-    log('info', 'Disconnected from QuickBooks.')
+    log('info', f'Disconnected {_connection_key()} from QuickBooks.')
 
 
 def mark_connection_expired(detail):
@@ -123,10 +183,23 @@ def connection_expired():
     return bool(settings.get('connection_expired')) and not tokens.get('refresh_token')
 
 
+def _read_settings_store():
+    raw = _load('qbo_settings.json', {})
+    if not isinstance(raw, dict):
+        raw = {}
+    if isinstance(raw.get('connections'), dict):
+        return raw
+    if raw:
+        raw = {'connections': {'us': raw}}
+        _save('qbo_settings.json', raw)
+    else:
+        raw = {'connections': {}}
+    return raw
+
+
 def load_settings():
-    data = _load('qbo_settings.json', {})
-    if not isinstance(data, dict):
-        data = {}
+    store = _read_settings_store()
+    data = dict((store.get('connections') or {}).get(_connection_key()) or {})
     data.setdefault('default_item', DEFAULT_ITEM)
     data.setdefault('tax_code', DEFAULT_TAX)
     data.setdefault('extra_items', {})
@@ -134,7 +207,9 @@ def load_settings():
 
 
 def save_settings(settings):
-    _save('qbo_settings.json', settings)
+    store = _read_settings_store()
+    store.setdefault('connections', {})[_connection_key()] = settings
+    _save('qbo_settings.json', store)
 
 
 def load_links():
@@ -153,15 +228,159 @@ def load_log():
 
 def log(level, message):
     rows = load_log()
-    rows.append({
+    entry = {
         'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         'level': level,
         'message': message,
-    })
+        'connection': _connection_key(),
+    }
+    rows.append(entry)
     _save('qbo_log.json', rows[-200:])
     settings = load_settings()
-    settings['last_sync'] = rows[-1]['at']
+    local = list(settings.get('log') or [])
+    local.append(entry)
+    settings['log'] = local[-50:]
+    settings['last_sync'] = entry['at']
     save_settings(settings)
+
+
+CANADA_PROVINCES = {'AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'}
+FX_FETCH = None
+
+
+def is_canadian(customer):
+    """A selling customer in Canada. The Canada books company itself is not one."""
+    if not isinstance(customer, dict) or customer.get('books_entity'):
+        return False
+    country = str(customer.get('country') or '').strip().lower()
+    if country in {'canada', 'ca'}:
+        return True
+    if country in {'united states', 'usa', 'us', 'united states of america'}:
+        return False
+    blob = ' '.join([
+        str(customer.get('address') or ''),
+        str(customer.get('city') or ''),
+        str(customer.get('state') or ''),
+    ]).lower()
+    if 'canada' in blob:
+        return True
+    return str(customer.get('state') or '').strip().upper() in CANADA_PROVINCES
+
+
+def _payment_connection(payment):
+    invoices = {row.get('id'): row for row in load_invoices()}
+    for allocation in (payment or {}).get('allocations') or []:
+        if allocation.get('target_type') != 'invoice':
+            continue
+        invoice = invoices.get(allocation.get('target_id'))
+        if invoice and invoice.get('issuer'):
+            return invoice.get('issuer')
+    if str((payment or {}).get('currency') or '').lower() == 'cad':
+        return 'ca'
+    return 'us'
+
+
+def fetch_fx_rate(day):
+    """CAD per 1 USD from the Bank of Canada. Uses the latest business day on or before day."""
+    if isinstance(day, datetime):
+        day = day.date()
+    start = day - timedelta(days=14)
+    url = (
+        'https://www.bankofcanada.ca/valet/observations/FXUSDCAD/json'
+        f'?start_date={start.isoformat()}&end_date={day.isoformat()}'
+    )
+    if FX_FETCH is not None:
+        data = FX_FETCH(url)
+    else:
+        request = urllib.request.Request(url, headers={'Accept': 'application/json'}, method='GET')
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = json.loads(response.read().decode() or '{}')
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise QuickBooksError('Bank of Canada did not return an exchange rate.') from exc
+    usable = [
+        row for row in (data.get('observations') or [])
+        if (row.get('FXUSDCAD') or {}).get('v')
+    ]
+    if not usable:
+        raise QuickBooksError('No Bank of Canada USD/CAD rate is available.')
+    last = usable[-1]
+    return float(last['FXUSDCAD']['v']), last.get('d') or day.isoformat()
+
+
+def cad_to_usd(amount, rate):
+    if not rate:
+        raise QuickBooksError('Exchange rate must be greater than zero.')
+    return round(float(amount) / float(rate), 2)
+
+
+def match_intercompany_customer():
+    """Find Ora Glass (Canada) Inc in the US QuickBooks company. Never creates or deletes it."""
+    with connection_scope('us'):
+        if not connected():
+            return ''
+        settings = load_settings()
+        if settings.get('intercompany_qbo_id'):
+            return str(settings['intercompany_qbo_id'])
+        safe = CANADA_COMPANY_NAME.replace("'", "\\'")
+        found = query(f"select * from Customer where DisplayName = '{safe}'")
+        if not found:
+            log('error', 'Ora Glass (Canada) Inc is not a customer in the US QuickBooks company yet.')
+            return ''
+        qbo_id = str(found[0].get('Id'))
+        settings = load_settings()
+        settings['intercompany_qbo_id'] = qbo_id
+        save_settings(settings)
+        return qbo_id
+
+
+def remember_intercompany_customer(qbo_id):
+    qbo_id = str(qbo_id or '').strip()
+    if not qbo_id:
+        raise QuickBooksError('Enter the QuickBooks customer id for Ora Glass (Canada) Inc.')
+    with connection_scope('us'):
+        settings = load_settings()
+        settings['intercompany_qbo_id'] = qbo_id
+        save_settings(settings)
+        log('info', f'Matched Ora Glass (Canada) Inc to QuickBooks customer {qbo_id}.')
+    return qbo_id
+
+
+def create_intercompany_customer():
+    """Create the Canada company as a customer of the US QuickBooks company. Admin action only."""
+    with connection_scope('us'):
+        if not connected():
+            raise QuickBooksError('The US QuickBooks company is not connected.')
+        settings = load_settings()
+        if settings.get('intercompany_qbo_id'):
+            return str(settings['intercompany_qbo_id'])
+        safe = CANADA_COMPANY_NAME.replace("'", "\\'")
+        found = query(f"select * from Customer where DisplayName = '{safe}'")
+        if found:
+            qbo_id = str(found[0].get('Id'))
+        else:
+            data = _post_entity('customer', {
+                'DisplayName': CANADA_COMPANY_NAME,
+                'CompanyName': CANADA_COMPANY_NAME,
+                'CurrencyRef': {'value': 'USD'},
+            })
+            remote = data.get('Customer') or {}
+            qbo_id = str(remote.get('Id') or '')
+            if not qbo_id:
+                raise QuickBooksError('QuickBooks did not return the new customer.')
+            log('info', 'Created Ora Glass (Canada) Inc as a customer in the US QuickBooks company.')
+        settings = load_settings()
+        settings['intercompany_qbo_id'] = qbo_id
+        save_settings(settings)
+        return qbo_id
+
+
+def any_connection_expired():
+    for key, _label, _currency in CONNECTIONS:
+        with connection_scope(key):
+            if connection_expired():
+                return True
+    return False
 
 
 def connected():
@@ -169,9 +388,20 @@ def connected():
     return bool(tokens.get('refresh_token') and tokens.get('realm_id') and not configured())
 
 
+def any_connected():
+    for key, _label, _currency in CONNECTIONS:
+        with connection_scope(key):
+            if connected():
+                return True
+    return False
+
+
 def find_link(kind, erp_id=None, qbo_id=None):
+    key = _connection_key()
     for row in load_links():
         if row.get('kind') != kind:
+            continue
+        if (row.get('connection') or 'us') != key:
             continue
         if erp_id is not None and str(row.get('erp_id')) == str(erp_id):
             return row
@@ -181,17 +411,22 @@ def find_link(kind, erp_id=None, qbo_id=None):
 
 
 def upsert_link(kind, erp_id, qbo_id, sync_token, origin):
+    key = _connection_key()
     rows = load_links()
     for row in rows:
-        if row.get('kind') == kind and (str(row.get('erp_id')) == str(erp_id) or str(row.get('qbo_id')) == str(qbo_id)):
+        if row.get('kind') != kind or (row.get('connection') or 'us') != key:
+            continue
+        if str(row.get('erp_id')) == str(erp_id) or str(row.get('qbo_id')) == str(qbo_id):
             row['erp_id'] = str(erp_id)
             row['qbo_id'] = str(qbo_id)
             row['sync_token'] = str(sync_token or '0')
             row['origin'] = origin or row.get('origin') or 'erp'
+            row['connection'] = key
             save_links(rows)
             return row
     record = {
         'kind': kind,
+        'connection': key,
         'erp_id': str(erp_id),
         'qbo_id': str(qbo_id),
         'sync_token': str(sync_token or '0'),
@@ -202,25 +437,42 @@ def upsert_link(kind, erp_id, qbo_id, sync_token, origin):
     return record
 
 
+def _card(key, label, currency):
+    with connection_scope(key):
+        tokens = load_tokens()
+        settings = load_settings()
+        missing = configured()
+        return {
+            'key': key,
+            'label': label,
+            'currency': currency,
+            'connected': bool(tokens.get('refresh_token') and tokens.get('realm_id') and not missing),
+            'company_name': tokens.get('company_name') or '',
+            'realm_id': tokens.get('realm_id') or '',
+            'environment': environment(),
+            'last_sync': settings.get('last_sync') or '',
+            'last_cdc': settings.get('last_cdc') or '',
+            'default_item': settings.get('default_item') or DEFAULT_ITEM,
+            'tax_code': settings.get('tax_code') or DEFAULT_TAX,
+            'extra_items': settings.get('extra_items') or {},
+            'connection_expired': connection_expired(),
+            'intercompany_qbo_id': settings.get('intercompany_qbo_id') or '',
+            'log': list(reversed((settings.get('log') or load_log())[-20:])),
+        }
+
+
 def status_view():
-    tokens = load_tokens()
-    settings = load_settings()
     missing = configured()
-    return {
+    cards = [_card(key, label, currency) for key, label, currency in CONNECTIONS]
+    us = next(card for card in cards if card['key'] == 'us')
+    view = dict(us)
+    view.update({
         'configured': not missing,
         'missing': missing,
-        'connected': bool(tokens.get('refresh_token') and tokens.get('realm_id') and not missing),
-        'company_name': tokens.get('company_name') or '',
-        'realm_id': tokens.get('realm_id') or '',
-        'environment': environment(),
-        'last_sync': settings.get('last_sync') or '',
-        'last_cdc': settings.get('last_cdc') or '',
-        'default_item': settings.get('default_item') or DEFAULT_ITEM,
-        'tax_code': settings.get('tax_code') or DEFAULT_TAX,
-        'extra_items': settings.get('extra_items') or {},
-        'connection_expired': connection_expired(),
-        'log': list(reversed(load_log()[-50:])),
-    }
+        'connections': cards,
+        'connection_expired': any(card['connection_expired'] for card in cards),
+    })
+    return view
 
 
 def authorize_url(state):
@@ -487,7 +739,7 @@ def preview_import():
     preview = []
     for row in rows:
         customer_id, reason = suggest_match(row, customers)
-        currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
+        currency = str((row.get('CurrencyRef') or {}).get('value') or ('CAD' if _connection_key() == 'ca' else 'USD')).lower()
         preview.append({
             'qbo_id': str(row.get('Id')),
             'name': row.get('DisplayName') or '',
@@ -499,13 +751,13 @@ def preview_import():
             'match_reason': reason,
             'action': 'link' if customer_id else 'create',
         })
-    _save('qbo_import_preview.json', preview)
+    _save(f'qbo_import_preview_{_connection_key()}.json', preview)
     log('info', f'Prepared an import of {len(preview)} QuickBooks customers.')
     return preview
 
 
 def _customer_from_qbo(row, customer_id, tier='T2'):
-    currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
+    currency = str((row.get('CurrencyRef') or {}).get('value') or ('CAD' if _connection_key() == 'ca' else 'USD')).lower()
     if currency not in {'usd', 'cad'}:
         currency = 'usd'
     address = row.get('BillAddr') or {}
@@ -522,6 +774,7 @@ def _customer_from_qbo(row, customer_id, tier='T2'):
         'zip': address.get('PostalCode') or '',
         'phone': ((row.get('PrimaryPhone') or {}).get('FreeFormNumber')) or '',
         'email': ((row.get('PrimaryEmailAddr') or {}).get('Address')) or '',
+        'country': 'Canada' if _connection_key() == 'ca' else 'United States',
         'credit_approved': False,
         'credit_limit': 0,
         'credit_currency': currency,
@@ -536,7 +789,7 @@ def _customer_from_qbo(row, customer_id, tier='T2'):
 
 def apply_import(decisions):
     """decisions: {qbo_id: {action: link|create|skip, customer_id?}}"""
-    preview = _load('qbo_import_preview.json', [])
+    preview = _load(f'qbo_import_preview_{_connection_key()}.json', [])
     if not isinstance(preview, list) or not preview:
         raise QuickBooksError('Review the QuickBooks customers before applying them.')
     by_id = {str(row.get('qbo_id')): row for row in preview}
@@ -665,6 +918,7 @@ def _ingest_invoice(row):
         'doc_type': 'invoice',
         'source': 'quickbooks',
         'qbo_origin': True,
+        'issuer': _connection_key(),
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
         'project': row.get('DocNumber') or '',
@@ -705,6 +959,7 @@ def _ingest_credit(row):
         'doc_type': 'credit_note',
         'source': 'quickbooks',
         'qbo_origin': True,
+        'issuer': _connection_key(),
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
         'currency': currency if currency in {'usd', 'cad'} else 'usd',
@@ -858,10 +1113,14 @@ def _document_lines(invoice):
 
 
 def push_customer(customer_id):
+    customers = load_customers()
+    customer = customers.get(customer_id) or {}
+    key = 'ca' if is_canadian(customer) else 'us'
+    if _connection_key() != key:
+        with connection_scope(key):
+            return push_customer(customer_id)
     if not connected():
         return None
-    customers = load_customers()
-    customer = customers.get(customer_id)
     if not customer:
         return None
     existing = find_link('customer', erp_id=customer_id)
@@ -948,6 +1207,10 @@ def _post_entity(entity, payload):
 
 
 def push_document(invoice):
+    key = (invoice or {}).get('issuer') or 'us'
+    if _connection_key() != key:
+        with connection_scope(key):
+            return push_document(invoice)
     if not connected() or not invoice or invoice.get('qbo_origin') or invoice.get('source') == 'quickbooks':
         return None
     kind = 'credit' if invoice.get('doc_type') == 'credit_note' else 'invoice'
@@ -955,7 +1218,14 @@ def push_document(invoice):
     response_key = 'CreditMemo' if kind == 'credit' else 'Invoice'
     if find_link(kind, erp_id=invoice.get('id')):
         return None
-    customer_link = find_link('customer', erp_id=invoice.get('customer_id'))
+    books_customer = load_customers().get(invoice.get('customer_id') or '') or {}
+    if books_customer.get('books_entity') == 'ca':
+        qbo_id = match_intercompany_customer()
+        if not qbo_id:
+            return None
+        customer_link = {'qbo_id': qbo_id}
+    else:
+        customer_link = find_link('customer', erp_id=invoice.get('customer_id'))
     if not customer_link:
         push_customer(invoice.get('customer_id'))
         customer_link = find_link('customer', erp_id=invoice.get('customer_id'))
@@ -993,6 +1263,10 @@ def push_document_id(invoice_id):
 
 
 def void_document(invoice):
+    key = (invoice or {}).get('issuer') or 'us'
+    if _connection_key() != key:
+        with connection_scope(key):
+            return void_document(invoice)
     if not connected() or not invoice:
         return None
     kind = 'credit' if invoice.get('doc_type') == 'credit_note' else 'invoice'
@@ -1010,6 +1284,10 @@ def void_document(invoice):
 
 
 def push_payment(payment):
+    key = _payment_connection(payment)
+    if _connection_key() != key:
+        with connection_scope(key):
+            return push_payment(payment)
     if not connected() or not payment or payment.get('qbo_origin') or payment.get('voided'):
         return None
     if payment.get('method') == 'credit_note':
@@ -1097,6 +1375,10 @@ def _push_credit_application(payment):
 
 
 def void_payment(payment):
+    key = _payment_connection(payment)
+    if _connection_key() != key:
+        with connection_scope(key):
+            return void_payment(payment)
     if not connected() or not payment:
         return None
     link = find_link('payment', erp_id=payment.get('id'))
@@ -1121,13 +1403,14 @@ def verify_webhook(payload, signature):
 
 def handle_webhook(payload):
     body = json.loads(payload.decode() or '{}')
-    realm = (load_tokens().get('realm_id') or '')
     for note in body.get('eventNotifications') or []:
-        if realm and str(note.get('realmId')) != str(realm):
-            log('error', 'Ignored a QuickBooks webhook for a different company.')
+        key = connection_for_realm(note.get('realmId'))
+        if not key:
+            log('error', f"Ignored a QuickBooks webhook for realm {note.get('realmId')}.")
             continue
-        for entity in ((note.get('dataChangeEvent') or {}).get('entities') or []):
-            _handle_event(entity.get('name'), str(entity.get('id') or ''), entity.get('operation') or 'Create')
+        with connection_scope(key):
+            for entity in ((note.get('dataChangeEvent') or {}).get('entities') or []):
+                _handle_event(entity.get('name'), str(entity.get('id') or ''), entity.get('operation') or 'Create')
     return {'ok': True}
 
 
@@ -1242,17 +1525,21 @@ def poll_cdc():
 
 
 def maybe_poll():
-    if os.environ.get('APP_ENV') == 'test' or not connected():
+    if os.environ.get('APP_ENV') == 'test':
         return
-    settings = load_settings()
-    last = settings.get('last_cdc_epoch') or 0
-    if time.time() - float(last) < CDC_INTERVAL:
-        return
-    try:
-        poll_cdc()
-    except QuickBooksError as exc:
-        log('error', f'QuickBooks change poll failed: {exc}')
-    finally:
-        settings = load_settings()
-        settings['last_cdc_epoch'] = time.time()
-        save_settings(settings)
+    for key, _label, _currency in CONNECTIONS:
+        with connection_scope(key):
+            if not connected():
+                continue
+            settings = load_settings()
+            last = settings.get('last_cdc_epoch') or 0
+            if time.time() - float(last) < CDC_INTERVAL:
+                continue
+            try:
+                poll_cdc()
+            except QuickBooksError as exc:
+                log('error', f'QuickBooks change poll failed: {exc}')
+            finally:
+                settings = load_settings()
+                settings['last_cdc_epoch'] = time.time()
+                save_settings(settings)

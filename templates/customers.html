@@ -64,6 +64,12 @@ td.actions{width:11rem}
 <div class="form-group"><label>City</label><input type="text" id="c-city"></div>
 <div class="form-group"><label>State / Province</label><input type="text" id="c-state"></div>
 <div class="form-group"><label>Postal code</label><input type="text" id="c-zip"></div>
+<div class="form-group"><label>Country</label>
+<select id="c-country">
+<option value="United States">United States</option>
+<option value="Canada">Canada</option>
+</select>
+</div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>Phone</label><input type="text" id="c-phone"></div>
@@ -151,6 +157,7 @@ function openModal(customer) {
   document.getElementById('c-city').value = customer ? (customer.city || '') : '';
   document.getElementById('c-state').value = customer ? (customer.state || '') : '';
   document.getElementById('c-zip').value = customer ? (customer.zip || '') : '';
+  document.getElementById('c-country').value = customer && customer.country === 'Canada' ? 'Canada' : 'United States';
   document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
   document.getElementById('c-email').value = customer ? (customer.email || '') : '';
   const knownTerms = ['Due on receipt', 'Net 15', 'Net 30', 'Net 45', 'Net 60', 'Custom'];
@@ -175,6 +182,7 @@ function payload() {
     city: document.getElementById('c-city').value,
     state: document.getElementById('c-state').value,
     zip: document.getElementById('c-zip').value,
+    country: document.getElementById('c-country').value,
     phone: document.getElementById('c-phone').value,
     email: document.getElementById('c-email').value,
     payment_terms: document.getElementById('c-terms').value,
