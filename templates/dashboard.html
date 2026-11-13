@@ -42,6 +42,22 @@
             This notice stays in the app. No email is sent.
         </div>
         {% endif %}
+        {% for warning in resale_warnings %}
+        <div class="import-notice">
+            {{ warning.text }}
+            {% if user.role == 'customer' %}
+            <a href="{{ url_for('company_page') }}">View certificate</a>
+            {% else %}
+            <a href="{{ url_for('customer_resale_page', cid=warning.customer_id) }}">Review certificate</a>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% if user.role == 'customer' %}
+        <div class="import-notice">
+            <a href="{{ url_for('company_page') }}">Resale certificate</a>
+            Upload or review your company's certificate.
+        </div>
+        {% endif %}
         {% if qbo_expired %}
         <div class="import-notice" id="qbo-expired">
             QuickBooks connection expired - Reconnect

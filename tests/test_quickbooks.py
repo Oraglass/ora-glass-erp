@@ -6,7 +6,7 @@ import urllib.parse
 
 import quickbooks
 from billing import invoice_balance
-from storage import load_customers, load_invoices, load_payments
+from storage import load_customers, load_invoices, load_payments, save_customers
 from tests.conftest import login, write_user
 
 
@@ -173,6 +173,10 @@ def test_erp_invoice_payment_and_credit_note_are_pushed_once(client, monkeypatch
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     write_user('lee@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor Glass')
+    customers = load_customers()
+    customers['harbor']['country'] = 'United States'
+    customers['harbor']['qbo_tax_code'] = 'NON'
+    save_customers(customers)
     assert login(client, 'admin@oraglass.us').status_code == 302
     fake = FakeQBO()
     try:

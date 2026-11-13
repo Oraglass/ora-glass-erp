@@ -18,6 +18,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 .num{text-align:right}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:6px}
+.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.unpaid{background:#fff3cd;color:#856404}
 .badge.partial{background:#e7f1ff;color:#1d4ed8}
@@ -190,6 +191,7 @@ function renderDetail(invoice) {
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
     + '<p class="note">' + esc(invoice.issuer_label || '') + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + '</p>'
     + fxLine + fxForm
+    + (invoice.qbo_warning ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'

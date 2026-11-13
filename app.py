@@ -589,6 +589,21 @@ def tier_label(tier, tiers=None):
     return (tiers.get(tier) or {}).get('label') or tier
 
 
+def _resale_label(customer):
+    import resale
+    return resale.resale_label(customer)
+
+
+def _qbo_tax_label(customer):
+    if customer.get('tax_exempt'):
+        import quickbooks
+        exempt = quickbooks.suggested_tax_code('', tax_exempt=True)
+        name = quickbooks.tax_code_name(exempt or customer.get('qbo_tax_code'))
+        return name or 'Tax exempt'
+    import quickbooks
+    return quickbooks.tax_code_name(customer.get('qbo_tax_code'))
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -599,6 +614,13 @@ def public_customer(customer_id, customer, tiers, user_count):
         'state': customer.get('state') or '',
         'zip': customer.get('zip') or '',
         'country': customer.get('country') or 'United States',
+        'province': customer.get('province') or '',
+        'tax_exempt': bool(customer.get('tax_exempt')),
+        'qbo_tax_code': customer.get('qbo_tax_code') or '',
+        'qbo_tax_code_label': _qbo_tax_label(customer),
+        'us_state': customer.get('us_state') or '',
+        'export_no_tax': bool(customer.get('export_no_tax')),
+        'resale_label': _resale_label(customer),
         'phone': customer.get('phone') or '',
         'email': customer.get('email') or '',
         'credit_approved': bool(customer.get('credit_approved')),
@@ -867,6 +889,33 @@ def apply_customer_fields(customer, data, tiers, creating):
         elif lowered in {'', 'us', 'usa', 'united states', 'united states of america'}:
             country = 'United States'
         customer['country'] = country
+    if creating or 'province' in data or 'state' in data or 'zip' in data or 'address' in data or 'country' in data:
+        from storage import PROVINCE_CODES, US_STATE_CODES, inferred_province, inferred_us_state
+        chosen = clean_text(data.get('province') if 'province' in data else customer.get('province'), 8).upper()
+        if chosen not in PROVINCE_CODES and customer.get('country') == 'Canada':
+            probe = dict(customer)
+            probe['province'] = ''
+            chosen = inferred_province(probe)
+        customer['province'] = chosen if chosen in PROVINCE_CODES else ''
+        state = clean_text(data.get('us_state') if 'us_state' in data else customer.get('us_state'), 8).upper()
+        if state not in US_STATE_CODES and customer.get('country') != 'Canada':
+            probe = dict(customer)
+            probe['us_state'] = ''
+            state = inferred_us_state(probe)
+        customer['us_state'] = state if state in US_STATE_CODES else ''
+    if 'export_no_tax' in data:
+        customer['export_no_tax'] = bool(data.get('export_no_tax'))
+    if creating or 'tax_exempt' in data:
+        customer['tax_exempt'] = bool(data.get('tax_exempt'))
+    if creating or 'qbo_tax_code' in data or 'province' in data or 'us_state' in data or 'tax_exempt' in data or 'export_no_tax' in data:
+        code = clean_text(data.get('qbo_tax_code') if 'qbo_tax_code' in data else customer.get('qbo_tax_code'), 40)
+        if not code and not customer.get('export_no_tax'):
+            import quickbooks
+            if customer.get('country') == 'Canada':
+                code = quickbooks.suggested_tax_code(customer.get('province'), customer.get('tax_exempt'))
+            elif customer.get('country') == 'United States':
+                code = quickbooks.suggested_us_tax_code(customer.get('us_state'))
+        customer['qbo_tax_code'] = code
     if creating or 'email' in data:
         email = normalize_email(data.get('email'))
         if email and not valid_email(email):
@@ -978,9 +1027,12 @@ def _security_headers(response):
 def inject_user():
     user = current_user()
     allowed = set(effective_module_ids(user)) if user else set()
+    nav = [item for item in MODULES if item['id'] in allowed]
+    if user and user.get('role') == 'customer':
+        nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
     return {
         'current_user': user,
-        'nav_modules': [item for item in MODULES if item['id'] in allowed],
+        'nav_modules': nav,
         'has_dashboard': 'dashboard' in allowed,
     }
 
@@ -1135,6 +1187,30 @@ def role_display_name(user):
     return {'sales': 'Ora Glass employee', 'production': 'Ora Glass employee', 'viewer': 'Ora Glass employee'}.get(role, role)
 
 
+def _resale_warnings(user):
+    import resale
+    customers = load_customers()
+    if user.get('role') == 'customer':
+        customer = customers.get(user.get('customer_id') or '')
+        scoped = {user.get('customer_id'): customer} if customer else {}
+        return resale.warnings_for(scoped)
+    if user.get('role') in {'admin', 'employee'}:
+        return resale.warnings_for(customers)
+    return []
+
+
+def _can_review_resale(user):
+    return bool(user) and user.get('role') in {'admin', 'employee'}
+
+
+def _can_view_resale(user, customer_id):
+    if not user:
+        return False
+    if _can_review_resale(user):
+        return True
+    return user.get('role') == 'customer' and user.get('customer_id') == customer_id
+
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -1150,6 +1226,7 @@ def dashboard():
         can_time=can_manage_time(user),
         template_requests=open_request_count() if user.get('role') == 'admin' else 0,
         qbo_expired=_quickbooks_expired(user),
+        resale_warnings=_resale_warnings(user),
     )
 
 
@@ -1329,10 +1406,38 @@ def _quickbooks_save_settings(quickbooks, data):
         if label and item:
             cleaned[label] = item
     settings['default_item'] = default_item or 'Insulated Glass Units'
-    settings['tax_code'] = tax_code or 'NON'
+    connection = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    if connection == 'ca':
+        from storage import PROVINCE_CODES
+        raw_tax = data.get('province_tax') if isinstance(data.get('province_tax'), dict) else settings.get('province_tax') or {}
+        province_tax = {}
+        for code in PROVINCE_CODES:
+            value = clean_text(raw_tax.get(code), 40)
+            if value:
+                province_tax[code] = value
+        settings['province_tax'] = province_tax
+        if 'tax_exempt_code' in data:
+            settings['tax_exempt_code'] = clean_text(data.get('tax_exempt_code'), 40)
+    else:
+        settings['tax_code'] = tax_code or 'NON'
+        if 'state_tax' in data:
+            from storage import US_STATE_CODES
+            raw_states = data.get('state_tax') if isinstance(data.get('state_tax'), dict) else {}
+            settings['state_tax'] = {
+                code: clean_text(raw_states.get(code), 40)
+                for code in US_STATE_CODES
+                if clean_text(raw_states.get(code), 40)
+            }
     settings['extra_items'] = cleaned
     quickbooks.save_settings(settings)
     return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/tax-codes', methods=['GET'])
+@module_required('customers')
+def quickbooks_tax_codes():
+    import quickbooks
+    return jsonify(quickbooks.canada_tax_choices())
 
 
 @app.route('/api/quickbooks/sync', methods=['POST'])
@@ -1639,6 +1744,127 @@ def customers_page():
         can_manage=user.get('role') == 'admin',
         tiers=ordered_tiers(),
     )
+
+
+def _resale_page(customer_id):
+    import resale
+    user = current_user()
+    if not _can_view_resale(user, customer_id):
+        return forbidden()
+    customer = load_customers().get(customer_id)
+    if not customer:
+        return json_error('Unknown customer.', 404) if wants_json() else redirect(url_for('customers_page'))
+    from storage import US_STATES
+    return render_template(
+        'resale.html',
+        customer_id=customer_id,
+        company=customer.get('name') or customer_id,
+        certificates=[resale.public_certificate(row) for row in customer.get('resale_certificates') or []],
+        can_review=_can_review_resale(user),
+        states=US_STATES,
+        warning=(resale.warnings_for({customer_id: customer}) or [{}])[0].get('text', ''),
+    )
+
+
+@app.route('/company')
+@login_required
+def company_page():
+    user = current_user()
+    if user.get('role') != 'customer' or not user.get('customer_id'):
+        return forbidden()
+    return _resale_page(user.get('customer_id'))
+
+
+@app.route('/customers/<cid>/resale')
+@login_required
+def customer_resale_page(cid):
+    if not _can_review_resale(current_user()):
+        return forbidden()
+    return _resale_page(cid)
+
+
+@app.route('/api/customers/<cid>/resale', methods=['GET'])
+@login_required
+def customer_resale_list(cid):
+    import resale
+    user = current_user()
+    if not _can_view_resale(user, cid):
+        return json_error('Access denied', 403)
+    customer = load_customers().get(cid)
+    if not customer:
+        return json_error('Unknown customer.', 404)
+    return jsonify([resale.public_certificate(row) for row in customer.get('resale_certificates') or []])
+
+
+@app.route('/api/customers/<cid>/resale', methods=['POST'])
+@login_required
+def customer_resale_upload(cid):
+    import resale
+    user = current_user()
+    if user.get('role') == 'customer':
+        if user.get('customer_id') != cid:
+            return json_error('Access denied', 403)
+        verified = False
+    elif _can_review_resale(user):
+        verified = str(request.form.get('verified') or '').lower() in {'1', 'true', 'on', 'yes'}
+    else:
+        return json_error('Access denied', 403)
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return json_error('Choose a certificate file.', 400)
+    payload = upload.read(9 * 1024 * 1024)
+    try:
+        record = resale.add_certificate(
+            cid,
+            upload.filename,
+            payload,
+            clean_text(request.form.get('number'), 80),
+            clean_text(request.form.get('state'), 8),
+            clean_text(request.form.get('expires'), 10),
+            user.get('email') or '',
+            verified=verified,
+        )
+    except resale.ResaleError as exc:
+        return json_error(str(exc), 400)
+    return jsonify(resale.public_certificate(record))
+
+
+@app.route('/api/customers/<cid>/resale/<certificate_id>', methods=['POST'])
+@login_required
+def customer_resale_review(cid, certificate_id):
+    import resale
+    user = current_user()
+    if not _can_review_resale(user):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    try:
+        record = resale.review_certificate(
+            cid,
+            certificate_id,
+            clean_text(data.get('status'), 20),
+            user.get('email') or '',
+            clean_text(data.get('note'), 300),
+        )
+    except resale.ResaleError as exc:
+        return json_error(str(exc), 400)
+    return jsonify(resale.public_certificate(record))
+
+
+@app.route('/api/customers/<cid>/resale/<certificate_id>/file', methods=['GET'])
+@login_required
+def customer_resale_file(cid, certificate_id):
+    import resale
+    user = current_user()
+    if not _can_view_resale(user, cid):
+        return json_error('Access denied', 403)
+    customer = load_customers().get(cid) or {}
+    found = next((row for row in customer.get('resale_certificates') or [] if row.get('id') == certificate_id), None)
+    if not found:
+        return json_error('Unknown certificate.', 404)
+    path = resale.certificate_path(cid, found.get('stored'))
+    if not path:
+        return json_error('The file is missing.', 404)
+    return send_file(path, mimetype=found.get('content_type') or 'application/octet-stream', as_attachment=True, download_name=found.get('filename') or 'certificate')
 
 
 @app.route('/inventory')
@@ -3128,6 +3354,7 @@ def order_for_viewer(order, user, with_coverage=False):
                 'currency': row.get('currency') or 'usd',
                 'fx_rate': row.get('fx_rate'),
                 'fx_date': row.get('fx_date') or '',
+                'qbo_warning': row.get('qbo_warning') or '',
                 'total': money(row.get('total')),
                 'voided': bool(row.get('voided')),
             }

@@ -237,6 +237,9 @@ def test_each_company_has_its_own_connection_import_and_push(client, monkeypatch
             'realm_id': '111', 'expires_at': 9_999_999_999, 'company_name': 'Ora Glass Inc',
         })
         _customer('maple-glass', 'Maple Glass', 'Canada', currency='cad')
+        customers = load_customers()
+        customers['maple-glass']['qbo_tax_code'] = '5'
+        save_customers(customers)
         fake.calls.clear()
         order = _deliver(client, 'maple-glass', 'cad')
         realms = [_realm(url) for method, url, _body in fake.calls if method == 'POST' and '/invoice' in url]
