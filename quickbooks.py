@@ -219,6 +219,36 @@ def save_settings(settings):
     _save('qbo_settings.json', store)
 
 
+def _wrong_canada_open_windows(row):
+    """Customer 2 in the Canada company is not Open Windows Inc."""
+    return (
+        isinstance(row, dict)
+        and row.get('kind') == 'customer'
+        and (row.get('connection') or 'us') == 'ca'
+        and str(row.get('qbo_id') or '') == '2'
+        and str(row.get('erp_id') or '') == 'open-windows'
+    )
+
+
+def drop_wrong_canada_open_windows_link(announce=False):
+    """Forget the Canada link of QuickBooks customer 2 to open-windows."""
+    rows = _load('qbo_links.json', [])
+    if not isinstance(rows, list):
+        rows = []
+    kept = [row for row in rows if not _wrong_canada_open_windows(row)]
+    if len(kept) == len(rows):
+        return False
+    _save('qbo_links.json', kept)
+    if announce:
+        with connection_scope('ca'):
+            log(
+                'info',
+                'Removed QuickBooks customer 2 from Open Windows on the Canada company. '
+                'That id is not Open Windows Inc. Link it on the Ora Glass Inc card, realm 9341456057091137.',
+            )
+    return True
+
+
 def load_links():
     data = _load('qbo_links.json', [])
     return data if isinstance(data, list) else []
@@ -486,6 +516,7 @@ def _card(key, label, currency):
 
 
 def status_view():
+    drop_wrong_canada_open_windows_link(announce=True)
     missing = configured()
     cards = [_card(key, label, currency) for key, label, currency in CONNECTIONS]
     us = next(card for card in cards if card['key'] == 'us')
@@ -872,6 +903,49 @@ def _active_realm():
     return realm
 
 
+def unlink_customer(customer_id):
+    """Remove this card's QuickBooks link for one ERP company. Does not delete QuickBooks data."""
+    customer_id = str(customer_id or '').strip()
+    customers = load_customers()
+    if customer_id not in customers:
+        raise QuickBooksError('That ERP company does not exist.')
+    realm = ''
+    try:
+        realm = _active_realm()
+    except QuickBooksError:
+        realm = str(load_tokens().get('realm_id') or '')
+    key = _connection_key()
+    rows = load_links()
+    kept = []
+    removed = None
+    for row in rows:
+        if (
+            row.get('kind') == 'customer'
+            and (row.get('connection') or 'us') == key
+            and str(row.get('erp_id') or '') == customer_id
+        ):
+            removed = row
+            continue
+        kept.append(row)
+    if not removed:
+        raise QuickBooksError('That company is not linked on this card.')
+    save_links(kept)
+    qbo_id = str(removed.get('qbo_id') or '')
+    still = any(
+        row.get('kind') == 'customer'
+        and str(row.get('erp_id') or '') == customer_id
+        and str(row.get('qbo_id') or '') == qbo_id
+        for row in kept
+    )
+    if not still and str(customers[customer_id].get('qbo_id') or '') == qbo_id:
+        customers[customer_id].pop('qbo_id', None)
+        save_customers(customers)
+    company = customers[customer_id].get('name') or customer_id
+    where = f', realm {realm}' if realm else ''
+    log('info', f'Unlinked QuickBooks customer {qbo_id}{where} from {company} ({customer_id}).')
+    return {'qbo_id': qbo_id, 'customer_id': customer_id, 'company': company, 'realm_id': realm}
+
+
 def link_customer(qbo_id, customer_id):
     """Attach one QuickBooks customer to an existing ERP company. Does not import documents."""
     if not connected():
@@ -880,6 +954,12 @@ def link_customer(qbo_id, customer_id):
     customer_id = str(customer_id or '').strip()
     if not qbo_id.isdigit():
         raise QuickBooksError('Enter the QuickBooks customer id.')
+    drop_wrong_canada_open_windows_link(announce=True)
+    if _connection_key() == 'ca' and qbo_id == '2' and customer_id == 'open-windows':
+        raise QuickBooksError(
+            'QuickBooks customer 2 on the Canada company is not Open Windows Inc. '
+            'Link Open Windows on the Ora Glass Inc card, realm 9341456057091137.'
+        )
     customers = load_customers()
     if customer_id not in customers:
         raise QuickBooksError('That ERP company does not exist.')
@@ -905,6 +985,7 @@ def import_linked_history():
     """
     if not connected():
         raise QuickBooksError('QuickBooks is not connected.')
+    drop_wrong_canada_open_windows_link(announce=True)
     realm = _active_realm()
     seen = []
     for row in load_links():

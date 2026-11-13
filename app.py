@@ -1522,6 +1522,23 @@ def quickbooks_link_customer():
     return jsonify(body)
 
 
+@app.route('/api/quickbooks/unlink-customer', methods=['POST'])
+@admin_required
+def quickbooks_unlink_customer():
+    import quickbooks
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    try:
+        with quickbooks.connection_scope(key):
+            unlinked = quickbooks.unlink_customer(data.get('customer_id'))
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['result'] = unlinked
+    body['message'] = f"Unlinked {unlinked['company']} on this card."
+    return jsonify(body)
+
+
 @app.route('/api/quickbooks/import/history', methods=['POST'])
 @admin_required
 def quickbooks_import_history():

@@ -297,6 +297,7 @@ def test_link_reads_the_card_realm_and_uses_display_name(client, monkeypatch):
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
+    write_user('calvin@maple.example', 'customer', customer_id='maple', customer_name='Maple Glass')
     assert login(client, 'admin@oraglass.us').status_code == 302
     fake = TwoRealmQBO()
     quickbooks.TRANSPORT = fake
@@ -322,7 +323,7 @@ def test_link_reads_the_card_realm_and_uses_display_name(client, monkeypatch):
         assert customer_reads(US_REALM)
         assert not customer_reads(CANADA_REALM)
         canada = client.post('/api/quickbooks/link-customer', json={
-            'connection': 'ca', 'qbo_id': '2', 'customer_id': 'open-windows',
+            'connection': 'ca', 'qbo_id': '2', 'customer_id': 'maple',
         })
         assert canada.status_code == 200, canada.get_json()
         assert canada.get_json()['result']['name'] == 'Calvin Chong'
@@ -351,6 +352,55 @@ def test_link_reads_the_card_realm_and_uses_display_name(client, monkeypatch):
         invoice_urls = [url for _method, url, _body in fake.calls if 'Invoice' in url]
         assert invoice_urls
         assert all(US_REALM in url for url in invoice_urls)
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+def test_canada_customer_two_is_not_linked_to_open_windows(client, monkeypatch):
+    _configure(monkeypatch)
+    write_user('admin@oraglass.us', 'admin')
+    write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    fake = TwoRealmQBO()
+    quickbooks.TRANSPORT = fake
+    try:
+        _save_connection('us', US_REALM, 'Ora Glass Inc')
+        _save_connection('ca', CANADA_REALM, 'Ora Glass (Canada) Inc')
+        quickbooks.save_links([
+            {
+                'kind': 'customer', 'connection': 'ca', 'erp_id': 'open-windows',
+                'qbo_id': '2', 'sync_token': '0', 'origin': 'qbo', 'realm_id': CANADA_REALM,
+            },
+            {
+                'kind': 'customer', 'connection': 'us', 'erp_id': 'open-windows',
+                'qbo_id': '2', 'sync_token': '1', 'origin': 'qbo', 'realm_id': US_REALM,
+            },
+        ])
+        page = client.get('/settings/quickbooks')
+        assert page.status_code == 200
+        assert b'Unlink customer' in page.data
+        kept = [row for row in quickbooks.load_links() if row.get('kind') == 'customer']
+        assert [row.get('connection') for row in kept] == ['us']
+        with quickbooks.connection_scope('ca'):
+            messages = [row.get('message', '') for row in quickbooks.load_settings().get('log') or []]
+        assert any('Removed QuickBooks customer 2 from Open Windows' in message for message in messages)
+        refused = client.post('/api/quickbooks/link-customer', json={
+            'connection': 'ca', 'qbo_id': '2', 'customer_id': 'open-windows',
+        })
+        assert refused.status_code == 400
+        assert 'not Open Windows Inc' in refused.get_json()['error']
+        unlinked = client.post('/api/quickbooks/unlink-customer', json={
+            'connection': 'us', 'customer_id': 'open-windows',
+        })
+        assert unlinked.status_code == 200, unlinked.get_json()
+        assert [row for row in quickbooks.load_links() if row.get('kind') == 'customer'] == []
+        script = __import__('subprocess').run(
+            ['node', 'tests/check_qbo_link_buttons.cjs'],
+            cwd='/workspace',
+            capture_output=True,
+            text=True,
+        )
+        assert script.returncode == 0, script.stdout + script.stderr
     finally:
         quickbooks.TRANSPORT = None
 
