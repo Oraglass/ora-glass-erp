@@ -1322,6 +1322,13 @@ def quickbooks_disconnected():
     return render_template('quickbooks_disconnected.html', cleared=cleared, mismatched=mismatched)
 
 
+def _quickbooks_tab_redirect(key=None):
+    chosen = key or session.get('qbo_connection') or 'us'
+    if chosen not in {'us', 'ca'}:
+        chosen = 'us'
+    return redirect(url_for('quickbooks_settings', company=chosen) + '#' + chosen)
+
+
 @app.route('/settings/quickbooks')
 @admin_required
 def quickbooks_settings():
@@ -1342,7 +1349,7 @@ def quickbooks_connect():
         return redirect(quickbooks.authorize_url(state))
     except quickbooks.QuickBooksError as exc:
         flash(str(exc), 'error')
-        return redirect(url_for('quickbooks_settings'))
+        return _quickbooks_tab_redirect()
 
 
 @app.route('/quickbooks/callback')
@@ -1351,27 +1358,27 @@ def quickbooks_callback():
     import quickbooks
     if request.args.get('error'):
         flash('QuickBooks authorization was cancelled.', 'error')
-        return redirect(url_for('quickbooks_settings'))
+        return _quickbooks_tab_redirect()
     state = request.args.get('state') or ''
     if not state or state != session.get('qbo_state'):
         flash('QuickBooks authorization could not be verified.', 'error')
-        return redirect(url_for('quickbooks_settings'))
+        return _quickbooks_tab_redirect()
     code = request.args.get('code') or ''
     realm_id = request.args.get('realmId') or ''
     if not code or not realm_id:
         flash('QuickBooks did not return a company.', 'error')
-        return redirect(url_for('quickbooks_settings'))
+        return _quickbooks_tab_redirect()
     try:
         key = session.get('qbo_connection') or 'us'
         with quickbooks.connection_scope(key if key in {'us', 'ca'} else 'us'):
             quickbooks.exchange_code(code, realm_id)
     except quickbooks.QuickBooksError as exc:
         flash(str(exc), 'error')
-        return redirect(url_for('quickbooks_settings'))
+        return _quickbooks_tab_redirect()
     session.pop('qbo_state', None)
     session.pop('qbo_connection', None)
     flash('QuickBooks is connected.', 'success')
-    return redirect(url_for('quickbooks_settings'))
+    return _quickbooks_tab_redirect(key)
 
 
 @app.route('/api/quickbooks/status', methods=['GET'])
