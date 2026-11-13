@@ -224,10 +224,20 @@ function renderDetail(order) {
   }).join('<br>');
   const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
   const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';
+  const drawings = (order.drawings || []).map(drawing => {
+    const href = '/api/orders/' + encodeURIComponent(order.id) + '/drawings/' + encodeURIComponent(drawing.line_id);
+    const charge = drawing.is_dwg ? '' : ' <span class="note">DWG drawing creation applies until this file is replaced with a .dwg.</span>';
+    return '<div style="margin:8px 0"><a href="' + href + '">Download ' + esc(drawing.filename || 'drawing') + '</a>' + charge
+      + '<form class="replace-drawing" data-line="' + esc(drawing.line_id) + '" style="margin-top:6px;display:flex;gap:8px;align-items:center">'
+      + '<input type="file" required aria-label="Replace drawing for ' + esc(drawing.filename || 'line') + '">'
+      + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
+  }).join('');
+  const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
     + notes + (documents ? documentNote : invoice)
     + '<div class="actions">' + buttons + '</div>'
+    + drawingBlock
     + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
@@ -238,6 +248,20 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  box.querySelectorAll('.replace-drawing').forEach(form => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const file = form.querySelector('input[type=file]').files[0];
+      if (!file) return;
+      const body = new FormData();
+      body.append('drawing', file);
+      const res = await fetch('/api/orders/' + encodeURIComponent(currentOrder.id) + '/drawings/' + encodeURIComponent(form.getAttribute('data-line')), {method: 'POST', body});
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(payload.error || 'Could not replace the drawing'); return; }
+      renderDetail(payload);
+      load();
+    });
+  });
 }
 async function changeStatus(status, message) {
   if (!confirm(message)) return;
@@ -256,7 +280,7 @@ function openEditor(order) {
   const editor = document.getElementById('order-editor');
   if (!editor) return;
   draft = JSON.parse(JSON.stringify(order));
-  draft.items = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge');
+  draft.items = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
   draft.extra_charges = draft.extra_charges || [];
   draft.discount = draft.discount || {type: 'percent', value: 0};
   document.getElementById('order-project').value = draft.project || '';

@@ -33,13 +33,18 @@ def load_pricing_settings():
     raw = read_json(pricing_settings_path(), {})
     if not isinstance(raw, dict):
         raw = {}
-    try:
-        rate = round(float(raw.get('irregular_shape_surcharge', 50)), 2)
-    except (TypeError, ValueError):
-        rate = 50.0
-    if rate < 0 or rate > 100000:
-        rate = 50.0
-    return {'irregular_shape_surcharge': rate}
+    def amount(key):
+        try:
+            value = round(float(raw.get(key, 50)), 2)
+        except (TypeError, ValueError):
+            value = 50.0
+        if value < 0 or value > 100000:
+            value = 50.0
+        return value
+    return {
+        'irregular_shape_surcharge': amount('irregular_shape_surcharge'),
+        'dwg_creation_fee': amount('dwg_creation_fee'),
+    }
 
 
 def save_pricing_settings(settings):
@@ -47,9 +52,12 @@ def save_pricing_settings(settings):
         raise TypeError('settings must be an object')
     path = pricing_settings_path()
     with lock_for(path):
-        atomic_write_json(path, {
-            'irregular_shape_surcharge': round(float(settings.get('irregular_shape_surcharge', 50)), 2),
-        })
+        current = load_pricing_settings()
+        if 'irregular_shape_surcharge' in settings:
+            current['irregular_shape_surcharge'] = round(float(settings.get('irregular_shape_surcharge', 50)), 2)
+        if 'dwg_creation_fee' in settings:
+            current['dwg_creation_fee'] = round(float(settings.get('dwg_creation_fee', 50)), 2)
+        atomic_write_json(path, current)
 
 
 def data_dir():

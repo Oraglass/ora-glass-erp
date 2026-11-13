@@ -21,7 +21,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 .sort-btn:hover,.sort-btn:focus-visible{color:#C41E3A}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:20}
 .modal.active{display:flex}
-.modal-content{background:white;padding:28px;border-radius:8px;width:480px;max-width:92%;max-height:90vh;overflow-y:auto}
+.modal-content{background:white;padding:28px;border-radius:8px;width:560px;max-width:92%;max-height:90vh;overflow-y:auto}
 .form-group{margin-bottom:14px}
 .form-group label{display:block;font-size:12px;color:#666;margin-bottom:5px;font-weight:600}
 .form-group input,.form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
@@ -94,6 +94,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 {% endif %}
 </div>
+<div id="drawing-panel"></div>
 <div class="form-group" id="tier-fields" hidden>
 <label for="order-tier">Pricing tier</label>
 <select id="order-tier"></select>
@@ -107,17 +108,81 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 </div>
 {% endif %}
+{% if can_order %}
+<div class="modal" id="customer-drawing-modal">
+<div class="modal-content">
+<h3 style="margin-bottom:8px;color:#333">Drawing required</h3>
+<p class="help" id="customer-drawing-note">{{ drawing_note }}</p>
+<form id="customer-drawing-form">
+<div id="customer-drawing-panel"></div>
+<p class="help" data-dwg-preview></p>
+<div class="modal-actions">
+<button type="button" class="btn btn-secondary" id="customer-drawing-cancel">Cancel</button>
+<button type="submit" class="btn">Confirm order</button>
+</div>
+</form>
+</div>
+</div>
+{% endif %}
 <script>
 const CAN_ORDER = {{ can_order|tojson }};
 const STAFF_ORDER = {{ staff_order|tojson }};
 const STAFF_TOOLS = {{ staff_tools|tojson }};
 const TIERS = {{ order_tiers|tojson }};
+const DWG_RATE = {{ dwg_rate|tojson }};
+const DRAWING_NOTE = {{ drawing_note|tojson }};
 let catalog = [];
 let pendingQuoteId = null;
 function esc(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function irregularLines(quote) {
+  return (quote && quote.items || []).filter(item => item && item.irregular_shape && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
+}
+function fileIsDwg(file) {
+  return !!(file && /\.dwg$/i.test(file.name || ''));
+}
+function chargeText(count) {
+  if (!count) return 'A .dwg file has no drawing-creation charge.';
+  const each = Number(DWG_RATE).toFixed(2);
+  const total = (count * Number(DWG_RATE)).toFixed(2);
+  return 'DWG drawing creation: ' + count + ' × $' + each + ' = $' + total + '. This charge is added because the file is not a .dwg, and it is included before the order is confirmed.';
+}
+function drawingMarkup(quote) {
+  const lines = irregularLines(quote);
+  if (!lines.length) return '';
+  return '<p class="help drawing-note">' + esc(DRAWING_NOTE) + '</p>' + lines.map(line => {
+    return '<div class="form-group"><label>Drawing for ' + esc(line.name || 'irregular shape') + '</label><input type="file" required data-line="' + esc(line.line_id) + '"></div>';
+  }).join('') + '<p class="help" data-dwg-preview></p>';
+}
+function bindDrawingPanel(root) {
+  if (!root) return;
+  const preview = root.querySelector('[data-dwg-preview]');
+  const update = () => {
+    let count = 0;
+    root.querySelectorAll('input[type=file][data-line]').forEach(input => {
+      const file = input.files && input.files[0];
+      if (file && !fileIsDwg(file)) count += 1;
+    });
+    if (preview) {
+      preview.textContent = chargeText(count);
+      preview.style.color = count ? '#9f1239' : '#666';
+      preview.style.fontWeight = count ? '700' : '400';
+    }
+  };
+  root.querySelectorAll('input[type=file][data-line]').forEach(input => input.addEventListener('change', update));
+  update();
+}
+function appendDrawings(formData, root) {
+  let missing = false;
+  (root ? root.querySelectorAll('input[type=file][data-line]') : []).forEach(input => {
+    const file = input.files && input.files[0];
+    if (!file) missing = true;
+    else formData.append('drawing_' + input.getAttribute('data-line'), file);
+  });
+  return missing;
 }
 function productLabel(quote) {
   const items = quote.items || [];
@@ -146,7 +211,8 @@ function renderQuotes(rows) {
         action += ' <button type="button" disabled style="background:#f5f5f5;color:#999;border:1px solid #ddd;padding:4px 8px;border-radius:4px;font-size:11px">Order for production</button>';
       }
     }
-    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
+    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -254,6 +320,11 @@ async function openOrderDialog(quoteId) {
   document.getElementById('new-phone').value = '';
   document.getElementById('new-address').value = '';
   syncOrderFields();
+  const panel = document.getElementById('drawing-panel');
+  if (panel) {
+    panel.innerHTML = drawingMarkup(quote);
+    bindDrawingPanel(panel);
+  }
   document.getElementById('order-modal').classList.add('active');
 }
 function closeOrderDialog() {
@@ -291,11 +362,26 @@ async function submitOrder(event) {
     alert('Choose a customer.');
     return;
   }
-  const res = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/order', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
+  const lines = irregularLines(pendingQuote());
+  let res;
+  if (lines.length) {
+    const panel = document.getElementById('drawing-panel');
+    const formData = new FormData();
+    if (body.customer_id) formData.append('customer_id', body.customer_id);
+    if (body.tier) formData.append('tier', body.tier);
+    if (body.new_customer) formData.append('new_customer', JSON.stringify(body.new_customer));
+    if (appendDrawings(formData, panel)) {
+      alert('Upload a drawing for each irregular shape.');
+      return;
+    }
+    res = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/order', {method: 'POST', body: formData});
+  } else {
+    res = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/order', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+  }
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
   if (payload.credit_warning) alert(payload.credit_warning);
@@ -333,8 +419,17 @@ document.getElementById('quote-list').addEventListener('click', async (event) =>
   const button = event.target.closest('button');
   if (!button) return;
   if (button.dataset.action === 'order') {
+    const quote = catalog.find(item => String(item.id) === String(button.getAttribute('data-id')));
     if (STAFF_ORDER) {
       openOrderDialog(button.getAttribute('data-id'));
+      return;
+    }
+    if (irregularLines(quote).length) {
+      pendingQuoteId = quote.id;
+      const panel = document.getElementById('customer-drawing-panel');
+      panel.innerHTML = drawingMarkup(quote);
+      bindDrawingPanel(document.getElementById('customer-drawing-form'));
+      document.getElementById('customer-drawing-modal').classList.add('active');
       return;
     }
     const res = await fetch('/api/quotes/' + encodeURIComponent(button.getAttribute('data-id')) + '/order', {
@@ -354,6 +449,27 @@ const orderCustomer = document.getElementById('order-customer');
 if (orderCustomer) orderCustomer.addEventListener('change', syncOrderFields);
 const orderForm = document.getElementById('order-form');
 if (orderForm) orderForm.addEventListener('submit', submitOrder);
+const customerDrawingForm = document.getElementById('customer-drawing-form');
+if (customerDrawingForm) customerDrawingForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const formData = new FormData();
+  if (appendDrawings(formData, customerDrawingForm)) {
+    alert('Upload a drawing for each irregular shape.');
+    return;
+  }
+  const res = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/order', {method: 'POST', body: formData});
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
+  if (payload.credit_warning) alert(payload.credit_warning);
+  document.getElementById('customer-drawing-modal').classList.remove('active');
+  pendingQuoteId = null;
+  loadCatalog();
+});
+const customerDrawingCancel = document.getElementById('customer-drawing-cancel');
+if (customerDrawingCancel) customerDrawingCancel.addEventListener('click', () => {
+  document.getElementById('customer-drawing-modal').classList.remove('active');
+  pendingQuoteId = null;
+});
 const newTerms = document.getElementById('new-terms');
 if (newTerms) newTerms.addEventListener('change', () => {
   document.getElementById('new-terms-days').hidden = newTerms.value !== 'Custom';

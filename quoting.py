@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import secrets
 import warnings
 
 from storage import TIER_ORDER, pricing_search_paths, resolve_pricing_path
@@ -458,7 +459,10 @@ def load_pricing(path=None):
 
 
 SURCHARGE_KIND = 'irregular_surcharge'
+DWG_KIND = 'dwg_creation'
 DEFAULT_IRREGULAR_RATE = 50.0
+DEFAULT_DWG_FEE = 50.0
+DRAWING_NOTE = 'A CAD drawing (DWG) will be required for irregular shapes when the order is placed.'
 
 
 def _surcharge_rate(value, fallback):
@@ -506,7 +510,7 @@ def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
     index = 0
     while index < len(rows):
         item = dict(rows[index])
-        if item.get('kind') == SURCHARGE_KIND:
+        if item.get('kind') in {SURCHARGE_KIND, DWG_KIND}:
             index += 1
             continue
         following = rows[index + 1] if index + 1 < len(rows) else None
@@ -519,6 +523,8 @@ def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
             stored = item.get('surcharge_rate')
         item['irregular_shape'] = irregular
         if irregular:
+            if not item.get('line_id'):
+                item['line_id'] = secrets.token_hex(4)
             rate = _surcharge_rate(stored if stored not in (None, '') else default_rate, default_rate)
             item['surcharge_rate'] = rate
             pieces = item.get('pcs') if item.get('pcs') not in (None, '', '-') else item.get('qty')
@@ -529,3 +535,29 @@ def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
             result.append(item)
         index += 1
     return result
+
+
+def dwg_creation_line(line_id, rate):
+    """One flat charge for a drawing that was not supplied as a DWG file."""
+    amount = _surcharge_rate(rate, DEFAULT_DWG_FEE)
+    return {
+        'kind': DWG_KIND,
+        'name': 'DWG drawing creation',
+        'description': 'DWG drawing creation',
+        'drawing_for': line_id,
+        'pcs': 1,
+        'qty': 1,
+        'unit_price': amount,
+        'price_pc': amount,
+        'price_sqf': 0,
+        'sqf': 0,
+        'total': amount,
+        'surcharge_rate': amount,
+    }
+
+
+def irregular_glass_lines(items):
+    return [
+        item for item in items or []
+        if isinstance(item, dict) and item.get('irregular_shape') and item.get('kind') != SURCHARGE_KIND
+    ]

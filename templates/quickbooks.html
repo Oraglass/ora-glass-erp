@@ -102,6 +102,7 @@ function cardBody(card, status) {
       : 'Invoice lines use the QuickBooks item below. US invoices use the tax code saved on the customer. Exports and a verified resale certificate are not taxed. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
     + '<div class="row"><label>Default item<input data-field="default-item" value="' + esc(card.default_item || 'Insulated Glass Units') + '"></label>'
     + '<label>Irregular shape item<input data-field="irregular-item" value="' + esc(card.irregular_item || 'Irregular shape surcharge') + '"></label>'
+    + '<label>DWG drawing item<input data-field="dwg-item" value="' + esc(card.dwg_item || 'DWG drawing creation') + '"></label>'
     + (key === 'ca' ? '' : taxChoice) + '</div>'
     + (key === 'ca' ? taxChoice : stateTaxTable(card))
     + '<label style="margin-top:8px">Extra charge items<textarea data-field="extra-items" rows="4" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px">' + esc(extras) + '</textarea></label>'
@@ -155,6 +156,7 @@ document.getElementById('connections').addEventListener('click', async (event) =
         connection,
         default_item: card.querySelector('[data-field="default-item"]').value,
         irregular_item: card.querySelector('[data-field="irregular-item"]').value,
+        dwg_item: card.querySelector('[data-field="dwg-item"]').value,
         extra_items: extra
       };
       const singleTax = card.querySelector('[data-field="tax-code"]');

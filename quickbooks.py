@@ -41,6 +41,7 @@ MINOR_VERSION = '75'
 CDC_INTERVAL = 15 * 60
 DEFAULT_ITEM = 'Insulated Glass Units'
 DEFAULT_IRREGULAR_ITEM = 'Irregular shape surcharge'
+DEFAULT_DWG_ITEM = 'DWG drawing creation'
 DEFAULT_TAX = 'NON'
 TRANSPORT = None
 SLEEP = time.sleep
@@ -460,6 +461,7 @@ def _card(key, label, currency):
             'last_cdc': settings.get('last_cdc') or '',
             'default_item': settings.get('default_item') or DEFAULT_ITEM,
             'irregular_item': settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM,
+            'dwg_item': settings.get('dwg_item') or DEFAULT_DWG_ITEM,
             'tax_code': settings.get('tax_code') or DEFAULT_TAX,
             'province_tax': dict(settings.get('province_tax') or {}),
             'tax_exempt_code': settings.get('tax_exempt_code') or '',
@@ -1297,7 +1299,12 @@ def _document_lines(invoice, tax_code=None):
         qty = item.get('qty') or item.get('pcs') or 1
         unit = item.get('unit_price') if item.get('unit_price') not in (None, '') else item.get('price_pc') or amount
         description = item.get('description') or item.get('name') or default_item
-        item_name = settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM if item.get('kind') == 'irregular_surcharge' else default_item
+        if item.get('kind') == 'irregular_surcharge':
+            item_name = settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM
+        elif item.get('kind') == 'dwg_creation':
+            item_name = settings.get('dwg_item') or DEFAULT_DWG_ITEM
+        else:
+            item_name = default_item
         lines.append(_sales_line(description, qty, unit, amount, item_name, tax_code))
     for charge in invoice.get('extra_charges') or []:
         label = charge.get('label') or charge.get('name') or 'Extra'

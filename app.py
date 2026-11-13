@@ -52,7 +52,10 @@ from quoting import (
     area_sqf,
     calculate_price_sqf,
     classify,
+    DRAWING_NOTE,
+    dwg_creation_line,
     expand_irregular_lines,
+    irregular_glass_lines,
     default_quote_tier,
     load_pricing,
     reprice_size_line,
@@ -1260,6 +1263,7 @@ def quote_template_context(user):
         'import_customer': user.get('role') == 'customer',
         'import_customer_id': user.get('customer_id') or '',
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
+        'drawing_note': DRAWING_NOTE,
         'import_companies': [
             {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
@@ -1414,6 +1418,10 @@ def _quickbooks_save_settings(quickbooks, data):
         data.get('irregular_item') or settings.get('irregular_item') or 'Irregular shape surcharge',
         120,
     ) or 'Irregular shape surcharge'
+    settings['dwg_item'] = clean_text(
+        data.get('dwg_item') or settings.get('dwg_item') or 'DWG drawing creation',
+        120,
+    ) or 'DWG drawing creation'
     connection = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
     if connection == 'ca':
         from storage import PROVINCE_CODES
@@ -1575,6 +1583,7 @@ def export_quote():
     if not isinstance(items, list):
         return json_error('Items must be a list', 400)
     items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+    drawing_note = DRAWING_NOTE if irregular_glass_lines(items) else ''
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.4*inch, bottomMargin=0.4*inch)
@@ -1606,6 +1615,10 @@ def export_quote():
     elements.append(Spacer(1, 8))
     elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
     elements.append(Spacer(1, 6))
+    if drawing_note:
+        note_style = ParagraphStyle('DrawingNote', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.HexColor('#9f1239'))
+        elements.append(Paragraph(escape(drawing_note), note_style))
+        elements.append(Spacer(1, 8))
 
     has_size = any(item.get('sqf') for item in items)
     currency = data.get('currency', 'usd')
@@ -1910,16 +1923,20 @@ def pricing_admin():
             cfg['spacer_markup'] = round(spacer / 100.0, 6)
         try:
             surcharge = round(float(request.form.get('irregular_shape_surcharge', 50)), 2)
+            dwg_fee = round(float(request.form.get('dwg_creation_fee', 50)), 2)
         except (TypeError, ValueError):
             surcharge = -1
+            dwg_fee = -1
         if surcharge < 0 or surcharge > 100000:
             errors.append('surcharge')
+        if dwg_fee < 0 or dwg_fee > 100000:
+            errors.append('dwg')
         if errors:
             flash('Check markup values for: ' + ', '.join(errors), 'error')
         else:
             save_tiers(tiers)
-            save_pricing_settings({'irregular_shape_surcharge': surcharge})
-            flash('Tier markups saved. Tier 5 is twice Tier 2. Irregular shape surcharge saved.', 'success')
+            save_pricing_settings({'irregular_shape_surcharge': surcharge, 'dwg_creation_fee': dwg_fee})
+            flash('Tier markups saved. Tier 5 is twice Tier 2. Irregular shape surcharge and DWG drawing fee saved.', 'success')
             return redirect(url_for('pricing_admin'))
         tiers = load_tiers()
     samples = []
@@ -1935,6 +1952,7 @@ def pricing_admin():
         tiers=ordered_tiers(tiers),
         sample_prices=samples,
         irregular_shape_surcharge=load_pricing_settings()['irregular_shape_surcharge'],
+        dwg_creation_fee=load_pricing_settings()['dwg_creation_fee'],
     )
 
 
@@ -1968,6 +1986,8 @@ def quote_history():
             for tid, cfg in ordered_tiers()
         ] if staff else [],
         is_admin=user.get('role') == 'admin',
+        dwg_rate=load_pricing_settings()['dwg_creation_fee'],
+        drawing_note=DRAWING_NOTE,
     )
 
 
@@ -3370,6 +3390,16 @@ def order_for_viewer(order, user, with_coverage=False):
         'status_label': STATUS_LABELS[status],
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
+        'drawings': [
+            {
+                'line_id': drawing.get('line_id'),
+                'filename': drawing.get('filename') or '',
+                'is_dwg': bool(drawing.get('is_dwg')),
+                'uploaded_at': drawing.get('uploaded_at') or '',
+            }
+            for drawing in order.get('drawings') or []
+            if isinstance(drawing, dict)
+        ],
         'documents': [
             {
                 'id': row.get('id'),
@@ -3527,9 +3557,17 @@ def convert_quote_to_order(quote_id):
     management = customer_subrole(user) == 'management'
     if not staff and not management:
         return json_error('Only customer management, or Ora Glass staff with Orders, can send a quote to production.', 403)
-    data = json_body()
-    if data is None:
-        data = {}
+    if request.files or (request.content_type or '').startswith('multipart/'):
+        data = request.form.to_dict(flat=True)
+        if data.get('new_customer'):
+            try:
+                data['new_customer'] = json.loads(data['new_customer'])
+            except (TypeError, ValueError):
+                return json_error('Customer details could not be read.', 400)
+    else:
+        data = json_body()
+        if data is None:
+            data = {}
     quotes = load_quotes()
     quote = next((row for row in quotes if row.get('id') == quote_id), None)
     if not quote:
@@ -3576,10 +3614,44 @@ def convert_quote_to_order(quote_id):
             'total': priced['total'],
             'irregular_shape': bool(item.get('irregular_shape')),
         }
+        if item.get('line_id'):
+            line['line_id'] = item.get('line_id')
         if item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = item.get('surcharge_rate')
         priced_items.append(line)
     priced_items = expand_irregular_lines(priced_items, load_pricing_settings()['irregular_shape_surcharge'])
+    pricing = load_pricing_settings()
+    irregular_lines = irregular_glass_lines(priced_items)
+    drawing_uploads = []
+    if irregular_lines:
+        missing = []
+        for line in irregular_lines:
+            upload = request.files.get('drawing_' + str(line.get('line_id')))
+            if not upload or not upload.filename:
+                missing.append({'line_id': line.get('line_id'), 'name': line.get('name') or 'Glass'})
+            else:
+                drawing_uploads.append((line, upload))
+        if missing:
+            return jsonify({
+                'error': 'Upload a drawing for each irregular shape before the order can be confirmed.',
+                'needs_drawings': True,
+                'dwg_creation_fee': pricing['dwg_creation_fee'],
+                'lines': missing,
+                'note': DRAWING_NOTE,
+            }), 400
+        import drawings as drawing_store
+        prepared = []
+        for line, upload in drawing_uploads:
+            payload = upload.read(drawing_store.MAX_BYTES + 1)
+            prepared.append((line, upload.filename, payload))
+            if not payload:
+                return json_error('The drawing file is empty.', 400)
+            if len(payload) > drawing_store.MAX_BYTES:
+                return json_error('The drawing is larger than 25 MB.', 400)
+            if not drawing_store.is_dwg(upload.filename):
+                priced_items.append(dwg_creation_line(line.get('line_id'), pricing['dwg_creation_fee']))
+    else:
+        prepared = []
     grand = round(sum(line['total'] for line in priced_items), 2)
     credit_check = conversion_allowed(
         grand, customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
@@ -3608,12 +3680,29 @@ def convert_quote_to_order(quote_id):
         'igu_total': grand,
         'extras_total': 0,
         'total': grand,
+        'dwg_rate': pricing['dwg_creation_fee'] if irregular_lines else None,
+        'drawings': [],
         'status': 'approved',
         'changelog': [],
         'approved_by': user.get('email'),
         'approved_at': approved_at,
         'date': approved_at[:10],
     })
+    if prepared:
+        import drawings as drawing_store
+        saved_drawings = []
+        for line, filename, payload in prepared:
+            try:
+                record = drawing_store.store_drawing(order['id'], line.get('line_id'), filename, payload)
+            except drawing_store.DrawingError as exc:
+                return json_error(str(exc), 400)
+            record['uploaded_by'] = user.get('email') or ''
+            saved_drawings.append(record)
+        def remember(row):
+            row['drawings'] = saved_drawings
+            return row, None
+        update_order(order['id'], remember)
+        order['drawings'] = saved_drawings
     updated = dict(quote)
     updated['order_id'] = order['id']
     updated['order_status'] = 'Approved for order'
@@ -3630,6 +3719,82 @@ def convert_quote_to_order(quote_id):
     if warning:
         payload['credit_warning'] = warning
     return jsonify(payload)
+
+
+def _owned_order(user, order_id):
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        return None
+    if user.get('role') == 'customer' and user.get('customer_id') != order.get('customer_id'):
+        return None
+    return order
+
+
+@app.route('/api/orders/<int:order_id>/drawings/<line_id>', methods=['GET'])
+@module_required('orders')
+def download_order_drawing(order_id, line_id):
+    user = current_user()
+    order = _owned_order(user, order_id)
+    drawing = next(
+        (row for row in (order or {}).get('drawings') or [] if str(row.get('line_id')) == str(line_id)),
+        None,
+    )
+    if not order or not drawing:
+        return json_error('Not found', 404)
+    import drawings as drawing_store
+    path = drawing_store.drawing_path(order_id, line_id, drawing.get('stored'))
+    if not path:
+        return json_error('Not found', 404)
+    return send_file(path, as_attachment=True, download_name=drawing.get('filename') or 'drawing')
+
+
+@app.route('/api/orders/<int:order_id>/drawings/<line_id>', methods=['POST'])
+@module_required('orders')
+def replace_order_drawing(order_id, line_id):
+    user = current_user()
+    order = _owned_order(user, order_id)
+    if not order:
+        return json_error('Not found', 404)
+    if not any(str(row.get('line_id')) == str(line_id) for row in order.get('drawings') or []):
+        return json_error('Not found', 404)
+    upload = request.files.get('drawing')
+    if not upload or not upload.filename:
+        return json_error('Choose a drawing file.', 400)
+    import drawings as drawing_store
+    payload = upload.read(drawing_store.MAX_BYTES + 1)
+    try:
+        record = drawing_store.store_drawing(order_id, line_id, upload.filename, payload)
+    except drawing_store.DrawingError as exc:
+        return json_error(str(exc), 400)
+    record['uploaded_by'] = user.get('email') or ''
+
+    def mutator(row):
+        row['drawings'] = [
+            record if str(item.get('line_id')) == str(line_id) else item
+            for item in row.get('drawings') or []
+        ]
+        if row.get('dwg_rate') in (None, ''):
+            row['dwg_rate'] = load_pricing_settings()['dwg_creation_fee']
+        items = _apply_drawing_charges(row.get('items') or [], row)
+        summary, error = price_summary(
+            items,
+            row.get('discount') or {'type': 'percent', 'value': 0},
+            row.get('extra_charges') or [],
+        )
+        if error:
+            return None, error
+        row['items'] = items
+        row['discount_amount'] = summary['discount_amount']
+        row['igu_subtotal'] = summary['igu_subtotal']
+        row['igu_total'] = summary['igu_total']
+        row['extras_total'] = summary['extras_total']
+        row['total'] = summary['total']
+        return row, None
+
+    saved, error = update_order(order_id, mutator)
+    if error:
+        return json_error(error if error != 'Not found' else 'Not found', 400 if error != 'Not found' else 404)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
 @app.route('/api/orders', methods=['GET'])
@@ -3663,6 +3828,19 @@ def _stamp_log(order, user, changes):
     return order
 
 
+def _apply_drawing_charges(items, order):
+    """Keep one DWG drawing creation line for each stored drawing that is not a DWG."""
+    kept = [item for item in items or [] if item.get('kind') != 'dwg_creation']
+    rate = order.get('dwg_rate')
+    if rate in (None, ''):
+        rate = load_pricing_settings()['dwg_creation_fee']
+    for drawing in order.get('drawings') or []:
+        if drawing.get('is_dwg'):
+            continue
+        kept.append(dwg_creation_line(drawing.get('line_id'), rate))
+    return kept
+
+
 def _parse_order_items(raw, tier, currency, tiers):
     if not isinstance(raw, list) or not raw:
         return None, 'An order needs at least one line.'
@@ -3670,7 +3848,7 @@ def _parse_order_items(raw, tier, currency, tiers):
     for raw_item in raw:
         if not isinstance(raw_item, dict):
             return None, 'Each line must be an object.'
-        if raw_item.get('kind') == 'irregular_surcharge':
+        if raw_item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
             continue
         spec_in = raw_item.get('spec')
         if not isinstance(spec_in, dict):
@@ -3756,6 +3934,7 @@ def _edited_order(order, data, tiers):
     else:
         charges = order.get('extra_charges') or []
     discount = data.get('discount') if 'discount' in data else (order.get('discount') or {'type': 'percent', 'value': 0})
+    items = _apply_drawing_charges(items, order)
     summary, error = price_summary(items, discount, charges)
     if error:
         return None, error
