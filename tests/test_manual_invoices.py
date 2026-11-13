@@ -165,3 +165,7 @@ def test_linked_and_standalone_invoices_and_credit_notes(client):
     admin_page = client.get('/invoices')
     assert b'Create invoice' in admin_page.data
     assert b'Create credit note' in admin_page.data
+    html = admin_page.data.decode()
+    assert 'Choose a customer' in html
+    assert 'if (filter && filter.value) return filter.value;' in html
+    assert html.index('if (filter && filter.value) return filter.value;') < html.index('if (pay && pay.value) return pay.value;')

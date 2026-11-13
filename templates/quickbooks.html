@@ -72,6 +72,12 @@ function provinceTaxTable(card) {
     + '<tr><td></td><td>Tax exempt</td><td>Zero-rated</td><td><select data-tax="exempt" aria-label="Exempt tax code">' + taxOptions(codes, card.tax_exempt_code || '') + '</select></td></tr>'
     + '</tbody></table>';
 }
+function erpOptions(customers, selected) {
+  const rows = customers || [];
+  let html = '<option value="">Choose a company</option>';
+  html += rows.map(row => '<option value="' + esc(row.id) + '"' + (String(row.id) === String(selected || '') ? ' selected' : '') + '>' + esc(row.name) + '</option>').join('');
+  return html;
+}
 function extrasText(extras) {
   return Object.keys(extras || {}).map(key => key + ' = ' + extras[key]).join('\n');
 }
@@ -87,6 +93,7 @@ function cardBody(card, status) {
   } else {
     head = '<p class="ok"><strong>' + esc(card.company_name || card.label) + '</strong> · realm ' + esc(card.realm_id) + ' · ' + esc(String(card.currency || '').toUpperCase()) + ' · ' + esc(card.environment) + '</p>'
       + '<p class="note">Last sync: ' + esc(card.last_sync || 'not yet') + '</p>'
+      + '<p class="note">Sync now reads changes since the last poll. Invoices already in QuickBooks stay out of the ERP until you import them.</p>'
       + '<p><button type="button" data-action="sync" data-connection="' + esc(key) + '">Sync now</button> <button type="button" class="secondary" data-action="disconnect" data-connection="' + esc(key) + '">Disconnect</button></p>';
   }
   const taxChoice = key === 'ca'
@@ -110,9 +117,17 @@ function cardBody(card, status) {
     + intercompany
     + '<h2>Import from QuickBooks</h2><p class="note">Customers are matched to existing ERP companies by name or email. New companies start at tier T2. Nothing is written until you apply the review.</p>'
     + '<button type="button" data-action="preview" data-connection="' + esc(key) + '">Review QuickBooks customers</button><div data-review="' + esc(key) + '"></div>'
+    + '<h2>Existing invoices and payments</h2><p class="note">Link the QuickBooks customer to the ERP company, then import. Open Windows Inc is QuickBooks customer 2 and the ERP company is open-windows. The import reads the full invoice, credit memo, and payment history for every customer linked on this company. A document already stored is skipped.</p>'
+    + '<div class="row"><label>QuickBooks customer id<input data-field="link-qbo" inputmode="numeric" placeholder="2"></label>'
+    + '<label>ERP company<select data-field="link-erp">' + erpOptions(card.erp_customers, '') + '</select></label>'
+    + '<button type="button" data-action="link-customer" data-connection="' + esc(key) + '">Link customer</button></div>'
+    + '<p><button type="button" data-action="import-history" data-connection="' + esc(key) + '">Import existing invoices & payments</button></p>'
+    + '<p class="note" data-history-result></p>'
     + '<h2>Sync log</h2><div class="note">' + logHtml + '</div></div>';
 }
+let STATUS = INITIAL;
 function render(status) {
+  STATUS = status;
   const cards = status.connections || [];
   document.getElementById('connections').innerHTML = cards.map(card => cardBody(card, status)).join('');
 }
@@ -127,7 +142,7 @@ function renderReview(connection, rows) {
   if (!box) return;
   if (!rows.length) { box.innerHTML = '<p class="note">QuickBooks returned no customers.</p>'; return; }
   box.innerHTML = '<table data-import="' + esc(connection) + '"><thead><tr><th>QuickBooks customer</th><th>Id</th><th>Currency</th><th>Open balance</th><th>ERP match</th><th>Action</th></tr></thead><tbody>'
-    + rows.map(row => '<tr data-qbo="' + esc(row.qbo_id) + '"><td>' + esc(row.name) + '<div class="note">' + esc(row.email) + '</div></td><td>' + esc(row.qbo_id) + '</td><td>' + esc(row.currency).toUpperCase() + '</td><td>' + Number(row.open_balance || 0).toLocaleString(undefined, {style:'currency', currency:(row.currency || 'usd').toUpperCase()}) + '</td><td>' + esc(row.suggested_customer_id || 'New company, tier T2') + (row.match_reason ? ' · ' + esc(row.match_reason) : '') + '</td><td><select data-choice><option value="link"' + (row.action === 'link' ? ' selected' : '') + '>Link</option><option value="create"' + (row.action === 'create' ? ' selected' : '') + '>Create</option><option value="skip">Skip</option></select></td></tr>').join('')
+    + rows.map(row => '<tr data-qbo="' + esc(row.qbo_id) + '"><td>' + esc(row.name) + '<div class="note">' + esc(row.email) + '</div></td><td>' + esc(row.qbo_id) + '</td><td>' + esc(row.currency).toUpperCase() + '</td><td>' + Number(row.open_balance || 0).toLocaleString(undefined, {style:'currency', currency:(row.currency || 'usd').toUpperCase()}) + '</td><td>' + esc(row.suggested_customer_id || 'New company, tier T2') + (row.match_reason ? ' · ' + esc(row.match_reason) : '') + '</td><td><select data-choice><option value="link"' + (row.action === 'link' ? ' selected' : '') + '>Link</option><option value="create"' + (row.action === 'create' ? ' selected' : '') + '>Create</option><option value="skip">Skip</option></select><select data-erp aria-label="ERP company for ' + esc(row.name) + '">' + erpOptions((STATUS && STATUS.erp_customers) || [], row.suggested_customer_id) + '</select></td></tr>').join('')
     + '</tbody></table><p><button type="button" data-action="apply" data-connection="' + esc(connection) + '">Apply import</button></p><p class="note" data-import-result="' + esc(connection) + '"></p>';
   box.dataset.rows = JSON.stringify(rows);
 }
@@ -183,15 +198,31 @@ document.getElementById('connections').addEventListener('click', async (event) =
       const review = card.querySelector('[data-review]');
       const rows = JSON.parse(review.dataset.rows || '[]');
       const decisions = {};
-      card.querySelectorAll('tbody tr').forEach(tr => {
+      card.querySelectorAll('[data-import] tbody tr').forEach(tr => {
         const choice = tr.querySelector('[data-choice]').value;
         decisions[tr.getAttribute('data-qbo')] = {
           action: choice,
-          customer_id: choice === 'link' ? (rows.find(row => String(row.qbo_id) === tr.getAttribute('data-qbo')) || {}).suggested_customer_id : ''
+          customer_id: choice === 'link' ? (tr.querySelector('[data-erp]').value || (rows.find(row => String(row.qbo_id) === tr.getAttribute('data-qbo')) || {}).suggested_customer_id) : ''
         };
       });
       const result = await post('/api/quickbooks/import/apply', {connection, decisions});
       card.querySelector('[data-import-result]').textContent = 'Imported ' + result.customers + ' customers, ' + result.invoices + ' invoices, and ' + result.payments + ' payments.';
+    }
+    if (action === 'link-customer') {
+      const linked = await post('/api/quickbooks/link-customer', {
+        connection,
+        qbo_id: card.querySelector('[data-field="link-qbo"]').value,
+        customer_id: card.querySelector('[data-field="link-erp"]').value
+      });
+      render(linked);
+      const note = document.querySelector('[data-connection="' + connection + '"] [data-history-result]');
+      if (note) note.textContent = linked.message || 'Linked.';
+    }
+    if (action === 'import-history') {
+      const imported = await post('/api/quickbooks/import/history', {connection});
+      render(imported);
+      const note = document.querySelector('[data-connection="' + connection + '"] [data-history-result]');
+      if (note) note.textContent = imported.message || '';
     }
     if (action === 'match-intercompany') {
       const body = await post('/api/quickbooks/intercompany', {action: 'match'});

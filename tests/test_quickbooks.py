@@ -131,6 +131,8 @@ def test_settings_are_admin_only_and_oauth_stores_the_company(client, monkeypatc
         assert b'123456' in connected.data
         assert b'Disconnect' in connected.data
         assert b'Sync now' in connected.data
+        assert b'Import existing invoices & payments' in page.data
+        assert b'Link customer' in page.data
     finally:
         quickbooks.TRANSPORT = None
 
@@ -165,6 +167,52 @@ def test_import_links_open_windows_and_matches_the_open_balance(client, monkeypa
         })
         assert again.status_code == 200
         assert len([item for item in load_invoices() if item.get('customer_id') == 'open-windows']) == 1
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+def test_sync_does_not_import_history_until_the_backfill(client, monkeypatch):
+    _configure(monkeypatch)
+    write_user('admin@oraglass.us', 'admin')
+    write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
+    write_user('ap@enerstar.example', 'customer', customer_id='enerstar', customer_name='Enerstar Windows')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    fake = FakeQBO()
+    fake.invoices = [
+        {**fake.invoices[0], 'Id': str(1000 + offset), 'DocNumber': str(1000 + offset), 'TotalAmt': 100, 'Balance': 100}
+        for offset in range(2, 5)
+    ]
+    try:
+        _connect(client, fake)
+        synced = client.post('/api/quickbooks/sync', json={'connection': 'us'})
+        assert synced.status_code == 200, synced.get_json()
+        assert load_invoices() == []
+        assert any('read 0 records' in row.get('message', '') for row in synced.get_json()['connections'][0]['log'])
+        empty = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
+        assert empty.status_code == 200, empty.get_json()
+        assert empty.get_json()['result']['customers'] == 0
+        assert load_invoices() == []
+        linked = client.post('/api/quickbooks/link-customer', json={
+            'connection': 'us', 'qbo_id': '2', 'customer_id': 'open-windows',
+        })
+        assert linked.status_code == 200, linked.get_json()
+        assert linked.get_json()['result']['customer_id'] == 'open-windows'
+        assert load_customers()['open-windows']['qbo_id'] == '2'
+        still = client.post('/api/quickbooks/sync', json={'connection': 'us'})
+        assert still.status_code == 200
+        assert load_invoices() == []
+        imported = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
+        assert imported.status_code == 200, imported.get_json()
+        result = imported.get_json()['result']
+        assert result['customers'] == 1
+        assert result['invoices'] == 3
+        assert result['payments'] == 0
+        assert any(result['message'] in row.get('message', '') for row in imported.get_json()['connections'][0]['log'])
+        numbers = sorted(row['project'] for row in load_invoices())
+        assert numbers == ['1002', '1003', '1004']
+        again = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
+        assert again.get_json()['result']['invoices'] == 0
+        assert len(load_invoices()) == 3
     finally:
         quickbooks.TRANSPORT = None
 

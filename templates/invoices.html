@@ -170,7 +170,7 @@ async function loadCustomers() {
   const filter = document.getElementById('filter-invoice-customer');
   if (filter) filter.innerHTML = options;
   const pay = document.getElementById('pay-customer');
-  if (pay) pay.innerHTML = rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  if (pay) pay.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
   return rows;
 }
 function renderInvoices(rows) {
@@ -258,10 +258,17 @@ async function loadPayments() {
   if (!res.ok) return;
   renderPayments(await res.json());
 }
+function creditCustomerId() {
+  const filter = document.getElementById('filter-invoice-customer');
+  const pay = document.getElementById('pay-customer');
+  if (filter && filter.value) return filter.value;
+  if (pay && pay.value) return pay.value;
+  return '';
+}
 async function loadCredit() {
   const params = new URLSearchParams();
   if (STAFF) {
-    const customer = (document.getElementById('pay-customer') || {}).value || (document.getElementById('filter-invoice-customer') || {}).value;
+    const customer = creditCustomerId();
     if (!customer) { document.getElementById('credit-summary').textContent = ''; return; }
     params.set('customer_id', customer);
   }
@@ -352,6 +359,17 @@ if (CAN_ISSUE) {
   loadOrders();
 }
 document.getElementById('invoice-filter').addEventListener('click', () => { loadInvoices(); loadPayments(); loadCredit(); });
+const filterCustomer = document.getElementById('filter-invoice-customer');
+if (filterCustomer) filterCustomer.addEventListener('change', () => {
+  const pay = document.getElementById('pay-customer');
+  if (pay) pay.value = filterCustomer.value;
+  loadCredit();
+});
+const payCustomer = document.getElementById('pay-customer');
+if (payCustomer) payCustomer.addEventListener('change', () => {
+  const filter = document.getElementById('filter-invoice-customer');
+  if (!filter || !filter.value) loadCredit();
+});
 document.getElementById('payment-list').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-void]');
   if (!button) return;

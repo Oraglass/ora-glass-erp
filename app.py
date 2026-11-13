@@ -1505,6 +1505,40 @@ def quickbooks_import_apply():
     return jsonify(result)
 
 
+@app.route('/api/quickbooks/link-customer', methods=['POST'])
+@admin_required
+def quickbooks_link_customer():
+    import quickbooks
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    try:
+        with quickbooks.connection_scope(key):
+            linked = quickbooks.link_customer(data.get('qbo_id'), data.get('customer_id'))
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['result'] = linked
+    body['message'] = f"Linked {linked['name']} to {linked['company']}."
+    return jsonify(body)
+
+
+@app.route('/api/quickbooks/import/history', methods=['POST'])
+@admin_required
+def quickbooks_import_history():
+    import quickbooks
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    try:
+        with quickbooks.connection_scope(key):
+            result = quickbooks.import_linked_history()
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['result'] = result
+    body['message'] = result['message']
+    return jsonify(body)
+
+
 @app.route('/api/quickbooks/intercompany', methods=['POST'])
 @admin_required
 def quickbooks_intercompany():

@@ -477,6 +477,7 @@ def _card(key, label, currency):
             'connection_expired': connection_expired(),
             'intercompany_qbo_id': settings.get('intercompany_qbo_id') or '',
             'log': list(reversed((settings.get('log') or load_log())[-20:])),
+            'erp_customers': _erp_customers(),
         }
 
 
@@ -715,6 +716,19 @@ def query(statement):
     return []
 
 
+def query_all(statement, page_size=1000):
+    """Every row for a query. QuickBooks returns at most 1000 rows per request."""
+    rows = []
+    start = 1
+    for _page in range(50):
+        page = query(f'{statement} STARTPOSITION {start} MAXRESULTS {page_size}')
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+    return rows
+
+
 def _entity_path(name):
     return {
         'Customer': 'customer',
@@ -806,6 +820,74 @@ def _customer_from_qbo(row, customer_id, tier='T2'):
     }
 
 
+def _erp_customers():
+    rows = [
+        {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
+        for customer_id, customer in load_customers().items()
+    ]
+    rows.sort(key=lambda row: (row['name'].lower(), row['id']))
+    return rows
+
+
+def link_customer(qbo_id, customer_id):
+    """Attach one QuickBooks customer to an existing ERP company. Does not import documents."""
+    if not connected():
+        raise QuickBooksError('QuickBooks is not connected.')
+    qbo_id = str(qbo_id or '').strip()
+    customer_id = str(customer_id or '').strip()
+    if not qbo_id.isdigit():
+        raise QuickBooksError('Enter the QuickBooks customer id.')
+    customers = load_customers()
+    if customer_id not in customers:
+        raise QuickBooksError('That ERP company does not exist.')
+    remote = _customer_record(qbo_id)
+    if not remote.get('Id'):
+        raise QuickBooksError('That QuickBooks customer was not found.')
+    qbo_id = str(remote.get('Id'))
+    upsert_link('customer', customer_id, qbo_id, remote.get('SyncToken'), 'qbo')
+    for other_id, other in customers.items():
+        if other_id != customer_id and str(other.get('qbo_id') or '') == qbo_id:
+            other.pop('qbo_id', None)
+    customers[customer_id]['qbo_id'] = qbo_id
+    save_customers(customers)
+    name = remote.get('DisplayName') or qbo_id
+    company = customers[customer_id].get('name') or customer_id
+    log('info', f'Linked QuickBooks customer {name} ({qbo_id}) to {company} ({customer_id}).')
+    return {'qbo_id': qbo_id, 'customer_id': customer_id, 'name': name, 'company': company}
+
+
+def import_linked_history():
+    """Pull the full invoice, credit memo, and payment history for customers linked on this company.
+
+    A QuickBooks document that is already stored is left as it is.
+    """
+    if not connected():
+        raise QuickBooksError('QuickBooks is not connected.')
+    seen = []
+    for row in load_links():
+        if row.get('kind') != 'customer' or (row.get('connection') or 'us') != _connection_key():
+            continue
+        customer_id = str(row.get('erp_id') or '')
+        if not customer_id or customer_id in seen or customer_id not in load_customers():
+            continue
+        seen.append(customer_id)
+    invoices = credits = payments = 0
+    for customer_id in seen:
+        counts = _import_customer_activity(customer_id)
+        invoices += counts['invoices']
+        credits += counts['credits']
+        payments += counts['payments']
+    if not seen:
+        message = 'Import found no linked customers. Link the QuickBooks customer to an ERP company, then import again.'
+    else:
+        message = (
+            f'Imported existing invoices: {invoices}, credit memos: {credits}, '
+            f'payments: {payments}, linked customers: {len(seen)}.'
+        )
+    log('info', message)
+    return {'customers': len(seen), 'invoices': invoices, 'credits': credits, 'payments': payments, 'message': message}
+
+
 def apply_import(decisions):
     """decisions: {qbo_id: {action: link|create|skip, customer_id?}}"""
     preview = _load(f'qbo_import_preview_{_connection_key()}.json', [])
@@ -838,7 +920,7 @@ def apply_import(decisions):
     imported = {'invoices': 0, 'payments': 0}
     for customer_id in linked:
         counts = _import_customer_activity(customer_id)
-        imported['invoices'] += counts['invoices']
+        imported['invoices'] += counts['invoices'] + counts['credits']
         imported['payments'] += counts['payments']
     log('info', f"Imported {imported['invoices']} invoices and {imported['payments']} payments from QuickBooks.")
     return {'customers': len(linked), **imported}
@@ -852,16 +934,18 @@ def _customer_record(qbo_id):
 def _import_customer_activity(customer_id):
     link = find_link('customer', erp_id=customer_id)
     qbo_id = link['qbo_id']
-    invoices = query(f"select * from Invoice where CustomerRef = '{qbo_id}' maxresults 1000")
-    credits = query(f"select * from CreditMemo where CustomerRef = '{qbo_id}' maxresults 1000")
-    payments = query(f"select * from Payment where CustomerRef = '{qbo_id}' maxresults 1000")
-    counts = {'invoices': 0, 'payments': 0}
+    if not str(qbo_id).isdigit():
+        return {'invoices': 0, 'credits': 0, 'payments': 0}
+    invoices = query_all(f"select * from Invoice where CustomerRef = '{qbo_id}'")
+    credits = query_all(f"select * from CreditMemo where CustomerRef = '{qbo_id}'")
+    payments = query_all(f"select * from Payment where CustomerRef = '{qbo_id}'")
+    counts = {'invoices': 0, 'credits': 0, 'payments': 0}
     for row in invoices:
         if _ingest_invoice(row):
             counts['invoices'] += 1
     for row in credits:
         if _ingest_credit(row):
-            counts['invoices'] += 1
+            counts['credits'] += 1
     for row in payments:
         if _ingest_payment(row):
             counts['payments'] += 1
