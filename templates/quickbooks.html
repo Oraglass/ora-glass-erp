@@ -45,6 +45,23 @@ const INITIAL = {{ status|tojson }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function taxOptions(codes, selected) {
+  const known = (codes || []).some(code => String(code.id) === String(selected));
+  let html = '<option value="">Choose a tax code</option>';
+  if (selected && !known) html += '<option value="' + esc(selected) + '" selected>' + esc(selected) + '</option>';
+  html += (codes || []).map(code => '<option value="' + esc(code.id) + '"' + (String(code.id) === String(selected) ? ' selected' : '') + '>' + esc(code.name) + '</option>').join('');
+  return html;
+}
+function provinceTaxTable(card) {
+  const codes = card.tax_codes || [];
+  const mapping = card.province_tax || {};
+  const rows = (card.provinces || []).map(row => '<tr><td>' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.regime) + '</td><td><select data-tax="' + esc(row.code) + '" aria-label="' + esc(row.name) + ' tax code">' + taxOptions(codes, mapping[row.code] || '') + '</select></td></tr>').join('');
+  return '<h2>Suggested tax codes</h2><p class="note">These defaults only fill an empty QBO tax code when a customer\'s province is set. The invoice uses the code saved on the customer. AB and the territories are GST. BC, SK, and MB are GST+PST. ON, NB, NS, NL, and PE are HST. Quebec is GST+QST. The exempt code is used when the customer is tax exempt and has not chosen a code. The choices are this company\'s QuickBooks tax codes.</p>'
+    + '<table id="province-tax"><thead><tr><th>Code</th><th>Province</th><th>Tax</th><th>Suggested QuickBooks tax code</th></tr></thead><tbody>'
+    + rows
+    + '<tr><td></td><td>Tax exempt</td><td>Zero-rated</td><td><select data-tax="exempt" aria-label="Exempt tax code">' + taxOptions(codes, card.tax_exempt_code || '') + '</select></td></tr>'
+    + '</tbody></table>';
+}
 function extrasText(extras) {
   return Object.keys(extras || {}).map(key => key + ' = ' + extras[key]).join('\n');
 }
@@ -62,13 +79,17 @@ function cardBody(card, status) {
       + '<p class="note">Last sync: ' + esc(card.last_sync || 'not yet') + '</p>'
       + '<p><button type="button" data-action="sync" data-connection="' + esc(key) + '">Sync now</button> <button type="button" class="secondary" data-action="disconnect" data-connection="' + esc(key) + '">Disconnect</button></p>';
   }
+  const taxChoice = key === 'ca' ? provinceTaxTable(card) : '<label>Tax code<input data-field="tax-code" value="' + esc(card.tax_code || 'NON') + '"></label>';
   const extras = extrasText(card.extra_items);
   const log = card.log || [];
   const logHtml = log.length ? '<table><tbody>' + log.map(row => '<tr><td>' + esc(row.at) + '</td><td class="' + (row.level === 'error' ? 'error' : '') + '">' + esc(row.message) + '</td></tr>').join('') + '</tbody></table>' : 'No sync activity yet.';
   const intercompany = key === 'us' ? '<h2>Ora Glass (Canada) Inc in this company</h2><p class="note">Intercompany invoices bill this QuickBooks customer in USD. Match the existing customer, or create it.</p><div class="row"><label>QuickBooks customer id<input data-field="intercompany" data-connection="us" value="' + esc(card.intercompany_qbo_id || '') + '"></label><button type="button" data-action="match-intercompany">Match by name</button><button type="button" class="secondary" data-action="save-intercompany">Save id</button><button type="button" class="secondary" data-action="create-intercompany">Create customer</button></div><p class="note" id="intercompany-note"></p>' : '';
   return '<div class="card" data-connection="' + esc(key) + '"><h2>' + esc(card.label) + '</h2>' + head
-    + '<h2>Item mapping</h2><p class="note">Invoice lines use the QuickBooks item below. Tax defaults to NON. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.</p>'
-    + '<div class="row"><label>Default item<input data-field="default-item" value="' + esc(card.default_item || 'Insulated Glass Units') + '"></label><label>Tax code<input data-field="tax-code" value="' + esc(card.tax_code || 'NON') + '"></label></div>'
+    + '<h2>Item mapping</h2><p class="note">' + (key === 'ca'
+      ? 'Invoice lines use the QuickBooks item below. Canadian invoices use the tax code saved on the customer. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.'
+      : 'Invoice lines use the QuickBooks item below. Tax defaults to NON. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
+    + '<div class="row"><label>Default item<input data-field="default-item" value="' + esc(card.default_item || 'Insulated Glass Units') + '"></label>' + (key === 'ca' ? '' : taxChoice) + '</div>'
+    + (key === 'ca' ? taxChoice : '')
     + '<label style="margin-top:8px">Extra charge items<textarea data-field="extra-items" rows="4" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px">' + esc(extras) + '</textarea></label>'
     + '<p><button type="button" data-action="save-mapping" data-connection="' + esc(key) + '">Save mapping</button></p>'
     + intercompany
@@ -116,12 +137,21 @@ document.getElementById('connections').addEventListener('click', async (event) =
         const parts = line.split('=');
         if (parts.length >= 2 && parts[0].trim()) extra[parts[0].trim()] = parts.slice(1).join('=').trim();
       });
-      render(await api('/api/quickbooks/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+      const body = {
         connection,
         default_item: card.querySelector('[data-field="default-item"]').value,
-        tax_code: card.querySelector('[data-field="tax-code"]').value,
         extra_items: extra
-      })}));
+      };
+      const singleTax = card.querySelector('[data-field="tax-code"]');
+      if (singleTax) body.tax_code = singleTax.value;
+      const provinceTax = {};
+      card.querySelectorAll('[data-tax]').forEach(select => {
+        const code = select.getAttribute('data-tax');
+        if (code === 'exempt') body.tax_exempt_code = select.value;
+        else provinceTax[code] = select.value;
+      });
+      if (card.querySelector('[data-tax]')) body.province_tax = provinceTax;
+      render(await api('/api/quickbooks/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}));
     }
     if (action === 'preview') {
       const data = await post('/api/quickbooks/import/preview', {connection});

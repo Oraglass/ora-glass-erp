@@ -19,6 +19,7 @@ td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 .num{text-align:right;white-space:nowrap}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:8px}
+.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.approved{background:#fff3cd;color:#856404}
 .badge.sent{background:#e7f1ff;color:#1d4ed8}
@@ -217,7 +218,8 @@ function renderDetail(order) {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
     const fx = doc.fx_rate ? ' · FXUSDCAD ' + esc(doc.fx_rate) + ' on ' + esc(doc.fx_date || '') : '';
-    return '<a href="/invoices/' + esc(doc.id) + '">' + esc(kind) + ' ' + esc(doc.number) + '</a> · ' + esc(company) + ' · ' + esc(String(doc.currency || '').toUpperCase()) + fx + (doc.voided ? ' (void)' : '');
+    const warning = doc.qbo_warning ? '<br><span class="error">' + esc(doc.qbo_warning) + '</span>' : '';
+    return '<a href="/invoices/' + esc(doc.id) + '">' + esc(kind) + ' ' + esc(doc.number) + '</a> · ' + esc(company) + ' · ' + esc(String(doc.currency || '').toUpperCase()) + fx + (doc.voided ? ' (void)' : '') + warning;
   }).join('<br>');
   const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
   const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';

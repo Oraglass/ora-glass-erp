@@ -589,6 +589,16 @@ def tier_label(tier, tiers=None):
     return (tiers.get(tier) or {}).get('label') or tier
 
 
+def _qbo_tax_label(customer):
+    if customer.get('tax_exempt'):
+        import quickbooks
+        exempt = quickbooks.suggested_tax_code('', tax_exempt=True)
+        name = quickbooks.tax_code_name(exempt or customer.get('qbo_tax_code'))
+        return name or 'Tax exempt'
+    import quickbooks
+    return quickbooks.tax_code_name(customer.get('qbo_tax_code'))
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -599,6 +609,10 @@ def public_customer(customer_id, customer, tiers, user_count):
         'state': customer.get('state') or '',
         'zip': customer.get('zip') or '',
         'country': customer.get('country') or 'United States',
+        'province': customer.get('province') or '',
+        'tax_exempt': bool(customer.get('tax_exempt')),
+        'qbo_tax_code': customer.get('qbo_tax_code') or '',
+        'qbo_tax_code_label': _qbo_tax_label(customer),
         'phone': customer.get('phone') or '',
         'email': customer.get('email') or '',
         'credit_approved': bool(customer.get('credit_approved')),
@@ -867,6 +881,22 @@ def apply_customer_fields(customer, data, tiers, creating):
         elif lowered in {'', 'us', 'usa', 'united states', 'united states of america'}:
             country = 'United States'
         customer['country'] = country
+    if creating or 'province' in data or 'state' in data or 'zip' in data or 'address' in data or 'country' in data:
+        from storage import PROVINCE_CODES, inferred_province
+        chosen = clean_text(data.get('province') if 'province' in data else customer.get('province'), 8).upper()
+        if chosen not in PROVINCE_CODES and customer.get('country') == 'Canada':
+            probe = dict(customer)
+            probe['province'] = ''
+            chosen = inferred_province(probe)
+        customer['province'] = chosen if chosen in PROVINCE_CODES else ''
+    if creating or 'tax_exempt' in data:
+        customer['tax_exempt'] = bool(data.get('tax_exempt'))
+    if creating or 'qbo_tax_code' in data or 'province' in data or 'tax_exempt' in data:
+        code = clean_text(data.get('qbo_tax_code') if 'qbo_tax_code' in data else customer.get('qbo_tax_code'), 40)
+        if not code and customer.get('country') == 'Canada':
+            import quickbooks
+            code = quickbooks.suggested_tax_code(customer.get('province'), customer.get('tax_exempt'))
+        customer['qbo_tax_code'] = code
     if creating or 'email' in data:
         email = normalize_email(data.get('email'))
         if email and not valid_email(email):
@@ -1329,10 +1359,30 @@ def _quickbooks_save_settings(quickbooks, data):
         if label and item:
             cleaned[label] = item
     settings['default_item'] = default_item or 'Insulated Glass Units'
-    settings['tax_code'] = tax_code or 'NON'
+    connection = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    if connection == 'ca':
+        from storage import PROVINCE_CODES
+        raw_tax = data.get('province_tax') if isinstance(data.get('province_tax'), dict) else settings.get('province_tax') or {}
+        province_tax = {}
+        for code in PROVINCE_CODES:
+            value = clean_text(raw_tax.get(code), 40)
+            if value:
+                province_tax[code] = value
+        settings['province_tax'] = province_tax
+        if 'tax_exempt_code' in data:
+            settings['tax_exempt_code'] = clean_text(data.get('tax_exempt_code'), 40)
+    else:
+        settings['tax_code'] = tax_code or 'NON'
     settings['extra_items'] = cleaned
     quickbooks.save_settings(settings)
     return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/tax-codes', methods=['GET'])
+@module_required('customers')
+def quickbooks_tax_codes():
+    import quickbooks
+    return jsonify(quickbooks.canada_tax_choices())
 
 
 @app.route('/api/quickbooks/sync', methods=['POST'])
@@ -3128,6 +3178,7 @@ def order_for_viewer(order, user, with_coverage=False):
                 'currency': row.get('currency') or 'usd',
                 'fx_rate': row.get('fx_rate'),
                 'fx_date': row.get('fx_date') or '',
+                'qbo_warning': row.get('qbo_warning') or '',
                 'total': money(row.get('total')),
                 'voided': bool(row.get('voided')),
             }

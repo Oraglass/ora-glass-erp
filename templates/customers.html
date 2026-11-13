@@ -30,7 +30,7 @@ td.actions{width:11rem}
 .status.inactive{background:#f8d7da;color:#721c24}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);justify-content:center;align-items:center}
 .modal.active{display:flex}
-.modal-content{background:white;padding:30px;border-radius:8px;width:560px;max-width:90%;max-height:90vh;overflow-y:auto}
+.modal-content{background:white;padding:30px;border-radius:8px;width:760px;max-width:94%;max-height:90vh;overflow-y:auto}
 .form-group{margin-bottom:15px}
 .form-group label{display:block;font-size:12px;color:#666;margin-bottom:5px;font-weight:600}
 .form-group input,.form-group select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
@@ -49,7 +49,7 @@ td.actions{width:11rem}
 </div>
 <p class="help" style="margin-top:8px">The tier on this page is the company default. On the Users page, set a different tier for an individual person when they should not use that default.</p>
 <table>
-<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>Province</th><th>QBO tax code</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
 <tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
@@ -69,6 +69,28 @@ td.actions{width:11rem}
 <option value="United States">United States</option>
 <option value="Canada">Canada</option>
 </select>
+</div>
+<div class="form-group"><label>Province</label>
+<select id="c-province" aria-label="Province">
+<option value="">Not a Canadian province</option>
+<option value="AB">Alberta</option>
+<option value="BC">British Columbia</option>
+<option value="MB">Manitoba</option>
+<option value="NB">New Brunswick</option>
+<option value="NL">Newfoundland and Labrador</option>
+<option value="NS">Nova Scotia</option>
+<option value="NT">Northwest Territories</option>
+<option value="NU">Nunavut</option>
+<option value="ON">Ontario</option>
+<option value="PE">Prince Edward Island</option>
+<option value="QC">Quebec</option>
+<option value="SK">Saskatchewan</option>
+<option value="YT">Yukon</option>
+</select>
+</div>
+<div class="form-group"><label for="c-tax-code">QBO tax code</label>
+<select id="c-tax-code" aria-label="QBO tax code"></select>
+<p class="help">Posted on invoices from Ora Glass (Canada) Inc. If this is empty, the province suggestion is filled in.</p>
 </div>
 </div>
 <div class="form-row">
@@ -98,6 +120,9 @@ td.actions{width:11rem}
 </div>
 <div class="form-row">
 <div class="form-group"><label>Status</label><select id="c-status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+<div class="form-group"><label><input type="checkbox" id="c-tax-exempt"> Tax exempt in Canada</label>
+<p class="help">Uses the exempt tax code. Choosing Exempt in QBO tax code does the same thing.</p>
+</div>
 <div class="form-group"><label><input type="checkbox" id="c-credit"> Credit Approved</label></div>
 </div>
 <div class="form-row">
@@ -130,7 +155,7 @@ async function api(url, options) {
 }
 function render() {
   const tbody = document.getElementById('customer-list');
-  const cols = CAN_MANAGE ? 8 : 7;
+  const cols = CAN_MANAGE ? 10 : 9;
   if (!customers.length) {
     tbody.innerHTML = '<tr><td colspan="' + cols + '" style="text-align:center;color:#666">No customers</td></tr>';
     return;
@@ -139,7 +164,7 @@ function render() {
     const actions = CAN_MANAGE
       ? '<td class="actions"><div class="row-actions"><div class="row-actions-main"><button class="act act-primary" type="button" data-action="edit" data-id="' + esc(c.id) + '">Edit</button></div><button class="act act-danger" type="button" data-action="delete" data-id="' + esc(c.id) + '">Delete</button></div></td>'
       : '';
-    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
+    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.province || '—') + '</td><td>' + esc(taxLabel(c)) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
   }).join('');
 }
 async function loadCustomers() {
@@ -158,6 +183,10 @@ function openModal(customer) {
   document.getElementById('c-state').value = customer ? (customer.state || '') : '';
   document.getElementById('c-zip').value = customer ? (customer.zip || '') : '';
   document.getElementById('c-country').value = customer && customer.country === 'Canada' ? 'Canada' : 'United States';
+  document.getElementById('c-province').value = customer && customer.province ? customer.province : '';
+  document.getElementById('c-tax-exempt').checked = customer ? !!customer.tax_exempt : false;
+  fillTaxCodes(customer ? (customer.qbo_tax_code || '') : '');
+  if (!customer || !customer.qbo_tax_code) suggestTaxCode();
   document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
   document.getElementById('c-email').value = customer ? (customer.email || '') : '';
   const knownTerms = ['Due on receipt', 'Net 15', 'Net 30', 'Net 45', 'Net 60', 'Custom'];
@@ -183,6 +212,9 @@ function payload() {
     state: document.getElementById('c-state').value,
     zip: document.getElementById('c-zip').value,
     country: document.getElementById('c-country').value,
+    province: document.getElementById('c-province').value,
+    tax_exempt: document.getElementById('c-tax-exempt').checked,
+    qbo_tax_code: document.getElementById('c-tax-code').value,
     phone: document.getElementById('c-phone').value,
     email: document.getElementById('c-email').value,
     payment_terms: document.getElementById('c-terms').value,
@@ -204,6 +236,40 @@ document.getElementById('customer-list').addEventListener('click', (event) => {
 });
 const addButton = document.getElementById('add-customer');
 if (addButton) addButton.addEventListener('click', () => openModal(null));
+let taxCodes = [];
+let provinceTax = {};
+let exemptCode = '';
+function fillTaxCodes(selected) {
+  const select = document.getElementById('c-tax-code');
+  select.innerHTML = '<option value="">No tax code</option>' + taxCodes.map(code => '<option value="' + esc(code.id) + '">' + esc(code.name) + '</option>').join('');
+  select.value = selected || '';
+  if (selected && select.value !== String(selected)) {
+    select.insertAdjacentHTML('beforeend', '<option value="' + esc(selected) + '">' + esc(selected) + '</option>');
+    select.value = selected;
+  }
+}
+function suggestTaxCode() {
+  const select = document.getElementById('c-tax-code');
+  if (select.value) return;
+  if (document.getElementById('c-tax-exempt').checked && exemptCode) {
+    select.value = exemptCode;
+    return;
+  }
+  const province = document.getElementById('c-province').value;
+  if (province && provinceTax[province]) select.value = provinceTax[province];
+}
+function taxLabel(customer) {
+  if (customer.tax_exempt) {
+    const exempt = taxCodes.find(code => String(code.id) === String(exemptCode || customer.qbo_tax_code));
+    if (!exempt) return customer.qbo_tax_code_label ? 'Exempt · ' + customer.qbo_tax_code_label : 'Tax exempt';
+    return exempt.name.toLowerCase() === 'exempt' ? 'Exempt' : 'Exempt · ' + exempt.name;
+  }
+  if (!customer.qbo_tax_code) return '—';
+  const match = taxCodes.find(code => String(code.id) === String(customer.qbo_tax_code));
+  return match ? match.name : (customer.qbo_tax_code_label || customer.qbo_tax_code);
+}
+document.getElementById('c-province').addEventListener('change', suggestTaxCode);
+document.getElementById('c-tax-exempt').addEventListener('change', suggestTaxCode);
 document.getElementById('c-terms').addEventListener('change', () => {
   document.getElementById('c-terms-days').style.display = document.getElementById('c-terms').value === 'Custom' ? 'block' : 'none';
 });
@@ -228,7 +294,15 @@ async function deleteCustomer(id) {
   const data = await api('/api/customers/' + encodeURIComponent(id), {method: 'DELETE'});
   if (data) loadCustomers();
 }
-loadCustomers();
+async function loadTaxCodes() {
+  const res = await fetch('/api/quickbooks/tax-codes');
+  if (!res.ok) return;
+  const data = await res.json().catch(() => ({}));
+  taxCodes = data.tax_codes || [];
+  provinceTax = data.province_tax || {};
+  exemptCode = data.tax_exempt_code || '';
+}
+loadTaxCodes().then(loadCustomers);
 </script>
 </body>
 </html>

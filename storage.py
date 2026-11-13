@@ -453,7 +453,43 @@ def append_quote(quote):
         return stored
 
 
-_CANADA_PROVINCES = {'AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'}
+PROVINCES = (
+    ('AB', 'Alberta', 'GST'),
+    ('BC', 'British Columbia', 'GST+PST'),
+    ('MB', 'Manitoba', 'GST+PST'),
+    ('NB', 'New Brunswick', 'HST'),
+    ('NL', 'Newfoundland and Labrador', 'HST'),
+    ('NS', 'Nova Scotia', 'HST'),
+    ('NT', 'Northwest Territories', 'GST'),
+    ('NU', 'Nunavut', 'GST'),
+    ('ON', 'Ontario', 'HST'),
+    ('PE', 'Prince Edward Island', 'HST'),
+    ('QC', 'Quebec', 'GST+QST'),
+    ('SK', 'Saskatchewan', 'GST+PST'),
+    ('YT', 'Yukon', 'GST'),
+)
+PROVINCE_CODES = {code for code, _name, _regime in PROVINCES}
+_PROVINCE_ALIASES = {
+    'AB': ('ab', 'alta', 'alberta'),
+    'BC': ('bc', 'b.c.', 'british columbia'),
+    'MB': ('mb', 'man', 'manitoba'),
+    'NB': ('nb', 'n.b.', 'new brunswick'),
+    'NL': ('nl', 'n.l.', 'nfld', 'newfoundland', 'newfoundland and labrador'),
+    'NS': ('ns', 'n.s.', 'nova scotia'),
+    'NT': ('nt', 'nwt', 'n.w.t.', 'northwest territories'),
+    'NU': ('nu', 'nunavut'),
+    'ON': ('on', 'ont', 'ontario'),
+    'PE': ('pe', 'pei', 'p.e.i.', 'prince edward island'),
+    'QC': ('qc', 'que', 'pq', 'quebec', 'québec'),
+    'SK': ('sk', 'sask', 'saskatchewan'),
+    'YT': ('yt', 'yk', 'yukon', 'yukon territory'),
+}
+_POSTAL_PROVINCE = {
+    'A': 'NL', 'B': 'NS', 'C': 'PE', 'E': 'NB',
+    'G': 'QC', 'H': 'QC', 'J': 'QC',
+    'K': 'ON', 'L': 'ON', 'M': 'ON', 'N': 'ON', 'P': 'ON',
+    'R': 'MB', 'S': 'SK', 'T': 'AB', 'V': 'BC', 'Y': 'YT',
+}
 
 
 def inferred_country(customer):
@@ -465,9 +501,38 @@ def inferred_country(customer):
         str(customer.get('city') or ''),
         str(customer.get('state') or ''),
     ]).lower()
-    if 'canada' in blob or str(customer.get('state') or '').strip().upper() in _CANADA_PROVINCES:
+    if 'canada' in blob or str(customer.get('state') or '').strip().upper() in PROVINCE_CODES:
         return 'Canada'
     return 'United States'
+
+
+def inferred_province(customer):
+    """Two-letter province from a saved code, a province name, or a Canadian postal code."""
+    customer = customer or {}
+    current = str(customer.get('province') or '').strip().upper()
+    if current in PROVINCE_CODES:
+        return current
+    state = str(customer.get('state') or '').strip().lower().rstrip('.')
+    for code, aliases in _PROVINCE_ALIASES.items():
+        if state in aliases:
+            return code
+    raw = ' '.join([
+        str(customer.get('address') or ''),
+        str(customer.get('city') or ''),
+        str(customer.get('state') or ''),
+    ])
+    lowered = raw.lower()
+    for code, aliases in _PROVINCE_ALIASES.items():
+        for alias in aliases:
+            if len(alias) <= 4:
+                if re.search(rf'(?<![A-Za-z]){re.escape(alias.upper())}(?![A-Za-z])', raw):
+                    return code
+            elif alias in lowered:
+                return code
+    postal = re.sub(r'[^A-Za-z0-9]', '', str(customer.get('zip') or '')).upper()
+    if re.fullmatch(r'[A-Z]\d[A-Z]\d[A-Z]\d', postal):
+        return _POSTAL_PROVINCE.get(postal[0], '')
+    return ''
 
 
 def load_customers():
@@ -484,6 +549,11 @@ def load_customers():
         if not str(customer.get('country') or '').strip():
             customer['country'] = inferred_country(customer)
             changed = True
+        if customer.get('country') == 'Canada' and str(customer.get('province') or '').strip().upper() not in PROVINCE_CODES:
+            province = inferred_province(customer)
+            if province:
+                customer['province'] = province
+                changed = True
     if changed:
         save_customers(data)
     return data
