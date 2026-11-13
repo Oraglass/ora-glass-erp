@@ -1111,6 +1111,13 @@ def change_password():
     return render_template('change_password.html', must_change=bool(user.get('must_change_password')))
 
 
+def _quickbooks_expired(user):
+    if not user or user.get('role') != 'admin':
+        return False
+    import quickbooks
+    return quickbooks.connection_expired()
+
+
 def role_display_name(user):
     role = (user or {}).get('role') or ''
     if role in ROLES:
@@ -1132,6 +1139,7 @@ def dashboard():
         can_payroll=can_manage_payroll(user),
         can_time=can_manage_time(user),
         template_requests=open_request_count() if user.get('role') == 'admin' else 0,
+        qbo_expired=_quickbooks_expired(user),
     )
 
 

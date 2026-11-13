@@ -31,6 +31,12 @@ select{padding:6px;border:1px solid #ddd;border-radius:4px}
 <div class="card">
 <h1>Settings · QuickBooks</h1>
 <p class="note">Direct connection to QuickBooks Online. Client ID, secret, redirect URI, environment, and the webhook verifier come from the server environment, not from this page.</p>
+{% if status.connection_expired %}
+<div class="error" id="qbo-expired">
+<p>QuickBooks connection expired - Reconnect</p>
+<p><a class="btn" href="{{ url_for('quickbooks_connect') }}">Reconnect</a></p>
+</div>
+{% endif %}
 <div id="connection"></div>
 </div>
 <div class="card">
@@ -61,7 +67,9 @@ function esc(value) {
 }
 function render(status) {
   const box = document.getElementById('connection');
-  if (!status.configured) {
+  if (status.connection_expired) {
+    box.innerHTML = '<div class="error" id="qbo-expired"><p>QuickBooks connection expired - Reconnect</p><p><a class="btn" href="/quickbooks/connect">Reconnect</a></p></div>';
+  } else if (!status.configured) {
     box.innerHTML = '<p class="error">Missing environment variables: ' + esc((status.missing || []).join(', ')) + '</p>';
   } else if (!status.connected) {
     box.innerHTML = '<p class="note">Not connected. Environment: ' + esc(status.environment) + '.</p><p><a class="btn" id="connect-qbo" href="/quickbooks/connect">Connect to QuickBooks</a></p>';

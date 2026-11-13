@@ -42,6 +42,12 @@
             This notice stays in the app. No email is sent.
         </div>
         {% endif %}
+        {% if qbo_expired %}
+        <div class="import-notice" id="qbo-expired">
+            QuickBooks connection expired - Reconnect
+            <a href="{{ url_for('quickbooks_connect') }}">Reconnect</a>
+        </div>
+        {% endif %}
         <div class="modules">
             {% if 'quotes' in modules %}
             <a href="/quotes" class="module">
@@ -98,9 +104,13 @@
             </a>
             {% endif %}
             {% if user.role == 'admin' %}
-            <a href="/settings/quickbooks" class="module">
+            <a href="/settings/quickbooks" class="module" id="quickbooks-tile">
                 <h3>QuickBooks</h3>
+                {% if qbo_expired %}
+                <p>QuickBooks connection expired - Reconnect</p>
+                {% else %}
                 <p>Connect QuickBooks and sync customers, invoices, and payments</p>
+                {% endif %}
             </a>
             {% endif %}
             {% if can_payroll %}
