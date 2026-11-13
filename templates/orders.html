@@ -120,6 +120,7 @@ const CAN_EDIT = {{ can_edit|tojson }};
 const CAN_STATUS = {{ can_status|tojson }};
 const IS_ADMIN = {{ is_admin|tojson }};
 const GLASS = {{ glass_names|tojson }};
+const IRREGULAR_RATE = {{ irregular_rate|default(50) }};
 const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 let currentOrder = null;
 let draft = null;
@@ -255,6 +256,7 @@ function openEditor(order) {
   const editor = document.getElementById('order-editor');
   if (!editor) return;
   draft = JSON.parse(JSON.stringify(order));
+  draft.items = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge');
   draft.extra_charges = draft.extra_charges || [];
   draft.discount = draft.discount || {type: 'percent', value: 0};
   document.getElementById('order-project').value = draft.project || '';
@@ -276,13 +278,15 @@ function openEditor(order) {
 }
 function renderLines() {
   const box = document.getElementById('order-lines');
-  box.innerHTML = (draft.items || []).map((item, index) => {
+  box.innerHTML = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge').map((item, index) => {
     const spec = item.spec || {};
+    const checked = item.irregular_shape ? ' checked' : '';
     return '<div class="edit-grid"><input data-line="' + index + '" data-field="name" value="' + esc(item.name || '') + '" aria-label="Line name">'
       + '<input data-line="' + index + '" data-field="width" type="number" step="0.01" value="' + esc(spec.width || '') + '" aria-label="Width">'
       + '<input data-line="' + index + '" data-field="height" type="number" step="0.01" value="' + esc(spec.height || '') + '" aria-label="Height">'
       + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
       + '<input data-line="' + index + '" data-field="pcs" type="number" min="1" step="1" value="' + esc(item.pcs || 1) + '" aria-label="Quantity">'
+      + '<label style="font-size:12px"><input data-line="' + index + '" data-field="irregular" type="checkbox"' + checked + '> Irregular shape</label>'
       + '<button type="button" class="btn small secondary" data-remove="' + index + '">Remove</button></div>';
   }).join('');
 }
@@ -291,7 +295,14 @@ function renderCharges() {
   box.innerHTML = (draft.extra_charges || []).map((charge, index) => '<div class="note">' + esc(charge.label) + ' · ' + Number(charge.amount).toFixed(2) + ' <button type="button" data-remove-charge="' + index + '">Remove</button></div>').join('');
 }
 function refreshPreview() {
-  const subtotal = (draft.items || []).reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const subtotal = (draft.items || []).reduce((sum, item, index) => {
+    const row = document.querySelector('[data-line="' + index + '"][data-field="irregular"]');
+    const irregular = row ? row.checked : !!item.irregular_shape;
+    const rate = Number(item.surcharge_rate || IRREGULAR_RATE || 50);
+    const pcsInput = document.querySelector('[data-line="' + index + '"][data-field="pcs"]');
+    const pcs = pcsInput ? Number(pcsInput.value || item.pcs || 1) : Number(item.pcs || 1);
+    return sum + Number(item.total || 0) + (irregular ? rate * pcs : 0);
+  }, 0);
   const type = document.getElementById('order-discount-type').value;
   const value = Number(document.getElementById('order-discount-value').value || 0);
   let amount = type === 'percent' ? subtotal * value / 100 : value;
@@ -306,15 +317,20 @@ function refreshPreview() {
   document.getElementById('grand-total').textContent = (igu + extras).toFixed(2);
 }
 function collectItems() {
-  const items = (draft.items || []).map((item, index) => {
+  const glass = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge');
+  const items = glass.map((item, index) => {
     const spec = Object.assign({}, item.spec || {});
+    let irregular = !!item.irregular_shape;
     document.querySelectorAll('[data-line="' + index + '"]').forEach(input => {
       const field = input.getAttribute('data-field');
       if (field === 'name') item.name = input.value;
       else if (field === 'pcs') item.pcs = Number(input.value);
+      else if (field === 'irregular') irregular = input.checked;
       else spec[field] = field === 'unit' ? input.value : Number(input.value);
     });
-    return {name: item.name, pcs: item.pcs, spec: spec};
+    const row = {name: item.name, pcs: item.pcs, spec: spec, irregular_shape: irregular};
+    if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
+    return row;
   });
   return items;
 }

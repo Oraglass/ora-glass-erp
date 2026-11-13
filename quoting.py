@@ -455,3 +455,77 @@ def load_pricing(path=None):
             f'Workbook not found or unreadable. Tried: {tried}'
         )
         return fallback, None
+
+
+SURCHARGE_KIND = 'irregular_surcharge'
+DEFAULT_IRREGULAR_RATE = 50.0
+
+
+def _surcharge_rate(value, fallback):
+    try:
+        rate = round(float(value), 2)
+    except (TypeError, ValueError):
+        rate = round(float(fallback), 2)
+    if rate < 0:
+        rate = round(float(fallback), 2)
+    return rate
+
+
+def _piece_count(value):
+    try:
+        pieces = int(value or 1)
+    except (TypeError, ValueError):
+        pieces = 1
+    return pieces if pieces >= 1 else 1
+
+
+def irregular_surcharge_line(description, pcs, rate):
+    """Flat per-piece surcharge. The rate is not a tier markup."""
+    pieces = _piece_count(pcs)
+    amount = _surcharge_rate(rate, DEFAULT_IRREGULAR_RATE)
+    label = f"Irregular shape surcharge – {description or 'Glass'}"
+    return {
+        'kind': SURCHARGE_KIND,
+        'name': label,
+        'description': label,
+        'pcs': pieces,
+        'qty': pieces,
+        'unit_price': amount,
+        'price_pc': amount,
+        'price_sqf': 0,
+        'sqf': 0,
+        'total': round(amount * pieces, 2),
+        'surcharge_rate': amount,
+    }
+
+
+def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
+    """Put a surcharge line after each irregular glass line. Stored rates stay as saved."""
+    rows = [item for item in items or [] if isinstance(item, dict)]
+    result = []
+    index = 0
+    while index < len(rows):
+        item = dict(rows[index])
+        if item.get('kind') == SURCHARGE_KIND:
+            index += 1
+            continue
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        irregular = bool(item.get('irregular_shape') or item.get('irregular'))
+        stored = None
+        if irregular and isinstance(following, dict) and following.get('kind') == SURCHARGE_KIND:
+            stored = following.get('surcharge_rate', following.get('price_pc', following.get('unit_price')))
+            index += 1
+        elif item.get('surcharge_rate') not in (None, ''):
+            stored = item.get('surcharge_rate')
+        item['irregular_shape'] = irregular
+        if irregular:
+            rate = _surcharge_rate(stored if stored not in (None, '') else default_rate, default_rate)
+            item['surcharge_rate'] = rate
+            pieces = item.get('pcs') if item.get('pcs') not in (None, '', '-') else item.get('qty')
+            result.append(item)
+            result.append(irregular_surcharge_line(item.get('name') or 'Glass', pieces, rate))
+        else:
+            item.pop('surcharge_rate', None)
+            result.append(item)
+        index += 1
+    return result

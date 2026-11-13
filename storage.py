@@ -25,6 +25,33 @@ _locks = {}
 _locks_guard = threading.Lock()
 
 
+def pricing_settings_path():
+    return os.path.join(data_dir(), 'pricing_settings.json')
+
+
+def load_pricing_settings():
+    raw = read_json(pricing_settings_path(), {})
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        rate = round(float(raw.get('irregular_shape_surcharge', 50)), 2)
+    except (TypeError, ValueError):
+        rate = 50.0
+    if rate < 0 or rate > 100000:
+        rate = 50.0
+    return {'irregular_shape_surcharge': rate}
+
+
+def save_pricing_settings(settings):
+    if not isinstance(settings, dict):
+        raise TypeError('settings must be an object')
+    path = pricing_settings_path()
+    with lock_for(path):
+        atomic_write_json(path, {
+            'irregular_shape_surcharge': round(float(settings.get('irregular_shape_surcharge', 50)), 2),
+        })
+
+
 def data_dir():
     """Directory for JSON state. Follows DATA_DIR, else the folder that holds QUOTES_PATH."""
     explicit = os.environ.get('DATA_DIR', '').strip()

@@ -52,6 +52,7 @@ from quoting import (
     area_sqf,
     calculate_price_sqf,
     classify,
+    expand_irregular_lines,
     default_quote_tier,
     load_pricing,
     reprice_size_line,
@@ -114,6 +115,8 @@ from storage import (
     append_quote,
     load_kiosks,
     load_pay_adjustments,
+    load_pricing_settings,
+    save_pricing_settings,
     load_pay_rates,
     load_paystubs,
     load_payroll_audit,
@@ -1256,6 +1259,7 @@ def quote_template_context(user):
         'import_admin': user.get('role') == 'admin',
         'import_customer': user.get('role') == 'customer',
         'import_customer_id': user.get('customer_id') or '',
+        'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'import_companies': [
             {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
@@ -1406,6 +1410,10 @@ def _quickbooks_save_settings(quickbooks, data):
         if label and item:
             cleaned[label] = item
     settings['default_item'] = default_item or 'Insulated Glass Units'
+    settings['irregular_item'] = clean_text(
+        data.get('irregular_item') or settings.get('irregular_item') or 'Irregular shape surcharge',
+        120,
+    ) or 'Irregular shape surcharge'
     connection = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
     if connection == 'ca':
         from storage import PROVINCE_CODES
@@ -1566,6 +1574,7 @@ def export_quote():
     items = data.get('items', [])
     if not isinstance(items, list):
         return json_error('Items must be a list', 400)
+    items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.4*inch, bottomMargin=0.4*inch)
@@ -1711,6 +1720,7 @@ def orders():
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in GLASS],
+        irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
     )
 
 
@@ -1731,6 +1741,7 @@ def order_detail(order_id):
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in GLASS],
+        irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
         focus_id=order_id,
     )
 
@@ -1897,11 +1908,18 @@ def pricing_admin():
             cfg['label'] = label
             cfg['glass_markup'] = round(glass / 100.0, 6)
             cfg['spacer_markup'] = round(spacer / 100.0, 6)
+        try:
+            surcharge = round(float(request.form.get('irregular_shape_surcharge', 50)), 2)
+        except (TypeError, ValueError):
+            surcharge = -1
+        if surcharge < 0 or surcharge > 100000:
+            errors.append('surcharge')
         if errors:
             flash('Check markup values for: ' + ', '.join(errors), 'error')
         else:
             save_tiers(tiers)
-            flash('Tier markups saved. Tier 5 is twice Tier 2.', 'success')
+            save_pricing_settings({'irregular_shape_surcharge': surcharge})
+            flash('Tier markups saved. Tier 5 is twice Tier 2. Irregular shape surcharge saved.', 'success')
             return redirect(url_for('pricing_admin'))
         tiers = load_tiers()
     samples = []
@@ -1912,7 +1930,12 @@ def pricing_admin():
             'tier2': calculate_price_sqf(payload, 'T2', PRICING, tiers),
             'tier5': calculate_price_sqf(payload, 'T5', PRICING, tiers),
         })
-    return render_template('pricing.html', tiers=ordered_tiers(tiers), sample_prices=samples)
+    return render_template(
+        'pricing.html',
+        tiers=ordered_tiers(tiers),
+        sample_prices=samples,
+        irregular_shape_surcharge=load_pricing_settings()['irregular_shape_surcharge'],
+    )
 
 
 @app.route('/users')
@@ -2400,7 +2423,7 @@ def save_quote():
         'company': company,
         'customer_id': customer_id,
         'project': clean_text(data.get('project'), 200),
-        'items': items,
+        'items': expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge']),
         'currency': currency,
         'type': quote_type,
         'tier': tier,
@@ -2970,6 +2993,7 @@ def _normalize_import_lines(raw_lines):
             'spacer_name': clean_text(raw.get('spacer_name'), 200),
             'glass_product': glass,
             'spacer_product': spacer,
+            'irregular_shape': bool(raw.get('irregular_shape') or raw.get('irregular')),
             'errors': errors,
         }
         lines.append(line)
@@ -3016,6 +3040,7 @@ def quote_from_import(import_id):
             'spec': spec,
             'mark': line.get('mark') or '',
             'source_glass': line.get('glass_name') or '',
+            'irregular_shape': bool(line.get('irregular_shape') or line.get('irregular')),
         })
     if user.get('role') == 'customer':
         company = record.get('company') or 'Customer'
@@ -3036,6 +3061,7 @@ def quote_from_import(import_id):
         'tier': tier,
         'import_id': record.get('id'),
     }
+    quote['items'] = expand_irregular_lines(quote['items'], load_pricing_settings()['irregular_shape_surcharge'])
     stored = append_quote(quote)
     record['status'] = 'quoted'
     record['quote_id'] = stored['id']
@@ -3534,11 +3560,13 @@ def convert_quote_to_order(quote_id):
     currency = quote.get('currency') or 'usd'
     priced_items = []
     for item in items:
+        if item.get('kind') == 'irregular_surcharge':
+            continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if not _usable_size_spec(spec):
             return json_error('This quote does not include the size inputs needed to reprice it.', 400)
         priced = reprice_size_line(spec, item.get('pcs'), company_tier, currency, PRICING, tiers)
-        priced_items.append({
+        line = {
             'name': item.get('name') or '',
             'spec': spec,
             'sqf': priced['sqf'],
@@ -3546,7 +3574,12 @@ def convert_quote_to_order(quote_id):
             'price_pc': priced['price_pc'],
             'pcs': priced['pcs'],
             'total': priced['total'],
-        })
+            'irregular_shape': bool(item.get('irregular_shape')),
+        }
+        if item.get('surcharge_rate') not in (None, ''):
+            line['surcharge_rate'] = item.get('surcharge_rate')
+        priced_items.append(line)
+    priced_items = expand_irregular_lines(priced_items, load_pricing_settings()['irregular_shape_surcharge'])
     grand = round(sum(line['total'] for line in priced_items), 2)
     credit_check = conversion_allowed(
         grand, customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
@@ -3637,6 +3670,8 @@ def _parse_order_items(raw, tier, currency, tiers):
     for raw_item in raw:
         if not isinstance(raw_item, dict):
             return None, 'Each line must be an object.'
+        if raw_item.get('kind') == 'irregular_surcharge':
+            continue
         spec_in = raw_item.get('spec')
         if not isinstance(spec_in, dict):
             return None, 'Each line needs a size spec.'
@@ -3664,7 +3699,7 @@ def _parse_order_items(raw, tier, currency, tiers):
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
-        items.append({
+        line = {
             'name': name,
             'spec': spec,
             'sqf': priced['sqf'],
@@ -3672,7 +3707,12 @@ def _parse_order_items(raw, tier, currency, tiers):
             'price_pc': priced['price_pc'],
             'pcs': priced['pcs'],
             'total': priced['total'],
-        })
+            'irregular_shape': bool(raw_item.get('irregular_shape')),
+        }
+        if raw_item.get('surcharge_rate') not in (None, ''):
+            line['surcharge_rate'] = raw_item.get('surcharge_rate')
+        items.append(line)
+    items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     return items, None
 
 
