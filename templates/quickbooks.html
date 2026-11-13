@@ -147,7 +147,7 @@ function renderReview(connection, rows) {
   box.dataset.rows = JSON.stringify(rows);
 }
 function cardOf(node) {
-  return node.closest('.card');
+  return node.closest('[data-connection]');
 }
 function post(url, body) {
   return api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
@@ -156,8 +156,8 @@ document.getElementById('connections').addEventListener('click', async (event) =
   const button = event.target.closest('button');
   if (!button) return;
   const action = button.getAttribute('data-action');
-  const connection = button.getAttribute('data-connection') || 'us';
   const card = cardOf(button);
+  const connection = (card && card.getAttribute('data-connection')) || button.getAttribute('data-connection') || 'us';
   try {
     if (action === 'sync') render(await post('/api/quickbooks/sync', {connection}));
     if (action === 'disconnect') render(await post('/api/quickbooks/disconnect', {connection}));

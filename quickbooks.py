@@ -417,7 +417,7 @@ def find_link(kind, erp_id=None, qbo_id=None):
     return None
 
 
-def upsert_link(kind, erp_id, qbo_id, sync_token, origin):
+def upsert_link(kind, erp_id, qbo_id, sync_token, origin, realm_id=None):
     key = _connection_key()
     rows = load_links()
     for row in rows:
@@ -429,6 +429,8 @@ def upsert_link(kind, erp_id, qbo_id, sync_token, origin):
             row['sync_token'] = str(sync_token or '0')
             row['origin'] = origin or row.get('origin') or 'erp'
             row['connection'] = key
+            if realm_id:
+                row['realm_id'] = str(realm_id)
             save_links(rows)
             return row
     record = {
@@ -439,6 +441,8 @@ def upsert_link(kind, erp_id, qbo_id, sync_token, origin):
         'sync_token': str(sync_token or '0'),
         'origin': origin or 'erp',
     }
+    if realm_id:
+        record['realm_id'] = str(realm_id)
     rows.append(record)
     save_links(rows)
     return record
@@ -476,7 +480,7 @@ def _card(key, label, currency):
             'extra_items': settings.get('extra_items') or {},
             'connection_expired': connection_expired(),
             'intercompany_qbo_id': settings.get('intercompany_qbo_id') or '',
-            'log': list(reversed((settings.get('log') or load_log())[-20:])),
+            'log': list(reversed((settings.get('log') or [])[-20:])),
             'erp_customers': _erp_customers(),
         }
 
@@ -829,6 +833,45 @@ def _erp_customers():
     return rows
 
 
+def customer_label(row):
+    """The company name QuickBooks shows. Never the contact's GivenName or FamilyName."""
+    if not isinstance(row, dict):
+        return ''
+    for key in ('DisplayName', 'CompanyName', 'FullyQualifiedName'):
+        value = str(row.get(key) or '').strip()
+        if value:
+            return value
+    return ''
+
+
+def _active_realm():
+    """Realm stored on this card. Refuses a card connected to the other company."""
+    tokens = ensure_access_token()
+    realm = str(tokens.get('realm_id') or '')
+    key = _connection_key()
+    if not realm:
+        raise QuickBooksError('QuickBooks is not connected.')
+    if key == 'us' and realm == CANADA_REALM:
+        raise QuickBooksError(
+            'The Ora Glass Inc card is connected to the Canada QuickBooks company. '
+            'Reconnect it to realm 9341456057091137.'
+        )
+    if key == 'ca' and realm == US_REALM:
+        raise QuickBooksError(
+            'The Canada card is connected to the US QuickBooks company. '
+            'Reconnect it to realm 123146408064299.'
+        )
+    store = _read_token_store()
+    other = 'ca' if key == 'us' else 'us'
+    other_realm = str(((store.get('connections') or {}).get(other) or {}).get('realm_id') or '')
+    if other_realm and other_realm == realm:
+        raise QuickBooksError(
+            f'Both QuickBooks cards are connected to realm {realm}. '
+            'Reconnect each card to its own company before linking.'
+        )
+    return realm
+
+
 def link_customer(qbo_id, customer_id):
     """Attach one QuickBooks customer to an existing ERP company. Does not import documents."""
     if not connected():
@@ -841,19 +884,18 @@ def link_customer(qbo_id, customer_id):
     if customer_id not in customers:
         raise QuickBooksError('That ERP company does not exist.')
     remote = _customer_record(qbo_id)
-    if not remote.get('Id'):
-        raise QuickBooksError('That QuickBooks customer was not found.')
     qbo_id = str(remote.get('Id'))
-    upsert_link('customer', customer_id, qbo_id, remote.get('SyncToken'), 'qbo')
+    realm = remote.get('realm_id') or _active_realm()
+    upsert_link('customer', customer_id, qbo_id, remote.get('SyncToken'), 'qbo', realm_id=realm)
     for other_id, other in customers.items():
         if other_id != customer_id and str(other.get('qbo_id') or '') == qbo_id:
             other.pop('qbo_id', None)
     customers[customer_id]['qbo_id'] = qbo_id
     save_customers(customers)
-    name = remote.get('DisplayName') or qbo_id
+    name = customer_label(remote) or qbo_id
     company = customers[customer_id].get('name') or customer_id
-    log('info', f'Linked QuickBooks customer {name} ({qbo_id}) to {company} ({customer_id}).')
-    return {'qbo_id': qbo_id, 'customer_id': customer_id, 'name': name, 'company': company}
+    log('info', f'Linked QuickBooks customer {name} (id {qbo_id}, realm {realm}) to {company} ({customer_id}).')
+    return {'qbo_id': qbo_id, 'customer_id': customer_id, 'name': name, 'company': company, 'realm_id': realm}
 
 
 def import_linked_history():
@@ -863,6 +905,7 @@ def import_linked_history():
     """
     if not connected():
         raise QuickBooksError('QuickBooks is not connected.')
+    realm = _active_realm()
     seen = []
     for row in load_links():
         if row.get('kind') != 'customer' or (row.get('connection') or 'us') != _connection_key():
@@ -871,21 +914,35 @@ def import_linked_history():
         if not customer_id or customer_id in seen or customer_id not in load_customers():
             continue
         seen.append(customer_id)
-    invoices = credits = payments = 0
+    invoices = credits = payments = confirmed = 0
     for customer_id in seen:
+        link = find_link('customer', erp_id=customer_id)
+        linked_realm = str((link or {}).get('realm_id') or '')
+        if linked_realm != realm:
+            log(
+                'error',
+                f'{customer_id} is linked to QuickBooks id {(link or {}).get("qbo_id")} without realm {realm}. '
+                'Link that customer again on this card before importing.',
+            )
+            continue
+        remote = _customer_record(link.get('qbo_id'))
+        log('info', f'Importing QuickBooks customer {customer_label(remote)} (id {remote.get("Id")}, realm {realm}).')
         counts = _import_customer_activity(customer_id)
         invoices += counts['invoices']
         credits += counts['credits']
         payments += counts['payments']
+        confirmed += 1
     if not seen:
         message = 'Import found no linked customers. Link the QuickBooks customer to an ERP company, then import again.'
+    elif not confirmed:
+        message = 'No customers were imported. Link each QuickBooks customer again on this card so the company realm is confirmed.'
     else:
         message = (
             f'Imported existing invoices: {invoices}, credit memos: {credits}, '
-            f'payments: {payments}, linked customers: {len(seen)}.'
+            f'payments: {payments}, linked customers: {confirmed}.'
         )
     log('info', message)
-    return {'customers': len(seen), 'invoices': invoices, 'credits': credits, 'payments': payments, 'message': message}
+    return {'customers': confirmed, 'invoices': invoices, 'credits': credits, 'payments': payments, 'message': message}
 
 
 def apply_import(decisions):
@@ -913,7 +970,7 @@ def apply_import(decisions):
             remote = _customer_record(qbo_id)
             customers[customer_id] = _customer_from_qbo(remote, customer_id)
             customers[customer_id]['qbo_origin'] = True
-        upsert_link('customer', customer_id, qbo_id, row.get('sync_token'), 'qbo')
+        upsert_link('customer', customer_id, qbo_id, row.get('sync_token'), 'qbo', realm_id=_active_realm())
         customers[customer_id]['qbo_id'] = str(qbo_id)
         linked.append(customer_id)
     save_customers(customers)
@@ -927,8 +984,39 @@ def apply_import(decisions):
 
 
 def _customer_record(qbo_id):
-    data = api_get(f"/v3/company/{load_tokens()['realm_id']}/customer/{qbo_id}")
-    return data.get('Customer') or {}
+    """Read one customer from this card's realm. The id must match; the name is DisplayName."""
+    qbo_id = str(qbo_id or '').strip()
+    if not qbo_id.isdigit():
+        raise QuickBooksError('Enter the QuickBooks customer id.')
+    realm = _active_realm()
+    headers, token_realm = _auth_headers()
+    if str(token_realm) != realm:
+        raise QuickBooksError(f'QuickBooks token realm {token_realm} does not match realm {realm}.')
+    statement = (
+        'select Id, SyncToken, DisplayName, CompanyName, FullyQualifiedName '
+        f"from Customer where Id = '{qbo_id}'"
+    )
+    url = api_host() + f'/v3/company/{realm}/query?' + urllib.parse.urlencode({
+        'query': statement,
+        'minorversion': MINOR_VERSION,
+    })
+    data = _json_call('GET', url, headers, None)
+    rows = []
+    for key, value in (data.get('QueryResponse') or {}).items():
+        if isinstance(value, list):
+            rows = value
+            break
+    match = next((row for row in rows if isinstance(row, dict) and str(row.get('Id')) == qbo_id), None)
+    if not match:
+        fetched = api_get(f'/v3/company/{realm}/customer/{qbo_id}')
+        candidate = fetched.get('Customer') if isinstance(fetched.get('Customer'), dict) else None
+        if isinstance(candidate, dict) and str(candidate.get('Id')) == qbo_id:
+            match = candidate
+    if not isinstance(match, dict) or str(match.get('Id') or '') != qbo_id:
+        raise QuickBooksError(f'QuickBooks customer {qbo_id} was not found in realm {realm}.')
+    match = dict(match)
+    match['realm_id'] = realm
+    return match
 
 
 def _import_customer_activity(customer_id):
