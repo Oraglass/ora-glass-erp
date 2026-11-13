@@ -1111,6 +1111,13 @@ def change_password():
     return render_template('change_password.html', must_change=bool(user.get('must_change_password')))
 
 
+def _quickbooks_expired(user):
+    if not user or user.get('role') != 'admin':
+        return False
+    import quickbooks
+    return quickbooks.connection_expired()
+
+
 def role_display_name(user):
     role = (user or {}).get('role') or ''
     if role in ROLES:
@@ -1132,6 +1139,7 @@ def dashboard():
         can_payroll=can_manage_payroll(user),
         can_time=can_manage_time(user),
         template_requests=open_request_count() if user.get('role') == 'admin' else 0,
+        qbo_expired=_quickbooks_expired(user),
     )
 
 
@@ -1168,6 +1176,46 @@ def quote_template_context(user):
         'import_glass': [item.get('name') for item in GLASS],
         'import_spacers': [item.get('name') for item in SPACERS],
     }
+
+
+@app.route('/eula')
+def eula():
+    return render_template('eula.html')
+
+
+@app.route('/privacy')
+def privacy():
+    return render_template('privacy.html')
+
+
+@app.route('/quickbooks')
+@app.route('/quickbooks/launch')
+def quickbooks_launch():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login', next='/settings/quickbooks'))
+    if user.get('must_change_password'):
+        return redirect(url_for('change_password'))
+    if user.get('role') != 'admin':
+        return forbidden()
+    return redirect(url_for('quickbooks_settings'))
+
+
+@app.route('/quickbooks/disconnected')
+def quickbooks_disconnected():
+    import quickbooks
+    tokens = quickbooks.load_tokens()
+    realm = (request.args.get('realmId') or '').strip()
+    stored_realm = str(tokens.get('realm_id') or '')
+    cleared = False
+    mismatched = False
+    if tokens.get('refresh_token'):
+        if realm and stored_realm and realm != stored_realm:
+            mismatched = True
+        else:
+            quickbooks.disconnect()
+            cleared = True
+    return render_template('quickbooks_disconnected.html', cleared=cleared, mismatched=mismatched)
 
 
 @app.route('/settings/quickbooks')

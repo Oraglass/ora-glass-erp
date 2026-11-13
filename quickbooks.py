@@ -38,6 +38,9 @@ CDC_INTERVAL = 15 * 60
 DEFAULT_ITEM = 'Insulated Glass Units'
 DEFAULT_TAX = 'NON'
 TRANSPORT = None
+SLEEP = time.sleep
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+RETRY_DELAYS = (1, 2, 4)
 
 
 class QuickBooksError(Exception):
@@ -99,7 +102,25 @@ def save_tokens(tokens):
 
 def disconnect():
     save_tokens({})
+    settings = load_settings()
+    settings['connection_expired'] = False
+    save_settings(settings)
     log('info', 'Disconnected from QuickBooks.')
+
+
+def mark_connection_expired(detail):
+    """Drop a revoked or repeatedly rejected connection so an admin can reconnect."""
+    save_tokens({})
+    settings = load_settings()
+    settings['connection_expired'] = True
+    save_settings(settings)
+    log('error', 'QuickBooks connection expired. Reconnect. ' + detail)
+
+
+def connection_expired():
+    settings = load_settings()
+    tokens = load_tokens()
+    return bool(settings.get('connection_expired')) and not tokens.get('refresh_token')
 
 
 def load_settings():
@@ -197,6 +218,7 @@ def status_view():
         'default_item': settings.get('default_item') or DEFAULT_ITEM,
         'tax_code': settings.get('tax_code') or DEFAULT_TAX,
         'extra_items': settings.get('extra_items') or {},
+        'connection_expired': connection_expired(),
         'log': list(reversed(load_log()[-50:])),
     }
 
@@ -220,7 +242,32 @@ def _basic_auth():
     return 'Basic ' + base64.b64encode(raw.encode()).decode()
 
 
-def _http(method, url, headers, body):
+def _header(headers, name):
+    if not headers:
+        return ''
+    wanted = name.lower().replace('-', '_')
+    for key, value in headers.items():
+        if str(key).lower().replace('-', '_') == wanted:
+            return str(value or '')
+    return ''
+
+
+def _retry_delay(headers, attempt):
+    raw = _header(headers, 'retry-after')
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+
+
+def _token_url(url):
+    token = os.environ.get('QBO_TOKEN_URL') or TOKEN_URL
+    return url.split('?', 1)[0] == token.split('?', 1)[0]
+
+
+def _http_once(method, url, headers, body):
     if TRANSPORT is not None:
         return TRANSPORT(method, url, headers, body)
     data = body if isinstance(body, bytes) or body is None else body.encode()
@@ -233,12 +280,45 @@ def _http(method, url, headers, body):
         return exc.code, dict(exc.headers or {}), exc.read()
 
 
+def _send(method, url, headers, body, retry_auth=True):
+    """Retry transient failures. On an API 401, refresh once and retry the request once."""
+    headers = dict(headers or {})
+    attempt = 0
+    auth_retried = False
+    while True:
+        try:
+            status, resp_headers, raw = _http_once(method, url, headers, body)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt >= 3:
+                raise QuickBooksError(f'QuickBooks network error: {exc}') from exc
+            SLEEP(RETRY_DELAYS[attempt])
+            attempt += 1
+            continue
+        tid = _header(resp_headers, 'intuit_tid')
+        if status == 401 and retry_auth and not _token_url(url):
+            if auth_retried:
+                detail = f'401 after refresh. intuit_tid={tid}' if tid else '401 after refresh.'
+                mark_connection_expired(detail)
+                raise QuickBooksError('QuickBooks connection expired. Reconnect.', status=401)
+            auth_retried = True
+            tokens = ensure_access_token(force=True)
+            headers['Authorization'] = 'Bearer ' + tokens['access_token']
+            continue
+        if status in RETRYABLE_STATUS and attempt < 3:
+            SLEEP(_retry_delay(resp_headers, attempt))
+            attempt += 1
+            continue
+        if status >= 400 and tid:
+            log('error', f'QuickBooks error {status}. intuit_tid={tid}')
+        return status, resp_headers, raw
+
+
 def _json_call(method, url, headers, payload):
     encoded = None if payload is None else json.dumps(payload).encode()
     headers = dict(headers)
     if encoded is not None:
         headers['Content-Type'] = 'application/json'
-    status, _headers, raw = _http(method, url, headers, encoded)
+    status, _headers, raw = _send(method, url, headers, encoded)
     try:
         data = json.loads(raw.decode() or '{}')
     except json.JSONDecodeError:
@@ -247,6 +327,9 @@ def _json_call(method, url, headers, payload):
         fault = ((data.get('Fault') or {}).get('Error') or [{}])[0]
         code = str(fault.get('code') or '')
         message = fault.get('Message') or fault.get('Detail') or data.get('error') or 'QuickBooks request failed'
+        tid = _header(_headers, 'intuit_tid')
+        if tid and 'intuit_tid=' not in str(message):
+            message = f'{message} intuit_tid={tid}'
         raise QuickBooksError(str(message), status=status, sync_conflict=code == '5010')
     return data
 
@@ -257,11 +340,11 @@ def exchange_code(code, realm_id):
         'code': code,
         'redirect_uri': os.environ['QBO_REDIRECT_URI'].strip(),
     }).encode()
-    status, _headers, raw = _http('POST', os.environ.get('QBO_TOKEN_URL') or TOKEN_URL, {
+    status, _headers, raw = _send('POST', os.environ.get('QBO_TOKEN_URL') or TOKEN_URL, {
         'Authorization': _basic_auth(),
         'Accept': 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded',
-    }, form)
+    }, form, retry_auth=False)
     data = json.loads(raw.decode() or '{}')
     if status >= 400:
         raise QuickBooksError(data.get('error_description') or 'QuickBooks did not accept the authorization code.', status)
@@ -272,6 +355,7 @@ def exchange_code(code, realm_id):
     save_tokens(tokens)
     settings = load_settings()
     settings['last_cdc'] = _now()
+    settings['connection_expired'] = False
     save_settings(settings)
     log('info', f'Connected to {company or realm_id}.')
     return tokens
@@ -290,24 +374,37 @@ def _store_token_response(data, realm_id):
     return tokens
 
 
-def ensure_access_token():
+def ensure_access_token(force=False):
     tokens = load_tokens()
     if not tokens.get('refresh_token') or not tokens.get('realm_id'):
         raise QuickBooksError('QuickBooks is not connected.')
-    if float(tokens.get('expires_at') or 0) - 60 > time.time() and tokens.get('access_token'):
+    if not force and float(tokens.get('expires_at') or 0) - 60 > time.time() and tokens.get('access_token'):
         return tokens
     form = urllib.parse.urlencode({
         'grant_type': 'refresh_token',
         'refresh_token': tokens['refresh_token'],
     }).encode()
-    status, _headers, raw = _http('POST', os.environ.get('QBO_TOKEN_URL') or TOKEN_URL, {
+    status, resp_headers, raw = _send('POST', os.environ.get('QBO_TOKEN_URL') or TOKEN_URL, {
         'Authorization': _basic_auth(),
         'Accept': 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded',
-    }, form)
-    data = json.loads(raw.decode() or '{}')
+    }, form, retry_auth=False)
+    try:
+        data = json.loads(raw.decode() or '{}')
+    except json.JSONDecodeError:
+        data = {}
     if status >= 400:
-        raise QuickBooksError(data.get('error_description') or 'QuickBooks refused to refresh the connection.', status)
+        tid = _header(resp_headers, 'intuit_tid')
+        detail = data.get('error') or data.get('error_description') or f'HTTP {status}'
+        if data.get('error') == 'invalid_grant' or status == 401:
+            suffix = f' intuit_tid={tid}' if tid else ''
+            mark_connection_expired(f'{detail}.{suffix}')
+            raise QuickBooksError('QuickBooks connection expired. Reconnect.', status)
+        message = data.get('error_description') or 'QuickBooks refused to refresh the connection.'
+        if tid:
+            message = f'{message} intuit_tid={tid}'
+            log('error', message)
+        raise QuickBooksError(message, status)
     tokens = _store_token_response(data, tokens.get('realm_id'))
     log('info', 'Refreshed the QuickBooks access token.')
     return tokens
