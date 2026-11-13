@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import secrets
 import warnings
 
 from storage import TIER_ORDER, pricing_search_paths, resolve_pricing_path
@@ -455,3 +456,108 @@ def load_pricing(path=None):
             f'Workbook not found or unreadable. Tried: {tried}'
         )
         return fallback, None
+
+
+SURCHARGE_KIND = 'irregular_surcharge'
+DWG_KIND = 'dwg_creation'
+DEFAULT_IRREGULAR_RATE = 50.0
+DEFAULT_DWG_FEE = 50.0
+DRAWING_NOTE = 'A CAD drawing (DWG) will be required for irregular shapes when the order is placed.'
+
+
+def _surcharge_rate(value, fallback):
+    try:
+        rate = round(float(value), 2)
+    except (TypeError, ValueError):
+        rate = round(float(fallback), 2)
+    if rate < 0:
+        rate = round(float(fallback), 2)
+    return rate
+
+
+def _piece_count(value):
+    try:
+        pieces = int(value or 1)
+    except (TypeError, ValueError):
+        pieces = 1
+    return pieces if pieces >= 1 else 1
+
+
+def irregular_surcharge_line(description, pcs, rate):
+    """Flat per-piece surcharge. The rate is not a tier markup."""
+    pieces = _piece_count(pcs)
+    amount = _surcharge_rate(rate, DEFAULT_IRREGULAR_RATE)
+    label = f"Irregular shape surcharge – {description or 'Glass'}"
+    return {
+        'kind': SURCHARGE_KIND,
+        'name': label,
+        'description': label,
+        'pcs': pieces,
+        'qty': pieces,
+        'unit_price': amount,
+        'price_pc': amount,
+        'price_sqf': 0,
+        'sqf': 0,
+        'total': round(amount * pieces, 2),
+        'surcharge_rate': amount,
+    }
+
+
+def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
+    """Put a surcharge line after each irregular glass line. Stored rates stay as saved."""
+    rows = [item for item in items or [] if isinstance(item, dict)]
+    result = []
+    index = 0
+    while index < len(rows):
+        item = dict(rows[index])
+        if item.get('kind') in {SURCHARGE_KIND, DWG_KIND}:
+            index += 1
+            continue
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        irregular = bool(item.get('irregular_shape') or item.get('irregular'))
+        stored = None
+        if irregular and isinstance(following, dict) and following.get('kind') == SURCHARGE_KIND:
+            stored = following.get('surcharge_rate', following.get('price_pc', following.get('unit_price')))
+            index += 1
+        elif item.get('surcharge_rate') not in (None, ''):
+            stored = item.get('surcharge_rate')
+        item['irregular_shape'] = irregular
+        if irregular:
+            if not item.get('line_id'):
+                item['line_id'] = secrets.token_hex(4)
+            rate = _surcharge_rate(stored if stored not in (None, '') else default_rate, default_rate)
+            item['surcharge_rate'] = rate
+            pieces = item.get('pcs') if item.get('pcs') not in (None, '', '-') else item.get('qty')
+            result.append(item)
+            result.append(irregular_surcharge_line(item.get('name') or 'Glass', pieces, rate))
+        else:
+            item.pop('surcharge_rate', None)
+            result.append(item)
+        index += 1
+    return result
+
+
+def dwg_creation_line(line_id, rate):
+    """One flat charge for a drawing that was not supplied as a DWG file."""
+    amount = _surcharge_rate(rate, DEFAULT_DWG_FEE)
+    return {
+        'kind': DWG_KIND,
+        'name': 'DWG drawing creation',
+        'description': 'DWG drawing creation',
+        'drawing_for': line_id,
+        'pcs': 1,
+        'qty': 1,
+        'unit_price': amount,
+        'price_pc': amount,
+        'price_sqf': 0,
+        'sqf': 0,
+        'total': amount,
+        'surcharge_rate': amount,
+    }
+
+
+def irregular_glass_lines(items):
+    return [
+        item for item in items or []
+        if isinstance(item, dict) and item.get('irregular_shape') and item.get('kind') != SURCHARGE_KIND
+    ]

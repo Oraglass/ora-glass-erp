@@ -25,9 +25,15 @@ input{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:1
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="color:#333">Tier markups</h2>
-<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is always twice the Tier 2 price of each glass, spacer, and sealant. Editing Tier 2 updates Tier 5. Temper add-ons stay the same at every tier.</p>
+<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is always twice the Tier 2 price of each glass, spacer, and sealant. Editing Tier 2 updates Tier 5. Temper add-ons stay the same at every tier. The irregular shape surcharge is a flat amount per piece in the quote currency. The DWG drawing creation fee is a flat amount per file that is not a .dwg. Neither amount is marked up by tier. Quotes and orders already saved keep the rate they were given.</p>
 <form method="POST">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label style="display:block;font-size:12px;color:#666;margin-bottom:8px">Irregular shape surcharge per piece
+<input name="irregular_shape_surcharge" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(irregular_shape_surcharge) }}" style="max-width:160px;margin-top:4px">
+</label>
+<label style="display:block;font-size:12px;color:#666;margin-bottom:12px">DWG drawing creation per non-DWG file
+<input name="dwg_creation_fee" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(dwg_creation_fee) }}" style="max-width:160px;margin-top:4px">
+</label>
 <table>
 <thead><tr><th>Tier</th><th>Label</th><th>Glass markup %</th><th>Spacer markup %</th></tr></thead>
 <tbody>

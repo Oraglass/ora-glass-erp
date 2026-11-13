@@ -122,6 +122,7 @@ def test_excel_import_requires_a_mapping_then_reuses_it(client):
             'glass_product': line['glass_product'],
             'spacer_product': line['spacer_product'],
             'glass_name': line['glass_name'],
+            'irregular_shape': line['mark'] == 'W1',
         } for line in ready['lines']],
     })
     assert created.status_code == 200, created.get_json()
@@ -137,6 +138,10 @@ def test_excel_import_requires_a_mapping_then_reuses_it(client):
     assert spec['width'] == 23.5
     assert spec['spacer1'] == SPACER
     assert saved['items'][0]['sqf'] > 0
+    assert saved['items'][0]['irregular_shape'] is True
+    assert saved['items'][1]['kind'] == 'irregular_surcharge'
+    assert saved['items'][1]['pcs'] == saved['items'][0]['pcs']
+    assert saved['items'][1]['unit_price'] == 50
 
     again = _upload(client, 'harbor-inches.xlsx', _file('order_inches.xlsx'), currency='usd')
     reused = again.get_json()

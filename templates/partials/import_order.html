@@ -24,7 +24,7 @@
 <h3 style="color:#333;margin:16px 0 8px">Preview</h3>
 <p class="import-note" id="import-unit"></p>
 <table class="import-table">
-<thead><tr><th>Mark</th><th>Width (in)</th><th>Height (in)</th><th>Pieces</th><th>Their glass</th><th>Our glass</th><th>Spacer</th><th>Price</th><th></th></tr></thead>
+<thead><tr><th>Mark</th><th>Width (in)</th><th>Height (in)</th><th>Pieces</th><th>Their glass</th><th>Our glass</th><th>Spacer</th><th>Irregular</th><th>Price</th><th></th></tr></thead>
 <tbody id="import-lines"></tbody>
 </table>
 <button type="button" class="btn" id="import-create" style="margin-top:12px">Create quote</button>
@@ -162,6 +162,7 @@
         + '<td>' + esc(line.glass_name || '') + (line.spacer_name ? '<div class="import-note">' + esc(line.spacer_name) + '</div>' : '') + '</td>'
         + '<td><select data-field="glass" style="width:150px">' + optionList(IMPORT.glass, line.glass_product || '') + '</select></td>'
         + '<td><select data-field="spacer" style="width:150px">' + optionList(IMPORT.spacers, line.spacer_product || '') + '</select></td>'
+        + '<td><label><input type="checkbox" data-field="irregular"' + (line.irregular_shape ? ' checked' : '') + '> Irregular</label></td>'
         + '<td class="import-price">' + esc(price) + '</td>'
         + '<td><button type="button" class="mini" data-remove="' + index + '">Remove</button><div class="import-note">' + esc((line.errors || []).join(' ')) + '</div></td></tr>';
     }).join('');
@@ -284,6 +285,7 @@
       qty: row.querySelector('[data-field=qty]').value,
       glass_product: row.querySelector('[data-field=glass]').value,
       spacer_product: row.querySelector('[data-field=spacer]').value,
+      irregular_shape: row.querySelector('[data-field=irregular]').checked,
       glass_name: row.getAttribute('data-glass') || '',
       spacer_name: row.getAttribute('data-spacer') || ''
     }));
