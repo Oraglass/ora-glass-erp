@@ -120,8 +120,9 @@ function cardBody(card, status) {
     + '<h2>Existing invoices and payments</h2><p class="note">Link the QuickBooks customer to the ERP company, then import. Open Windows Inc is QuickBooks customer 2 and the ERP company is open-windows. The import reads the full invoice, credit memo, and payment history for every customer linked on this company. A document already stored is skipped.</p>'
     + '<div class="row"><label>QuickBooks customer id<input data-field="link-qbo" inputmode="numeric" placeholder="2"></label>'
     + '<label>ERP company<select data-field="link-erp">' + erpOptions(card.erp_customers, '') + '</select></label>'
-    + '<button type="button" data-action="link-customer" data-connection="' + esc(key) + '">Link customer</button></div>'
-    + '<p><button type="button" data-action="import-history" data-connection="' + esc(key) + '">Import existing invoices & payments</button></p>'
+    + '<button type="button" data-action="link-customer">Link customer</button>'
+    + '<button type="button" class="secondary" data-action="unlink-customer">Unlink customer</button></div>'
+    + '<p><button type="button" data-action="import-history">Import existing invoices & payments</button></p>'
     + '<p class="note" data-history-result></p>'
     + '<h2>Sync log</h2><div class="note">' + logHtml + '</div></div>';
 }
@@ -147,7 +148,13 @@ function renderReview(connection, rows) {
   box.dataset.rows = JSON.stringify(rows);
 }
 function cardOf(node) {
-  return node.closest('[data-connection]');
+  const parent = node && node.parentElement;
+  return parent ? parent.closest('.card[data-connection]') : null;
+}
+function fieldValue(card, name) {
+  const field = card && card.querySelector('[data-field="' + name + '"]');
+  if (!field) throw new Error('Could not read ' + name + ' on this QuickBooks card.');
+  return field.value;
 }
 function post(url, body) {
   return api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
@@ -211,17 +218,26 @@ document.getElementById('connections').addEventListener('click', async (event) =
     if (action === 'link-customer') {
       const linked = await post('/api/quickbooks/link-customer', {
         connection,
-        qbo_id: card.querySelector('[data-field="link-qbo"]').value,
-        customer_id: card.querySelector('[data-field="link-erp"]').value
+        qbo_id: fieldValue(card, 'link-qbo'),
+        customer_id: fieldValue(card, 'link-erp')
       });
       render(linked);
-      const note = document.querySelector('[data-connection="' + connection + '"] [data-history-result]');
+      const note = document.querySelector('.card[data-connection="' + connection + '"] [data-history-result]');
       if (note) note.textContent = linked.message || 'Linked.';
+    }
+    if (action === 'unlink-customer') {
+      const unlinked = await post('/api/quickbooks/unlink-customer', {
+        connection,
+        customer_id: fieldValue(card, 'link-erp')
+      });
+      render(unlinked);
+      const note = document.querySelector('.card[data-connection="' + connection + '"] [data-history-result]');
+      if (note) note.textContent = unlinked.message || 'Unlinked.';
     }
     if (action === 'import-history') {
       const imported = await post('/api/quickbooks/import/history', {connection});
       render(imported);
-      const note = document.querySelector('[data-connection="' + connection + '"] [data-history-result]');
+      const note = document.querySelector('.card[data-connection="' + connection + '"] [data-history-result]');
       if (note) note.textContent = imported.message || '';
     }
     if (action === 'match-intercompany') {
