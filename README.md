@@ -97,7 +97,9 @@ Optional `BASE_URL` (for example `https://ora-glass-erp.onrender.com`) is used w
 
 ## QuickBooks Online
 
-The ERP talks to Intuit's QuickBooks Online Accounting API directly. There is no third-party sync product. An administrator opens **QuickBooks** on the dashboard (`/settings/quickbooks`), connects the company, reviews the customer match list, and applies the import. After that, invoices, credit notes, voids, payments, and customer edits made in the ERP are sent to QuickBooks, and QuickBooks changes come back through webhooks plus a change-data poll at least every 15 minutes while the app is awake. Records that started in QuickBooks are not sent back.
+The ERP talks to Intuit's QuickBooks Online Accounting API directly. There is no third-party sync product. Two companies share one Intuit app: **Ora Glass Inc** (USD, realm `9341456057091137`) and **Ora Glass (Canada) Inc** (CAD, its own company). Tokens are stored per company. An administrator opens **QuickBooks** on the dashboard (`/settings/quickbooks`) and connects each company on its own card. Customer import, item mapping, tax code, sync, and the log are per company. Webhooks and the change-data poll are routed by `realmId`.
+
+A customer whose country is Canada gets two invoices when an order is delivered. Ora Glass Inc invoices Ora Glass (Canada) Inc in USD, converting the order's CAD total at that day's Bank of Canada `FXUSDCAD` rate (CAD per 1 USD; the latest business day on or before the invoice date). Ora Glass (Canada) Inc invoices the customer in CAD at the prices already on the order. Open Windows and every other US customer still get a single USD invoice from Ora Glass Inc. The same five environment variables cover both companies. No new secrets.
 
 Set these in the Render dashboard. Do not commit them.
 
@@ -119,7 +121,10 @@ Access and refresh tokens are written under `DATA_DIR` (`qbo_tokens.json`) and r
 4. Add the redirect URI `https://<render-host>/quickbooks/callback` (for this service, `https://ora-glass-erp.onrender.com/quickbooks/callback` once that host is the public URL) and set the same value as `QBO_REDIRECT_URI`.
 5. Open **Webhooks**. Set the endpoint to `https://<render-host>/quickbooks/webhook`. Subscribe to Customer, Invoice, Payment, and CreditMemo. Copy the verifier token into `QBO_WEBHOOK_VERIFIER`.
 6. Leave `QBO_ENVIRONMENT=sandbox` until Intuit has approved the app for production, then switch it to `production` and reconnect.
-7. In the ERP, sign in as an administrator, open **QuickBooks**, and click **Connect to QuickBooks**. Choose the company, then **Review QuickBooks customers** and apply the matches. New companies are created at tier T2 unless you link them to an existing ERP customer.
+7. In the ERP, sign in as an administrator, open **QuickBooks**, and click **Connect to QuickBooks** on the Ora Glass Inc card, then again on the Ora Glass (Canada) Inc card. Choose the matching company each time. The existing US connection is kept; reconnect it only if the card says the connection expired.
+8. On the US card, match **Ora Glass (Canada) Inc** to the customer of that name in the US QuickBooks company, or create that customer from the card. Intercompany invoices cannot sync until that customer exists. Nothing is deleted in QuickBooks.
+9. Review QuickBooks customers on each card and apply the matches. Canadian customers come from the Canada company. New companies are created at tier T2 unless you link them to an existing ERP customer.
+10. The webhook URL stays `https://<render-host>/quickbooks/webhook`. In the Intuit app, both companies send Customer, Invoice, Payment, and CreditMemo events to that same URL. Intuit includes `realmId`, and the ERP uses it to pick the company.
 
 Public URLs for the Intuit production-key questionnaire, on `https://ora-glass-erp.onrender.com`:
 

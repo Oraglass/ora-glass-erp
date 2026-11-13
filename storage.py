@@ -423,8 +423,12 @@ def append_invoice(invoice):
             invoices = []
         stored = dict(invoice)
         stored['id'] = max([item.get('id') or 0 for item in invoices] or [0]) + 1
-        prefix = 'CN' if stored.get('doc_type') == 'credit_note' else 'INV'
-        pattern = re.compile(rf'{prefix}-(\d+)')
+        issuer = stored.get('issuer') or 'us'
+        if issuer == 'ca':
+            prefix = 'CA-CN' if stored.get('doc_type') == 'credit_note' else 'CA-INV'
+        else:
+            prefix = 'CN' if stored.get('doc_type') == 'credit_note' else 'INV'
+        pattern = re.compile(rf'{re.escape(prefix)}-(\d+)')
         highest = 0
         for item in invoices:
             match = pattern.fullmatch(str(item.get('number') or ''))
@@ -449,14 +453,36 @@ def append_quote(quote):
         return stored
 
 
+_CANADA_PROVINCES = {'AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'}
+
+
+def inferred_country(customer):
+    country = str((customer or {}).get('country') or '').strip()
+    if country:
+        return country
+    blob = ' '.join([
+        str(customer.get('address') or ''),
+        str(customer.get('city') or ''),
+        str(customer.get('state') or ''),
+    ]).lower()
+    if 'canada' in blob or str(customer.get('state') or '').strip().upper() in _CANADA_PROVINCES:
+        return 'Canada'
+    return 'United States'
+
+
 def load_customers():
     data = read_json(customers_path(), {})
     if not isinstance(data, dict):
         return {}
     changed = False
     for customer in data.values():
-        if isinstance(customer, dict) and customer.get('kind') == 'order_only':
+        if not isinstance(customer, dict):
+            continue
+        if customer.get('kind') == 'order_only':
             customer['kind'] = 'account'
+            changed = True
+        if not str(customer.get('country') or '').strip():
+            customer['country'] = inferred_country(customer)
             changed = True
     if changed:
         save_customers(data)

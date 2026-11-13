@@ -58,7 +58,7 @@ h2,h3{color:#333}
 {% endif %}
 </div>
 <table>
-<thead><tr><th>Number</th><th>Type</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
+<thead><tr><th>Number</th><th>Type</th><th>Issued by</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
 <tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
 </table>
 <div id="invoice-detail"></div>
@@ -178,15 +178,18 @@ function renderInvoices(rows) {
     body.innerHTML = '<tr><td colspan="9" style="color:#666">No invoices found</td></tr>';
     return;
   }
-  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
+  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.issuer_label || '') + ' · ' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
 }
 function renderDetail(invoice) {
   const box = document.getElementById('invoice-detail');
   if (!invoice) { box.innerHTML = ''; return; }
   const lines = (invoice.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + money(invoice.currency, item.total) + '</td></tr>').join('');
   const charges = (invoice.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td></td><td class="num">' + money(invoice.currency, charge.amount) + '</td></tr>').join('');
+  const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
+  const fxForm = CAN_ISSUE && invoice.kind === 'intercompany' && !invoice.voided ? '<div class="row"><input id="fx-rate" type="number" min="0.0001" step="0.0001" value="' + esc(invoice.fx_rate || '') + '" aria-label="Exchange rate"><button type="button" class="btn" id="save-fx">Save exchange rate</button></div>' : '';
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
-    + '<p class="note">' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + '</p>'
+    + '<p class="note">' + esc(invoice.issuer_label || '') + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + '</p>'
+    + fxLine + fxForm
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
@@ -208,6 +211,14 @@ function renderDetail(invoice) {
     const res = await fetch('/api/invoices/' + invoice.id + '/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invoice_id: document.getElementById('apply-invoice').value, amount: document.getElementById('apply-amount').value})});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Not applied'); return; }
+    loadInvoices();
+    renderDetail(body);
+  });
+  const saveFx = document.getElementById('save-fx');
+  if (saveFx) saveFx.addEventListener('click', async () => {
+    const res = await fetch('/api/invoices/' + invoice.id + '/exchange-rate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rate: document.getElementById('fx-rate').value})});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Rate not saved'); return; }
     loadInvoices();
     renderDetail(body);
   });

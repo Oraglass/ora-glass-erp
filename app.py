@@ -598,6 +598,7 @@ def public_customer(customer_id, customer, tiers, user_count):
         'city': customer.get('city') or '',
         'state': customer.get('state') or '',
         'zip': customer.get('zip') or '',
+        'country': customer.get('country') or 'United States',
         'phone': customer.get('phone') or '',
         'email': customer.get('email') or '',
         'credit_approved': bool(customer.get('credit_approved')),
@@ -829,6 +830,7 @@ def blank_customer(customer_id, name, tier):
         'city': '',
         'state': '',
         'zip': '',
+        'country': 'United States',
         'phone': '',
         'email': '',
         'credit_approved': False,
@@ -857,6 +859,14 @@ def apply_customer_fields(customer, data, tiers, creating):
     ):
         if creating or field in data:
             customer[field] = clean_text(data.get(field), limit)
+    if creating or 'country' in data:
+        country = clean_text(data.get('country') or customer.get('country') or 'United States', 80)
+        lowered = country.lower()
+        if lowered in {'canada', 'ca'}:
+            country = 'Canada'
+        elif lowered in {'', 'us', 'usa', 'united states', 'united states of america'}:
+            country = 'United States'
+        customer['country'] = country
     if creating or 'email' in data:
         email = normalize_email(data.get('email'))
         if email and not valid_email(email):
@@ -1115,7 +1125,7 @@ def _quickbooks_expired(user):
     if not user or user.get('role') != 'admin':
         return False
     import quickbooks
-    return quickbooks.connection_expired()
+    return quickbooks.any_connection_expired()
 
 
 def role_display_name(user):
@@ -1204,15 +1214,24 @@ def quickbooks_launch():
 @app.route('/quickbooks/disconnected')
 def quickbooks_disconnected():
     import quickbooks
-    tokens = quickbooks.load_tokens()
     realm = (request.args.get('realmId') or '').strip()
-    stored_realm = str(tokens.get('realm_id') or '')
     cleared = False
     mismatched = False
-    if tokens.get('refresh_token'):
-        if realm and stored_realm and realm != stored_realm:
+    if realm:
+        key = quickbooks.connection_for_realm(realm)
+        if key:
+            with quickbooks.connection_scope(key):
+                tokens = quickbooks.load_tokens()
+                if tokens.get('refresh_token') and str(tokens.get('realm_id') or '') == realm:
+                    quickbooks.disconnect()
+                    cleared = True
+                elif tokens.get('refresh_token'):
+                    mismatched = True
+        elif quickbooks.load_tokens().get('refresh_token'):
             mismatched = True
-        else:
+    else:
+        tokens = quickbooks.load_tokens()
+        if tokens.get('refresh_token'):
             quickbooks.disconnect()
             cleared = True
     return render_template('quickbooks_disconnected.html', cleared=cleared, mismatched=mismatched)
@@ -1233,6 +1252,8 @@ def quickbooks_connect():
     try:
         state = token_secrets.token_urlsafe(24)
         session['qbo_state'] = state
+        key = request.args.get('connection') or 'us'
+        session['qbo_connection'] = key if key in {'us', 'ca'} else 'us'
         return redirect(quickbooks.authorize_url(state))
     except quickbooks.QuickBooksError as exc:
         flash(str(exc), 'error')
@@ -1256,11 +1277,14 @@ def quickbooks_callback():
         flash('QuickBooks did not return a company.', 'error')
         return redirect(url_for('quickbooks_settings'))
     try:
-        quickbooks.exchange_code(code, realm_id)
+        key = session.get('qbo_connection') or 'us'
+        with quickbooks.connection_scope(key if key in {'us', 'ca'} else 'us'):
+            quickbooks.exchange_code(code, realm_id)
     except quickbooks.QuickBooksError as exc:
         flash(str(exc), 'error')
         return redirect(url_for('quickbooks_settings'))
     session.pop('qbo_state', None)
+    session.pop('qbo_connection', None)
     flash('QuickBooks is connected.', 'success')
     return redirect(url_for('quickbooks_settings'))
 
@@ -1276,7 +1300,10 @@ def quickbooks_status():
 @admin_required
 def quickbooks_disconnect():
     import quickbooks
-    quickbooks.disconnect()
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    with quickbooks.connection_scope(key):
+        quickbooks.disconnect()
     return jsonify(quickbooks.status_view())
 
 
@@ -1285,6 +1312,12 @@ def quickbooks_disconnect():
 def quickbooks_save_settings():
     import quickbooks
     data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    with quickbooks.connection_scope(key):
+        return _quickbooks_save_settings(quickbooks, data)
+
+
+def _quickbooks_save_settings(quickbooks, data):
     settings = quickbooks.load_settings()
     default_item = clean_text(data.get('default_item') or settings.get('default_item'), 120)
     tax_code = clean_text(data.get('tax_code') or settings.get('tax_code'), 40)
@@ -1306,12 +1339,15 @@ def quickbooks_save_settings():
 @admin_required
 def quickbooks_sync():
     import quickbooks
-    if not quickbooks.connected():
-        return json_error('QuickBooks is not connected.', 400)
-    try:
-        result = quickbooks.poll_cdc()
-    except quickbooks.QuickBooksError as exc:
-        return json_error(str(exc), 400)
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    with quickbooks.connection_scope(key):
+        if not quickbooks.connected():
+            return json_error('QuickBooks is not connected.', 400)
+        try:
+            result = quickbooks.poll_cdc()
+        except quickbooks.QuickBooksError as exc:
+            return json_error(str(exc), 400)
     body = quickbooks.status_view()
     body['result'] = result
     return jsonify(body)
@@ -1321,13 +1357,16 @@ def quickbooks_sync():
 @admin_required
 def quickbooks_import_preview():
     import quickbooks
-    if not quickbooks.connected():
-        return json_error('QuickBooks is not connected.', 400)
-    try:
-        rows = quickbooks.preview_import()
-    except quickbooks.QuickBooksError as exc:
-        return json_error(str(exc), 400)
-    return jsonify({'customers': rows})
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    with quickbooks.connection_scope(key):
+        if not quickbooks.connected():
+            return json_error('QuickBooks is not connected.', 400)
+        try:
+            rows = quickbooks.preview_import()
+        except quickbooks.QuickBooksError as exc:
+            return json_error(str(exc), 400)
+    return jsonify({'customers': rows, 'connection': key})
 
 
 @app.route('/api/quickbooks/import/apply', methods=['POST'])
@@ -1336,11 +1375,35 @@ def quickbooks_import_apply():
     import quickbooks
     data = json_body() or {}
     decisions = data.get('decisions') if isinstance(data.get('decisions'), dict) else {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
     try:
-        result = quickbooks.apply_import(decisions)
+        with quickbooks.connection_scope(key):
+            result = quickbooks.apply_import(decisions)
     except quickbooks.QuickBooksError as exc:
         return json_error(str(exc), 400)
     return jsonify(result)
+
+
+@app.route('/api/quickbooks/intercompany', methods=['POST'])
+@admin_required
+def quickbooks_intercompany():
+    import quickbooks
+    data = json_body() or {}
+    action = clean_text(data.get('action') or 'match', 20)
+    try:
+        if action == 'create':
+            qbo_id = quickbooks.create_intercompany_customer()
+        elif action == 'save':
+            qbo_id = quickbooks.remember_intercompany_customer(data.get('qbo_id'))
+        else:
+            qbo_id = quickbooks.match_intercompany_customer()
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['intercompany_qbo_id'] = qbo_id
+    if not qbo_id:
+        body['message'] = 'Ora Glass (Canada) Inc is not a customer in the US QuickBooks company yet.'
+    return jsonify(body)
 
 
 @app.route('/quickbooks/webhook', methods=['POST'])
@@ -1351,7 +1414,7 @@ def quickbooks_webhook():
     signature = request.headers.get('intuit-signature', '')
     if not quickbooks.verify_webhook(payload, signature):
         return json_error('Invalid signature', 401)
-    if not quickbooks.connected():
+    if not quickbooks.any_connected():
         return jsonify({'ok': True})
     try:
         return jsonify(quickbooks.handle_webhook(payload))
@@ -1715,6 +1778,7 @@ def get_customers():
     rows = [
         public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
         for customer_id, customer in customers.items()
+        if not customer.get('books_entity')
     ]
     rows.sort(key=lambda row: row['name'].lower())
     return jsonify(rows)
@@ -3059,6 +3123,11 @@ def order_for_viewer(order, user, with_coverage=False):
                 'id': row.get('id'),
                 'number': row.get('number'),
                 'doc_type': document_type(row),
+                'issuer': row.get('issuer') or 'us',
+                'kind': row.get('kind') or 'customer',
+                'currency': row.get('currency') or 'usd',
+                'fx_rate': row.get('fx_rate'),
+                'fx_date': row.get('fx_date') or '',
                 'total': money(row.get('total')),
                 'voided': bool(row.get('voided')),
             }
@@ -3557,21 +3626,10 @@ def set_order_status(order_id):
         if target == 'delivered':
             if updated.get('invoice_id'):
                 return None, 'This order already has an invoice.'
-            invoice = _invoice_from_order(updated, user)
-            stored = append_invoice(invoice)
-            _apply_prepayments_to_invoice(order.get('id'), stored['id'], user)
-            fresh = next((row for row in load_invoices() if row.get('id') == stored['id']), stored)
-            payments = load_payments()
-            fresh['status'] = invoice_status(fresh, payments)
-            fresh['balance'] = invoice_balance(fresh, payments)
-            invoices = load_invoices()
-            for index, row in enumerate(invoices):
-                if row.get('id') == fresh['id']:
-                    invoices[index] = fresh
-            save_invoices(invoices)
-            updated['invoice_id'] = fresh['id']
-            updated['invoice_number'] = fresh['number']
-            changes.append({'field': 'invoice', 'action': 'added', 'new': fresh['number']})
+            issued, issue_error = _issue_delivery_invoices(updated, user)
+            if issue_error:
+                return None, issue_error
+            changes.append({'field': 'invoice', 'action': 'added', 'new': issued})
         _stamp_log(updated, user, changes)
         return updated, None
 
@@ -3583,6 +3641,8 @@ def set_order_status(order_id):
         return json_error(error, status)
     if target == 'delivered' and saved and saved.get('invoice_id'):
         _qbo('push_document_id', saved.get('invoice_id'))
+        if saved.get('intercompany_invoice_id'):
+            _qbo('push_document_id', saved.get('intercompany_invoice_id'))
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
@@ -3618,9 +3678,122 @@ def _invoice_from_order(order, user):
         'payment_terms_days': days,
         'status': 'unpaid',
         'balance': summary.get('total', money(order.get('total'))),
+        'issuer': 'us',
+        'kind': 'customer',
         'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         'created_by': user.get('email') or '',
     }
+
+
+def _finish_invoice(stored, user):
+    payments = load_payments()
+    fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), stored)
+    fresh['status'] = invoice_status(fresh, payments)
+    fresh['balance'] = invoice_balance(fresh, payments)
+    invoices = load_invoices()
+    for index, row in enumerate(invoices):
+        if row.get('id') == fresh['id']:
+            invoices[index] = fresh
+    save_invoices(invoices)
+    return fresh
+
+
+def _canada_books_customer():
+    customers = load_customers()
+    for customer_id, customer in customers.items():
+        if customer.get('books_entity') == 'ca':
+            return customer_id
+    customer_id = 'ora-glass-canada'
+    if customer_id in customers:
+        customer_id = new_customer_id('Ora Glass Canada', customers)
+    customers[customer_id] = {
+        'id': customer_id,
+        'name': 'Ora Glass (Canada) Inc',
+        'books_entity': 'ca',
+        'domain': '',
+        'address': '',
+        'city': '',
+        'state': '',
+        'zip': '',
+        'country': 'Canada',
+        'phone': '',
+        'email': '',
+        'credit_approved': True,
+        'payment_terms': 'Net 30',
+        'credit_currency': 'usd',
+        'tier': 'T1',
+        'status': 'active',
+    }
+    save_customers(customers)
+    return customer_id
+
+
+def _issue_delivery_invoices(order, user):
+    import quickbooks
+    customer = load_customers().get(order.get('customer_id') or '') or {}
+    base = _invoice_from_order(order, user)
+    if not quickbooks.is_canadian(customer):
+        stored = append_invoice(base)
+        _apply_prepayments_to_invoice(order.get('id'), stored['id'], user)
+        fresh = _finish_invoice(stored, user)
+        order['invoice_id'] = fresh['id']
+        order['invoice_number'] = fresh['number']
+        return fresh['number'], None
+    currency = str(base.get('currency') or 'usd').lower()
+    invoice_day = date.fromisoformat(base['invoice_date'])
+    if currency == 'cad':
+        try:
+            rate, fx_date = quickbooks.fetch_fx_rate(invoice_day)
+        except quickbooks.QuickBooksError as exc:
+            return None, str(exc)
+        usd_total = quickbooks.cad_to_usd(base.get('total'), rate)
+    else:
+        rate, fx_date = 1.0, invoice_day.isoformat()
+        usd_total = money(base.get('total'))
+    customer_invoice = dict(base)
+    customer_invoice['issuer'] = 'ca'
+    customer_invoice['kind'] = 'customer'
+    stored_customer = append_invoice(customer_invoice)
+    _apply_prepayments_to_invoice(order.get('id'), stored_customer['id'], user)
+    fresh_customer = _finish_invoice(stored_customer, user)
+    books_id = _canada_books_customer()
+    intercompany = dict(base)
+    intercompany.update({
+        'issuer': 'us',
+        'kind': 'intercompany',
+        'customer_id': books_id,
+        'company': 'Ora Glass (Canada) Inc',
+        'currency': 'usd',
+        'items': [{
+            'name': 'Intercompany glass',
+            'description': order.get('project') or 'Intercompany glass',
+            'pcs': 1,
+            'qty': 1,
+            'unit_price': usd_total,
+            'price_pc': usd_total,
+            'total': usd_total,
+        }],
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'igu_subtotal': usd_total,
+        'igu_total': usd_total,
+        'extras_total': 0,
+        'total': usd_total,
+        'balance': usd_total,
+        'fx_rate': rate,
+        'fx_date': fx_date,
+        'fx_pair': 'FXUSDCAD',
+        'cad_total': money(base.get('total')) if currency == 'cad' else None,
+    })
+    fresh_intercompany = _finish_invoice(append_invoice(intercompany), user)
+    order['invoice_id'] = fresh_customer['id']
+    order['invoice_number'] = fresh_customer['number']
+    order['intercompany_invoice_id'] = fresh_intercompany['id']
+    order['intercompany_invoice_number'] = fresh_intercompany['number']
+    order['fx_rate'] = rate
+    order['fx_date'] = fx_date
+    return f"{fresh_customer['number']} and {fresh_intercompany['number']}", None
 
 
 def _invoices_visible(user):
@@ -3634,7 +3807,15 @@ def _invoices_visible(user):
 def _present_invoice(invoice, payments):
     view = dict(invoice)
     view['doc_type'] = document_type(invoice)
-    view['type_label'] = 'Credit note' if view['doc_type'] == 'credit_note' else 'Invoice'
+    view['issuer'] = invoice.get('issuer') or 'us'
+    view['issuer_label'] = 'Ora Glass (Canada) Inc' if view['issuer'] == 'ca' else 'Ora Glass Inc'
+    view['kind'] = invoice.get('kind') or 'customer'
+    if view['doc_type'] == 'credit_note':
+        view['type_label'] = 'Credit note'
+    elif view['kind'] == 'intercompany':
+        view['type_label'] = 'Intercompany invoice'
+    else:
+        view['type_label'] = 'Invoice'
     view['audit'] = list(invoice.get('audit') or [])
     if view['doc_type'] == 'credit_note':
         applied = credit_note_applied(invoice)
@@ -3794,6 +3975,13 @@ def create_document():
     customer = customers.get(customer_id or '')
     if not customer:
         return json_error('Choose a customer.', 400)
+    import quickbooks
+    if linked_invoice:
+        issuer = linked_invoice.get('issuer') or 'us'
+    elif quickbooks.is_canadian(customer):
+        issuer = 'ca'
+    else:
+        issuer = 'us'
     if not currency:
         currency = str(customer.get('credit_currency') or 'usd').lower()
     if currency not in CURRENCIES:
@@ -3846,11 +4034,49 @@ def create_document():
         'voided': False,
         'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         'created_by': user.get('email') or '',
+        'issuer': issuer,
+        'kind': 'customer',
     }
     document['audit'] = [_audit(user, 'created', document['doc_type'])]
     stored = append_invoice(document)
     _qbo('push_document', stored)
     return jsonify(_present_invoice(stored, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/exchange-rate', methods=['POST'])
+@module_required('invoices')
+def override_exchange_rate(invoice_id):
+    import quickbooks
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body() or {}
+    try:
+        rate = float(data.get('rate'))
+    except (TypeError, ValueError):
+        return json_error('Enter an exchange rate.', 400)
+    if rate <= 0:
+        return json_error('Exchange rate must be greater than zero.', 400)
+    invoices = load_invoices()
+    invoice = next((row for row in invoices if row.get('id') == invoice_id), None)
+    if not invoice or invoice.get('kind') != 'intercompany':
+        return json_error('Only an intercompany invoice has an exchange rate.', 400)
+    if invoice.get('cad_total') in (None, ''):
+        return json_error('This invoice has no CAD amount to convert.', 400)
+    usd_total = quickbooks.cad_to_usd(invoice.get('cad_total'), rate)
+    invoice['fx_rate'] = rate
+    invoice['fx_override'] = True
+    invoice['total'] = usd_total
+    invoice['balance'] = usd_total
+    invoice['igu_subtotal'] = usd_total
+    invoice['igu_total'] = usd_total
+    for line in invoice.get('items') or []:
+        line['unit_price'] = usd_total
+        line['price_pc'] = usd_total
+        line['total'] = usd_total
+    invoice.setdefault('audit', []).append(_audit(user, 'exchange-rate', f'FXUSDCAD {rate}'))
+    save_invoices(invoices)
+    return jsonify(_present_invoice(invoice, load_payments()))
 
 
 @app.route('/api/invoices/<int:note_id>/apply', methods=['POST'])

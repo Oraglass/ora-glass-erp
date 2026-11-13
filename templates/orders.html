@@ -213,12 +213,17 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
-  const documents = (order.documents || []).map(doc => '<a href="/invoices/' + esc(doc.id) + '">' + esc(doc.number) + '</a>' + (doc.voided ? ' (void)' : '')).join(', ');
-  const documentNote = documents ? '<p class="note">Documents: ' + documents + '</p>' : '';
+  const documents = (order.documents || []).map(doc => {
+    const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
+    const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
+    const fx = doc.fx_rate ? ' · FXUSDCAD ' + esc(doc.fx_rate) + ' on ' + esc(doc.fx_date || '') : '';
+    return '<a href="/invoices/' + esc(doc.id) + '">' + esc(kind) + ' ' + esc(doc.number) + '</a> · ' + esc(company) + ' · ' + esc(String(doc.currency || '').toUpperCase()) + fx + (doc.voided ? ' (void)' : '');
+  }).join('<br>');
+  const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
   const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
-    + notes + invoice + documentNote
+    + notes + (documents ? documentNote : invoice)
     + '<div class="actions">' + buttons + '</div>'
     + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
