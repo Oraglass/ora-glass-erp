@@ -5,6 +5,7 @@ import json
 import urllib.parse
 
 import quickbooks
+from quickbooks import CANADA_REALM, US_REALM
 from billing import invoice_balance
 from storage import load_customers, load_invoices, load_payments, save_customers
 from tests.conftest import login, write_user
@@ -213,6 +214,143 @@ def test_sync_does_not_import_history_until_the_backfill(client, monkeypatch):
         again = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
         assert again.get_json()['result']['invoices'] == 0
         assert len(load_invoices()) == 3
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+class TwoRealmQBO:
+    """Customer id 2 is a different person in each QuickBooks company."""
+
+    def __init__(self):
+        self.calls = []
+        self.customers = {
+            US_REALM: {
+                '2': {
+                    'Id': '2', 'SyncToken': '1',
+                    'DisplayName': 'Open Windows Inc',
+                    'CompanyName': 'Open Windows Inc',
+                    'GivenName': 'Calvin',
+                    'FamilyName': 'Chong',
+                },
+            },
+            CANADA_REALM: {
+                '2': {
+                    'Id': '2', 'SyncToken': '4',
+                    'DisplayName': 'Calvin Chong',
+                    'CompanyName': '',
+                    'GivenName': 'Calvin',
+                    'FamilyName': 'Chong',
+                },
+            },
+        }
+        self.invoices = {
+            US_REALM: [{
+                'Id': '1002', 'SyncToken': '0', 'DocNumber': '1002',
+                'CustomerRef': {'value': '2'}, 'TotalAmt': 10, 'Balance': 10,
+                'CurrencyRef': {'value': 'USD'}, 'TxnDate': '2026-01-02', 'DueDate': '2026-02-01',
+                'Line': [{'Description': 'IGU', 'Amount': 10}],
+            }],
+            CANADA_REALM: [{
+                'Id': '9', 'SyncToken': '0', 'DocNumber': 'CA-9',
+                'CustomerRef': {'value': '2'}, 'TotalAmt': 5, 'Balance': 5,
+                'CurrencyRef': {'value': 'CAD'}, 'TxnDate': '2026-01-02',
+                'Line': [{'Description': 'Other', 'Amount': 5}],
+            }],
+        }
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, body))
+        parsed = urllib.parse.urlparse(url)
+        parts = [part for part in parsed.path.split('/') if part]
+        realm = parts[parts.index('company') + 1] if 'company' in parts else ''
+        if parsed.path.rstrip('/').endswith('/query'):
+            statement = urllib.parse.parse_qs(parsed.query).get('query', [''])[0]
+            if 'from Customer' in statement:
+                row = self.customers.get(realm, {}).get('2') if "Id = '2'" in statement else None
+                payload = {'Customer': [row] if row else []}
+            elif 'from Invoice' in statement:
+                payload = {'Invoice': self.invoices.get(realm, [])}
+            elif 'from CreditMemo' in statement:
+                payload = {'CreditMemo': []}
+            elif 'from Payment' in statement:
+                payload = {'Payment': []}
+            else:
+                payload = {}
+            return 200, {}, json.dumps({'QueryResponse': payload}).encode()
+        if '/customer/' in parsed.path and method == 'GET':
+            row = self.customers.get(realm, {}).get(parts[-1])
+            if not row:
+                return 404, {}, b'{}'
+            return 200, {}, json.dumps({'Customer': row}).encode()
+        return 200, {}, b'{}'
+
+
+def _save_connection(key, realm, company):
+    with quickbooks.connection_scope(key):
+        quickbooks.save_tokens({
+            'access_token': key, 'refresh_token': key, 'realm_id': realm,
+            'expires_at': 9_999_999_999, 'company_name': company,
+        })
+
+
+def test_link_reads_the_card_realm_and_uses_display_name(client, monkeypatch):
+    _configure(monkeypatch)
+    write_user('admin@oraglass.us', 'admin')
+    write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    fake = TwoRealmQBO()
+    quickbooks.TRANSPORT = fake
+    try:
+        _save_connection('us', US_REALM, 'Ora Glass Inc')
+        _save_connection('ca', CANADA_REALM, 'Ora Glass (Canada) Inc')
+        linked = client.post('/api/quickbooks/link-customer', json={
+            'connection': 'us', 'qbo_id': '2', 'customer_id': 'open-windows',
+        })
+        assert linked.status_code == 200, linked.get_json()
+        assert linked.get_json()['result']['name'] == 'Open Windows Inc'
+        assert linked.get_json()['result']['realm_id'] == US_REALM
+        us_log = ' '.join(row.get('message', '') for row in linked.get_json()['connections'][0]['log'])
+        assert 'Open Windows Inc' in us_log and US_REALM in us_log
+        assert 'Calvin Chong' not in us_log
+
+        def customer_reads(realm):
+            return [
+                url for _method, url, _body in fake.calls
+                if f'/company/{realm}/' in url and ('Customer+where+Id' in url or f'/customer/' in url)
+            ]
+
+        assert customer_reads(US_REALM)
+        assert not customer_reads(CANADA_REALM)
+        canada = client.post('/api/quickbooks/link-customer', json={
+            'connection': 'ca', 'qbo_id': '2', 'customer_id': 'open-windows',
+        })
+        assert canada.status_code == 200, canada.get_json()
+        assert canada.get_json()['result']['name'] == 'Calvin Chong'
+        assert canada.get_json()['result']['realm_id'] == CANADA_REALM
+        assert any(f'/v3/company/{CANADA_REALM}/query' in url for _method, url, _body in fake.calls)
+
+        links = quickbooks.load_links()
+        for row in links:
+            if row.get('connection') == 'us' and row.get('kind') == 'customer':
+                row.pop('realm_id', None)
+        quickbooks.save_links(links)
+        blocked = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
+        assert blocked.status_code == 200, blocked.get_json()
+        assert blocked.get_json()['result']['invoices'] == 0
+        assert 'Link' in blocked.get_json()['message']
+        assert load_invoices() == []
+
+        again = client.post('/api/quickbooks/link-customer', json={
+            'connection': 'us', 'qbo_id': '2', 'customer_id': 'open-windows',
+        })
+        assert again.status_code == 200
+        imported = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
+        assert imported.status_code == 200, imported.get_json()
+        assert imported.get_json()['result']['invoices'] == 1
+        assert [row['project'] for row in load_invoices()] == ['1002']
+        invoice_urls = [url for _method, url, _body in fake.calls if 'Invoice' in url]
+        assert invoice_urls
+        assert all(US_REALM in url for url in invoice_urls)
     finally:
         quickbooks.TRANSPORT = None
 
