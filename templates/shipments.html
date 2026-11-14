@@ -6,13 +6,18 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.container{max-width:1100px;margin:20px auto;padding:0 20px}
-.card{background:white;border-radius:8px;padding:20px;margin-bottom:16px}
+.container{max-width:1200px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:16px 20px;margin-bottom:12px}
 .note{font-size:13px;color:#555;line-height:1.5}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-th{background:#f5f5f5;text-align:left;padding:8px;border-bottom:2px solid #ddd}
-td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
-a{color:#C41E3A}
+.actions{display:flex;gap:8px;margin:12px 0}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 12px;border-radius:4px;text-decoration:none;font-size:13px}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+th{background:#f5f5f5;text-align:left;padding:6px;border-bottom:2px solid #ddd;white-space:nowrap}
+td{padding:6px;border-bottom:1px solid #eee;vertical-align:top}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+summary{cursor:pointer;font-weight:600;color:#333}
+summary a{color:#C41E3A}
 </style>
 </head>
 <body>
@@ -20,21 +25,42 @@ a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container">
 <h2 style="color:#333;margin-bottom:8px">Open shipments / backorders</h2>
-<p class="note" style="margin-bottom:12px">Orders that still have pieces to ship or invoice. A quantity already invoiced is not billed again.</p>
+<p class="note">Each order opens to the pieces still to ship. A quantity already invoiced is not billed again.</p>
+<div class="actions">
+<a class="btn" href="/api/shipments/open.xlsx">Export Excel</a>
+<a class="btn secondary" href="/api/shipments/open.pdf">Export PDF</a>
+</div>
 <div id="backorders"><p class="note">Loading...</p></div>
 </div>
 <script>
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function money(currency, amount) {
+  return esc(String(currency || '').toUpperCase()) + ' ' + Number(amount || 0).toFixed(2);
+}
 function render(rows) {
   const box = document.getElementById('backorders');
   if (!rows.length) { box.innerHTML = '<div class="card"><p class="note">Nothing is waiting to ship.</p></div>'; return; }
   box.innerHTML = rows.map(order => {
-    const lines = (order.lines || []).map(line => '<tr><td>' + esc(line.name) + '</td><td>' + esc(line.remaining) + '</td><td>' + esc(line.sqf_remaining) + '</td><td>' + Number(line.value_remaining || 0).toFixed(2) + '</td></tr>').join('');
-    return '<div class="card"><h3 style="color:#333"><a href="/orders/' + esc(order.id) + '">Order ' + esc(order.id) + '</a> · ' + esc(order.company) + '</h3>'
-      + '<p class="note">' + esc(order.project || '') + ' · ' + esc(order.shipping_label) + ' · ' + esc(order.remaining_pcs) + ' pcs · ' + esc(order.remaining_sqf) + ' sqf · ' + esc(String(order.currency || '').toUpperCase()) + ' ' + Number(order.remaining_value || 0).toFixed(2) + ' still to ship</p>'
-      + '<table><thead><tr><th>Line</th><th>Qty remaining</th><th>Sq ft remaining</th><th>Value remaining</th></tr></thead><tbody>' + lines + '</tbody></table></div>';
+    const lines = (order.lines || []).filter(line => line.remaining).map(line => '<tr>'
+      + '<td>' + esc(line.serial) + '</td>'
+      + '<td>' + esc(line.floor_code || '') + '</td>'
+      + '<td>' + esc(line.name) + '</td>'
+      + '<td>' + esc(line.size_mm) + '</td>'
+      + '<td>' + esc(line.size_in) + '</td>'
+      + '<td class="num">' + esc(line.ordered) + '</td>'
+      + '<td class="num">' + esc(line.shipped) + '</td>'
+      + '<td class="num">' + esc(line.remaining) + '</td>'
+      + '<td class="num">' + esc(line.sqf_remaining) + '</td>'
+      + '<td class="num">' + Number(line.unit_price || 0).toFixed(2) + '</td>'
+      + '<td class="num">' + Number(line.value_remaining || 0).toFixed(2) + '</td>'
+      + '<td>' + esc(line.remarks || '') + '</td></tr>').join('');
+    return '<details class="card" open><summary><a href="/orders/' + esc(order.id) + '">Order ' + esc(order.id) + '</a> · ' + esc(order.company) + ' · ' + esc(order.shipping_label) + '</summary>'
+      + '<p class="note">' + esc(order.project || '') + '</p>'
+      + '<table><thead><tr><th>Serial</th><th>Floor code</th><th>Product name</th><th>Width x height (mm)</th><th>Width x height (in)</th><th class="num">Qty ordered</th><th class="num">Qty shipped</th><th class="num">Qty remaining</th><th class="num">Sq ft remaining</th><th class="num">Unit price</th><th class="num">Remaining value</th><th>Remarks</th></tr></thead><tbody>'
+      + lines + '</tbody></table>'
+      + '<p class="note">Order total still to ship: ' + esc(order.remaining_pcs) + ' pcs · ' + esc(order.remaining_sqf) + ' sq ft · ' + money(order.currency, order.remaining_value) + '</p></details>';
   }).join('');
 }
 fetch('/api/shipments/open').then(res => res.json()).then(render).catch(() => {
