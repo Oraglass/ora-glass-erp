@@ -55,21 +55,26 @@ def test_us_order_invoices_once_when_fully_shipped_and_cannot_overship(client):
     listed = next(row for row in waiting if row['id'] == order_id)
     line = listed['lines'][0]
     assert line['serial'] == 1
-    assert line['ordered'] == 4
-    assert line['shipped'] == 2
-    assert line['remaining'] == 2
-    assert line['size_in'] == '24 x 36'
-    assert line['size_mm'] == '609.6 x 914.4'
-    assert line['value_remaining'] == round(line['unit_price'] * line['remaining'], 2)
-    sheet = __import__('io').BytesIO()
+    assert line['bo_qty'] == 2
+    assert line['width_in'] == 24
+    assert line['height_in'] == 36
+    assert line['width_mm'] == 609.6
+    assert line['height_mm'] == 914.4
+    assert 'sqf_remaining' not in line
+    assert 'value_remaining' not in line
     workbook = client.get('/api/shipments/open.xlsx')
     assert workbook.status_code == 200
     from openpyxl import load_workbook
     grid = load_workbook(__import__('io').BytesIO(workbook.data)).active
     headers = [cell.value for cell in next(grid.iter_rows(min_row=1, max_row=1))]
-    assert headers[:8] == ['Order', 'Customer', 'Project', 'Serial', 'Floor code', 'Product name', 'Width x height (mm)', 'Width x height (in)']
-    assert 'Qty remaining' in headers
-    assert 'Remarks' in headers
+    assert headers == [
+        'Order', 'Customer', 'Serial Number', 'Floor Code', 'Product ID', 'Product Name',
+        'Unit Price', 'Width(mm)', 'Height(mm)', 'Width(In)', 'Height(In)', 'BO quantity', 'Remarks',
+    ]
+    assert 'Sq ft remaining' not in headers
+    assert 'Remaining value' not in headers
+    values = [cell.value for cell in next(grid.iter_rows(min_row=2, max_row=2))]
+    assert values[11] == 2
     pdf = client.get('/api/shipments/open.pdf')
     assert pdf.status_code == 200
     assert pdf.mimetype == 'application/pdf'
