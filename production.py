@@ -465,6 +465,37 @@ def floor_code(item):
     return ''
 
 
+def line_export(item, quantity=None, serial=None):
+    """One production-Excel row. Quantity defaults to the line's piece count."""
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+    found = lookup_product(spec, item.get('name') or '')
+    width_mm, height_mm, width_in, height_in = dimensions_mm_in(
+        spec.get('width'), spec.get('height'), spec.get('unit'),
+    )
+    try:
+        unit_price = float(item.get('price_sqf'))
+    except (TypeError, ValueError):
+        unit_price = None
+    if quantity is None:
+        try:
+            quantity = int(item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+    return {
+        'Serial Number': serial,
+        'Floor Code': floor_code(item),
+        'Product ID': found['product_id'],
+        'Product Name': found['product_name'],
+        'Unit Price': unit_price,
+        'Width(mm)': width_mm,
+        'Height(mm)': height_mm,
+        'Width(In)': width_in,
+        'Height(In)': height_in,
+        'Quantity': quantity,
+        'Remarks': str(item.get('remarks') or '').strip(),
+    }
+
+
 def export_lines(items):
     """One production row per glass line. Surcharge and drawing charges are not units."""
     rows = []
@@ -477,31 +508,7 @@ def export_lines(items):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        found = lookup_product(spec, item.get('name') or '')
-        width_mm, height_mm, width_in, height_in = dimensions_mm_in(
-            spec.get('width'), spec.get('height'), spec.get('unit'),
-        )
-        try:
-            unit_price = float(item.get('price_sqf'))
-        except (TypeError, ValueError):
-            unit_price = None
-        try:
-            quantity = int(item.get('pcs') or 0)
-        except (TypeError, ValueError):
-            quantity = 0
-        rows.append({
-            'Serial Number': serial,
-            'Floor Code': floor_code(item),
-            'Product ID': found['product_id'],
-            'Product Name': found['product_name'],
-            'Unit Price': unit_price,
-            'Width(mm)': width_mm,
-            'Height(mm)': height_mm,
-            'Width(In)': width_in,
-            'Height(In)': height_in,
-            'Quantity': quantity,
-            'Remarks': str(item.get('remarks') or '').strip(),
-        })
+        rows.append(line_export(item, serial=serial))
         serial += 1
     return rows
 

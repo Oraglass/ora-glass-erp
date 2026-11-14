@@ -1,5 +1,6 @@
 """Invoices follow shipments, and a quantity is billed only once."""
 
+import production
 from storage import load_customers, load_invoices, save_customers
 from tests.conftest import login, write_user
 from tests.test_production_orders import SPEC, _size_item
@@ -56,10 +57,12 @@ def test_us_order_invoices_once_when_fully_shipped_and_cannot_overship(client):
     line = listed['lines'][0]
     assert line['serial'] == 1
     assert line['bo_qty'] == 2
-    assert line['width_in'] == 24
-    assert line['height_in'] == 36
-    assert line['width_mm'] == 609.6
-    assert line['height_mm'] == 914.4
+    width_mm, height_mm, width_in, height_in = production.dimensions_mm_in(24, 36, 'in')
+    assert line['width_mm'] == width_mm
+    assert line['height_mm'] == height_mm
+    assert line['width_in'] == width_in
+    assert line['height_in'] == height_in
+    assert line['product_id'] == ''
     assert 'sqf_remaining' not in line
     assert 'value_remaining' not in line
     workbook = client.get('/api/shipments/open.xlsx')

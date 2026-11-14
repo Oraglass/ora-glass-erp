@@ -5,22 +5,10 @@ invoiced at most once. Orders with no shipments keep the existing full invoice.
 """
 
 from billing import money
+import production
 
 SURCHARGE = 'irregular_surcharge'
 DRAWING = 'dwg_creation'
-
-
-def _size_pair(spec):
-    """Width and height in both millimetres and inches."""
-    spec = spec or {}
-    try:
-        width = float(spec.get('width') or 0)
-        height = float(spec.get('height') or 0)
-    except (TypeError, ValueError):
-        return 0.0, 0.0, 0.0, 0.0
-    if str(spec.get('unit') or 'in').lower() == 'mm':
-        return round(width, 2), round(height, 2), round(width / 25.4, 2), round(height / 25.4, 2)
-    return round(width * 25.4, 2), round(height * 25.4, 2), round(width, 2), round(height, 2)
 
 
 def is_glass_line(item):
@@ -230,24 +218,24 @@ def shipment_progress(order):
         invoiced_value += row['price_pc'] * invoiced
         remaining_sqf += row['sqf_each'] * left
         if left or left_invoice:
-            width_mm, height_mm, width_in, height_in = _size_pair(row.get('spec'))
+            exported = production.line_export(items[index], quantity=left, serial=row['serial'])
             lines.append({
                 'index': index,
-                'serial': row['serial'],
-                'floor_code': row['mark'],
-                'product_id': row['product_id'],
-                'name': row['name'],
-                'width_mm': width_mm,
-                'height_mm': height_mm,
-                'width_in': width_in,
-                'height_in': height_in,
+                'serial': exported['Serial Number'],
+                'floor_code': exported['Floor Code'],
+                'product_id': exported['Product ID'],
+                'name': exported['Product Name'],
+                'width_mm': exported['Width(mm)'],
+                'height_mm': exported['Height(mm)'],
+                'width_in': exported['Width(In)'],
+                'height_in': exported['Height(In)'],
                 'ordered': row['pcs'],
                 'shipped': shipped,
                 'invoiced': invoiced,
                 'remaining': left,
-                'bo_qty': left,
-                'unit_price': row['price_sqf'],
-                'remarks': row['remarks'],
+                'bo_qty': exported['Quantity'],
+                'unit_price': exported['Unit Price'],
+                'remarks': exported['Remarks'],
             })
     fully_shipped = ordered_pcs > 0 and shipped_pcs >= ordered_pcs
     fully_invoiced = ordered_pcs > 0 and invoiced_pcs >= ordered_pcs
@@ -274,20 +262,8 @@ def shipment_progress(order):
     }
 
 
-BACKORDER_HEADERS = (
-    'Order',
-    'Customer',
-    'Serial Number',
-    'Floor Code',
-    'Product ID',
-    'Product Name',
-    'Unit Price',
-    'Width(mm)',
-    'Height(mm)',
-    'Width(In)',
-    'Height(In)',
-    'BO quantity',
-    'Remarks',
+BACKORDER_HEADERS = ('Order', 'Customer') + tuple(
+    'BO quantity' if name == 'Quantity' else name for name in production.PRODUCTION_HEADERS
 )
 
 
