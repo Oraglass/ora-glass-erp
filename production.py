@@ -458,7 +458,8 @@ def lookup_product(spec, fallback_name=''):
 
 
 def floor_code(item):
-    for key in ('floor_code', 'floor', 'location', 'mark'):
+    """The floor where the piece is installed. Older lines called this a mark or location."""
+    for key in ('floor', 'mark', 'location', 'floor_code'):
         text = str((item or {}).get(key) or '').strip()
         if text:
             return text

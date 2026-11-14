@@ -289,6 +289,24 @@ def _header_and_body(rows, header_row):
     return headers, body
 
 
+_FLOOR_HEADERS = {'floor', 'floor code', 'floorcode', 'mark', 'location'}
+
+
+def _floor_column(headers, columns):
+    """One column, whether the customer file calls it floor, mark, or location."""
+    for key in ('floor', 'mark', 'location', 'floor_code'):
+        label = (columns or {}).get(key) or ''
+        if not label:
+            continue
+        index = _column_index(headers, label)
+        if index is not None:
+            return index
+    for index, header in enumerate(headers):
+        if _clean_label(header).casefold() in _FLOOR_HEADERS:
+            return index
+    return None
+
+
 def _mapped_indexes(headers, columns):
     indexes = {}
     missing = []
@@ -298,9 +316,9 @@ def _mapped_indexes(headers, columns):
         if index is None:
             missing.append(label or key)
         indexes[key] = index
-    for key in ('spacer', 'mark'):
-        label = (columns or {}).get(key) or ''
-        indexes[key] = _column_index(headers, label) if label else None
+    label = (columns or {}).get('spacer') or ''
+    indexes['spacer'] = _column_index(headers, label) if label else None
+    indexes['mark'] = _floor_column(headers, columns)
     if missing:
         raise OrderImportError('Could not find columns: ' + ', '.join(missing) + '.')
     return indexes

@@ -117,7 +117,8 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     fresh = next(row for row in load_quotes() if row['id'] == copied.get_json()['id'])
     glass = next(row for row in fresh['items'] if row.get('spec'))
     assert glass['remarks'] == 'Tempered edge'
-    assert glass['mark'] == 'L3'
+    assert glass['floor'] == 'L3'
+    assert 'mark' not in glass
     rows = production.registry_rows()
     custom = next(row for row in rows if row['product_name'] == stored['items'][0]['name'])
     assert custom['product_id'] == ''
@@ -131,7 +132,7 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     order_id = created.get_json()['order_id']
     order = next(row for row in load_orders() if row['id'] == order_id)
     assert order['items'][0]['remarks'] == 'Tempered edge'
-    assert order['items'][0]['mark'] == 'L3'
+    assert order['items'][0]['floor'] == 'L3'
     counted = next(row for row in production.registry_rows() if row['product_name'] == stored['items'][0]['name'])
     assert counted['order_count'] == 1
     detail = client.get(f'/api/orders/{order_id}').get_json()

@@ -211,7 +211,8 @@ function renderDetail(order) {
     const idNote = STAFF && item.production_note ? '<br><span class="note">' + esc(item.production_note) + '</span>' : '';
     const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
     const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const floor = item.floor || item.mark || item.location || '';
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -261,7 +262,7 @@ function renderDetail(order) {
     + shipForm
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
-    + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
@@ -400,6 +401,7 @@ function renderLines() {
       + '<input data-line="' + index + '" data-field="height" type="number" step="0.01" value="' + esc(spec.height || '') + '" aria-label="Height">'
       + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
       + '<input data-line="' + index + '" data-field="pcs" type="number" min="1" step="1" value="' + esc(item.pcs || 1) + '" aria-label="Quantity">'
+      + '<input data-line="' + index + '" data-field="floor" value="' + esc(item.floor || item.mark || item.location || '') + '" aria-label="Floor" placeholder="Floor" style="width:6rem">'
       + '<label style="font-size:12px"><input data-line="' + index + '" data-field="irregular" type="checkbox"' + checked + '> Irregular shape</label>'
       + '<input data-line="' + index + '" data-field="remarks" value="' + esc(item.remarks || '') + '" aria-label="Remarks" placeholder="Remarks">'
       + '<button type="button" class="btn small secondary" data-remove="' + index + '">Remove</button></div>';
@@ -441,12 +443,13 @@ function collectItems() {
       if (field === 'name') item.name = input.value;
       else if (field === 'pcs') item.pcs = Number(input.value);
       else if (field === 'remarks') item.remarks = input.value;
+      else if (field === 'floor') item.floor = input.value;
       else if (field === 'irregular') irregular = input.checked;
       else spec[field] = field === 'unit' ? input.value : Number(input.value);
     });
     const row = {name: item.name, pcs: item.pcs, spec: spec, irregular_shape: irregular};
     if (item.remarks) row.remarks = item.remarks;
-    if (item.mark) row.mark = item.mark;
+    if (item.floor) row.floor = item.floor;
     if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
     return row;
   });

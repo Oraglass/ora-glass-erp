@@ -1764,9 +1764,7 @@ def export_quote():
             total_sqf += sqf * pcs
             total_pcs += pcs
             total_line_sum += line_total
-            description = escape(str(item.get('name', '') or ''))
-            if str(item.get('remarks') or '').strip():
-                description += '<br/>' + escape(str(item.get('remarks')).strip())
+            description = _item_description(item)
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(description, cell_style),
@@ -1796,9 +1794,7 @@ def export_quote():
             price_value = amount(item.get('price', 0))
             total_price += price_value
             price = escape(f'{price_value:.2f}')
-            description = escape(str(item.get('name', '') or ''))
-            if str(item.get('remarks') or '').strip():
-                description += '<br/>' + escape(str(item.get('remarks')).strip())
+            description = _item_description(item)
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(description, cell_style),
@@ -2707,13 +2703,42 @@ def _with_quote_tax(quote):
     return row
 
 
+def _remember_floor(item):
+    """Keep one Floor value. A mark or location on an older line is the same field."""
+    if not isinstance(item, dict):
+        return item
+    text = ''
+    for key in ('floor', 'mark', 'location', 'floor_code'):
+        if str(item.get(key) or '').strip():
+            text = clean_text(item.get(key), 80)
+            break
+    for key in ('mark', 'location', 'floor_code'):
+        item.pop(key, None)
+    if text:
+        item['floor'] = text
+    else:
+        item.pop('floor', None)
+    return item
+
+
+def _item_description(item):
+    from xml.sax.saxutils import escape
+    description = escape(str(item.get('name') or ''))
+    floor = production.floor_code(item)
+    if floor:
+        description += '<br/>Floor: ' + escape(floor)
+    if str(item.get('remarks') or '').strip():
+        description += '<br/>' + escape(str(item.get('remarks')).strip())
+    return description
+
+
 @app.route('/api/quotes', methods=['POST'])
 @module_required('quotes')
 def save_quote():
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
-    items = data.get('items', [])
+    items = [_remember_floor(dict(item)) if isinstance(item, dict) else item for item in data.get('items', [])]
     if not isinstance(items, list) or len(items) > 200:
         return json_error('Items must be a list of at most 200 lines.', 400)
     currency = clean_text(data.get('currency') or 'usd', 8).lower()
@@ -2834,8 +2859,9 @@ def _repriced_quote_items(items, tier, currency, tiers):
             }
             if item.get('remarks'):
                 copied_line['remarks'] = clean_text(item.get('remarks'), 500)
-            if item.get('mark'):
-                copied_line['mark'] = clean_text(item.get('mark'), 80)
+            floor = production.floor_code(item)
+            if floor:
+                copied_line['floor'] = floor
             rows.append(copied_line)
             continue
         plain = {
@@ -2847,6 +2873,9 @@ def _repriced_quote_items(items, tier, currency, tiers):
         }
         if item.get('remarks'):
             plain['remarks'] = clean_text(item.get('remarks'), 500)
+        floor = production.floor_code(item)
+        if floor:
+            plain['floor'] = floor
         rows.append(plain)
     return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge'])
 
@@ -3530,7 +3559,7 @@ def quote_from_import(import_id):
             'total': line.get('total'),
             'pcs': line.get('qty'),
             'spec': spec,
-            'mark': line.get('mark') or '',
+            'floor': line.get('mark') or '',
             'source_glass': line.get('glass_name') or '',
             'irregular_shape': bool(line.get('irregular_shape') or line.get('irregular')),
         })
@@ -4102,9 +4131,9 @@ def convert_quote_to_order(quote_id):
         }
         if item.get('remarks'):
             line['remarks'] = clean_text(item.get('remarks'), 500)
-        for source_key in ('mark', 'floor', 'floor_code', 'location'):
-            if item.get(source_key):
-                line[source_key] = clean_text(item.get(source_key), 80)
+        floor = production.floor_code(item)
+        if floor:
+            line['floor'] = clean_text(floor, 80)
         if item.get('line_id'):
             line['line_id'] = item.get('line_id')
         if item.get('surcharge_rate') not in (None, ''):
@@ -4411,9 +4440,9 @@ def _parse_order_items(raw, tier, currency, tiers):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
         if raw_item.get('remarks'):
             line['remarks'] = clean_text(raw_item.get('remarks'), 500)
-        for source_key in ('mark', 'floor', 'floor_code', 'location'):
-            if raw_item.get(source_key):
-                line[source_key] = clean_text(raw_item.get(source_key), 80)
+        floor = production.floor_code(raw_item)
+        if floor:
+            line['floor'] = clean_text(floor, 80)
         items.append(line)
     items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     return items, None
@@ -5652,9 +5681,7 @@ def _render_invoice_pdf(invoice):
         Paragraph(f'<b>{currency}</b>', header_cell),
     ]]
     for item in invoice.get('items') or []:
-        description = escape(str(item.get('name') or ''))
-        if str(item.get('remarks') or '').strip():
-            description += '<br/>' + escape(str(item.get('remarks')).strip())
+        description = _item_description(item)
         table_data.append([
             Paragraph(description, cell_style),
             Paragraph(escape(str(item.get('pcs') or '')), cell_style),
