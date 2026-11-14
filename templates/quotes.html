@@ -71,6 +71,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="currency-btn" id="btn-cad" onclick="selectCurrency('cad')">CAD</div>
 </div>
 <div class="form-group" style="margin-bottom:15px;max-width:300px"><label>Project Name (optional)</label><input type="text" id="project-name" placeholder="Enter project name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+<p id="copy-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <div id="tab-sqf" class="tab-content active">
 <div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
 <div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}">{{ g.name }}</option>{% endfor %}</select></div>
@@ -159,6 +160,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="btn" style="background:#333;margin-top:15px" onclick="addSizeToQuote()">Add to Quote</button>
 <div id="size-quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
+<p id="copy-note-lines" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="drawing-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px;font-weight:600">{{ drawing_note }}</p>
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
@@ -191,7 +193,7 @@ function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
 async function exportQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems,currency:selectedCurrency,project,type:'sqf',tier:document.getElementById('tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;sizeQuoteItems.push({name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}});const added=sizeQuoteItems[sizeQuoteItems.length-1];added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
-function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty">'+pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
+function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty">'+pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem('+i+')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
 function removeSizeItem(i){sizeQuoteItems.splice(i,1);renderSizeQuoteList()}
 async function exportSizeQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;const items=sizeQuoteItems.map(i=>({name:i.name+' - '+i.size,sqf:i.sqf,price_sqf:i.priceSqf,price_pc:i.pricePc,total:i.total,pcs:i.pcs,spec:i.spec||null,irregular_shape:!!i.irregular_shape,surcharge_rate:i.surcharge_rate||null}));await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project,type:'size',tier:document.getElementById('s-tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 function checkSheetSize(){const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const unit=document.getElementById('unit').value;const glasses=['s-glass1','s-glass2','s-glass3'];let error='';for(const id of glasses){const el=document.getElementById(id);const sel=el.options[el.selectedIndex];if(sel&&sel.dataset.size){const match=sel.dataset.size.match(/(\d+)"x(\d+)"/);if(match){const sheetW=parseInt(match[1]);const sheetH=parseInt(match[2]);let inputW=w;let inputH=h;if(unit==='mm'){inputW=w/25.4;inputH=h/25.4}const fits=(inputW<=sheetW&&inputH<=sheetH)||(inputW<=sheetH&&inputH<=sheetW);if(!fits){error='Size exceeds sheet ('+sel.dataset.size+') for '+sel.value;break}}}}const errEl=document.getElementById('size-error');if(error){if(!errEl){const div=document.createElement('div');div.id='size-error';div.style.cssText='color:#C41E3A;font-size:13px;margin:10px 0;font-weight:bold;padding:10px;background:#fff0f0;border-radius:4px';const dimSection=document.querySelector('#tab-size .section');dimSection.parentNode.insertBefore(div,dimSection.nextSibling)}document.getElementById('size-error').textContent=error;document.getElementById('size-error').style.display='block';return false}else if(errEl){errEl.style.display='none'}return true}
@@ -205,6 +207,126 @@ document.getElementById('unit').addEventListener('change',function(){if(sizeQuot
 document.getElementById('s-spacer2').addEventListener('change',function(){updateSealant('s-spacer2','s-sealant2');calcSize()});
 document.getElementById('s-spacer1').addEventListener('change',function(){updateSealant('s-spacer1','s-sealant1');calcSize()});
 ['s-temper1','s-temper2','s-temper3','s-sealant1','s-sealant2','s-tier','width','height','pieces'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('change',calcSize)});
+</script>
+<script>
+let draftQuoteId = null;
+let draftExtras = [];
+function showCopyNote(text) {
+  ['copy-note', 'copy-note-lines'].forEach(id => {
+    const note = document.getElementById(id);
+    if (!note) return;
+    note.hidden = !text;
+    note.textContent = text || '';
+  });
+}
+function editSizeItem(index) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  const spec = item.spec || {};
+  showTab('size');
+  const set = (id, value) => {
+    const field = document.getElementById(id);
+    if (field && value != null && value !== '') field.value = value;
+  };
+  set('s-glass1', spec.glass1);
+  set('s-temper1', spec.temper1 || 'n/a');
+  set('s-spacer1', spec.spacer1 || '');
+  set('s-sealant1', spec.sealant1 || '');
+  set('s-glass2', spec.glass2 || 'n/a');
+  set('s-temper2', spec.temper2 || 'n/a');
+  set('s-spacer2', spec.spacer2 || '');
+  set('s-sealant2', spec.sealant2 || '');
+  set('s-glass3', spec.glass3 || 'n/a');
+  set('s-temper3', spec.temper3 || 'n/a');
+  set('width', spec.width);
+  set('height', spec.height);
+  set('pieces', item.pcs || spec.pcs || 1);
+  set('unit', spec.unit || 'in');
+  const irregular = document.getElementById('s-irregular');
+  if (irregular) irregular.checked = !!item.irregular_shape;
+  sizeQuoteItems.splice(index, 1);
+  renderSizeQuoteList();
+  if (typeof calcSize === 'function') calcSize();
+}
+function quotePayload(items, type) {
+  const body = {
+    items,
+    currency: selectedCurrency,
+    project: document.getElementById('project-name').value,
+    type,
+    tier: document.getElementById(type === 'size' ? 's-tier' : 'tier').value
+  };
+  if (draftQuoteId) {
+    body.id = draftQuoteId;
+    body.extra_charges = draftExtras;
+  }
+  return body;
+}
+const saveNewQuote = exportQuote;
+exportQuote = async function () {
+  if (!selectedCurrency) { alert('Select currency first'); return; }
+  const project = document.getElementById('project-name').value;
+  await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(quoteItems, 'sqf'))});
+  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items: quoteItems, currency: selectedCurrency, project})});
+  const blob = await res.blob();
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'ORA_Quote.pdf';
+  link.click();
+};
+const saveNewSizeQuote = exportSizeQuote;
+exportSizeQuote = async function () {
+  if (!selectedCurrency) { alert('Select currency first'); return; }
+  const project = document.getElementById('project-name').value;
+  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null}));
+  await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
+  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items, currency: selectedCurrency, project})});
+  const blob = await res.blob();
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'ORA_Quote.pdf';
+  link.click();
+};
+function lineFromStored(item, currency, project) {
+  const spec = item.spec || null;
+  let size = item.size || '';
+  if (spec && spec.width) size = spec.width + ' x ' + spec.height + ' ' + (spec.unit || 'in');
+  let name = item.name || '';
+  if (size && name.endsWith(' - ' + size)) name = name.slice(0, -(' - ' + size).length);
+  return {
+    name, size, total: item.total, sqf: item.sqf, priceSqf: item.price_sqf || item.price,
+    pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
+    irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate
+  };
+}
+async function loadCopiedQuote() {
+  const draft = new URLSearchParams(location.search).get('draft');
+  if (!draft) return;
+  const res = await fetch('/api/quotes/' + encodeURIComponent(draft));
+  if (!res.ok) return;
+  const quote = await res.json();
+  draftQuoteId = quote.id;
+  draftExtras = quote.extra_charges || [];
+  document.getElementById('project-name').value = quote.project || '';
+  showCopyNote(quote.copy_note || quote.notes || '');
+  selectedCurrency = quote.currency || 'usd';
+  document.getElementById('btn-usd').classList.toggle('selected', selectedCurrency === 'usd');
+  document.getElementById('btn-cad').classList.toggle('selected', selectedCurrency === 'cad');
+  const tierId = quote.type === 'size' ? 's-tier' : 'tier';
+  const tier = document.getElementById(tierId);
+  if (tier && quote.tier && Array.from(tier.options || []).some(option => option.value === quote.tier)) tier.value = quote.tier;
+  const lines = (quote.items || []).filter(item => item && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
+  if (quote.type === 'size') {
+    showTab('size');
+    sizeQuoteItems = lines.map(item => lineFromStored(item, quote.currency, quote.project));
+    renderSizeQuoteList();
+  } else {
+    showTab('sqf');
+    quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-'}));
+    renderQuoteList();
+  }
+}
+loadCopiedQuote();
 </script>
 </body>
 </html>
