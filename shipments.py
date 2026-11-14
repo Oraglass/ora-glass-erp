@@ -10,6 +10,19 @@ SURCHARGE = 'irregular_surcharge'
 DRAWING = 'dwg_creation'
 
 
+def _size_pair(spec):
+    """Width and height in both millimetres and inches."""
+    spec = spec or {}
+    try:
+        width = float(spec.get('width') or 0)
+        height = float(spec.get('height') or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0, 0.0, 0.0
+    if str(spec.get('unit') or 'in').lower() == 'mm':
+        return round(width, 2), round(height, 2), round(width / 25.4, 2), round(height / 25.4, 2)
+    return round(width * 25.4, 2), round(height * 25.4, 2), round(width, 2), round(height, 2)
+
+
 def is_glass_line(item):
     if not isinstance(item, dict) or item.get('kind') in {SURCHARGE, DRAWING}:
         return False
@@ -33,14 +46,18 @@ def glass_rows(order):
     for index, item in enumerate((order or {}).get('items') or []):
         if not is_glass_line(item):
             continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         rows.append({
             'index': index,
+            'serial': len(rows) + 1,
             'name': item.get('name') or 'Glass',
             'pcs': _pcs(item),
             'sqf_each': money(item.get('sqf')),
             'price_pc': money(item.get('price_pc') if item.get('price_pc') not in (None, '') else item.get('unit_price')),
             'price_sqf': money(item.get('price_sqf')),
-            'mark': item.get('mark') or item.get('floor') or item.get('floor_code') or '',
+            'mark': item.get('mark') or item.get('floor') or item.get('floor_code') or item.get('location') or '',
+            'remarks': item.get('remarks') or '',
+            'spec': spec,
         })
     return rows
 
@@ -212,15 +229,27 @@ def shipment_progress(order):
         invoiced_value += row['price_pc'] * invoiced
         remaining_sqf += row['sqf_each'] * left
         if left or left_invoice:
+            width_mm, height_mm, width_in, height_in = _size_pair(row.get('spec'))
+            unit_price = row['price_pc']
             lines.append({
                 'index': index,
+                'serial': row['serial'],
+                'floor_code': row['mark'],
                 'name': row['name'],
+                'width_mm': width_mm,
+                'height_mm': height_mm,
+                'width_in': width_in,
+                'height_in': height_in,
+                'size_mm': f'{width_mm:g} x {height_mm:g}',
+                'size_in': f'{width_in:g} x {height_in:g}',
                 'ordered': row['pcs'],
                 'shipped': shipped,
                 'invoiced': invoiced,
                 'remaining': left,
                 'sqf_remaining': round(row['sqf_each'] * left, 2),
-                'value_remaining': round(row['price_pc'] * left, 2),
+                'unit_price': unit_price,
+                'value_remaining': round(unit_price * left, 2),
+                'remarks': row['remarks'],
             })
     fully_shipped = ordered_pcs > 0 and shipped_pcs >= ordered_pcs
     fully_invoiced = ordered_pcs > 0 and invoiced_pcs >= ordered_pcs
@@ -245,3 +274,103 @@ def shipment_progress(order):
         'label': label,
         'open': ordered_pcs > 0 and not (fully_shipped and fully_invoiced),
     }
+
+
+BACKORDER_HEADERS = (
+    'Order',
+    'Customer',
+    'Project',
+    'Serial',
+    'Floor code',
+    'Product name',
+    'Width x height (mm)',
+    'Width x height (in)',
+    'Qty ordered',
+    'Qty shipped',
+    'Qty remaining',
+    'Sq ft remaining',
+    'Unit price',
+    'Remaining value',
+    'Remarks',
+)
+
+
+def backorder_table(orders):
+    """One row per back-ordered line, then a totals row for that order."""
+    table = []
+    for order in orders or []:
+        lines = [line for line in order.get('lines') or [] if line.get('remaining')]
+        for line in lines:
+            table.append([
+                order.get('id'),
+                order.get('company') or '',
+                order.get('project') or '',
+                line.get('serial'),
+                line.get('floor_code') or '',
+                line.get('name') or '',
+                line.get('size_mm') or '',
+                line.get('size_in') or '',
+                line.get('ordered'),
+                line.get('shipped'),
+                line.get('remaining'),
+                line.get('sqf_remaining'),
+                line.get('unit_price'),
+                line.get('value_remaining'),
+                line.get('remarks') or '',
+            ])
+        if lines:
+            currency = str(order.get('currency') or 'usd').upper()
+            table.append([
+                order.get('id'), order.get('company') or '', 'Order total', '', '', '', '', '',
+                '', '', order.get('remaining_pcs'), order.get('remaining_sqf'), '',
+                f"{currency} {order.get('remaining_value')}", '',
+            ])
+    return table
+
+
+def backorder_workbook(orders):
+    from io import BytesIO
+    from openpyxl import Workbook
+    book = Workbook()
+    sheet = book.active
+    sheet.title = 'Backorders'
+    sheet.append(list(BACKORDER_HEADERS))
+    for row in backorder_table(orders):
+        sheet.append(row)
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def backorder_pdf(orders):
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    styles = getSampleStyleSheet()
+    small = styles['Normal']
+    small.fontSize = 7
+    small.leading = 8
+    header = list(BACKORDER_HEADERS)
+    data = [header]
+    for row in backorder_table(orders):
+        data.append([Paragraph(str(cell if cell is not None else ''), small) for cell in row])
+    if len(data) == 1:
+        data.append([Paragraph('Nothing is waiting to ship.', small)] + [''] * (len(header) - 1))
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), leftMargin=0.35 * inch, rightMargin=0.35 * inch, topMargin=0.4 * inch, bottomMargin=0.4 * inch)
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 7),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    doc.build([Paragraph('Open shipments / backorders', styles['Title']), Spacer(1, 8), table])
+    return buffer.getvalue()

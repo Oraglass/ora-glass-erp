@@ -1827,12 +1827,7 @@ def shipments_page():
     return render_template('shipments.html')
 
 
-@app.route('/api/shipments/open', methods=['GET'])
-@module_required('orders')
-def open_shipments():
-    user = current_user()
-    if not staff_can_order(user):
-        return json_error('Access denied', 403)
+def _open_shipment_rows(user):
     rows = []
     for order in orders_visible_to(user, load_orders()):
         if order_status(order) not in {'sent', 'made', 'delivered'} and not order.get('shipments'):
@@ -1853,7 +1848,41 @@ def open_shipments():
             'lines': progress['lines'],
         })
     rows.sort(key=lambda row: row.get('id') or 0)
-    return jsonify(rows)
+    return rows
+
+
+@app.route('/api/shipments/open', methods=['GET'])
+@module_required('orders')
+def open_shipments():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    return jsonify(_open_shipment_rows(user))
+
+
+@app.route('/api/shipments/open.xlsx', methods=['GET'])
+@module_required('orders')
+def export_open_shipments_excel():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    payload = shipments.backorder_workbook(_open_shipment_rows(user))
+    return send_file(
+        BytesIO(payload),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='backorders.xlsx',
+    )
+
+
+@app.route('/api/shipments/open.pdf', methods=['GET'])
+@module_required('orders')
+def export_open_shipments_pdf():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    payload = shipments.backorder_pdf(_open_shipment_rows(user))
+    return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name='backorders.pdf')
 
 
 @app.route('/orders')

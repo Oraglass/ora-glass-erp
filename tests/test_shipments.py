@@ -51,6 +51,29 @@ def test_us_order_invoices_once_when_fully_shipped_and_cannot_overship(client):
     body = first.get_json()
     assert body['shipping']['label'] == 'Partially shipped'
     assert body['shipping']['remaining_pcs'] == 2
+    waiting = client.get('/api/shipments/open').get_json()
+    listed = next(row for row in waiting if row['id'] == order_id)
+    line = listed['lines'][0]
+    assert line['serial'] == 1
+    assert line['ordered'] == 4
+    assert line['shipped'] == 2
+    assert line['remaining'] == 2
+    assert line['size_in'] == '24 x 36'
+    assert line['size_mm'] == '609.6 x 914.4'
+    assert line['value_remaining'] == round(line['unit_price'] * line['remaining'], 2)
+    sheet = __import__('io').BytesIO()
+    workbook = client.get('/api/shipments/open.xlsx')
+    assert workbook.status_code == 200
+    from openpyxl import load_workbook
+    grid = load_workbook(__import__('io').BytesIO(workbook.data)).active
+    headers = [cell.value for cell in next(grid.iter_rows(min_row=1, max_row=1))]
+    assert headers[:8] == ['Order', 'Customer', 'Project', 'Serial', 'Floor code', 'Product name', 'Width x height (mm)', 'Width x height (in)']
+    assert 'Qty remaining' in headers
+    assert 'Remarks' in headers
+    pdf = client.get('/api/shipments/open.pdf')
+    assert pdf.status_code == 200
+    assert pdf.mimetype == 'application/pdf'
+    assert pdf.data.startswith(b'%PDF')
     assert body['shipments'][0]['number'] == 'XF1'
     assert body['shipments'][0]['invoiced'] is False
     assert load_invoices() == []
