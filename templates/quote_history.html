@@ -446,7 +446,7 @@ if (sortSelect) sortSelect.addEventListener('change', applyFilters);
 function showQuoteDetail(quote) {
   const box = document.getElementById('quote-detail');
   if (!box || !quote) return;
-  const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
+  const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const note = quote.copy_note || quote.notes || '';
   const tax = quote.tax_label ? '<p class="note">Tax: ' + esc(quote.tax_label) + '</p>' : '';

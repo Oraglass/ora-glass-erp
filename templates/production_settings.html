@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ORA Glass ERP - Production settings</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.container{max-width:1100px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:20px}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.tabs a{padding:8px 14px;border-radius:6px;text-decoration:none;color:#333;background:#f3f4f6;font-size:14px}
+.tabs a.active{background:#C41E3A;color:white}
+.note{font-size:13px;color:#555;line-height:1.5;margin:8px 0 16px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:2px solid #ddd}
+td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
+input[type=text],input[type=file]{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+.filters{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.filters a{font-size:13px;color:#333}
+.filters a.active{font-weight:700;color:#C41E3A}
+.missing{color:#9a3412}
+.headers{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 16px}
+.headers span{background:#f5f5f5;border:1px solid #ddd;border-radius:4px;padding:6px 8px;font-size:12px;font-weight:600}
+label.check{display:flex;gap:8px;align-items:center;font-size:14px;margin:8px 0}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container"><div class="card">
+<h2 style="color:#333;margin-bottom:12px">Production settings</h2>
+<nav class="tabs" aria-label="Production settings">
+{% for item in tabs %}
+<a href="{{ url_for('production_settings', tab=item.id) }}" class="{{ 'active' if tab == item.id else '' }}">{{ item.label }}</a>
+{% endfor %}
+</nav>
+{% if tab == 'ids' %}
+<p class="note">Every IGU configuration from a quote or an order is listed here. The production software assigns the Product ID after the order is imported, so a blank ID is normal. Seeded IDs come from the last tab of the pricing workbook. Exports use the ID stored here at the moment the file is built. Download the production Excel again after an ID is filled in.</p>
+<p class="note">{{ seed.matched }} production IDs matched an ERP glass and spacer combination. {{ seed.unmatched|length }} workbook rows did not match and were not seeded{% if seed.unmatched %}: {% for row in seed.unmatched %}{{ row.product_name }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}.</p>
+<div class="filters">
+<a href="{{ url_for('production_settings', tab='ids', filter='missing') }}" class="{{ 'active' if list_filter == 'missing' else '' }}">Missing ID</a>
+<a href="{{ url_for('production_settings', tab='ids', filter='all') }}" class="{{ 'active' if list_filter == 'all' else '' }}">All</a>
+<span class="note" style="margin:0">{{ rows|length }} shown</span>
+</div>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="ids">
+<input type="hidden" name="tab" value="ids">
+<input type="hidden" name="filter" value="{{ list_filter }}">
+<table>
+<thead><tr><th>Production product name</th><th>Product ID</th><th>First used</th><th>Orders</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr>
+<td><input type="hidden" name="row_key" value="{{ row.key }}"><input type="text" name="product_name" value="{{ row.product_name }}" aria-label="Production product name"></td>
+<td><input type="text" name="product_id" value="{{ row.product_id }}" aria-label="Product ID" class="{{ 'missing' if row.missing else '' }}" placeholder="No production ID yet"></td>
+<td>{{ row.first_used or '—' }}</td>
+<td>{{ row.order_count }}</td>
+</tr>
+{% else %}
+<tr><td colspan="4">No IGU types in this list yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<button class="btn" type="submit" style="margin-top:12px">Save production IDs</button>
+</form>
+<h3 style="color:#333;margin:22px 0 8px">Upload a product list</h3>
+<p class="note">Use an .xlsx file with Product ID and Product Name columns, the same columns as the last tab of the pricing workbook. Names must match exactly. IDs that are already filled in stay as they are unless you tick the box to replace them.</p>
+<form method="post" enctype="multipart/form-data">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="upload">
+<input type="hidden" name="tab" value="ids">
+<input type="file" name="product_list" accept=".xlsx" required aria-label="Production product list">
+<label class="check"><input type="checkbox" name="replace_ids"> Replace IDs that are already set</label>
+<button class="btn secondary" type="submit">Upload and match</button>
+</form>
+{% elif tab == 'excel' %}
+<p class="note">The production file is one row per glass line. A line with no Product ID is still exported, with the product name filled in, so the production software can create it. Turning off automatic generation leaves the download button on the order.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="excel">
+<input type="hidden" name="tab" value="excel">
+<label class="check"><input type="checkbox" name="generate_on_confirm" {% if settings.generate_on_confirm %}checked{% endif %}> Generate the production Excel file when an order is confirmed</label>
+<button class="btn" type="submit">Save export settings</button>
+</form>
+<h3 style="color:#333;margin:22px 0 8px">Column headers</h3>
+<p class="note">These are the headers written on the first row of the file, in this order.</p>
+<div class="headers" id="production-headers">
+{% for header in headers %}<span>{{ header }}</span>{% endfor %}
+</div>
+{% endif %}
+</div></div>
+</body>
+</html>

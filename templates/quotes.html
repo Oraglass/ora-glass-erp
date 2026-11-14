@@ -116,6 +116,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="btn" style="background:#333;margin-top:15px" onclick="addToQuote()">Add to Quote</button>
 <div id="quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
+<label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
 </div>
@@ -161,6 +162,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="btn" style="background:#333;margin-top:15px" onclick="addSizeToQuote()">Add to Quote</button>
 <div id="size-quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
+<label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
 <p id="copy-note-lines" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="quote-tax-lines" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <p id="drawing-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px;font-weight:600">{{ drawing_note }}</p>
@@ -211,6 +213,56 @@ document.getElementById('s-spacer1').addEventListener('change',function(){update
 ['s-temper1','s-temper2','s-temper3','s-sealant1','s-sealant2','s-tier','width','height','pieces'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('change',calcSize)});
 </script>
 <script>
+function quoteEsc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+let showRemarks = false;
+function toggleShowRemarks(checked) {
+  showRemarks = !!checked;
+  document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
+  renderQuoteList();
+  renderSizeQuoteList();
+}
+function setRemark(listName, index, value) {
+  const list = listName === 'size' ? sizeQuoteItems : quoteItems;
+  if (list[index]) list[index].remarks = value;
+}
+function toggleLineRemark(listName, index, checked) {
+  const list = listName === 'size' ? sizeQuoteItems : quoteItems;
+  if (!list[index]) return;
+  list[index].remarkOpen = checked;
+  if (!checked) list[index].remarks = list[index].remarks || '';
+  renderQuoteList();
+  renderSizeQuoteList();
+}
+function remarkControls(item, index, listName) {
+  const open = showRemarks || item.remarkOpen || !!(item.remarks);
+  const marked = (item.remarkOpen || item.remarks) ? ' checked' : '';
+  const field = open ? '<input type="text" aria-label="Remarks" placeholder="Remarks" value="' + quoteEsc(item.remarks || '') + '" oninput="setRemark(\'' + listName + '\',' + index + ', this.value)" style="width:100%;margin-top:4px;padding:4px;border:1px solid #ddd;border-radius:4px">' : '';
+  return '<div style="margin-top:4px"><label style="font-size:12px;color:#555"><input type="checkbox"' + marked + ' onchange="toggleLineRemark(\'' + listName + '\',' + index + ', this.checked)"> Remark</label>' + field + '</div>';
+}
+const renderSqfQuoteList = renderQuoteList;
+renderQuoteList = function () {
+  const tbody = document.getElementById('quote-body');
+  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td><td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
+  document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
+  document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
+};
+const renderSizedQuoteList = renderSizeQuoteList;
+renderSizeQuoteList = function () {
+  const tbody = document.getElementById('size-quote-body');
+  tbody.innerHTML = sizeQuoteItems.map((item, i) => {
+    const checked = item.irregular_shape ? ' checked' : '';
+    const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
+    const pcs = Number(item.pcs) || 1;
+    const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-size"></td><td class="col-qty">' + pcs + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
+    return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td><td class="col-size">' + quoteEsc(item.size) + '</td><td class="col-qty">' + quoteEsc(item.pcs) + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
+  }).join('');
+  document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
+  const note = document.getElementById('drawing-note');
+  if (note) note.hidden = !sizeQuoteItems.some(item => item.irregular_shape);
+  document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
+};
 let draftQuoteId = null;
 let draftExtras = [];
 let draftShipProvince = '';
@@ -291,7 +343,7 @@ const saveNewSizeQuote = exportSizeQuote;
 exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null}));
+  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', mark: i.mark || ''}));
   await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
   const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince})});
   const blob = await res.blob();
@@ -309,7 +361,8 @@ function lineFromStored(item, currency, project) {
   return {
     name, size, total: item.total, sqf: item.sqf, priceSqf: item.price_sqf || item.price,
     pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
-    irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate
+    irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate,
+    remarks: item.remarks || '', mark: item.mark || ''
   };
 }
 async function loadCopiedQuote() {
@@ -335,10 +388,12 @@ async function loadCopiedQuote() {
   if (quote.type === 'size') {
     showTab('size');
     sizeQuoteItems = lines.map(item => lineFromStored(item, quote.currency, quote.project));
+    if (sizeQuoteItems.some(item => item.remarks)) showRemarks = true;
     renderSizeQuoteList();
   } else {
     showTab('sqf');
-    quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-'}));
+    quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-', remarks: item.remarks || ''}));
+    if (quoteItems.some(item => item.remarks)) showRemarks = true;
     renderQuoteList();
   }
 }
