@@ -92,10 +92,19 @@ td.actions{width:11rem}
 <option value="YT">Yukon</option>
 </select>
 </div>
+</div>
+<div class="form-group"><label for="c-pst-number">PST number</label>
+<input type="text" id="c-pst-number" maxlength="40" autocomplete="off">
+<p class="help">British Columbia, Manitoba, and Saskatchewan. With a PST number on file, delivery to those provinces is GST only.</p>
+</div>
+<div class="form-group"><label for="c-qst-number">QST number</label>
+<input type="text" id="c-qst-number" maxlength="40" autocomplete="off">
+<p class="help">Quebec. With a QST number on file, delivery to Quebec is GST only.</p>
+</div>
 <div class="form-group"><label for="c-tax-code">QBO tax code</label>
 <select id="c-tax-code" aria-label="QBO tax code"></select>
-<p class="help">Posted on invoices from Ora Glass (Canada) Inc. If this is empty, the province suggestion is filled in.</p>
-</div>
+<p class="help">Used for Canada invoices only when Override is ticked. Otherwise the ship-to province decides.</p>
+<label style="margin-top:8px"><input type="checkbox" id="c-tax-override"> Override ship-to tax</label>
 </div>
 <div class="form-row">
 <div class="form-group"><label>Phone</label><input type="text" id="c-phone"></div>
@@ -195,6 +204,10 @@ function openModal(customer) {
   document.getElementById('c-us-state').value = customer && customer.us_state ? customer.us_state : '';
   document.getElementById('c-export').checked = customer ? !!customer.export_no_tax : false;
   document.getElementById('c-tax-exempt').checked = customer ? !!customer.tax_exempt : false;
+  document.getElementById('c-pst-number').value = customer ? (customer.pst_number || '') : '';
+  document.getElementById('c-qst-number').value = customer ? (customer.qst_number || '') : '';
+  document.getElementById('c-tax-override').checked = customer ? !!customer.tax_code_override : false;
+  syncCanadaFields();
   fillTaxCodes(customer ? (customer.qbo_tax_code || '') : '');
   if (!customer || !customer.qbo_tax_code) suggestTaxCode();
   const resale = document.getElementById('resale-link');
@@ -228,6 +241,9 @@ function payload() {
     us_state: document.getElementById('c-us-state').value,
     export_no_tax: document.getElementById('c-export').checked,
     tax_exempt: document.getElementById('c-tax-exempt').checked,
+    pst_number: document.getElementById('c-pst-number').value,
+    qst_number: document.getElementById('c-qst-number').value,
+    tax_code_override: document.getElementById('c-tax-override').checked,
     qbo_tax_code: document.getElementById('c-tax-code').value,
     phone: document.getElementById('c-phone').value,
     email: document.getElementById('c-email').value,
@@ -279,12 +295,7 @@ function suggestTaxCode() {
   const select = document.getElementById('c-tax-code');
   if (select.value || document.getElementById('c-export').checked) return;
   if (document.getElementById('c-country').value === 'Canada') {
-    if (document.getElementById('c-tax-exempt').checked && exemptCode) {
-      select.value = exemptCode;
-      return;
-    }
-    const province = document.getElementById('c-province').value;
-    if (province && provinceTax[province]) select.value = provinceTax[province];
+    if (document.getElementById('c-tax-exempt').checked && exemptCode && !select.value) select.value = exemptCode;
     return;
   }
   const state = document.getElementById('c-us-state').value;
@@ -302,9 +313,15 @@ function taxLabel(customer) {
 }
 document.getElementById('c-province').addEventListener('change', suggestTaxCode);
 document.getElementById('c-us-state').addEventListener('change', suggestTaxCode);
+function syncCanadaFields() {
+  const canada = document.getElementById('c-country').value === 'Canada';
+  document.getElementById('c-pst-number').closest('.form-group').hidden = !canada;
+  document.getElementById('c-qst-number').closest('.form-group').hidden = !canada;
+}
 document.getElementById('c-country').addEventListener('change', () => {
   const selected = document.getElementById('c-tax-code').value;
   fillTaxCodes(selected);
+  syncCanadaFields();
   suggestTaxCode();
 });
 document.getElementById('c-tax-exempt').addEventListener('change', suggestTaxCode);

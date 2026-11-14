@@ -239,6 +239,7 @@ def test_each_company_has_its_own_connection_import_and_push(client, monkeypatch
         _customer('maple-glass', 'Maple Glass', 'Canada', currency='cad')
         customers = load_customers()
         customers['maple-glass']['qbo_tax_code'] = '5'
+        customers['maple-glass']['tax_code_override'] = True
         save_customers(customers)
         fake.calls.clear()
         order = _deliver(client, 'maple-glass', 'cad')

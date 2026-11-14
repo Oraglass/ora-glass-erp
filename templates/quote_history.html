@@ -70,6 +70,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 <label for="order-customer">Customer</label>
 <select id="order-customer"></select>
 </div>
+<div class="form-group">
+<label for="order-ship-province">Ship-to province</label>
+<select id="order-ship-province" aria-label="Ship-to province"></select>
+<p class="help">Canadian sales tax follows this province. Goods delivered to Ontario are HST even when the customer is billed in another province.</p>
+</div>
 <div id="new-customer-fields" hidden>
 <div class="form-group"><label for="new-name">Customer name</label><input type="text" id="new-name" autocomplete="off"></div>
 <div class="form-group"><label for="new-contact">Contact</label><input type="text" id="new-contact" autocomplete="off"></div>
@@ -218,7 +223,8 @@ function renderQuotes(rows) {
     }
     const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
     const copyNote = quote.copy_note ? '<div class="copy-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(quote.copy_note) + '</div>' : '';
-    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + copyNote + drawingNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    const taxNote = quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '';
+    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + copyNote + drawingNote + taxNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -304,6 +310,11 @@ function syncOrderFields() {
   document.getElementById('new-customer-fields').hidden = !isNew;
   document.getElementById('tier-fields').hidden = !needsTier;
   if (needsTier) fillTierSelect(suggestedTier(pendingQuote()));
+  const ship = document.getElementById('order-ship-province');
+  if (ship) {
+    fillShipProvinces();
+    ship.value = (option && option.getAttribute('data-province')) || '';
+  }
 }
 async function openOrderDialog(quoteId) {
   const quote = catalog.find(item => String(item.id) === String(quoteId));
@@ -314,7 +325,7 @@ async function openOrderDialog(quoteId) {
   const select = document.getElementById('order-customer');
   const options = ['<option value="">Choose a customer</option>'].concat(customers.map(row => {
     const label = row.name;
-    return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '">' + esc(label) + '</option>';
+    return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '" data-province="' + esc(row.province || '') + '">' + esc(label) + '</option>';
   })).concat(['<option value="__new__">New customer...</option>']);
   select.innerHTML = options.join('');
   if (quote && quote.customer_id && customers.some(row => row.id === quote.customer_id)) {
@@ -331,7 +342,16 @@ async function openOrderDialog(quoteId) {
     panel.innerHTML = drawingMarkup(quote);
     bindDrawingPanel(panel);
   }
+  fillShipProvinces();
+  const ship = document.getElementById('order-ship-province');
+  if (ship && quote && quote.ship_province) ship.value = quote.ship_province;
   document.getElementById('order-modal').classList.add('active');
+}
+const SHIP_PROVINCES = [['', 'Same as billing province'], ['AB', 'Alberta'], ['BC', 'British Columbia'], ['MB', 'Manitoba'], ['NB', 'New Brunswick'], ['NL', 'Newfoundland and Labrador'], ['NS', 'Nova Scotia'], ['NT', 'Northwest Territories'], ['NU', 'Nunavut'], ['ON', 'Ontario'], ['PE', 'Prince Edward Island'], ['QC', 'Quebec'], ['SK', 'Saskatchewan'], ['YT', 'Yukon']];
+function fillShipProvinces() {
+  const select = document.getElementById('order-ship-province');
+  if (!select || select.options.length) return;
+  select.innerHTML = SHIP_PROVINCES.map(row => '<option value="' + row[0] + '">' + row[1] + '</option>').join('');
 }
 function closeOrderDialog() {
   const modal = document.getElementById('order-modal');
@@ -360,6 +380,7 @@ async function submitOrder(event) {
     body.tier = document.getElementById('order-tier').value || suggestedTier(pendingQuote());
   } else if (select.value) {
     body.customer_id = select.value;
+    body.ship_province = document.getElementById('order-ship-province').value;
     const option = select.options[select.selectedIndex];
     if (option && !option.getAttribute('data-tier')) {
       body.tier = document.getElementById('order-tier').value || suggestedTier(pendingQuote());
@@ -374,6 +395,7 @@ async function submitOrder(event) {
     const panel = document.getElementById('drawing-panel');
     const formData = new FormData();
     if (body.customer_id) formData.append('customer_id', body.customer_id);
+    if (body.ship_province) formData.append('ship_province', body.ship_province);
     if (body.tier) formData.append('tier', body.tier);
     if (body.new_customer) formData.append('new_customer', JSON.stringify(body.new_customer));
     if (appendDrawings(formData, panel)) {
@@ -400,7 +422,7 @@ async function downloadPDF(id) {
   const pdfRes = await fetch('/api/export-quote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project})
+      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || ''})
   });
   if (!pdfRes.ok) { alert('Could not build the PDF'); return; }
   const blob = await pdfRes.blob();
@@ -427,8 +449,10 @@ function showQuoteDetail(quote) {
   const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const note = quote.copy_note || quote.notes || '';
+  const tax = quote.tax_label ? '<p class="note">Tax: ' + esc(quote.tax_label) + '</p>' : '';
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
     + (note ? '<p class="copy-note" style="color:#9f1239;font-weight:600;margin-bottom:8px">' + esc(note) + '</p>' : '')
+    + tax
     + (quote.notes && quote.notes !== note ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + '<table><thead><tr><th>Line</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
     + (extras ? '<p class="help">Extras</p><ul>' + extras + '</ul>' : '')

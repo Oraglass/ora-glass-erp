@@ -621,6 +621,9 @@ def public_customer(customer_id, customer, tiers, user_count):
         'zip': customer.get('zip') or '',
         'country': customer.get('country') or 'United States',
         'province': customer.get('province') or '',
+        'pst_number': customer.get('pst_number') or '',
+        'qst_number': customer.get('qst_number') or '',
+        'tax_code_override': bool(customer.get('tax_code_override')),
         'tax_exempt': bool(customer.get('tax_exempt')),
         'qbo_tax_code': customer.get('qbo_tax_code') or '',
         'qbo_tax_code_label': _qbo_tax_label(customer),
@@ -913,12 +916,18 @@ def apply_customer_fields(customer, data, tiers, creating):
         customer['export_no_tax'] = bool(data.get('export_no_tax'))
     if creating or 'tax_exempt' in data:
         customer['tax_exempt'] = bool(data.get('tax_exempt'))
+    if creating or 'pst_number' in data:
+        customer['pst_number'] = clean_text(data.get('pst_number'), 40)
+    if creating or 'qst_number' in data:
+        customer['qst_number'] = clean_text(data.get('qst_number'), 40)
+    if creating or 'tax_code_override' in data:
+        customer['tax_code_override'] = bool(data.get('tax_code_override'))
     if creating or 'qbo_tax_code' in data or 'province' in data or 'us_state' in data or 'tax_exempt' in data or 'export_no_tax' in data:
         code = clean_text(data.get('qbo_tax_code') if 'qbo_tax_code' in data else customer.get('qbo_tax_code'), 40)
         if not code and not customer.get('export_no_tax'):
             import quickbooks
-            if customer.get('country') == 'Canada':
-                code = quickbooks.suggested_tax_code(customer.get('province'), customer.get('tax_exempt'))
+            if customer.get('country') == 'Canada' and customer.get('tax_exempt'):
+                code = quickbooks.suggested_tax_code(customer.get('province'), True)
             elif customer.get('country') == 'United States':
                 code = quickbooks.suggested_us_tax_code(customer.get('us_state'))
         customer['qbo_tax_code'] = code
@@ -1434,10 +1443,23 @@ def _quickbooks_save_settings(quickbooks, data):
         from storage import PROVINCE_CODES
         raw_tax = data.get('province_tax') if isinstance(data.get('province_tax'), dict) else settings.get('province_tax') or {}
         province_tax = {}
+        allowed_cases = {'hst', 'gst', 'with_pst', 'gst_only', 'with_qst'}
         for code in PROVINCE_CODES:
-            value = clean_text(raw_tax.get(code), 40)
-            if value:
-                province_tax[code] = value
+            value = raw_tax.get(code)
+            if isinstance(value, dict):
+                cleaned = {}
+                for case, item in value.items():
+                    if case not in allowed_cases:
+                        continue
+                    text = clean_text(item, 40)
+                    if text:
+                        cleaned[case] = text
+                if cleaned:
+                    province_tax[code] = cleaned
+                continue
+            text = clean_text(value, 40)
+            if text:
+                province_tax[code] = text
         settings['province_tax'] = province_tax
         if 'tax_exempt_code' in data:
             settings['tax_exempt_code'] = clean_text(data.get('tax_exempt_code'), 40)
@@ -1676,6 +1698,15 @@ def export_quote():
     if drawing_note:
         note_style = ParagraphStyle('DrawingNote', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.HexColor('#9f1239'))
         elements.append(Paragraph(escape(drawing_note), note_style))
+        elements.append(Spacer(1, 8))
+    tax_label = clean_text(data.get('tax_label'), 200)
+    if not tax_label:
+        viewer = current_user()
+        if viewer and viewer.get('role') == 'customer':
+            owner = load_customers().get(viewer.get('customer_id') or '')
+            tax_label = _canada_tax_fields(owner, data.get('ship_province')).get('tax_label') or ''
+    if tax_label:
+        elements.append(Paragraph('<b>Tax:</b> ' + escape(tax_label), small_style))
         elements.append(Spacer(1, 8))
 
     has_size = any(item.get('sqf') for item in items)
@@ -2464,6 +2495,36 @@ def set_temporary_password(email):
     return jsonify({'success': True, 'must_change_password': True})
 
 
+def _ship_province(value, customer):
+    from storage import PROVINCE_CODES
+    chosen = clean_text(value, 8).upper()
+    if chosen in PROVINCE_CODES:
+        return chosen
+    billing = str((customer or {}).get('province') or '').strip().upper()
+    return billing if billing in PROVINCE_CODES else ''
+
+
+def _canada_tax_fields(customer, ship_province=None):
+    """Resolved Canada tax for a document. Empty for customers outside Canada."""
+    import quickbooks
+    if not customer or not quickbooks.is_canadian(customer):
+        return {}
+    province = _ship_province(ship_province, customer)
+    code, _warning, label = quickbooks.resolve_canada_tax(customer, province)
+    return {'ship_province': province, 'qbo_tax_code': code, 'tax_label': label}
+
+
+def _with_quote_tax(quote):
+    row = dict(quote)
+    owner = load_customers().get(row.get('customer_id') or '')
+    tax = _canada_tax_fields(owner, row.get('ship_province'))
+    if tax:
+        row['ship_province'] = row.get('ship_province') or tax.get('ship_province') or ''
+        row['tax_label'] = tax.get('tax_label') or ''
+        row['qbo_tax_code'] = tax.get('qbo_tax_code') or ''
+    return row
+
+
 @app.route('/api/quotes', methods=['POST'])
 @module_required('quotes')
 def save_quote():
@@ -2513,6 +2574,10 @@ def save_quote():
         existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
         if 'extra_charges' in data:
             existing['extra_charges'] = _copied_extras(data.get('extra_charges'))
+        owner = customers.get(existing.get('customer_id') or '')
+        if 'ship_province' in data:
+            existing['ship_province'] = _ship_province(data.get('ship_province'), owner)
+        existing.update(_canada_tax_fields(owner, existing.get('ship_province')))
         saved = replace_quote(quote_id, existing)
         if not saved:
             return json_error('Not found', 404)
@@ -2529,6 +2594,8 @@ def save_quote():
         'type': quote_type,
         'tier': tier,
     }
+    if user.get('role') == 'customer':
+        quote.update(_canada_tax_fields(customer, data.get('ship_province')))
     stored = append_quote(quote)
     return jsonify({'success': True, 'id': stored['id']})
 
@@ -2606,7 +2673,7 @@ def get_quote(quote_id):
     quote = _visible_quote(user, quote_id)
     if not quote:
         return json_error('Not found', 404)
-    return jsonify(quote)
+    return jsonify(_with_quote_tax(quote))
 
 
 @app.route('/api/quotes/<int:quote_id>/copy', methods=['POST'])
@@ -2637,7 +2704,9 @@ def copy_quote(quote_id):
     previous = clean_text(source.get('notes'), 2000)
     notes = previous if note in previous else (previous + '\n' + note).strip()
     quote_type = source.get('type') if source.get('type') in {'sqf', 'size'} else 'sqf'
-    stored = append_quote({
+    owner = customers.get(customer_id or '')
+    ship = source.get('ship_province') or ''
+    copied = {
         'date': date.today().isoformat(),
         'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
         'user': user.get('email'),
@@ -2653,7 +2722,11 @@ def copy_quote(quote_id):
         'type': quote_type,
         'tier': tier,
         'status': 'draft',
-    })
+    }
+    if ship:
+        copied['ship_province'] = ship
+    copied.update(_canada_tax_fields(owner, ship))
+    stored = append_quote(copied)
     return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
 
 
@@ -3498,7 +3571,7 @@ def get_quotes():
         # The quote keeps the tier and prices it was created with. Do not reprice it.
         if row.get('order_id') and not row.get('order_status'):
             row['order_status'] = 'Approved for order'
-        visible.append(row)
+        visible.append(_with_quote_tax(row))
     return jsonify(filter_quote_rows(visible))
 
 
@@ -3523,6 +3596,7 @@ def order_customer_choices():
             'tier': known,
             'tier_label': tier_label(known, tiers) if known else '',
             'kind': 'account',
+            'province': customer.get('province') or '',
         })
     rows.sort(key=lambda row: (row['name'].lower(), row['id']))
     return jsonify(rows)
@@ -3605,6 +3679,8 @@ def order_for_viewer(order, user, with_coverage=False):
             for drawing in order.get('drawings') or []
             if isinstance(drawing, dict)
         ],
+        'ship_province': order.get('ship_province') or '',
+        'tax_label': order.get('tax_label') or '',
         'documents': [
             {
                 'id': row.get('id'),
@@ -3623,6 +3699,12 @@ def order_for_viewer(order, user, with_coverage=False):
             if row.get('order_id') == order.get('id')
         ],
     }
+    owner = load_customers().get(order.get('customer_id') or '') or {}
+    tax = _canada_tax_fields(owner, order.get('ship_province'))
+    if tax:
+        base['ship_province'] = tax.get('ship_province') or base.get('ship_province') or ''
+        base['tax_label'] = tax.get('tax_label') or ''
+        base['qbo_tax_code'] = tax.get('qbo_tax_code') or ''
     if not _order_prices_visible(user):
         items = []
         for item in order.get('items') or []:
@@ -3868,6 +3950,8 @@ def convert_quote_to_order(quote_id):
             return json_error(message, 400)
         warning = message
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    ship = _ship_province(data.get('ship_province'), customer)
+    tax = _canada_tax_fields(customer, ship)
     order = append_order({
         'quote_id': quote_id,
         'customer_id': customer_id,
@@ -3886,6 +3970,9 @@ def convert_quote_to_order(quote_id):
         'extras_total': 0,
         'total': grand,
         'dwg_rate': pricing['dwg_creation_fee'] if irregular_lines else None,
+        'ship_province': tax.get('ship_province') or ship,
+        'qbo_tax_code': tax.get('qbo_tax_code') or '',
+        'tax_label': tax.get('tax_label') or '',
         'drawings': [],
         'status': 'approved',
         'changelog': [],
@@ -4147,6 +4234,10 @@ def _edited_order(order, data, tiers):
     updated['items'] = items
     updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
     updated['notes'] = clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or '')
+    if 'ship_province' in data:
+        from storage import PROVINCE_CODES
+        chosen = clean_text(data.get('ship_province'), 8).upper()
+        updated['ship_province'] = chosen if chosen in PROVINCE_CODES else ''
     updated.update(summary)
     updated['changelog'] = list(order.get('changelog') or [])
     return updated, None
@@ -4404,6 +4495,7 @@ def _issue_delivery_invoices(order, user):
     customer_invoice = dict(base)
     customer_invoice['issuer'] = 'ca'
     customer_invoice['kind'] = 'customer'
+    customer_invoice.update(_canada_tax_fields(customer, order.get('ship_province')))
     stored_customer = append_invoice(customer_invoice)
     _apply_prepayments_to_invoice(order.get('id'), stored_customer['id'], user)
     fresh_customer = _finish_invoice(stored_customer, user)
@@ -4688,6 +4780,9 @@ def create_document():
         'issuer': issuer,
         'kind': 'customer',
     }
+    if issuer == 'ca' and doc_type == 'invoice':
+        ship = data.get('ship_province') or (order.get('ship_province') if order else None)
+        document.update(_canada_tax_fields(customer, ship))
     document['audit'] = [_audit(user, 'created', document['doc_type'])]
     stored = append_invoice(document)
     _qbo('push_document', stored)
@@ -4929,6 +5024,8 @@ def _render_invoice_pdf(invoice):
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
         label_style,
     ))
+    if invoice.get('tax_label'):
+        elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):

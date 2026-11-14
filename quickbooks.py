@@ -1398,13 +1398,108 @@ def detect_automated_sales_tax(settings=None):
     return enabled
 
 
+HST_PROVINCES = {'NB', 'NL', 'NS', 'ON', 'PE'}
+GST_PROVINCES = {'AB', 'NT', 'NU', 'YT'}
+PST_PROVINCES = {'BC', 'MB', 'SK'}
+PROVINCE_NAMES = {code: name for code, name, _regime in PROVINCES}
+
+
+def _province_codes(province, settings):
+    """One stored string is the main code. A dict holds each case for that province."""
+    raw = (settings.get('province_tax') or {}).get(province or '')
+    regime = next((item[2] for item in PROVINCES if item[0] == province), '')
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return {}
+        if regime == 'HST':
+            return {'hst': text}
+        if regime == 'GST':
+            return {'gst': text}
+        if regime == 'GST+PST':
+            return {'with_pst': text}
+        if regime == 'GST+QST':
+            return {'with_qst': text}
+        return {}
+    if isinstance(raw, dict):
+        return {key: str(value).strip() for key, value in raw.items() if str(value or '').strip()}
+    return {}
+
+
 def suggested_tax_code(province, tax_exempt=False):
-    """Province defaults on the Canada card are suggestions. They are not used at posting time."""
+    """Exempt code, or the main code for a province. Used when a customer record is first filled."""
     with connection_scope('ca'):
         settings = load_settings()
     if tax_exempt:
         return str(settings.get('tax_exempt_code') or '').strip()
-    return str((settings.get('province_tax') or {}).get(province or '') or '').strip()
+    codes = _province_codes(province, settings)
+    for key in ('hst', 'gst', 'with_pst', 'with_qst'):
+        if codes.get(key):
+            return codes[key]
+    return ''
+
+
+def resolve_canada_tax(customer, ship_province=None):
+    """Sales tax for a Canada invoice from the ship-to province and PST/QST number.
+
+    A code saved on the customer is used only when tax_code_override is set.
+    Returns (code, warning, label).
+    """
+    with connection_scope('ca'):
+        settings = load_settings()
+    customer = customer or {}
+    name = customer.get('name') or 'This customer'
+    if customer.get('tax_exempt'):
+        code = str(settings.get('tax_exempt_code') or '').strip() or str(customer.get('qbo_tax_code') or '').strip()
+        if code:
+            return code, '', 'Tax exempt'
+        return '', (
+            f'{name} is tax exempt and has no exempt tax code. '
+            'Choose the exempt code on the customer, or set it on the Canada QuickBooks card. '
+            'The invoice was kept in the ERP and was not posted.'
+        ), ''
+    if customer.get('tax_code_override') and str(customer.get('qbo_tax_code') or '').strip():
+        code = str(customer.get('qbo_tax_code')).strip()
+        return code, '', tax_code_name(code) or code
+    province = str(ship_province or customer.get('province') or '').strip().upper()
+    place = PROVINCE_NAMES.get(province) or province or 'the ship-to province'
+    codes = _province_codes(province, settings)
+    if province in PST_PROVINCES:
+        if str(customer.get('pst_number') or '').strip():
+            code = codes.get('gst_only') or ''
+            label = f'GST only, shipped to {place} (PST number on file)'
+        else:
+            code = codes.get('with_pst') or ''
+            label = f'GST + PST, shipped to {place}'
+    elif province == 'QC':
+        if str(customer.get('qst_number') or '').strip():
+            code = codes.get('gst_only') or ''
+            label = f'GST only, shipped to {place} (QST number on file)'
+        else:
+            code = codes.get('with_qst') or ''
+            label = f'GST + QST, shipped to {place}'
+    elif province in HST_PROVINCES:
+        code = codes.get('hst') or ''
+        label = f'HST, shipped to {place}'
+    elif province in GST_PROVINCES:
+        code = codes.get('gst') or ''
+        label = f'GST, shipped to {place}'
+    else:
+        code = ''
+        label = ''
+    if code:
+        return code, '', label
+    if not province:
+        return '', (
+            f'{name} has no ship-to province and no QuickBooks tax code. '
+            'Set the province the goods are delivered to. '
+            'The invoice was kept in the ERP and was not posted.'
+        ), ''
+    return '', (
+        f'{name} has no QuickBooks tax code for {place}. '
+        'Set the tax codes on the Canada QuickBooks card. '
+        'The invoice was kept in the ERP and was not posted.'
+    ), ''
 
 
 def suggested_us_tax_code(state):
@@ -1456,27 +1551,10 @@ def tax_code_name(code_id):
     return str(code_id)
 
 
-def canada_tax_code(customer):
-    """The customer's own QuickBooks tax code. A missing code is a warning, not a post."""
-    settings = load_settings()
-    customer = customer or {}
-    name = customer.get('name') or 'This customer'
-    own_code = str(customer.get('qbo_tax_code') or '').strip()
-    if customer.get('tax_exempt'):
-        code = str(settings.get('tax_exempt_code') or '').strip() or own_code
-        if code:
-            return code, ''
-        return '', (
-            f'{name} is tax exempt and has no exempt tax code. '
-            'Choose the exempt code on the customer, or set it on the Canada QuickBooks card. '
-            'The invoice was kept in the ERP and was not posted.'
-        )
-    if own_code:
-        return own_code, ''
-    return '', (
-        f'{name} has no QuickBooks tax code. Set QBO tax code on the customer. '
-        'The invoice was kept in the ERP and was not posted.'
-    )
+def canada_tax_code(customer, ship_province=None):
+    """Tax code for an Ora Glass (Canada) Inc invoice. A missing code is a warning, not a post."""
+    code, warning, _label = resolve_canada_tax(customer, ship_province)
+    return code, warning
 
 
 def _customer_is_export(customer):
@@ -1689,7 +1767,10 @@ def push_document(invoice):
     ship_to = False
     selling = load_customers().get(invoice.get('customer_id') or '') or {}
     if _connection_key() == 'ca':
-        tax_code, warning = canada_tax_code(selling)
+        tax_code = str(invoice.get('qbo_tax_code') or '').strip()
+        warning = ''
+        if not tax_code:
+            tax_code, warning = canada_tax_code(selling, invoice.get('ship_province'))
         if warning:
             _stamp_invoice_warning(invoice, warning)
             log('error', warning)
