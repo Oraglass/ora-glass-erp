@@ -56,6 +56,7 @@ def glass_rows(order):
             'price_pc': money(item.get('price_pc') if item.get('price_pc') not in (None, '') else item.get('unit_price')),
             'price_sqf': money(item.get('price_sqf')),
             'mark': item.get('mark') or item.get('floor') or item.get('floor_code') or item.get('location') or '',
+            'product_id': item.get('product_id') or item.get('production_id') or '',
             'remarks': item.get('remarks') or '',
             'spec': spec,
         })
@@ -230,25 +231,22 @@ def shipment_progress(order):
         remaining_sqf += row['sqf_each'] * left
         if left or left_invoice:
             width_mm, height_mm, width_in, height_in = _size_pair(row.get('spec'))
-            unit_price = row['price_pc']
             lines.append({
                 'index': index,
                 'serial': row['serial'],
                 'floor_code': row['mark'],
+                'product_id': row['product_id'],
                 'name': row['name'],
                 'width_mm': width_mm,
                 'height_mm': height_mm,
                 'width_in': width_in,
                 'height_in': height_in,
-                'size_mm': f'{width_mm:g} x {height_mm:g}',
-                'size_in': f'{width_in:g} x {height_in:g}',
                 'ordered': row['pcs'],
                 'shipped': shipped,
                 'invoiced': invoiced,
                 'remaining': left,
-                'sqf_remaining': round(row['sqf_each'] * left, 2),
-                'unit_price': unit_price,
-                'value_remaining': round(unit_price * left, 2),
+                'bo_qty': left,
+                'unit_price': row['price_sqf'],
                 'remarks': row['remarks'],
             })
     fully_shipped = ordered_pcs > 0 and shipped_pcs >= ordered_pcs
@@ -279,51 +277,41 @@ def shipment_progress(order):
 BACKORDER_HEADERS = (
     'Order',
     'Customer',
-    'Project',
-    'Serial',
-    'Floor code',
-    'Product name',
-    'Width x height (mm)',
-    'Width x height (in)',
-    'Qty ordered',
-    'Qty shipped',
-    'Qty remaining',
-    'Sq ft remaining',
-    'Unit price',
-    'Remaining value',
+    'Serial Number',
+    'Floor Code',
+    'Product ID',
+    'Product Name',
+    'Unit Price',
+    'Width(mm)',
+    'Height(mm)',
+    'Width(In)',
+    'Height(In)',
+    'BO quantity',
     'Remarks',
 )
 
 
 def backorder_table(orders):
-    """One row per back-ordered line, then a totals row for that order."""
+    """One row per back-ordered line, kept together by order."""
     table = []
     for order in orders or []:
-        lines = [line for line in order.get('lines') or [] if line.get('remaining')]
-        for line in lines:
+        for line in order.get('lines') or []:
+            if not line.get('bo_qty') and not line.get('remaining'):
+                continue
             table.append([
                 order.get('id'),
                 order.get('company') or '',
-                order.get('project') or '',
                 line.get('serial'),
                 line.get('floor_code') or '',
+                line.get('product_id') or '',
                 line.get('name') or '',
-                line.get('size_mm') or '',
-                line.get('size_in') or '',
-                line.get('ordered'),
-                line.get('shipped'),
-                line.get('remaining'),
-                line.get('sqf_remaining'),
                 line.get('unit_price'),
-                line.get('value_remaining'),
+                line.get('width_mm'),
+                line.get('height_mm'),
+                line.get('width_in'),
+                line.get('height_in'),
+                line.get('bo_qty') if line.get('bo_qty') is not None else line.get('remaining'),
                 line.get('remarks') or '',
-            ])
-        if lines:
-            currency = str(order.get('currency') or 'usd').upper()
-            table.append([
-                order.get('id'), order.get('company') or '', 'Order total', '', '', '', '', '',
-                '', '', order.get('remaining_pcs'), order.get('remaining_sqf'), '',
-                f"{currency} {order.get('remaining_value')}", '',
             ])
     return table
 

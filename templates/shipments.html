@@ -25,7 +25,7 @@ summary a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container">
 <h2 style="color:#333;margin-bottom:8px">Open shipments / backorders</h2>
-<p class="note">Each order opens to the pieces still to ship. A quantity already invoiced is not billed again.</p>
+<p class="note">Back-ordered items, one row each, grouped by order. The columns match the production Excel. BO quantity is the number of pieces not yet shipped.</p>
 <div class="actions">
 <a class="btn" href="/api/shipments/open.xlsx">Export Excel</a>
 <a class="btn secondary" href="/api/shipments/open.pdf">Export PDF</a>
@@ -36,31 +36,25 @@ summary a{color:#C41E3A}
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-function money(currency, amount) {
-  return esc(String(currency || '').toUpperCase()) + ' ' + Number(amount || 0).toFixed(2);
-}
 function render(rows) {
   const box = document.getElementById('backorders');
   if (!rows.length) { box.innerHTML = '<div class="card"><p class="note">Nothing is waiting to ship.</p></div>'; return; }
   box.innerHTML = rows.map(order => {
-    const lines = (order.lines || []).filter(line => line.remaining).map(line => '<tr>'
+    const lines = (order.lines || []).filter(line => line.bo_qty || line.remaining).map(line => '<tr>'
       + '<td>' + esc(line.serial) + '</td>'
       + '<td>' + esc(line.floor_code || '') + '</td>'
+      + '<td>' + esc(line.product_id || '') + '</td>'
       + '<td>' + esc(line.name) + '</td>'
-      + '<td>' + esc(line.size_mm) + '</td>'
-      + '<td>' + esc(line.size_in) + '</td>'
-      + '<td class="num">' + esc(line.ordered) + '</td>'
-      + '<td class="num">' + esc(line.shipped) + '</td>'
-      + '<td class="num">' + esc(line.remaining) + '</td>'
-      + '<td class="num">' + esc(line.sqf_remaining) + '</td>'
       + '<td class="num">' + Number(line.unit_price || 0).toFixed(2) + '</td>'
-      + '<td class="num">' + Number(line.value_remaining || 0).toFixed(2) + '</td>'
+      + '<td class="num">' + esc(line.width_mm) + '</td>'
+      + '<td class="num">' + esc(line.height_mm) + '</td>'
+      + '<td class="num">' + esc(line.width_in) + '</td>'
+      + '<td class="num">' + esc(line.height_in) + '</td>'
+      + '<td class="num">' + esc(line.bo_qty != null ? line.bo_qty : line.remaining) + '</td>'
       + '<td>' + esc(line.remarks || '') + '</td></tr>').join('');
-    return '<details class="card" open><summary><a href="/orders/' + esc(order.id) + '">Order ' + esc(order.id) + '</a> · ' + esc(order.company) + ' · ' + esc(order.shipping_label) + '</summary>'
-      + '<p class="note">' + esc(order.project || '') + '</p>'
-      + '<table><thead><tr><th>Serial</th><th>Floor code</th><th>Product name</th><th>Width x height (mm)</th><th>Width x height (in)</th><th class="num">Qty ordered</th><th class="num">Qty shipped</th><th class="num">Qty remaining</th><th class="num">Sq ft remaining</th><th class="num">Unit price</th><th class="num">Remaining value</th><th>Remarks</th></tr></thead><tbody>'
-      + lines + '</tbody></table>'
-      + '<p class="note">Order total still to ship: ' + esc(order.remaining_pcs) + ' pcs · ' + esc(order.remaining_sqf) + ' sq ft · ' + money(order.currency, order.remaining_value) + '</p></details>';
+    return '<details class="card" open><summary><a href="/orders/' + esc(order.id) + '">Order ' + esc(order.id) + '</a> · ' + esc(order.company) + ' · ' + esc(order.project || '') + '</summary>'
+      + '<table><thead><tr><th>Serial Number</th><th>Floor Code</th><th>Product ID</th><th>Product Name</th><th class="num">Unit Price</th><th class="num">Width(mm)</th><th class="num">Height(mm)</th><th class="num">Width(In)</th><th class="num">Height(In)</th><th class="num">BO quantity</th><th>Remarks</th></tr></thead><tbody>'
+      + lines + '</tbody></table></details>';
   }).join('');
 }
 fetch('/api/shipments/open').then(res => res.json()).then(render).catch(() => {
