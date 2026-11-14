@@ -340,7 +340,7 @@ def test_quickbooks_uses_the_configured_surcharge_item(client, monkeypatch):
         assert 'Insulated Glass Units' in names
         customers['maple'] = {
             'id': 'maple', 'name': 'Maple Glass', 'country': 'Canada', 'province': 'ON',
-            'qbo_tax_code': '6', 'tier': 'T2', 'status': 'active',
+            'qbo_tax_code': '6', 'tax_code_override': True, 'tier': 'T2', 'status': 'active',
         }
         save_customers(customers)
         canada = append_invoice({

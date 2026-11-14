@@ -74,6 +74,7 @@ a{color:#C41E3A}
 <p class="note" id="edit-lock-note"></p>
 <div class="edit-grid" style="grid-template-columns:1fr 1fr">
 <label>Project<input id="order-project" type="text"></label>
+<label>Ship-to province<select id="order-ship-province" aria-label="Ship-to province"></select></label>
 <label>Customer notes<textarea id="order-notes" rows="2"></textarea></label>
 </div>
 <div id="order-lines"></div>
@@ -224,6 +225,7 @@ function renderDetail(order) {
   }).join('<br>');
   const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
   const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';
+  const tax = order.tax_label ? '<p class="note">Tax: ' + esc(order.tax_label) + '</p>' : '';
   const drawings = (order.drawings || []).map(drawing => {
     const href = '/api/orders/' + encodeURIComponent(order.id) + '/drawings/' + encodeURIComponent(drawing.line_id);
     const charge = drawing.is_dwg ? '' : ' <span class="note">DWG drawing creation applies until this file is replaced with a .dwg.</span>';
@@ -235,7 +237,7 @@ function renderDetail(order) {
   const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
-    + notes + (documents ? documentNote : invoice)
+    + notes + tax + (documents ? documentNote : invoice)
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
     + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
@@ -285,6 +287,12 @@ function openEditor(order) {
   draft.discount = draft.discount || {type: 'percent', value: 0};
   document.getElementById('order-project').value = draft.project || '';
   document.getElementById('order-notes').value = draft.notes || '';
+  const ship = document.getElementById('order-ship-province');
+  if (ship && !ship.options.length) {
+    const provinces = [['', 'Billing province'], ['AB', 'Alberta'], ['BC', 'British Columbia'], ['MB', 'Manitoba'], ['NB', 'New Brunswick'], ['NL', 'Newfoundland and Labrador'], ['NS', 'Nova Scotia'], ['NT', 'Northwest Territories'], ['NU', 'Nunavut'], ['ON', 'Ontario'], ['PE', 'Prince Edward Island'], ['QC', 'Quebec'], ['SK', 'Saskatchewan'], ['YT', 'Yukon']];
+    ship.innerHTML = provinces.map(row => '<option value="' + row[0] + '">' + row[1] + '</option>').join('');
+  }
+  if (ship) ship.value = draft.ship_province || '';
   document.getElementById('order-discount-type').value = draft.discount.type || 'percent';
   document.getElementById('order-discount-value').value = draft.discount.value || 0;
   document.getElementById('edit-lock-note').textContent = order.status === 'delivered'
@@ -362,6 +370,7 @@ async function saveOrder() {
   const body = {
     project: document.getElementById('order-project').value,
     notes: document.getElementById('order-notes').value,
+    ship_province: document.getElementById('order-ship-province') ? document.getElementById('order-ship-province').value : '',
     discount: {
       type: document.getElementById('order-discount-type').value,
       value: Number(document.getElementById('order-discount-value').value || 0)

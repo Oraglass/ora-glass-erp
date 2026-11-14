@@ -135,7 +135,7 @@ def test_customer_tax_code_is_suggested_then_used_on_the_canada_invoice(client, 
         assert names['6'] == 'HST ON'
         assert '10' not in names
         page = client.get('/settings/quickbooks').data
-        assert b'Suggested tax codes' in page
+        assert b'Sales tax by ship-to province' in page
         assert b'HST ON' in page
         assert b'GST/PST BC' in page
 
@@ -150,8 +150,8 @@ def test_customer_tax_code_is_suggested_then_used_on_the_canada_invoice(client, 
         listed = client.get('/api/customers').get_json()
         maple = next(row for row in listed if row['id'] == 'maple-glass')
         assert maple['province'] == 'ON'
-        assert maple['qbo_tax_code'] == '6'
-        assert maple['qbo_tax_code_label'] == 'HST ON'
+        assert maple['qbo_tax_code'] == ''
+        assert maple['qbo_tax_code_label'] == ''
 
         kept = client.put('/api/customers/maple-glass', json={
             'country': 'Canada', 'province': 'BC', 'qbo_tax_code': '6',
@@ -165,10 +165,11 @@ def test_customer_tax_code_is_suggested_then_used_on_the_canada_invoice(client, 
         })
         assert invoice.status_code == 200, invoice.get_json()
         assert invoice.get_json()['issuer'] == 'ca'
+        assert invoice.get_json()['tax_label'] == 'GST + PST, shipped to British Columbia'
         bodies = [json.loads(call[2]) for call in _posts(fake, '/invoice')]
         assert len(bodies) == 1
         detail = bodies[0]['Line'][0]['SalesItemLineDetail']
-        assert detail['TaxCodeRef']['value'] == '6'
+        assert detail['TaxCodeRef']['value'] == '7'
         assert detail['ItemRef']['name'] == SUPPLY_ITEM
         assert detail['ItemRef']['value'] == '42'
         assert any(SUPPLY_ITEM in query for query in _queries(fake))
@@ -247,5 +248,197 @@ def test_customer_tax_code_is_suggested_then_used_on_the_canada_invoice(client, 
         assert any(json.loads(call[2])['Line'][0]['SalesItemLineDetail']['TaxCodeRef']['value'] == '6' for call in canada_calls)
         assert intercompany['currency'] == 'usd'
         assert 'NON' in posted
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+def _pdf_text(data):
+    import base64
+    import re
+    import zlib
+    chunks = []
+    for match in re.finditer(rb'stream\r?\n(.*?)endstream', data, re.S):
+        raw = match.group(1).rstrip(b'\r\n')
+        try:
+            raw = base64.a85decode(raw, adobe=True)
+        except (ValueError, base64.binascii.Error):
+            pass
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            pass
+        chunks.append(raw)
+    return b'\n'.join(chunks)
+
+
+def _last_canada_tax(fake):
+    calls = [call for call in _posts(fake, '/invoice') if '/123146408064299/' in call[1]]
+    body = json.loads(calls[-1][2])
+    return body['Line'][0]['SalesItemLineDetail']['TaxCodeRef']['value']
+
+
+def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, monkeypatch):
+    _configure(monkeypatch)
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'sales@maple.example', 'customer', customer_id='maple-glass', customer_name='Maple Glass',
+        customer_tier='T2', customer_subrole='management', tier_override='T5',
+        allowed_tiers=['T5'], password='Validpass1',
+    )
+    customers = load_customers()
+    customers['maple-glass'].update({
+        'country': 'Canada', 'province': 'BC', 'state': 'BC', 'city': 'Vancouver', 'zip': 'V6B 1A1',
+        'credit_currency': 'cad', 'credit_limit': 100000, 'credit_approved': True,
+        'pst_number': '', 'qst_number': '', 'tax_code_override': False, 'qbo_tax_code': '',
+    })
+    customers['harbor'] = {
+        'id': 'harbor', 'name': 'Harbor Glass', 'country': 'United States', 'us_state': 'WA',
+        'qbo_tax_code': 'NON', 'credit_currency': 'usd',
+    }
+    save_customers(customers)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    fake = TaxQBO()
+    quickbooks.TRANSPORT = fake
+    try:
+        start = client.get('/quickbooks/connect?connection=ca')
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(start.headers['Location']).query)['state'][0]
+        assert client.get(
+            f'/quickbooks/callback?code=auth-code&realmId=123146408064299&state={state}'
+        ).status_code == 302
+        quickbooks.save_tokens({
+            'access_token': 'us-access', 'refresh_token': 'us-refresh',
+            'realm_id': '9341456057091137', 'expires_at': 9_999_999_999, 'company_name': 'Ora Glass Inc',
+        })
+        mapping = {
+            'ON': {'hst': '6'},
+            'BC': {'with_pst': '7', 'gst_only': '5'},
+            'QC': {'with_qst': '8', 'gst_only': '5'},
+            'AB': {'gst': '5'},
+        }
+        saved = client.put('/api/quickbooks/settings', json={
+            'connection': 'ca', 'default_item': SUPPLY_ITEM, 'province_tax': mapping, 'tax_exempt_code': '9',
+        })
+        assert saved.status_code == 200, saved.get_json()
+        canada = next(row for row in saved.get_json()['connections'] if row['key'] == 'ca')
+        assert canada['province_tax']['BC']['with_pst'] == '7'
+        assert canada['province_tax']['BC']['gst_only'] == '5'
+        page = client.get('/settings/quickbooks?company=ca').data
+        assert b'Sales tax by ship-to province' in page
+        assert b'GST only, PST exempt' in page
+        assert b'With QST' in page
+        customers_page = client.get('/customers').data
+        assert b'PST number' in customers_page
+        assert b'QST number' in customers_page
+        assert b'Override ship-to tax' in customers_page
+
+        def invoice(ship, description):
+            posted = client.post('/api/invoices', json={
+                'customer_id': 'maple-glass',
+                'ship_province': ship,
+                'lines': [{'description': description, 'qty': 1, 'unit_price': 40}],
+            })
+            assert posted.status_code == 200, posted.get_json()
+            return posted.get_json()
+
+        ontario = invoice('ON', 'Delivered to Ontario')
+        assert ontario['tax_label'] == 'HST, shipped to Ontario'
+        assert ontario['qbo_tax_code'] == '6'
+        assert _last_canada_tax(fake) == '6'
+
+        british_columbia = invoice('BC', 'Delivered to BC')
+        assert british_columbia['tax_label'] == 'GST + PST, shipped to British Columbia'
+        assert _last_canada_tax(fake) == '7'
+
+        numbered = client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'BC', 'pst_number': 'PST-123456', 'qbo_tax_code': '',
+        })
+        assert numbered.status_code == 200
+        assert load_customers()['maple-glass']['pst_number'] == 'PST-123456'
+        exempt_pst = invoice('BC', 'BC with PST number')
+        assert exempt_pst['tax_label'] == 'GST only, shipped to British Columbia (PST number on file)'
+        assert _last_canada_tax(fake) == '5'
+
+        client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'QC', 'pst_number': '', 'qst_number': '', 'qbo_tax_code': '',
+            'tax_code_override': False,
+        })
+        quebec = invoice('QC', 'Delivered to Quebec')
+        assert quebec['tax_label'] == 'GST + QST, shipped to Quebec'
+        assert _last_canada_tax(fake) == '8'
+        client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'QC', 'qst_number': 'QST-999', 'qbo_tax_code': '',
+        })
+        quebec_registered = invoice('QC', 'Quebec with QST number')
+        assert quebec_registered['tax_label'] == 'GST only, shipped to Quebec (QST number on file)'
+        assert _last_canada_tax(fake) == '5'
+
+        client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'AB', 'qst_number': '', 'pst_number': '', 'qbo_tax_code': '',
+        })
+        alberta = invoice('AB', 'Delivered to Alberta')
+        assert alberta['tax_label'] == 'GST, shipped to Alberta'
+        assert _last_canada_tax(fake) == '5'
+
+        client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'AB', 'qbo_tax_code': '6', 'tax_code_override': True,
+        })
+        overridden = invoice('BC', 'Override ignores ship-to')
+        assert overridden['qbo_tax_code'] == '6'
+        assert _last_canada_tax(fake) == '6'
+
+        us_invoice = client.post('/api/invoices', json={
+            'customer_id': 'harbor',
+            'ship_province': 'ON',
+            'lines': [{'description': 'US glass', 'qty': 1, 'unit_price': 40}],
+        })
+        assert us_invoice.status_code == 200, us_invoice.get_json()
+        assert us_invoice.get_json()['issuer'] == 'us'
+        us_body = json.loads([call for call in _posts(fake, '/invoice') if '/9341456057091137/' in call[1]][-1][2])
+        assert us_body['Line'][0]['SalesItemLineDetail']['TaxCodeRef']['value'] == 'NON'
+
+        client.put('/api/customers/maple-glass', json={
+            'country': 'Canada', 'province': 'BC', 'pst_number': '', 'qst_number': '',
+            'qbo_tax_code': '', 'tax_code_override': False,
+        })
+        client.post('/logout')
+        assert login(client, 'sales@maple.example').status_code == 302
+        quote = client.post('/api/quotes', json={
+            'items': [_size_item()], 'currency': 'cad', 'project': 'Lobby', 'type': 'size', 'tier': 'T5',
+        })
+        assert quote.status_code == 200, quote.get_json()
+        listed = client.get('/api/quotes').get_json()
+        saved_quote = next(row for row in listed if row['id'] == quote.get_json()['id'])
+        assert saved_quote['tax_label'] == 'GST + PST, shipped to British Columbia'
+        pdf = client.post('/api/export-quote', json={
+            'items': [_size_item()],
+            'currency': 'cad',
+            'project': 'Lobby',
+            'tax_label': saved_quote['tax_label'],
+        })
+        assert pdf.status_code == 200
+        assert pdf.mimetype == 'application/pdf'
+        assert b'GST + PST, shipped to British Columbia' in _pdf_text(pdf.data)
+        client.post('/logout')
+        assert login(client, 'admin@oraglass.us').status_code == 302
+        created = client.post(
+            f"/api/quotes/{quote.get_json()['id']}/order",
+            json={'customer_id': 'maple-glass', 'ship_province': 'ON'},
+        )
+        assert created.status_code == 200, created.get_json()
+        order_id = created.get_json()['order_id']
+        for status in ('sent', 'made', 'delivered'):
+            moved = client.post(f'/api/orders/{order_id}/status', json={'status': status})
+            assert moved.status_code == 200, moved.get_json()
+        order = client.get(f'/api/orders/{order_id}').get_json()
+        assert order['ship_province'] == 'ON'
+        assert order['tax_label'] == 'HST, shipped to Ontario'
+        canada_invoice = next(row for row in order['documents'] if row['issuer'] == 'ca')
+        stored = next(row for row in load_invoices() if row['id'] == canada_invoice['id'])
+        assert stored['qbo_tax_code'] == '6'
+        assert stored['tax_label'] == 'HST, shipped to Ontario'
+        assert _last_canada_tax(fake) == '6'
+        invoice_pdf = client.get(f"/api/invoices/{stored['id']}/pdf")
+        assert invoice_pdf.status_code == 200
+        assert b'HST, shipped to Ontario' in _pdf_text(invoice_pdf.data)
     finally:
         quickbooks.TRANSPORT = None

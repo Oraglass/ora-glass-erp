@@ -121,3 +121,57 @@ def test_copy_is_a_new_draft_at_current_prices_and_the_original_stays(client):
     })
     assert blocked.status_code == 400
     assert next(row for row in load_quotes() if row['id'] == own_id)['project'] == 'Own'
+
+
+def test_copy_keeps_the_ship_to_province_and_resolves_canadian_tax(client):
+    import quickbooks
+    from storage import load_customers, save_customers
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'sales@maple.example', 'customer', customer_id='maple-glass', customer_name='Maple Glass',
+        customer_tier='T2', customer_subrole='management', tier_override='T5', allowed_tiers=['T5'],
+    )
+    customers = load_customers()
+    customers['maple-glass'].update({
+        'country': 'Canada', 'province': 'BC', 'pst_number': '', 'qst_number': '', 'tax_code_override': False,
+    })
+    save_customers(customers)
+    with quickbooks.connection_scope('ca'):
+        quickbooks.save_settings({'province_tax': {
+            'ON': {'hst': '6'},
+            'BC': {'with_pst': '7', 'gst_only': '5'},
+        }})
+    assert login(client, 'sales@maple.example').status_code == 302
+    saved = client.post('/api/quotes', json={
+        'items': [_line(pcs=1, irregular=False)],
+        'currency': 'cad', 'project': 'Lobby', 'type': 'size', 'tier': 'T5', 'ship_province': 'ON',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    original_id = saved.get_json()['id']
+    original = next(row for row in load_quotes() if row['id'] == original_id)
+    assert original['ship_province'] == 'ON'
+    assert original['tax_label'] == 'HST, shipped to Ontario'
+    copied = client.post(f'/api/quotes/{original_id}/copy', json={})
+    assert copied.status_code == 200, copied.get_json()
+    fresh = next(row for row in load_quotes() if row['id'] == copied.get_json()['id'])
+    assert fresh['ship_province'] == 'ON'
+    assert fresh['tax_label'] == 'HST, shipped to Ontario'
+    assert fresh['qbo_tax_code'] == '6'
+    assert fresh['copy_note'] == f'Copied from quote #{original_id}'
+    assert next(row for row in load_quotes() if row['id'] == original_id)['ship_province'] == 'ON'
+    viewed = client.get(f"/api/quotes/{fresh['id']}")
+    assert viewed.status_code == 200
+    assert viewed.get_json()['tax_label'] == 'HST, shipped to Ontario'
+    customers = load_customers()
+    customers['maple-glass']['pst_number'] = 'PST-100'
+    save_customers(customers)
+    quotes = load_quotes()
+    source = next(row for row in quotes if row['id'] == original_id)
+    source['ship_province'] = 'BC'
+    save_quotes(quotes)
+    british_columbia = client.post(f'/api/quotes/{original_id}/copy', json={})
+    assert british_columbia.status_code == 200, british_columbia.get_json()
+    registered = next(row for row in load_quotes() if row['id'] == british_columbia.get_json()['id'])
+    assert registered['ship_province'] == 'BC'
+    assert registered['tax_label'] == 'GST only, shipped to British Columbia (PST number on file)'
+    assert registered['qbo_tax_code'] == '5'

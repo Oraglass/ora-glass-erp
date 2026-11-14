@@ -69,12 +69,28 @@ function stateTaxTable(card) {
   return ast + '<h2>Suggested state tax codes</h2><p class="note">These defaults only fill an empty QBO tax code when a US customer\'s state is set. A verified, unexpired resale certificate, and Export / no tax, are invoiced with no tax.</p>'
     + '<div style="max-height:320px;overflow:auto"><table id="state-tax"><thead><tr><th>Code</th><th>State</th><th>Suggested QuickBooks tax code</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
+function provinceCase(code, regime) {
+  if (regime === 'HST') return [{field: 'hst', label: 'HST'}];
+  if (regime === 'GST') return [{field: 'gst', label: 'GST'}];
+  if (regime === 'GST+PST') return [{field: 'with_pst', label: 'With PST'}, {field: 'gst_only', label: 'GST only, PST exempt'}];
+  if (regime === 'GST+QST') return [{field: 'with_qst', label: 'With QST'}, {field: 'gst_only', label: 'GST only'}];
+  return [];
+}
+function storedTax(mapping, code, field) {
+  const value = mapping[code];
+  if (value && typeof value === 'object') return value[field] || '';
+  const primary = {hst: 1, gst: 1, with_pst: 1, with_qst: 1};
+  return primary[field] ? (value || '') : '';
+}
 function provinceTaxTable(card) {
   const codes = card.tax_codes || [];
   const mapping = card.province_tax || {};
-  const rows = (card.provinces || []).map(row => '<tr><td>' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.regime) + '</td><td><select data-tax="' + esc(row.code) + '" aria-label="' + esc(row.name) + ' tax code">' + taxOptions(codes, mapping[row.code] || '') + '</select></td></tr>').join('');
-  return '<h2>Suggested tax codes</h2><p class="note">These defaults only fill an empty QBO tax code when a customer\'s province is set. The invoice uses the code saved on the customer. AB and the territories are GST. BC, SK, and MB are GST+PST. ON, NB, NS, NL, and PE are HST. Quebec is GST+QST. The exempt code is used when the customer is tax exempt and has not chosen a code. The choices are this company\'s QuickBooks tax codes.</p>'
-    + '<table id="province-tax"><thead><tr><th>Code</th><th>Province</th><th>Tax</th><th>Suggested QuickBooks tax code</th></tr></thead><tbody>'
+  const rows = (card.provinces || []).map(row => {
+    const cases = provinceCase(row.code, row.regime).map(item => '<div><span class="note">' + esc(item.label) + '</span><br>' + '<select data-tax="' + esc(row.code) + '" data-tax-field="' + esc(item.field) + '" aria-label="' + esc(row.name) + ' ' + esc(item.label) + '">' + taxOptions(codes, storedTax(mapping, row.code, item.field)) + '</select></div>').join('');
+    return '<tr><td>' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.regime) + '</td><td>' + cases + '</td></tr>';
+  }).join('');
+  return '<h2>Sales tax by ship-to province</h2><p class="note">Tax follows the province the goods are delivered to. Ontario, New Brunswick, Nova Scotia, Newfoundland and Labrador, and Prince Edward Island use one HST code. Alberta and the territories use one GST code. British Columbia, Manitoba, and Saskatchewan use GST+PST unless the customer has a PST number, then GST only. Quebec uses GST+QST unless the customer has a QST number, then GST only. A tax-exempt customer uses the zero-rated code. A code typed on the customer is used only when Override is ticked.</p>'
+    + '<table id="province-tax"><thead><tr><th>Code</th><th>Province</th><th>Tax</th><th>QuickBooks tax code</th></tr></thead><tbody>'
     + rows
     + '<tr><td></td><td>Tax exempt</td><td>Zero-rated</td><td><select data-tax="exempt" aria-label="Exempt tax code">' + taxOptions(codes, card.tax_exempt_code || '') + '</select></td></tr>'
     + '</tbody></table>';
@@ -135,7 +151,7 @@ function cardBody(card, status) {
   const intercompany = key === 'us' ? '<h2>Ora Glass (Canada) Inc in this company</h2><p class="note">Intercompany invoices bill this QuickBooks customer in USD. Match the existing customer, or create it.</p><div class="row"><label>QuickBooks customer id<input data-field="intercompany" data-connection="us" value="' + esc(card.intercompany_qbo_id || '') + '"></label><button type="button" data-action="match-intercompany">Match by name</button><button type="button" class="secondary" data-action="save-intercompany">Save id</button><button type="button" class="secondary" data-action="create-intercompany">Create customer</button></div><p class="note" id="intercompany-note"></p>' : '';
   return '<div class="card" data-connection="' + esc(key) + '"><header class="company-header"><h2>' + esc(title) + '</h2><p class="realm">Realm ' + esc(realm) + '</p></header>' + head
     + '<h2>Item mapping</h2><p class="note">' + (key === 'ca'
-      ? 'Invoice lines use the QuickBooks item below. Canadian invoices use the tax code saved on the customer. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.'
+      ? 'Invoice lines use the QuickBooks item below. Canadian invoices use the ship-to tax code chosen below. A code on the customer is used only when Override is ticked. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.'
       : 'Invoice lines use the QuickBooks item below. US invoices use the tax code saved on the customer. Exports and a verified resale certificate are not taxed. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
     + '<div class="row"><label>Default item<input data-field="default-item" value="' + esc(card.default_item || 'Insulated Glass Units') + '"></label>'
     + '<label>Irregular shape item<input data-field="irregular-item" value="' + esc(card.irregular_item || 'Irregular shape surcharge') + '"></label>'
@@ -230,8 +246,12 @@ document.getElementById('connections').addEventListener('click', async (event) =
       const provinceTax = {};
       card.querySelectorAll('[data-tax]').forEach(select => {
         const code = select.getAttribute('data-tax');
+        const field = select.getAttribute('data-tax-field');
         if (code === 'exempt') body.tax_exempt_code = select.value;
-        else provinceTax[code] = select.value;
+        else if (field) {
+          provinceTax[code] = provinceTax[code] || {};
+          provinceTax[code][field] = select.value;
+        } else provinceTax[code] = select.value;
       });
       if (card.querySelector('[data-tax]')) body.province_tax = provinceTax;
       const stateTax = {};
