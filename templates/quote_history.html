@@ -58,6 +58,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 </tr></thead>
 <tbody id="quote-list"><tr><td colspan="11" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
+<div id="quote-detail"></div>
 </div></div>
 {% if staff_order %}
 <div class="modal" id="order-modal">
@@ -202,8 +203,12 @@ function renderQuotes(rows) {
     let status = '-';
     if (quote.order_id) {
       status = 'Approved for order. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
+    } else if (quote.status === 'draft') {
+      status = 'Draft';
     }
     let action = '<button type="button" data-id="' + esc(quote.id) + '" class="pdf-btn" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button>';
+    action += ' <button type="button" class="copy-btn" data-action="copy" data-id="' + esc(quote.id) + '" style="background:#fff;color:#333;border:1px solid #ccc;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Copy quote</button>';
+    action += ' <button type="button" class="detail-btn" data-action="detail" data-id="' + esc(quote.id) + '" style="background:#fff;color:#333;border:1px solid #ccc;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Details</button>';
     if (CAN_ORDER && !quote.order_id) {
       if (quote.type === 'size') {
         action += ' <button type="button" class="order-btn" data-action="order" data-id="' + esc(quote.id) + '" style="background:#fff;color:#C41E3A;border:1px solid #C41E3A;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Order for production</button>';
@@ -212,7 +217,8 @@ function renderQuotes(rows) {
       }
     }
     const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
-    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    const copyNote = quote.copy_note ? '<div class="copy-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(quote.copy_note) + '</div>' : '';
+    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + copyNote + drawingNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -415,9 +421,39 @@ if (sortTotal) {
 }
 const sortSelect = document.getElementById('filter-sort');
 if (sortSelect) sortSelect.addEventListener('change', applyFilters);
+function showQuoteDetail(quote) {
+  const box = document.getElementById('quote-detail');
+  if (!box || !quote) return;
+  const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
+  const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
+  const note = quote.copy_note || quote.notes || '';
+  box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
+    + (note ? '<p class="copy-note" style="color:#9f1239;font-weight:600;margin-bottom:8px">' + esc(note) + '</p>' : '')
+    + (quote.notes && quote.notes !== note ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
+    + '<table><thead><tr><th>Line</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
+    + (extras ? '<p class="help">Extras</p><ul>' + extras + '</ul>' : '')
+    + '<p style="margin-top:10px"><button type="button" class="copy-btn" data-action="copy" data-id="' + esc(quote.id) + '" style="background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer">Copy quote</button></p>';
+  box.scrollIntoView({block: 'nearest'});
+}
+async function copyQuote(id) {
+  const res = await fetch('/api/quotes/' + encodeURIComponent(id) + '/copy', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(body.error || 'Could not copy the quote'); return; }
+  window.location = '/quotes?draft=' + encodeURIComponent(body.id);
+}
 document.getElementById('quote-list').addEventListener('click', async (event) => {
   const button = event.target.closest('button');
   if (!button) return;
+  if (button.dataset.action === 'copy') {
+    copyQuote(button.getAttribute('data-id'));
+    return;
+  }
+  if (button.dataset.action === 'detail') {
+    showQuoteDetail(catalog.find(item => String(item.id) === String(button.getAttribute('data-id'))));
+    return;
+  }
   if (button.dataset.action === 'order') {
     const quote = catalog.find(item => String(item.id) === String(button.getAttribute('data-id')));
     if (STAFF_ORDER) {
@@ -447,6 +483,11 @@ document.getElementById('quote-list').addEventListener('click', async (event) =>
 });
 const orderCustomer = document.getElementById('order-customer');
 if (orderCustomer) orderCustomer.addEventListener('change', syncOrderFields);
+const quoteDetail = document.getElementById('quote-detail');
+if (quoteDetail) quoteDetail.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-action="copy"]');
+  if (button) copyQuote(button.getAttribute('data-id'));
+});
 const orderForm = document.getElementById('order-form');
 if (orderForm) orderForm.addEventListener('submit', submitOrder);
 const customerDrawingForm = document.getElementById('customer-drawing-form');

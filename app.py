@@ -2494,20 +2494,167 @@ def save_quote():
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
     if not tier:
         return json_error('That pricing tier is not available.', 400)
+    project = clean_text(data.get('project'), 200)
+    priced = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+    quote_id = data.get('id')
+    if quote_id not in (None, ''):
+        try:
+            quote_id = int(quote_id)
+        except (TypeError, ValueError):
+            return json_error('Not found', 404)
+        existing = _visible_quote(user, quote_id)
+        if not existing or existing.get('status') != 'draft':
+            return json_error('That quote cannot be replaced.', 400)
+        existing['project'] = project
+        existing['items'] = _repriced_quote_items(items, tier, currency, tiers) if quote_type == 'size' else priced
+        existing['currency'] = currency
+        existing['type'] = quote_type
+        existing['tier'] = tier
+        existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
+        if 'extra_charges' in data:
+            existing['extra_charges'] = _copied_extras(data.get('extra_charges'))
+        saved = replace_quote(quote_id, existing)
+        if not saved:
+            return json_error('Not found', 404)
+        return jsonify({'success': True, 'id': saved['id']})
     quote = {
         'date': date.today().isoformat(),
         'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
         'user': user.get('email'),
         'company': company,
         'customer_id': customer_id,
-        'project': clean_text(data.get('project'), 200),
-        'items': expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge']),
+        'project': project,
+        'items': priced,
         'currency': currency,
         'type': quote_type,
         'tier': tier,
     }
     stored = append_quote(quote)
     return jsonify({'success': True, 'id': stored['id']})
+
+
+def _visible_quote(user, quote_id):
+    if not (user_has_module(user, 'quotes') or user_has_module(user, 'quote-history')):
+        return None
+    return next((row for row in quotes_visible_to(user, load_quotes()) if row.get('id') == quote_id), None)
+
+
+def _copy_note(quote_id):
+    return f'Copied from quote #{quote_id}'
+
+
+def _copied_extras(raw):
+    charges = []
+    for row in raw or []:
+        if not isinstance(row, dict):
+            continue
+        label = clean_text(row.get('label'), 80)
+        if not label:
+            continue
+        try:
+            amount = round(float(row.get('amount') or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        charges.append({'label': label, 'amount': amount})
+    return charges
+
+
+def _repriced_quote_items(items, tier, currency, tiers):
+    """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
+    rows = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
+            priced = reprice_size_line(spec, item.get('pcs'), tier, currency, PRICING, tiers)
+            rows.append({
+                'name': item.get('name') or 'Glass',
+                'spec': spec,
+                'sqf': priced['sqf'],
+                'price_sqf': priced['price_sqf'],
+                'price_pc': priced['price_pc'],
+                'pcs': priced['pcs'],
+                'total': priced['total'],
+                'irregular_shape': bool(item.get('irregular_shape')),
+            })
+            continue
+        rows.append({
+            'name': item.get('name') or '',
+            'price': item.get('price') if item.get('price') not in (None, '') else item.get('total') or 0,
+            'size': item.get('size') or '-',
+            'pcs': item.get('pcs') if item.get('pcs') not in (None, '') else '-',
+            'currency': currency,
+        })
+    return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge'])
+
+
+def _tier_for_copy(user, source, customers, tiers):
+    requested = str((source or {}).get('tier') or '').strip()
+    chosen = tier_for_request(user, requested, customers, tiers)
+    if chosen:
+        return chosen
+    return tier_for_request(user, '', customers, tiers)
+
+
+@app.route('/api/quotes/<int:quote_id>', methods=['GET'])
+@login_required
+def get_quote(quote_id):
+    user = current_user()
+    quote = _visible_quote(user, quote_id)
+    if not quote:
+        return json_error('Not found', 404)
+    return jsonify(quote)
+
+
+@app.route('/api/quotes/<int:quote_id>/copy', methods=['POST'])
+@login_required
+def copy_quote(quote_id):
+    user = current_user()
+    source = _visible_quote(user, quote_id)
+    if not source:
+        return json_error('Not found', 404)
+    customers = load_customers()
+    tiers = load_tiers()
+    tier = _tier_for_copy(user, source, customers, tiers)
+    if not tier:
+        return json_error('That pricing tier is not available.', 400)
+    currency = str(source.get('currency') or 'usd').lower()
+    if currency not in {'usd', 'cad'}:
+        currency = 'usd'
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id')
+        customer = customers.get(customer_id or '')
+        if not customer or source.get('customer_id') != customer_id:
+            return json_error('Not found', 404)
+        company = customer.get('name') or source.get('company') or 'Customer'
+    else:
+        customer_id = source.get('customer_id')
+        company = source.get('company') or 'ORA'
+    note = _copy_note(quote_id)
+    previous = clean_text(source.get('notes'), 2000)
+    notes = previous if note in previous else (previous + '\n' + note).strip()
+    quote_type = source.get('type') if source.get('type') in {'sqf', 'size'} else 'sqf'
+    stored = append_quote({
+        'date': date.today().isoformat(),
+        'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
+        'user': user.get('email'),
+        'company': company,
+        'customer_id': customer_id,
+        'project': source.get('project') or '',
+        'notes': notes,
+        'copy_note': note,
+        'copied_from': quote_id,
+        'items': _repriced_quote_items(source.get('items'), tier, currency, tiers),
+        'extra_charges': _copied_extras(source.get('extra_charges')),
+        'currency': currency,
+        'type': quote_type,
+        'tier': tier,
+        'status': 'draft',
+    })
+    return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
 
 
 _IMPORT_COLUMNS = ('width', 'height', 'qty', 'glass', 'spacer', 'mark')
