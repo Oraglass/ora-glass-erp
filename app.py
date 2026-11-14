@@ -4696,6 +4696,33 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
     return order, None
 
 
+@app.route('/api/orders/<int:order_id>/shipments/preview', methods=['POST'])
+@module_required('orders')
+def preview_packing_list(order_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to record a shipment.', 403)
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        return json_error('Not found', 404)
+    upload = request.files.get('packing_list')
+    if not upload or not upload.filename:
+        return json_error('Choose a packing-list PDF.', 400)
+    payload = upload.read(25 * 1024 * 1024 + 1)
+    if len(payload) > 25 * 1024 * 1024:
+        return json_error('The packing list is larger than 25 MB.', 400)
+    if not payload.startswith(b'%PDF'):
+        return json_error('The packing list must be a PDF.', 400)
+    import packing
+    try:
+        parsed = packing.parse_packing_pdf(payload)
+    except Exception:
+        return json_error('The packing list could not be read.', 400)
+    if not parsed.get('rows'):
+        return json_error('No glass rows were found in that packing list.', 400)
+    return jsonify(packing.match_packing(order, parsed))
+
+
 @app.route('/api/orders/<int:order_id>/shipments', methods=['POST'])
 @module_required('orders')
 def create_shipment(order_id):
