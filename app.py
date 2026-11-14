@@ -47,6 +47,7 @@ from billing import (
     unallocated_credit,
     unapplied_credits,
 )
+import production
 from quoting import (
     allowed_tier_ids,
     area_sqf,
@@ -1043,6 +1044,16 @@ def inject_user():
     user = current_user()
     allowed = set(effective_module_ids(user)) if user else set()
     nav = [item for item in MODULES if item['id'] in allowed]
+    if user and _is_ora_staff(user):
+        settings_link = {'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'}
+        placed = False
+        for index, item in enumerate(nav):
+            if item['id'] == 'orders':
+                nav.insert(index + 1, settings_link)
+                placed = True
+                break
+        if not placed:
+            nav.append(settings_link)
     if user and user.get('role') == 'customer':
         nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
     return {
@@ -1748,9 +1759,12 @@ def export_quote():
             total_sqf += sqf * pcs
             total_pcs += pcs
             total_line_sum += line_total
+            description = escape(str(item.get('name', '') or ''))
+            if str(item.get('remarks') or '').strip():
+                description += '<br/>' + escape(str(item.get('remarks')).strip())
             table_data.append([
                 Paragraph(f'({i})', cell_style),
-                Paragraph(escape(str(item.get('name', '') or '')), cell_style),
+                Paragraph(description, cell_style),
                 Paragraph(f"{sqf * pcs:.2f}", cell_style),
                 Paragraph(f"${price_sqf:.2f}", cell_style),
                 Paragraph(f"${price_pc:.2f}", cell_style),
@@ -1777,9 +1791,12 @@ def export_quote():
             price_value = amount(item.get('price', 0))
             total_price += price_value
             price = escape(f'{price_value:.2f}')
+            description = escape(str(item.get('name', '') or ''))
+            if str(item.get('remarks') or '').strip():
+                description += '<br/>' + escape(str(item.get('remarks')).strip())
             table_data.append([
                 Paragraph(f'({i})', cell_style),
-                Paragraph(escape(str(item.get('name', '') or '')), cell_style),
+                Paragraph(description, cell_style),
                 Paragraph(f"${price}", cell_style)
             ])
         table_data.append([
@@ -2042,6 +2059,99 @@ def pricing_admin():
         sample_prices=samples,
         irregular_shape_surcharge=load_pricing_settings()['irregular_shape_surcharge'],
         dwg_creation_fee=load_pricing_settings()['dwg_creation_fee'],
+    )
+
+
+def _production_staff():
+    user, response = _enforce()
+    if response is not None:
+        return None, response
+    if not _is_ora_staff(user):
+        return None, forbidden()
+    return user, None
+
+
+def _remember_igus(items, used_on=None, order_id=None):
+    try:
+        production.remember_configurations(items, used_on or date.today().isoformat(), order_id)
+    except Exception:
+        logger.exception('Could not record IGU types')
+
+
+def _write_production_file(order):
+    if not production.load_export_settings().get('generate_on_confirm', True):
+        return
+    try:
+        production.write_order_workbook(order)
+    except Exception:
+        logger.exception('Could not write the production Excel file')
+
+
+@app.route('/production-settings', methods=['GET', 'POST'])
+def production_settings():
+    _user, response = _production_staff()
+    if response is not None:
+        return response
+    tab = clean_text(request.values.get('tab') or 'ids', 20)
+    if tab not in {item['id'] for item in production.PRODUCTION_TABS}:
+        tab = 'ids'
+    list_filter = clean_text(request.values.get('filter') or 'missing', 20)
+    if list_filter not in {'missing', 'all'}:
+        list_filter = 'missing'
+    if request.method == 'POST':
+        action = clean_text(request.form.get('action'), 20)
+        if action == 'excel':
+            production.save_export_settings(request.form.get('generate_on_confirm') == 'on')
+            flash('Production Excel settings saved.', 'success')
+            return redirect(url_for('production_settings', tab='excel'))
+        if action == 'upload':
+            upload = request.files.get('product_list')
+            if not upload or not upload.filename:
+                flash('Choose an Excel file.', 'error')
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            import tempfile
+            handle, path = tempfile.mkstemp(suffix='.xlsx')
+            os.close(handle)
+            try:
+                upload.save(path)
+                rows = production.read_product_sheet(path)
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            if not rows:
+                flash('That file needs Product ID and Product Name columns.', 'error')
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            result = production.apply_product_upload(rows, replace=request.form.get('replace_ids') == 'on')
+            flash(
+                f"Matched {len(result['matched'])} names. "
+                f"{len(result['unmatched'])} names were not in the registry. "
+                f"{len(result['kept'])} existing IDs were left unchanged.",
+                'success',
+            )
+            return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+        keys = request.form.getlist('row_key')
+        ids = request.form.getlist('product_id')
+        names = request.form.getlist('product_name')
+        updates = {}
+        for key, product_id, product_name in zip(keys, ids, names):
+            updates[key] = {'product_id': product_id, 'product_name': product_name}
+        production.save_production_overrides(updates)
+        flash('Production IDs saved.', 'success')
+        return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+    rows = production.registry_rows()
+    if list_filter == 'missing':
+        rows = [row for row in rows if row['missing']]
+    return render_template(
+        'production_settings.html',
+        tabs=production.PRODUCTION_TABS,
+        tab=tab,
+        rows=rows,
+        list_filter=list_filter,
+        seed=production.seed_report(),
+        settings=production.load_export_settings(),
+        headers=production.PRODUCTION_HEADERS,
     )
 
 
@@ -2579,6 +2689,8 @@ def save_quote():
             existing['ship_province'] = _ship_province(data.get('ship_province'), owner)
         existing.update(_canada_tax_fields(owner, existing.get('ship_province')))
         saved = replace_quote(quote_id, existing)
+        if saved:
+            _remember_igus(saved.get('items'), saved.get('date'))
         if not saved:
             return json_error('Not found', 404)
         return jsonify({'success': True, 'id': saved['id']})
@@ -2597,6 +2709,7 @@ def save_quote():
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
     stored = append_quote(quote)
+    _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id']})
 
 
@@ -2637,7 +2750,7 @@ def _repriced_quote_items(items, tier, currency, tiers):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
             priced = reprice_size_line(spec, item.get('pcs'), tier, currency, PRICING, tiers)
-            rows.append({
+            copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
                 'sqf': priced['sqf'],
@@ -2646,15 +2759,23 @@ def _repriced_quote_items(items, tier, currency, tiers):
                 'pcs': priced['pcs'],
                 'total': priced['total'],
                 'irregular_shape': bool(item.get('irregular_shape')),
-            })
+            }
+            if item.get('remarks'):
+                copied_line['remarks'] = clean_text(item.get('remarks'), 500)
+            if item.get('mark'):
+                copied_line['mark'] = clean_text(item.get('mark'), 80)
+            rows.append(copied_line)
             continue
-        rows.append({
+        plain = {
             'name': item.get('name') or '',
             'price': item.get('price') if item.get('price') not in (None, '') else item.get('total') or 0,
             'size': item.get('size') or '-',
             'pcs': item.get('pcs') if item.get('pcs') not in (None, '') else '-',
             'currency': currency,
-        })
+        }
+        if item.get('remarks'):
+            plain['remarks'] = clean_text(item.get('remarks'), 500)
+        rows.append(plain)
     return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge'])
 
 
@@ -2727,6 +2848,7 @@ def copy_quote(quote_id):
         copied['ship_province'] = ship
     copied.update(_canada_tax_fields(owner, ship))
     stored = append_quote(copied)
+    _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
 
 
@@ -3361,6 +3483,7 @@ def quote_from_import(import_id):
     }
     quote['items'] = expand_irregular_lines(quote['items'], load_pricing_settings()['irregular_shape_surcharge'])
     stored = append_quote(quote)
+    _remember_igus(stored.get('items'), stored.get('date'))
     record['status'] = 'quoted'
     record['quote_id'] = stored['id']
     replace_import(record['id'], record)
@@ -3740,7 +3863,7 @@ def order_for_viewer(order, user, with_coverage=False):
         base.update({'items': items, 'changelog': changelog, 'prices_visible': False})
         return base
     view = dict(base)
-    view['items'] = order.get('items') or []
+    view['items'] = [production.present_order_line(item) for item in (order.get('items') or [])]
     view['discount'] = summary.get('discount') or {'type': 'percent', 'value': 0}
     view['discount_amount'] = summary.get('discount_amount', 0)
     view['extra_charges'] = summary.get('extra_charges') or []
@@ -3901,6 +4024,11 @@ def convert_quote_to_order(quote_id):
             'total': priced['total'],
             'irregular_shape': bool(item.get('irregular_shape')),
         }
+        if item.get('remarks'):
+            line['remarks'] = clean_text(item.get('remarks'), 500)
+        for source_key in ('mark', 'floor', 'floor_code', 'location'):
+            if item.get(source_key):
+                line[source_key] = clean_text(item.get(source_key), 80)
         if item.get('line_id'):
             line['line_id'] = item.get('line_id')
         if item.get('surcharge_rate') not in (None, ''):
@@ -3995,6 +4123,8 @@ def convert_quote_to_order(quote_id):
             return row, None
         update_order(order['id'], remember)
         order['drawings'] = saved_drawings
+    _remember_igus(order.get('items'), order.get('date'), order.get('id'))
+    _write_production_file(order)
     updated = dict(quote)
     updated['order_id'] = order['id']
     updated['order_status'] = 'Approved for order'
@@ -4020,6 +4150,28 @@ def _owned_order(user, order_id):
     if user.get('role') == 'customer' and user.get('customer_id') != order.get('customer_id'):
         return None
     return order
+
+
+@app.route('/api/orders/<int:order_id>/production.xlsx', methods=['GET'])
+@login_required
+def download_production_excel(order_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    order = _owned_order(user, order_id)
+    if not order:
+        return json_error('Not found', 404)
+    payload = production.workbook_bytes(order.get('items') or [])
+    try:
+        production.write_order_workbook(order)
+    except Exception:
+        logger.exception('Could not refresh the stored production Excel file')
+    return send_file(
+        BytesIO(payload),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=f'production-order-{order_id}.xlsx',
+    )
 
 
 @app.route('/api/orders/<int:order_id>/drawings/<line_id>', methods=['GET'])
@@ -4181,6 +4333,11 @@ def _parse_order_items(raw, tier, currency, tiers):
         }
         if raw_item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
+        if raw_item.get('remarks'):
+            line['remarks'] = clean_text(raw_item.get('remarks'), 500)
+        for source_key in ('mark', 'floor', 'floor_code', 'location'):
+            if raw_item.get(source_key):
+                line[source_key] = clean_text(raw_item.get(source_key), 80)
         items.append(line)
     items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     return items, None
@@ -4286,6 +4443,7 @@ def edit_order(order_id):
         return json_error('Not found', 404)
     if error:
         return json_error(error, 400)
+    _remember_igus(saved.get('items'), saved.get('date'), saved.get('id'))
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
@@ -5037,8 +5195,11 @@ def _render_invoice_pdf(invoice):
         Paragraph(f'<b>{currency}</b>', header_cell),
     ]]
     for item in invoice.get('items') or []:
+        description = escape(str(item.get('name') or ''))
+        if str(item.get('remarks') or '').strip():
+            description += '<br/>' + escape(str(item.get('remarks')).strip())
         table_data.append([
-            Paragraph(escape(str(item.get('name') or '')), cell_style),
+            Paragraph(description, cell_style),
             Paragraph(escape(str(item.get('pcs') or '')), cell_style),
             Paragraph(f"${money(item.get('total')):.2f}", cell_style),
         ])

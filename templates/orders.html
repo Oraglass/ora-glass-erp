@@ -10,7 +10,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .card{background:white;border-radius:8px;padding:20px}
 .filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
 .filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
-.btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;text-decoration:none;display:inline-block}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
 .btn.small{padding:4px 8px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
@@ -207,7 +207,9 @@ function renderDetail(order) {
     const spec = item.spec || {};
     const size = spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '';
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const remark = item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '';
+    const idNote = STAFF && item.production_note ? '<br><span class="note">' + esc(item.production_note) + '</span>' : '';
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -215,6 +217,7 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
+  if (STAFF) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
@@ -319,6 +322,7 @@ function renderLines() {
       + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
       + '<input data-line="' + index + '" data-field="pcs" type="number" min="1" step="1" value="' + esc(item.pcs || 1) + '" aria-label="Quantity">'
       + '<label style="font-size:12px"><input data-line="' + index + '" data-field="irregular" type="checkbox"' + checked + '> Irregular shape</label>'
+      + '<input data-line="' + index + '" data-field="remarks" value="' + esc(item.remarks || '') + '" aria-label="Remarks" placeholder="Remarks">'
       + '<button type="button" class="btn small secondary" data-remove="' + index + '">Remove</button></div>';
   }).join('');
 }
@@ -357,10 +361,13 @@ function collectItems() {
       const field = input.getAttribute('data-field');
       if (field === 'name') item.name = input.value;
       else if (field === 'pcs') item.pcs = Number(input.value);
+      else if (field === 'remarks') item.remarks = input.value;
       else if (field === 'irregular') irregular = input.checked;
       else spec[field] = field === 'unit' ? input.value : Number(input.value);
     });
     const row = {name: item.name, pcs: item.pcs, spec: spec, irregular_shape: irregular};
+    if (item.remarks) row.remarks = item.remarks;
+    if (item.mark) row.mark = item.mark;
     if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
     return row;
   });
