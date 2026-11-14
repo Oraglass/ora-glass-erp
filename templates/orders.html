@@ -209,7 +209,10 @@ function renderDetail(order) {
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
     const remark = item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '';
     const idNote = STAFF && item.production_note ? '<br><span class="note">' + esc(item.production_note) + '</span>' : '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
+    const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
+    const floor = item.floor || item.mark || item.location || '';
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -238,12 +241,28 @@ function renderDetail(order) {
       + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
   }).join('');
   const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
+  const shipping = order.shipping || {};
+  const shipHead = '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>';
+  const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
+  const glass = (order.items || []).map((item, index) => {
+    if (!item.spec || !item.spec.width || item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation') return '';
+    const line = (shipping.lines || []).find(row => row.index === index) || {};
+    const max = line.remaining != null ? line.remaining : item.pcs;
+    if (!max) return '';
+    return '<div style="display:flex;gap:8px;align-items:center;margin:6px 0"><input data-ship-index="' + index + '" type="number" min="0" max="' + esc(max) + '" value="0" aria-label="Ship quantity for ' + esc(item.name) + '" style="width:80px"><span class="note">' + esc(item.name) + ' · ' + esc(max) + ' left</span></div>';
+  }).join('');
+  const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
+    ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
+  const shipForm = STAFF ? '<div id="shipment-entry"><h3 style="color:#333;font-size:16px">Shipments</h3>' + shipHead + shipRows + partial
+    + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
+    + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
     + notes + tax + (documents ? documentNote : invoice)
+    + shipForm
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
-    + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
@@ -253,6 +272,67 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const partialBox = document.getElementById('partial-invoicing');
+  if (partialBox) partialBox.addEventListener('change', async () => {
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/partial-invoicing', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({partial_invoicing: partialBox.checked})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not change invoicing'); partialBox.checked = !partialBox.checked; return; }
+    renderDetail(payload);
+  });
+  const matchPacking = document.getElementById('match-packing');
+  if (matchPacking) matchPacking.addEventListener('click', async () => {
+    const file = document.getElementById('ship-file').files[0];
+    if (!file) { alert('Choose a packing-list PDF.'); return; }
+    const body = new FormData();
+    body.append('packing_list', file);
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/shipments/preview', {method: 'POST', body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not read the packing list'); return; }
+    if (payload.number) document.getElementById('ship-number').value = payload.number;
+    if (payload.date) document.getElementById('ship-date').value = payload.date;
+    if (payload.rack) document.getElementById('ship-rack').value = payload.rack;
+    shipmentForm.querySelectorAll('[data-ship-index]').forEach(input => { input.value = '0'; });
+    (payload.lines || []).forEach(line => {
+      const input = shipmentForm.querySelector('[data-ship-index="' + line.index + '"]');
+      if (input) input.value = line.qty;
+    });
+    const warnings = (payload.warnings || []).map(text => '<p class="note" style="color:#9a3412">' + esc(text) + '</p>').join('');
+    const matched = (payload.matched || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.product_id || '') + '</td><td>' + esc(line.name) + '</td><td class="num">' + esc(line.qty) + '</td><td class="num">' + esc(line.bo_after) + '</td><td>' + (line.over ? 'More than the order has left' : 'Matched') + '</td></tr>').join('');
+    const unmatched = (payload.unmatched || []).map(line => '<tr style="color:#9f1239"><td>' + esc(line.qty) + '</td><td>' + esc(line.floor) + '</td><td>' + esc(line.width_mm) + ' x ' + esc(line.height_mm) + '</td><td>' + esc(line.description) + '</td><td>Not on this order</td></tr>').join('');
+    document.getElementById('packing-review').innerHTML = '<div id="packing-review-body" style="margin-top:12px">'
+      + '<h3 style="color:#333;font-size:16px">Review packing list</h3>'
+      + '<p class="note">Check the match, then record the shipment. Nothing is saved until you do.</p>'
+      + warnings
+      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product ID</th><th>Product</th><th class="num">Shipped</th><th class="num">BO after</th><th></th></tr></thead><tbody>'
+      + (matched || '<tr><td colspan="7">No packing-list rows matched this order.</td></tr>')
+      + '</tbody></table>'
+      + (unmatched ? '<table><thead><tr><th>Qty</th><th>Floor</th><th>mm</th><th>Description</th><th></th></tr></thead><tbody>' + unmatched + '</tbody></table>' : '')
+      + '</div>';
+  });
+  const shipmentForm = document.getElementById('shipment-form');
+  if (shipmentForm) shipmentForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const lines = [];
+    shipmentForm.querySelectorAll('[data-ship-index]').forEach(input => {
+      lines.push({index: Number(input.getAttribute('data-ship-index')), qty: Number(input.value || 0)});
+    });
+    const body = new FormData();
+    body.append('number', document.getElementById('ship-number').value);
+    body.append('date', document.getElementById('ship-date').value);
+    body.append('rack', document.getElementById('ship-rack').value);
+    body.append('weight', document.getElementById('ship-weight').value);
+    body.append('lines', JSON.stringify(lines));
+    const file = document.getElementById('ship-file').files[0];
+    if (file) body.append('packing_list', file);
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/shipments', {method: 'POST', body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not record the shipment'); return; }
+    renderDetail(payload);
+    load();
+  });
   box.querySelectorAll('.replace-drawing').forEach(form => {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -321,6 +401,7 @@ function renderLines() {
       + '<input data-line="' + index + '" data-field="height" type="number" step="0.01" value="' + esc(spec.height || '') + '" aria-label="Height">'
       + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
       + '<input data-line="' + index + '" data-field="pcs" type="number" min="1" step="1" value="' + esc(item.pcs || 1) + '" aria-label="Quantity">'
+      + '<input data-line="' + index + '" data-field="floor" value="' + esc(item.floor || item.mark || item.location || '') + '" aria-label="Floor" placeholder="Floor" style="width:6rem">'
       + '<label style="font-size:12px"><input data-line="' + index + '" data-field="irregular" type="checkbox"' + checked + '> Irregular shape</label>'
       + '<input data-line="' + index + '" data-field="remarks" value="' + esc(item.remarks || '') + '" aria-label="Remarks" placeholder="Remarks">'
       + '<button type="button" class="btn small secondary" data-remove="' + index + '">Remove</button></div>';
@@ -362,12 +443,13 @@ function collectItems() {
       if (field === 'name') item.name = input.value;
       else if (field === 'pcs') item.pcs = Number(input.value);
       else if (field === 'remarks') item.remarks = input.value;
+      else if (field === 'floor') item.floor = input.value;
       else if (field === 'irregular') irregular = input.checked;
       else spec[field] = field === 'unit' ? input.value : Number(input.value);
     });
     const row = {name: item.name, pcs: item.pcs, spec: spec, irregular_shape: irregular};
     if (item.remarks) row.remarks = item.remarks;
-    if (item.mark) row.mark = item.mark;
+    if (item.floor) row.floor = item.floor;
     if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
     return row;
   });

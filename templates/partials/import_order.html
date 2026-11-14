@@ -24,7 +24,7 @@
 <h3 style="color:#333;margin:16px 0 8px">Preview</h3>
 <p class="import-note" id="import-unit"></p>
 <table class="import-table">
-<thead><tr><th>Mark</th><th>Width (in)</th><th>Height (in)</th><th>Pieces</th><th>Their glass</th><th>Our glass</th><th>Spacer</th><th>Irregular</th><th>Price</th><th></th></tr></thead>
+<thead><tr><th>Floor</th><th>Width (in)</th><th>Height (in)</th><th>Pieces</th><th>Their glass</th><th>Our glass</th><th>Spacer</th><th>Irregular</th><th>Price</th><th></th></tr></thead>
 <tbody id="import-lines"></tbody>
 </table>
 <button type="button" class="btn" id="import-create" style="margin-top:12px">Create quote</button>
@@ -64,7 +64,7 @@
 <div class="form-group"><label>Qty column</label><input id="tpl-qty" type="text"></div>
 <div class="form-group"><label>Glass column</label><input id="tpl-glass" type="text"></div>
 <div class="form-group"><label>Spacer column</label><input id="tpl-spacer" type="text" placeholder="optional"></div>
-<div class="form-group"><label>Mark column</label><input id="tpl-mark" type="text" placeholder="optional"></div>
+<div class="form-group"><label>Floor column</label><input id="tpl-mark" type="text" placeholder="Floor, Mark, or Location"></div>
 </div>
 <div class="form-group" id="tpl-pattern-wrap" style="display:none"><label for="tpl-pattern">Line pattern</label>
 <input id="tpl-pattern" type="text" placeholder="(?P&lt;width&gt;...)" style="width:100%"></div>
@@ -155,7 +155,7 @@
       const bad = (line.errors || []).length ? ' class="line-bad"' : '';
       const price = line.total == null ? '' : (currency().toUpperCase() + ' $' + Number(line.total).toFixed(2));
       return '<tr' + bad + ' data-index="' + index + '" data-glass="' + esc(line.glass_name || '') + '" data-spacer="' + esc(line.spacer_name || '') + '">'
-        + '<td><input data-field="mark" value="' + esc(line.mark || '') + '" style="width:5rem"></td>'
+        + '<td><input data-field="mark" aria-label="Floor" value="' + esc(line.mark || '') + '" style="width:5rem"></td>'
         + '<td><input data-field="width" value="' + esc(line.width == null ? '' : line.width) + '" style="width:5rem"></td>'
         + '<td><input data-field="height" value="' + esc(line.height == null ? '' : line.height) + '" style="width:5rem"></td>'
         + '<td><input data-field="qty" value="' + esc(line.qty || '') + '" style="width:4rem"></td>'

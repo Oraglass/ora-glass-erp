@@ -117,7 +117,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div id="quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
-<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
+<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
 </div>
 </div>
@@ -166,7 +166,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <p id="copy-note-lines" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="quote-tax-lines" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <p id="drawing-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px;font-weight:600">{{ drawing_note }}</p>
-<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
+<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
 </div>
 </div>
@@ -235,6 +235,14 @@ function toggleLineRemark(listName, index, checked) {
   renderQuoteList();
   renderSizeQuoteList();
 }
+function setFloor(listName, index, value) {
+  const list = listName === 'size' ? sizeQuoteItems : quoteItems;
+  if (list[index]) list[index].floor = value;
+}
+function floorCell(item, index, listName) {
+  const value = item.floor || item.mark || '';
+  return '<td class="col-floor"><input type="text" aria-label="Floor" placeholder="W12" maxlength="80" value="' + quoteEsc(value) + '" oninput="setFloor(\'' + listName + '\',' + index + ', this.value)" style="width:5.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td>';
+}
 function remarkControls(item, index, listName) {
   const open = showRemarks || item.remarkOpen || !!(item.remarks);
   const marked = (item.remarkOpen || item.remarks) ? ' checked' : '';
@@ -244,7 +252,7 @@ function remarkControls(item, index, listName) {
 const renderSqfQuoteList = renderQuoteList;
 renderQuoteList = function () {
   const tbody = document.getElementById('quote-body');
-  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td><td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
+  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
   document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
@@ -255,8 +263,8 @@ renderSizeQuoteList = function () {
     const checked = item.irregular_shape ? ' checked' : '';
     const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
     const pcs = Number(item.pcs) || 1;
-    const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-size"></td><td class="col-qty">' + pcs + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
-    return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td><td class="col-size">' + quoteEsc(item.size) + '</td><td class="col-qty">' + quoteEsc(item.pcs) + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
+    const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-floor"></td><td class="col-size"></td><td class="col-qty">' + pcs + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
+    return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + quoteEsc(item.size) + '</td><td class="col-qty">' + quoteEsc(item.pcs) + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
   const note = document.getElementById('drawing-note');
@@ -343,7 +351,7 @@ const saveNewSizeQuote = exportSizeQuote;
 exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', mark: i.mark || ''}));
+  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
   await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
   const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince})});
   const blob = await res.blob();
@@ -362,7 +370,7 @@ function lineFromStored(item, currency, project) {
     name, size, total: item.total, sqf: item.sqf, priceSqf: item.price_sqf || item.price,
     pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
     irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate,
-    remarks: item.remarks || '', mark: item.mark || ''
+    remarks: item.remarks || '', floor: item.floor || item.mark || ''
   };
 }
 async function loadCopiedQuote() {
@@ -392,7 +400,7 @@ async function loadCopiedQuote() {
     renderSizeQuoteList();
   } else {
     showTab('sqf');
-    quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-', remarks: item.remarks || ''}));
+    quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-', remarks: item.remarks || '', floor: item.floor || item.mark || ''}));
     if (quoteItems.some(item => item.remarks)) showRemarks = true;
     renderQuoteList();
   }
