@@ -207,7 +207,9 @@ function renderDetail(order) {
     const spec = item.spec || {};
     const size = spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '';
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const left = (order.shipping && order.shipping.lines || []).find(line => line.name === item.name && line.remaining);
+    const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remain + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -235,9 +237,25 @@ function renderDetail(order) {
       + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
   }).join('');
   const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
+  const shipping = order.shipping || {};
+  const shipHead = '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>';
+  const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
+  const glass = (order.items || []).map((item, index) => {
+    if (!item.spec || !item.spec.width || item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation') return '';
+    const line = (shipping.lines || []).find(row => row.index === index) || {};
+    const max = line.remaining != null ? line.remaining : item.pcs;
+    if (!max) return '';
+    return '<div style="display:flex;gap:8px;align-items:center;margin:6px 0"><input data-ship-index="' + index + '" type="number" min="0" max="' + esc(max) + '" value="0" aria-label="Ship quantity for ' + esc(item.name) + '" style="width:80px"><span class="note">' + esc(item.name) + ' · ' + esc(max) + ' left</span></div>';
+  }).join('');
+  const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
+    ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
+  const shipForm = STAFF ? '<div id="shipment-entry"><h3 style="color:#333;font-size:16px">Shipments</h3>' + shipHead + shipRows + partial
+    + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
+    + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label><button type="submit" class="btn">Record shipment</button></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
     + notes + tax + (documents ? documentNote : invoice)
+    + shipForm
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
     + '<table><thead><tr><th>Item</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
@@ -250,6 +268,37 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const partialBox = document.getElementById('partial-invoicing');
+  if (partialBox) partialBox.addEventListener('change', async () => {
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/partial-invoicing', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({partial_invoicing: partialBox.checked})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not change invoicing'); partialBox.checked = !partialBox.checked; return; }
+    renderDetail(payload);
+  });
+  const shipmentForm = document.getElementById('shipment-form');
+  if (shipmentForm) shipmentForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const lines = [];
+    shipmentForm.querySelectorAll('[data-ship-index]').forEach(input => {
+      lines.push({index: Number(input.getAttribute('data-ship-index')), qty: Number(input.value || 0)});
+    });
+    const body = new FormData();
+    body.append('number', document.getElementById('ship-number').value);
+    body.append('date', document.getElementById('ship-date').value);
+    body.append('rack', document.getElementById('ship-rack').value);
+    body.append('weight', document.getElementById('ship-weight').value);
+    body.append('lines', JSON.stringify(lines));
+    const file = document.getElementById('ship-file').files[0];
+    if (file) body.append('packing_list', file);
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/shipments', {method: 'POST', body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not record the shipment'); return; }
+    renderDetail(payload);
+    load();
+  });
   box.querySelectorAll('.replace-drawing').forEach(form => {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();

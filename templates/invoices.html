@@ -189,7 +189,7 @@ function renderDetail(invoice) {
   const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
   const fxForm = CAN_ISSUE && invoice.kind === 'intercompany' && !invoice.voided ? '<div class="row"><input id="fx-rate" type="number" min="0.0001" step="0.0001" value="' + esc(invoice.fx_rate || '') + '" aria-label="Exchange rate"><button type="button" class="btn" id="save-fx">Save exchange rate</button></div>' : '';
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
-    + '<p class="note">' + esc(invoice.issuer_label || '') + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '') + '</p>'
+    + '<p class="note">' + esc(invoice.issuer_label || '') + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '') + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
     + fxLine + fxForm
     + (invoice.qbo_warning ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
