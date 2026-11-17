@@ -93,13 +93,40 @@ td.actions{width:11rem}
 </select>
 </div>
 </div>
-<div class="form-group"><label for="c-pst-number">PST number</label>
+<div class="form-group" id="pst-group"><label for="c-pst-number">PST number</label>
+<div id="pst-create">
 <input type="text" id="c-pst-number" maxlength="40" autocomplete="off">
-<p class="help">British Columbia, Manitoba, and Saskatchewan. With a PST number on file, delivery to those provinces is GST only.</p>
 </div>
-<div class="form-group"><label for="c-qst-number">QST number</label>
+<div id="pst-locked" hidden>
+<p class="current" id="pst-current"></p>
+<button class="btn btn-secondary" type="button" id="change-pst">Change PST number</button>
+<div id="pst-change" hidden>
+<label>New number<input id="pst-new" maxlength="40" autocomplete="off"></label>
+<label>Enter the new number again<input id="pst-confirm" maxlength="40" autocomplete="off"></label>
+<label>Reason<input id="pst-reason" maxlength="300"></label>
+<label><input type="checkbox" id="pst-remove"> Remove the saved number</label>
+<button class="btn" type="button" id="save-pst">Save PST change</button>
+</div>
+</div>
+<p class="help">British Columbia, Manitoba, and Saskatchewan. A saved number makes delivery to those provinces GST only. With no number, new documents charge GST + PST.</p>
+</div>
+<div class="form-group" id="qst-group"><label for="c-qst-number">QST number</label>
+<div id="qst-create">
 <input type="text" id="c-qst-number" maxlength="40" autocomplete="off">
-<p class="help">Quebec. With a QST number on file, delivery to Quebec is GST only.</p>
+</div>
+<div id="qst-locked" hidden>
+<p class="current" id="qst-current"></p>
+<button class="btn btn-secondary" type="button" id="change-qst">Change QST number</button>
+<div id="qst-change" hidden>
+<label>New number<input id="qst-new" maxlength="40" autocomplete="off"></label>
+<label>Enter the new number again<input id="qst-confirm" maxlength="40" autocomplete="off"></label>
+<label>Reason<input id="qst-reason" maxlength="300"></label>
+<label><input type="checkbox" id="qst-remove"> Remove the saved number</label>
+<button class="btn" type="button" id="save-qst">Save QST change</button>
+</div>
+</div>
+<p class="help">Quebec. A saved number makes delivery to Quebec GST only. With no number, new documents charge GST + QST.</p>
+<div id="tax-history" hidden></div>
 </div>
 <div class="form-group"><label for="c-tax-code">QBO tax code</label>
 <select id="c-tax-code" aria-label="QBO tax code"></select>
@@ -218,8 +245,21 @@ function openModal(customer) {
   document.getElementById('c-us-state').value = customer && customer.us_state ? customer.us_state : '';
   document.getElementById('c-export').checked = customer ? !!customer.export_no_tax : false;
   document.getElementById('c-tax-exempt').checked = customer ? !!customer.tax_exempt : false;
-  document.getElementById('c-pst-number').value = customer ? (customer.pst_number || '') : '';
-  document.getElementById('c-qst-number').value = customer ? (customer.qst_number || '') : '';
+  const editing = !!customer;
+  document.getElementById('pst-create').hidden = editing;
+  document.getElementById('qst-create').hidden = editing;
+  document.getElementById('pst-locked').hidden = !editing;
+  document.getElementById('qst-locked').hidden = !editing;
+  document.getElementById('pst-change').hidden = true;
+  document.getElementById('qst-change').hidden = true;
+  document.getElementById('c-pst-number').value = '';
+  document.getElementById('c-qst-number').value = '';
+  document.getElementById('pst-current').textContent = customer && customer.pst_number ? customer.pst_number : 'Not on file';
+  document.getElementById('qst-current').textContent = customer && customer.qst_number ? customer.qst_number : 'Not on file';
+  const history = document.getElementById('tax-history');
+  history.hidden = !editing;
+  history.innerHTML = '';
+  if (editing) loadTaxHistory(customer.id);
   document.getElementById('c-tax-override').checked = customer ? !!customer.tax_code_override : false;
   syncCanadaFields();
   fillTaxCodes(customer ? (customer.qbo_tax_code || '') : '');
@@ -260,7 +300,7 @@ function openModal(customer) {
   document.getElementById('customer-modal').classList.add('active');
 }
 function payload() {
-  return {
+  const body = {
     name: document.getElementById('c-name').value,
     domain: document.getElementById('c-domain').value,
     address: document.getElementById('c-address').value,
@@ -272,8 +312,6 @@ function payload() {
     us_state: document.getElementById('c-us-state').value,
     export_no_tax: document.getElementById('c-export').checked,
     tax_exempt: document.getElementById('c-tax-exempt').checked,
-    pst_number: document.getElementById('c-pst-number').value,
-    qst_number: document.getElementById('c-qst-number').value,
     tax_code_override: document.getElementById('c-tax-override').checked,
     qbo_tax_code: document.getElementById('c-tax-code').value,
     phone: document.getElementById('c-phone').value,
@@ -289,7 +327,52 @@ function payload() {
     status: document.getElementById('c-status').value,
     credit_approved: document.getElementById('c-credit').checked
   };
+  if (!document.getElementById('c-id').value) {
+    body.pst_number = document.getElementById('c-pst-number').value;
+    body.qst_number = document.getElementById('c-qst-number').value;
+  }
+  return body;
 }
+async function loadTaxHistory(customerId) {
+  const rows = await api('/api/customers/' + encodeURIComponent(customerId) + '/tax-number');
+  const history = document.getElementById('tax-history');
+  if (!rows) { history.hidden = true; return; }
+  const lines = rows.map(row => '<li>' + esc(row.at) + ' · ' + esc(row.field) + ' · ' + esc(row.old_value || '—') + ' → ' + esc(row.new_value || '—') + ' · ' + esc(row.changed_by || '—') + ' · ' + esc(row.reason) + '</li>').join('');
+  history.innerHTML = '<p class="help">Tax number history is append-only.</p><ul>' + (lines || '<li>No changes yet.</li>') + '</ul>'
+    + '<p><a href="/customers/' + encodeURIComponent(customerId) + '/tax-numbers.pdf">Download PDF</a></p>';
+}
+function wireTaxChange(buttonId, panelId, field, currentId, newId, confirmId, reasonId, removeId) {
+  document.getElementById(buttonId).addEventListener('click', () => {
+    document.getElementById(panelId).hidden = false;
+  });
+  document.getElementById('save-' + field).addEventListener('click', async () => {
+    const id = document.getElementById('c-id').value;
+    if (!id) return;
+    const remove = document.getElementById(removeId).checked;
+    const next = document.getElementById(newId).value.trim();
+    const again = document.getElementById(confirmId).value.trim();
+    const current = document.getElementById(currentId).textContent.trim();
+    const label = field === 'pst' ? 'PST number' : 'QST number';
+    if (!remove && next !== again) { alert('Enter the new number twice, and make both entries match.'); return; }
+    const shown = remove ? '(none)' : next;
+    const oldText = current === 'Not on file' ? '(none)' : current;
+    if (!confirm('Change ' + label + ' from "' + oldText + '" to "' + shown + '"?')) return;
+    const saved = await api('/api/customers/' + encodeURIComponent(id) + '/tax-number', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        field: field + '_number', number: next, number_confirm: again,
+        reason: document.getElementById(reasonId).value, remove
+      })
+    });
+    if (!saved) return;
+    document.getElementById(currentId).textContent = saved[field + '_number'] || 'Not on file';
+    document.getElementById(panelId).hidden = true;
+    loadTaxHistory(id);
+    loadCustomers();
+  });
+}
+wireTaxChange('change-pst', 'pst-change', 'pst', 'pst-current', 'pst-new', 'pst-confirm', 'pst-reason', 'pst-remove');
+wireTaxChange('change-qst', 'qst-change', 'qst', 'qst-current', 'qst-new', 'qst-confirm', 'qst-reason', 'qst-remove');
 document.getElementById('customer-list').addEventListener('click', (event) => {
   const button = event.target.closest('button');
   if (!button) return;

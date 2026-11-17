@@ -848,6 +848,27 @@ def append_payroll_audit(entry):
         atomic_write_json(path, rows)
 
 
+def tax_number_history_path():
+    return os.path.join(data_dir(), 'tax_number_history.json')
+
+
+def load_tax_number_history():
+    rows = _json_list(tax_number_history_path)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def append_tax_number_history(entry):
+    """Append one tax-number event. There is no update or delete."""
+    path = tax_number_history_path()
+    with lock_for(path):
+        rows = read_json(path, [])
+        if not isinstance(rows, list):
+            rows = []
+        rows.append(dict(entry))
+        atomic_write_json(path, rows)
+        return dict(entry)
+
+
 def ordered_tiers(tiers=None):
     tiers = tiers if tiers is not None else load_tiers()
     keys = [key for key in TIER_ORDER if key in tiers]

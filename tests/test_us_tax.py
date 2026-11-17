@@ -253,14 +253,20 @@ def test_canadian_company_uses_pst_or_qst_instead_of_a_resale_certificate(client
     assert page.status_code == 200
     assert b'Upload a certificate' not in page.data
     assert b'PST number' in page.data
-    assert b'US resale certificate' in page.data
-    saved = client.post('/company', data={'pst_number': 'PST-100'})
+    assert b'Change PST number' in page.data
+    assert b'US resale certificate' not in page.data
+    assert b'not asked for a US resale certificate' not in page.data
+    saved = client.post('/company', data={
+        'number': 'PST-100', 'number_confirm': 'PST-100', 'reason': 'Registration received',
+    })
     assert saved.status_code == 200
     assert load_customers()['maple']['pst_number'] == 'PST-100'
     assert b'PST-100' in saved.data
+    assert b'not asked for a US resale certificate' not in saved.data
     dashboard = client.get('/dashboard')
     assert b'Resale certificate' not in dashboard.data
-    assert b'PST number' in dashboard.data
+    assert b'instead of a US resale certificate' not in dashboard.data
+    assert b'Canadian companies use this number' not in dashboard.data
     blocked = client.post('/api/customers/maple/resale', data={
         'number': 'RC-1', 'state': 'CA', 'file': (io.BytesIO(PDF), 'cert.pdf'),
     }, content_type='multipart/form-data')

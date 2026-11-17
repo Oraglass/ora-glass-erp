@@ -3,17 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ORA Glass ERP - {{ 'QST number' if kind == 'qst' else 'PST number' }}</title>
+<title>ORA Glass ERP - {{ field_label }}</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
-.wrap{max-width:720px;margin:0 auto;padding:20px}
+.wrap{max-width:820px;margin:0 auto;padding:20px}
 .card{background:#fff;border-radius:10px;padding:18px;margin-bottom:14px}
 h1{margin:0 0 8px;font-size:22px}
-label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px;max-width:360px}
+h2{margin:0 0 8px;font-size:16px;color:#333}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px;max-width:420px;margin-top:10px}
 input{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
-button{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px 'Segoe UI',Arial,sans-serif;cursor:pointer;margin-top:12px}
+button,a.btn{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px 'Segoe UI',Arial,sans-serif;cursor:pointer;margin-top:12px;display:inline-block;text-decoration:none}
+button.secondary{background:#fff;color:#333;border:1px solid #ccc}
 .note{color:#555;font-size:13px;line-height:1.45}
+.current{font-size:16px;font-weight:600;color:#222;margin:8px 0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid #eee;text-align:left;padding:6px 4px;vertical-align:top}
 </style>
 </head>
 <body>
@@ -22,24 +27,81 @@ button{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14p
 <div class="wrap">
 <div class="card">
 <h1>{{ company }}</h1>
-<p class="note" id="canada-tax-note">A Canadian company is not asked for a US resale certificate. {% if kind == 'qst' %}Quebec uses the QST number.{% else %}The PST number is used instead.{% endif %} With that number on file, delivery to the province is GST only.</p>
 {% if province %}<p class="note">Province: {{ province }}</p>{% endif %}
+{% if staff_view %}
+<p class="note">A saved number makes new documents to this province GST only. Removing it, with a reason, charges GST + PST or GST + QST on documents created after the change. Orders and invoices keep the number from when they were created.</p>
+{% endif %}
 </div>
 <div class="card">
+<p class="note">{{ field_label }}</p>
+<p class="current" id="tax-current">{{ current_number or 'Not on file' }}</p>
 {% if can_edit %}
-<form method="post" id="canada-tax-form">
+<button type="button" id="show-tax-change" class="secondary">Change {{ field_label }}</button>
+<form method="post" id="canada-tax-form" hidden>
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-{% if kind == 'qst' %}
-<label for="qst-number">QST number<input id="qst-number" name="qst_number" maxlength="40" value="{{ qst_number }}"></label>
-{% else %}
-<label for="pst-number">PST number<input id="pst-number" name="pst_number" maxlength="40" value="{{ pst_number }}"></label>
-{% endif %}
-<button type="submit">Save</button>
+<label for="tax-number">New number<input id="tax-number" name="number" maxlength="40" autocomplete="off"></label>
+<label for="tax-number-confirm">Enter the new number again<input id="tax-number-confirm" name="number_confirm" maxlength="40" autocomplete="off"></label>
+<label for="tax-reason">Reason<input id="tax-reason" name="reason" maxlength="300" required></label>
+<label style="flex-direction:row;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="tax-remove" name="remove" value="1"> Remove the saved number</label>
+<button type="submit">Save change</button>
 </form>
-{% else %}
-<p class="note" id="canada-tax-value">{% if kind == 'qst' %}QST number: {{ qst_number or 'Not on file' }}{% else %}PST number: {{ pst_number or 'Not on file' }}{% endif %}</p>
 {% endif %}
 </div>
+{% if staff_view %}
+<div class="card">
+<h2>Tax number history</h2>
+<p class="note">Append-only. These rows cannot be edited or deleted.</p>
+<a class="btn" href="{{ url_for('download_tax_number_history', cid=customer_id) }}">Download PDF</a>
+<table>
+<thead><tr><th>When</th><th>Field</th><th>Old</th><th>New</th><th>Changed by</th><th>Reason</th><th>IP</th></tr></thead>
+<tbody>
+{% for row in history %}
+<tr>
+<td>{{ row.at }}</td>
+<td>{{ row.field }}</td>
+<td>{{ row.old_value or '—' }}</td>
+<td>{{ row.new_value or '—' }}</td>
+<td>{{ row.changed_by or '—' }}</td>
+<td>{{ row.reason }}</td>
+<td>{{ row.ip or '—' }}</td>
+</tr>
+{% else %}
+<tr><td colspan="7">No tax number history yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<h2 style="margin-top:16px">Changelog</h2>
+{% for entry in changelog %}
+<p class="note">{{ entry.at }} · {{ entry.user or '—' }} · {{ entry.reason or '' }}
+{% for change in entry.changes or [] %} {{ change.field }}: {{ change.old or '—' }} → {{ change.new or '—' }}{% endfor %}
+</p>
+{% else %}
+<p class="note">No changelog entries.</p>
+{% endfor %}
 </div>
+{% endif %}
+</div>
+<script>
+const show = document.getElementById('show-tax-change');
+const form = document.getElementById('canada-tax-form');
+if (show && form) {
+  show.addEventListener('click', () => { form.hidden = false; show.hidden = true; });
+  form.addEventListener('submit', (event) => {
+    const remove = document.getElementById('tax-remove').checked;
+    const next = document.getElementById('tax-number').value.trim();
+    const again = document.getElementById('tax-number-confirm').value.trim();
+    const current = document.getElementById('tax-current').textContent.trim();
+    const label = {{ field_label|tojson }};
+    if (!remove && next !== again) {
+      event.preventDefault();
+      alert('Enter the new number twice, and make both entries match.');
+      return;
+    }
+    const shown = remove ? '(none)' : next;
+    const oldText = current === 'Not on file' ? '(none)' : current;
+    if (!confirm('Change ' + label + ' from "' + oldText + '" to "' + shown + '"?')) event.preventDefault();
+  });
+}
+</script>
 </body>
 </html>

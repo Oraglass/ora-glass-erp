@@ -57,11 +57,6 @@
             <a href="{{ url_for('company_page') }}">Resale certificate</a>
             Upload or review your company's certificate.
         </div>
-        {% elif canada_tax_label %}
-        <div class="import-notice">
-            <a href="{{ url_for('company_page') }}">{{ canada_tax_label }}</a>
-            Canadian companies use this number instead of a US resale certificate.
-        </div>
         {% endif %}
         {% if qbo_expired %}
         <div class="import-notice" id="qbo-expired">

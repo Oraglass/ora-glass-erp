@@ -1474,15 +1474,16 @@ def resolve_canada_tax(customer, ship_province=None):
     province = str(ship_province or customer.get('province') or '').strip().upper()
     place = PROVINCE_NAMES.get(province) or province or 'the ship-to province'
     codes = _province_codes(province, settings)
+    from tax_numbers import saved_number
     if province in PST_PROVINCES:
-        if str(customer.get('pst_number') or '').strip():
+        if saved_number(customer.get('pst_number')):
             code = codes.get('gst_only') or ''
             label = f'GST only, shipped to {place} (PST number on file)'
         else:
             code = codes.get('with_pst') or ''
             label = f'GST + PST, shipped to {place}'
     elif province == 'QC':
-        if str(customer.get('qst_number') or '').strip():
+        if saved_number(customer.get('qst_number')):
             code = codes.get('gst_only') or ''
             label = f'GST only, shipped to {place} (QST number on file)'
         else:
