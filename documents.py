@@ -172,7 +172,8 @@ def _styles():
         'num': ParagraphStyle('DocNum', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_RIGHT),
         'center': ParagraphStyle('DocCenter', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
         'foot': ParagraphStyle('DocFoot', parent=base, fontName='Helvetica', fontSize=8, leading=11),
-        'total': ParagraphStyle('DocTotal', parent=base, fontName='Helvetica-Bold', fontSize=8, leading=11, alignment=TA_RIGHT),
+        'sum_label': ParagraphStyle('SumLabel', parent=base, fontName='Helvetica', fontSize=8, leading=11),
+        'sum_amount': ParagraphStyle('SumAmount', parent=base, fontName='Helvetica', fontSize=8, leading=11),
     }
 
 
@@ -349,7 +350,8 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
         label = str(document.get('tax_label') or '').strip()
         tax_text = label or 'AS APPLICABLE'
         tax_value = 0.0
-    discount_text = money_text(currency, discount) if discount else ''
+    if tax_text == 'AS APPLICABLE':
+        tax_text = '- AS APPLICABLE'
     grand = round(subtotal - discount + tax_value, 2)
     summary = Paragraph(
         f'Total Pcs: {total_pcs}&nbsp;&nbsp;&nbsp;&nbsp;Total SQ/FT : {total_sqf:.2f}'
@@ -360,13 +362,30 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
         'Accept Signature: ____________________<br/>Date: ____________________<br/>Name: ____________________',
         styles['foot'],
     )
-    totals = Paragraph(
-        f'Sub-Total: {money_text(currency, subtotal)}<br/>'
-        f'Tax: {escape(tax_text)}<br/>'
-        f'Discount: {escape(discount_text)}<br/>'
-        f'<b>Total: {money_text(currency, grand)}</b>',
-        styles['total'],
-    )
+    rows = [
+        [Paragraph('Sub-Total:', styles['sum_label']), Paragraph(money_text(currency, subtotal), styles['sum_amount'])],
+        [Paragraph('Tax:', styles['sum_label']), Paragraph(escape(tax_text), styles['sum_amount'])],
+    ]
+    if discount > 0:
+        rows.append([
+            Paragraph('Discount:', styles['sum_label']),
+            Paragraph(money_text(currency, discount), styles['sum_amount']),
+        ])
+    rows.append([
+        Paragraph('<b>Total:</b>', styles['sum_label']),
+        Paragraph(f'<b>{money_text(currency, grand)}</b>', styles['sum_amount']),
+    ])
+    totals = Table(rows, colWidths=[0.9 * inch, 2.35 * inch])
+    totals.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (0, -1), 8),
+        ('RIGHTPADDING', (1, 0), (1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+    ]))
+    totals.hAlign = 'RIGHT'
     block = Table([[signature, totals]], colWidths=[4.4 * inch, 3.3 * inch])
     block.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),

@@ -103,8 +103,21 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     }).data)
     assert b'C$/SQF' in cad
     assert b'C$ 20.00' in cad
-    assert b'AS APPLICABLE' in text
-    assert b'Discount:' in text
+    assert b'Sub-Total:' in cad
+    assert b'- AS APPLICABLE' in cad
+    assert b'Discount:' not in cad
+    assert b'Discount:' not in text
+    discounted = pdf_text(client.post('/api/export-quote', json={
+        'items': [{
+            'name': 'Wide', 'sqf': 10, 'price_sqf': 2, 'price_pc': 20, 'pcs': 1, 'total': 20,
+        }],
+        'currency': 'cad', 'project': 'Discounted', 'type': 'size',
+        'additional_discount_percent': 10,
+    }).data)
+    assert b'Discount:' in discounted
+    assert b'C$ 2.00' in discounted
+    assert b'C$ 18.00' in discounted
+    assert b'- AS APPLICABLE' in text
     assert b'Accept Signature:' in text
     assert b'Ora Glass Inc Terms And Conditions of Sale apply.' in text
     assert b'Quote By:' in text
@@ -125,6 +138,9 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert confirmation.mimetype == 'application/pdf'
     order_text = pdf_text(confirmation.data)
     assert b'Order Confirmation' in order_text
+    assert b'Sub-Total:' in order_text
+    assert b'Discount:' not in order_text
+    assert b'- AS APPLICABLE' in order_text
     assert f'Order: {order_id}'.encode() in order_text or str(order_id).encode() in order_text
     assert b'Quotation' not in order_text
     assert b'18.00' in order_text
