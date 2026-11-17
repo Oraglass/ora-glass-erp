@@ -253,9 +253,35 @@ def _live_materials():
     return pricing_catalog.material_lists()
 
 
-def _sell_price(data, tier, tiers):
+def _percent(value, limit=100):
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if number < 0:
+        return 0.0
+    if number > limit:
+        return float(limit)
+    return number
+
+
+def _price_factor(percent):
+    return 1 + _percent(percent, 1000) / 100.0
+
+
+def _scale_prices(priced, factor):
+    if not priced or factor == 1:
+        return priced
+    priced = dict(priced)
+    priced['price_sqf'] = round(priced['price_sqf'] * factor, 2)
+    priced['price_pc'] = round(priced['price_pc'] * factor, 2)
+    priced['total'] = round(priced['price_pc'] * priced['pcs'], 2)
+    return priced
+
+
+def _sell_price(data, tier, tiers, price_factor=1):
     options = _price_options()
-    return calculate_price_sqf(
+    price = calculate_price_sqf(
         data, tier, options['pricing'], tiers,
         temper_prices=options['temper_prices'],
         tier5_scale=options['tier5_scale'],
@@ -263,11 +289,12 @@ def _sell_price(data, tier, tiers):
         extra_per_sqf=options['extra_per_sqf'],
         triple_factor=options['triple_factor'],
     )
+    return round(price * (price_factor or 1), 2)
 
 
-def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None):
+def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1):
     options = _price_options()
-    return reprice_size_line(
+    priced = reprice_size_line(
         spec, pcs, tier, currency, options['pricing'], tiers, fx_rate,
         temper_prices=options['temper_prices'],
         tier5_scale=options['tier5_scale'],
@@ -277,6 +304,7 @@ def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None):
         minimum_sqf=options['minimum_sqf'],
         minimum_charge=options['minimum_charge'],
     )
+    return _scale_prices(priced, price_factor or 1)
 
 _state = {'bootstrapped': False}
 
@@ -733,6 +761,7 @@ def public_customer(customer_id, customer, tiers, user_count):
         'credit_currency': _shown_credit_currency(customer),
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
+        'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
         'status': customer.get('status') or 'active',
         'user_count': user_count,
     }
@@ -836,7 +865,7 @@ def customer_subrole(user):
 
 
 def customer_subrole_label(user):
-    return 'Management' if customer_subrole(user) == 'management' else 'Sales force'
+    return 'Management' if customer_subrole(user) == 'management' else 'Operations'
 
 
 def apply_customer_subrole(record, data):
@@ -849,7 +878,7 @@ def apply_customer_subrole(record, data):
         return None
     value = clean_text(data.get('customer_subrole'), 20).lower()
     if value not in {'management', 'sales'}:
-        return 'Customer role must be Management or Sales force.'
+        return 'Customer role must be Management or Operations.'
     record['customer_subrole'] = value
     if value != 'management' and isinstance(record.get('modules'), list):
         record['modules'] = [module_id for module_id in record['modules'] if module_id != 'orders']
@@ -1049,6 +1078,10 @@ def apply_customer_fields(customer, data, tiers, creating):
         if tier not in tiers:
             return 'Unknown pricing tier.'
         customer['tier'] = tier
+    if creating or 'additional_discount_percent' in data:
+        customer['additional_discount_percent'] = _percent(data.get('additional_discount_percent'))
+    if creating or 'price_addon_percent' in data:
+        customer['price_addon_percent'] = _percent(data.get('price_addon_percent'), 1000)
     if creating or 'status' in data:
         status = clean_text(data.get('status') or 'active', 20)
         if status not in {'active', 'inactive'}:
@@ -1408,6 +1441,7 @@ def quote_template_context(user):
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'drawing_note': DRAWING_NOTE,
         'erp_rate': _current_fx()[0],
+        'company_discount_percent': _percent((customers.get(user.get('customer_id') or '') or {}).get('additional_discount_percent')) if user.get('role') == 'customer' else 0,
         'currency_locked': user.get('role') == 'customer',
         'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
@@ -1415,6 +1449,7 @@ def quote_template_context(user):
                 'id': customer_id,
                 'name': (customer or {}).get('name') or customer_id,
                 'currency': _required_currency(customer),
+                'discount_percent': _percent(customer.get('additional_discount_percent')),
             }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
@@ -1783,7 +1818,13 @@ def calculate():
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
     if not tier:
         return json_error('That pricing tier is not available.', 400)
-    price = _sell_price(data, tier, tiers)
+    customer = None
+    if user.get('role') == 'customer':
+        customer = customers.get(user.get('customer_id') or '')
+    else:
+        requested = clean_text(data.get('customer_id'), 64)
+        customer = customers.get(requested) if requested else None
+    price = _sell_price(data, tier, tiers, _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000)))
     try:
         supplied = float(data.get('fx_rate'))
     except (TypeError, ValueError):
@@ -1919,6 +1960,24 @@ def export_quote():
             Paragraph('', cell_style),
             Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
         ])
+        discount_percent, discount_amount = _export_discount(data, total_line_sum)
+        if discount_amount:
+            table_data.append([
+                Paragraph('', cell_style),
+                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
+                Paragraph('', cell_style),
+                Paragraph('', cell_style),
+                Paragraph('', cell_style),
+                Paragraph(f'-${discount_amount:.2f}', total_style),
+            ])
+            table_data.append([
+                Paragraph('', cell_style),
+                Paragraph('<b>Total</b>', total_style),
+                Paragraph('', cell_style),
+                Paragraph('', cell_style),
+                Paragraph('', cell_style),
+                Paragraph(f'<b>${total_line_sum - discount_amount:.2f}</b>', total_style),
+            ])
         col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
     else:
         curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
@@ -1943,6 +2002,18 @@ def export_quote():
             Paragraph('<b>TOTAL</b>', total_style),
             Paragraph(f'<b>${total_price:.2f}</b>', total_style),
         ])
+        discount_percent, discount_amount = _export_discount(data, total_price)
+        if discount_amount:
+            table_data.append([
+                Paragraph('', cell_style),
+                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
+                Paragraph(f'-${discount_amount:.2f}', total_style),
+            ])
+            table_data.append([
+                Paragraph('', cell_style),
+                Paragraph('<b>Total</b>', total_style),
+                Paragraph(f'<b>${total_price - discount_amount:.2f}</b>', total_style),
+            ])
         col_widths = [0.4*inch, 5.5*inch, 1.1*inch]
 
     items_table = Table(table_data, colWidths=col_widths)
@@ -2353,7 +2424,7 @@ def pricing_admin():
         if action == 'temper':
             pricing_catalog.update_temper(_form_rows(('thickness', 'addon')), user.get('email'))
             flash('Tempering add-ons saved. Saved quotes and orders keep their prices.', 'success')
-            return redirect(url_for('pricing_admin', tab='glass'))
+            return redirect(url_for('pricing_admin', tab='temper'))
         if action == 'components':
             rows = _material_posts(('id', 'name', 'price_per_ft', 'foot_factor', 'price_per_set', 'spacer_width_mm', 'raw_price', 'tariff_percent', 'waste_percent', 'in_price', 'active'), None)
             new_name = clean_text(request.form.get('new_name'), 120)
@@ -2374,6 +2445,11 @@ def pricing_admin():
                     'active': True,
                 })
             pricing_catalog.update_materials(rows, user.get('email'), 'components')
+            if request.form.get('technoform_foot_factor') not in (None, ''):
+                pricing_catalog.update_formula(
+                    {'technoform_foot_factor': request.form.get('technoform_foot_factor')},
+                    user.get('email'),
+                )
             flash('Component prices saved. Saved quotes and orders keep their prices.', 'success')
             return redirect(url_for('pricing_admin', tab='components'))
         if action == 'formula':
@@ -2693,12 +2769,15 @@ def get_customers():
         customer = customers.get(customer_id)
         if not customer:
             return jsonify([])
-        return jsonify([public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))])
-    rows = [
-        public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
-        for customer_id, customer in customers.items()
-        if not customer.get('books_entity')
-    ]
+        row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        return jsonify([row])
+    rows = []
+    for customer_id, customer in customers.items():
+        if customer.get('books_entity'):
+            continue
+        row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        row['price_addon_percent'] = _percent(customer.get('price_addon_percent'), 1000)
+        rows.append(row)
     rows.sort(key=lambda row: row['name'].lower())
     return jsonify(rows)
 
@@ -3104,6 +3183,47 @@ def _remember_floor(item):
     return item
 
 
+def _export_discount(data, subtotal):
+    percent = _percent((data or {}).get('additional_discount_percent'))
+    if not percent:
+        return 0, 0.0
+    return percent, round(float(subtotal) * percent / 100.0, 2)
+
+
+def _line_subtotal(items):
+    total = 0.0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get('total') if item.get('total') not in (None, '') else item.get('price')
+        try:
+            total += float(raw or 0)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def _stamp_terms(document, items, discount_percent, addon_percent):
+    document['additional_discount_percent'] = _percent(discount_percent)
+    document['additional_discount_amount'] = round(
+        _line_subtotal(items) * document['additional_discount_percent'] / 100.0, 2,
+    )
+    document['price_addon_percent'] = _percent(addon_percent, 1000)
+
+
+def _saved_or_company_terms(existing, customer):
+    """Keep a percent already stored on the document. A new document takes the company values."""
+    if existing and 'additional_discount_percent' in existing:
+        discount = existing.get('additional_discount_percent')
+    else:
+        discount = (customer or {}).get('additional_discount_percent')
+    if existing and 'price_addon_percent' in existing:
+        addon = existing.get('price_addon_percent')
+    else:
+        addon = (customer or {}).get('price_addon_percent')
+    return discount, addon
+
+
 def _item_description(item):
     from xml.sax.saxutils import escape
     description = escape(str(item.get('name') or ''))
@@ -3195,8 +3315,9 @@ def save_quote():
     if not tier:
         return json_error('That pricing tier is not available.', 400)
     project = clean_text(data.get('project'), 200)
+    new_discount, new_addon = _saved_or_company_terms(None, customer)
     if currency_changed and quote_type == 'size':
-        items = _repriced_quote_items(items, tier, currency, tiers, fx_rate)
+        items = _repriced_quote_items(items, tier, currency, tiers, fx_rate, _price_factor(new_addon))
     priced = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     quote_id = data.get('id')
     if quote_id not in (None, ''):
@@ -3210,7 +3331,11 @@ def save_quote():
         existing['project'] = project
         existing['customer_id'] = customer_id
         existing['company'] = company
-        existing['items'] = _repriced_quote_items(items, tier, currency, tiers, fx_rate) if quote_type == 'size' else priced
+        kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
+        existing['items'] = _repriced_quote_items(
+            items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
+        ) if quote_type == 'size' else priced
+        _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
         existing['fx_rate'] = fx_rate
         existing['type'] = quote_type
@@ -3241,11 +3366,19 @@ def save_quote():
         'type': quote_type,
         'tier': tier,
     }
+    _stamp_terms(quote, quote['items'], new_discount, new_addon)
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
     stored = append_quote(quote)
     _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id']})
+
+
+def _quote_for_viewer(quote, user):
+    row = dict(quote)
+    if user.get('role') == 'customer':
+        row.pop('price_addon_percent', None)
+    return row
 
 
 def _visible_quote(user, quote_id):
@@ -3274,7 +3407,7 @@ def _copied_extras(raw):
     return charges
 
 
-def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None):
+def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
     for item in items or []:
@@ -3284,7 +3417,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None):
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
-            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate)
+            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor)
             copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
@@ -3381,7 +3514,10 @@ def copy_quote(quote_id):
         'notes': notes,
         'copy_note': note,
         'copied_from': quote_id,
-        'items': _repriced_quote_items(source.get('items'), tier, currency, tiers, fx_rate),
+        'items': _repriced_quote_items(
+            source.get('items'), tier, currency, tiers, fx_rate,
+            _price_factor(source.get('price_addon_percent') if 'price_addon_percent' in source else (owner or {}).get('price_addon_percent')),
+        ),
         'fx_rate': fx_rate,
         'extra_charges': _copied_extras(source.get('extra_charges')),
         'currency': currency,
@@ -3392,6 +3528,8 @@ def copy_quote(quote_id):
     if ship:
         copied['ship_province'] = ship
     copied.update(_canada_tax_fields(owner, ship))
+    copy_discount, copy_addon = _saved_or_company_terms(source if 'price_addon_percent' in source or 'additional_discount_percent' in source else None, owner)
+    _stamp_terms(copied, copied['items'], copy_discount, copy_addon)
     stored = append_quote(copied)
     _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
@@ -3419,7 +3557,9 @@ def change_quote_currency(quote_id):
     tiers = load_tiers()
     tier = quote.get('tier') or _tier_for_copy(user, quote, customers, tiers)
     fx_rate = _stored_fx(quote)
-    items = _repriced_quote_items(quote.get('items'), tier, requested, tiers, fx_rate)
+    items = _repriced_quote_items(
+        quote.get('items'), tier, requested, tiers, fx_rate, _price_factor(quote.get('price_addon_percent')),
+    )
     if quote.get('type') != 'size' and str(quote.get('currency') or 'usd').lower() != requested:
         factor = _switch_factor(requested, fx_rate)
         for item in items:
@@ -3433,12 +3573,13 @@ def change_quote_currency(quote_id):
                 except (TypeError, ValueError):
                     pass
     quote['items'] = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+    _stamp_terms(quote, quote['items'], quote.get('additional_discount_percent'), quote.get('price_addon_percent'))
     quote['currency'] = requested
     quote['fx_rate'] = fx_rate
     saved = replace_quote(quote_id, quote)
     if not saved:
         return json_error('Not found', 404)
-    return jsonify(saved)
+    return jsonify(_quote_for_viewer(saved, user))
 
 
 _IMPORT_COLUMNS = ('width', 'height', 'qty', 'glass', 'spacer', 'mark')
@@ -4282,7 +4423,7 @@ def get_quotes():
     user = current_user()
     visible = []
     for quote in quotes_visible_to(user, load_quotes()):
-        row = dict(quote)
+        row = _quote_for_viewer(quote, user)
         # The quote keeps the tier and prices it was created with. Do not reprice it.
         if row.get('order_id') and not row.get('order_status'):
             row['order_status'] = 'Approved for order'
@@ -4369,7 +4510,11 @@ def order_for_viewer(order, user, with_coverage=False):
         order.get('discount') or {'type': 'percent', 'value': 0},
         order.get('extra_charges') or [],
     )
-    summary = summary or {}
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary or {
+        'igu_subtotal': 0, 'igu_total': 0, 'total': 0, 'discount_amount': 0,
+        'discount': {'type': 'percent', 'value': 0}, 'extra_charges': [], 'extras_total': 0,
+    }, order.get('additional_discount_percent'))
     base = {
         'id': order.get('id'),
         'quote_id': order.get('quote_id'),
@@ -4466,6 +4611,10 @@ def order_for_viewer(order, user, with_coverage=False):
     view['partial_invoicing'] = bool(order.get('partial_invoicing'))
     view['discount'] = summary.get('discount') or {'type': 'percent', 'value': 0}
     view['discount_amount'] = summary.get('discount_amount', 0)
+    view['additional_discount_percent'] = summary.get('additional_discount_percent') or 0
+    view['additional_discount_amount'] = summary.get('additional_discount_amount') or 0
+    if user.get('role') != 'customer':
+        view['price_addon_percent'] = _percent(order.get('price_addon_percent'), 1000)
     view['extra_charges'] = summary.get('extra_charges') or []
     view['igu_subtotal'] = summary.get('igu_subtotal', money(order.get('total')))
     view['igu_total'] = summary.get('igu_total', view['igu_subtotal'])
@@ -4628,7 +4777,10 @@ def convert_quote_to_order(quote_id):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if not _usable_size_spec(spec):
             return json_error('This quote does not include the size inputs needed to reprice it.', 400)
-        priced = _reprice(spec, item.get('pcs'), company_tier, currency, tiers, _stored_fx(quote))
+        priced = _reprice(
+            spec, item.get('pcs'), company_tier, currency, tiers, _stored_fx(quote),
+            _price_factor((customer or {}).get('price_addon_percent')),
+        )
         line = {
             'name': item.get('name') or '',
             'spec': spec,
@@ -4683,8 +4835,18 @@ def convert_quote_to_order(quote_id):
     else:
         prepared = []
     grand = round(sum(line['total'] for line in priced_items), 2)
+    if 'additional_discount_percent' in quote:
+        order_discount_percent = quote.get('additional_discount_percent')
+    else:
+        order_discount_percent = (customer or {}).get('additional_discount_percent')
+    order_addon_percent = (customer or {}).get('price_addon_percent')
+    from billing import apply_additional_discount
+    commercial = apply_additional_discount(
+        {'igu_subtotal': grand, 'igu_total': grand, 'total': grand, 'discount_amount': 0},
+        order_discount_percent,
+    )
     credit_check = conversion_allowed(
-        grand, customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
+        commercial['total'], customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
     )
     warning = None
     if not credit_check['allowed']:
@@ -4708,11 +4870,14 @@ def convert_quote_to_order(quote_id):
         'items': priced_items,
         'discount': {'type': 'percent', 'value': 0},
         'discount_amount': 0,
+        'additional_discount_percent': commercial['additional_discount_percent'],
+        'additional_discount_amount': commercial['additional_discount_amount'],
+        'price_addon_percent': _percent(order_addon_percent, 1000),
         'extra_charges': [],
         'igu_subtotal': grand,
-        'igu_total': grand,
+        'igu_total': commercial['igu_total'],
         'extras_total': 0,
-        'total': grand,
+        'total': commercial['total'],
         'dwg_rate': pricing['dwg_creation_fee'] if irregular_lines else None,
         'ship_province': tax.get('ship_province') or ship,
         'qbo_tax_code': tax.get('qbo_tax_code') or '',
@@ -4847,8 +5012,11 @@ def replace_order_drawing(order_id, line_id):
         )
         if error:
             return None, error
+        from billing import apply_additional_discount
+        summary = apply_additional_discount(summary, row.get('additional_discount_percent'))
         row['items'] = items
         row['discount_amount'] = summary['discount_amount']
+        row['additional_discount_amount'] = summary['additional_discount_amount']
         row['igu_subtotal'] = summary['igu_subtotal']
         row['igu_total'] = summary['igu_total']
         row['extras_total'] = summary['extras_total']
@@ -4905,7 +5073,7 @@ def _apply_drawing_charges(items, order):
     return kept
 
 
-def _parse_order_items(raw, tier, currency, tiers, fx_rate=None):
+def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1):
     if not isinstance(raw, list) or not raw:
         return None, 'An order needs at least one line.'
     items = []
@@ -4937,7 +5105,7 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None):
             return None, 'Quantity must be a whole number.'
         if pcs < 1 or pcs > 10000:
             return None, 'Quantity must be at least 1.'
-        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate)
+        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor)
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
@@ -4991,7 +5159,10 @@ def _edited_order(order, data, tiers):
     currency = order.get('currency') or 'usd'
     tier = order.get('tier')
     if 'items' in data:
-        items, error = _parse_order_items(data.get('items'), tier, currency, tiers, _stored_fx(order))
+        items, error = _parse_order_items(
+            data.get('items'), tier, currency, tiers, _stored_fx(order),
+            _price_factor(order.get('price_addon_percent')),
+        )
         if error:
             return None, error
     else:
@@ -5007,6 +5178,8 @@ def _edited_order(order, data, tiers):
     summary, error = price_summary(items, discount, charges)
     if error:
         return None, error
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     updated = dict(order)
     updated['items'] = items
     updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
@@ -5207,6 +5380,8 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
     summary, error = price_summary(built, _scaled_discount(order, portion, full_value), charges)
     if error:
         return None, error
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     shipment_id = max([row.get('id') or 0 for row in order.get('shipments') or []] or [0]) + 1
     stored_name = ''
     if packing_bytes:
@@ -5365,7 +5540,11 @@ def _invoice_from_order(order, user):
         order.get('discount') or {'type': 'percent', 'value': 0},
         order.get('extra_charges') or [],
     )
-    summary = summary or {}
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary or {
+        'igu_subtotal': 0, 'igu_total': 0, 'total': 0, 'discount_amount': 0,
+        'discount': {'type': 'percent', 'value': 0}, 'extra_charges': [], 'extras_total': 0,
+    }, order.get('additional_discount_percent'))
     return {
         'order_id': order.get('id'),
         'quote_id': order.get('quote_id'),
@@ -5376,6 +5555,8 @@ def _invoice_from_order(order, user):
         'items': json.loads(json.dumps(order.get('items') or [])),
         'discount': summary.get('discount') or {'type': 'percent', 'value': 0},
         'discount_amount': summary.get('discount_amount', 0),
+        'additional_discount_percent': summary.get('additional_discount_percent') or 0,
+        'additional_discount_amount': summary.get('additional_discount_amount') or 0,
         'extra_charges': json.loads(json.dumps(summary.get('extra_charges') or [])),
         'igu_subtotal': summary.get('igu_subtotal', 0),
         'igu_total': summary.get('igu_total', 0),
@@ -5558,6 +5739,8 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
         'items': items,
         'discount': summary.get('discount') or {'type': 'percent', 'value': 0},
         'discount_amount': summary.get('discount_amount', 0),
+        'additional_discount_percent': summary.get('additional_discount_percent') or 0,
+        'additional_discount_amount': summary.get('additional_discount_amount') or 0,
         'extra_charges': summary.get('extra_charges') or [],
         'igu_subtotal': summary.get('igu_subtotal', 0),
         'igu_total': summary.get('igu_total', 0),
@@ -5594,6 +5777,8 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
     )
     if error:
         return None, error
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     if mode == 'canada':
         invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
         currency = str(order.get('currency') or 'usd').lower()
@@ -5705,6 +5890,7 @@ def _invoices_visible(user):
 
 def _present_invoice(invoice, payments):
     view = dict(invoice)
+    view.pop('price_addon_percent', None)
     view['doc_type'] = document_type(invoice)
     view['issuer'] = invoice.get('issuer') or 'us'
     view['issuer_label'] = 'Ora Glass (Canada) Inc' if view['issuer'] == 'ca' else 'Ora Glass Inc'
@@ -6219,8 +6405,17 @@ def _render_invoice_pdf(invoice):
     summary_rows = [
         [subtotal_label, f"${money(invoice.get('subtotal') or invoice.get('igu_subtotal')):.2f}"],
         [f"Discount ({discount_label})", f"-${money(invoice.get('discount_amount')):.2f}"],
-        ['Total before extras' if invoice.get('tax_free') else 'IGU total', f"${money(invoice.get('igu_total')):.2f}"],
     ]
+    extra_discount = money(invoice.get('additional_discount_amount'))
+    if extra_discount:
+        extra_percent = _percent(invoice.get('additional_discount_percent'))
+        summary_rows.append([
+            f"Additional discount ({extra_percent:g}%)",
+            f"-${extra_discount:.2f}",
+        ])
+    summary_rows.append(
+        ['Total before extras' if invoice.get('tax_free') else 'IGU total', f"${money(invoice.get('igu_total')):.2f}"],
+    )
     for charge in invoice.get('extra_charges') or []:
         summary_rows.append([charge.get('label') or 'Extra', f"${money(charge.get('amount')):.2f}"])
     summary_rows.append(['Grand total', f"${money(invoice.get('total')):.2f}"])

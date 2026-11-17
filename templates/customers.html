@@ -130,6 +130,16 @@ td.actions{width:11rem}
 </select>
 <p class="help">People at this company use this tier unless their user account has its own tier.</p>
 </div>
+{% if can_manage %}
+<div class="form-group"><label for="c-discount">Additional discount %</label>
+<input type="number" id="c-discount" min="0" max="100" step="0.01" placeholder="0">
+<p class="help">Shown on this company's quotes and orders as its own line. Blank or 0 shows nothing. Customers can see the line and cannot edit it.</p>
+</div>
+<div class="form-group"><label for="c-addon">Add-on %</label>
+<input type="number" id="c-addon" min="0" max="1000" step="0.01" placeholder="0">
+<p class="help">Increases this company's unit prices. It is not shown to the customer.</p>
+</div>
+{% endif %}
 </div>
 <div class="form-row">
 <div class="form-group"><label>Status</label><select id="c-status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
@@ -235,6 +245,10 @@ function openModal(customer) {
   document.getElementById('c-credit-currency').value = customer ? (customer.credit_currency || 'usd') : 'usd';
   syncCanadaFields();
   document.getElementById('c-tier').value = customer ? customer.tier : 'T2';
+  const discountField = document.getElementById('c-discount');
+  if (discountField) discountField.value = customer && customer.additional_discount_percent ? customer.additional_discount_percent : '';
+  const addonField = document.getElementById('c-addon');
+  if (addonField) addonField.value = customer && customer.price_addon_percent ? customer.price_addon_percent : '';
   document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
   document.getElementById('customer-modal').classList.add('active');
@@ -263,6 +277,8 @@ function payload() {
     credit_limit: document.getElementById('c-credit-limit').value,
     credit_currency: document.getElementById('c-credit-currency').value,
     tier: document.getElementById('c-tier').value,
+    additional_discount_percent: document.getElementById('c-discount') ? document.getElementById('c-discount').value : '',
+    price_addon_percent: document.getElementById('c-addon') ? document.getElementById('c-addon').value : '',
     status: document.getElementById('c-status').value,
     credit_approved: document.getElementById('c-credit').checked
   };

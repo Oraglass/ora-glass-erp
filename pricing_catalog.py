@@ -10,13 +10,14 @@ import os
 import re
 from datetime import datetime, timezone
 
-from quoting import TEMPER_PRICES, classify, load_pricing, load_pricing_workbook
+from quoting import TEMPER_PRICES, classify, glass_family, load_pricing, load_pricing_workbook
 from storage import atomic_write_json, data_dir, lock_for, read_json
 
 TABS = (
     {'id': 'markups', 'label': 'Tier markups'},
     {'id': 'currency', 'label': 'Currency'},
     {'id': 'glass', 'label': 'Glass'},
+    {'id': 'temper', 'label': 'Tempering'},
     {'id': 'components', 'label': 'Spacers and sealants'},
     {'id': 'formula', 'label': 'Formula / other costs'},
     {'id': 'prices', 'label': 'Price list'},
@@ -33,7 +34,7 @@ FORMULA_DEFAULTS = (
     {
         'key': 'unknown_temper_addon',
         'value': 0.65,
-        'description': 'Tempering add-on per sq ft when the glass name does not end in a thickness from the temper table. Used on the Glass tab temper add-ons.',
+        'description': 'Tempering add-on per sq ft when the glass name does not end in a thickness from the Tempering tab.',
     },
     {
         'key': 'triple_glaze_factor',
@@ -47,8 +48,8 @@ FORMULA_DEFAULTS = (
     },
     {
         'key': 'technoform_foot_factor',
-        'value': 0,
-        'description': 'Spacer sheet cell B51. Technoform $ per foot is the listed $ per foot times this factor. The cell is empty in the workbook, so the factor is 0 and those bases stay $0 until it is changed.',
+        'value': 1.5,
+        'description': 'Labour add-on on the spacer sheet, cell B51. Technoform adjusted $ per foot is the raw $ per foot times this factor. 1.5 is 150%. Superspacer does not use it (its adjusted $ per foot equals the raw $ per foot). Changing it recomputes Technoform $ per sq ft.',
     },
     {
         'key': 'sealant_igu_width_mm',
@@ -102,14 +103,12 @@ FORMULA_DEFAULTS = (
     },
 )
 
-EXCEL_TEMPER = {'4mm': 0.50, '5mm': 0.60, '6mm': 0.65, '8mm': 0.95, '10mm': 1.00, '12mm': 1.20}
-
 GAPS = (
-    'Workbook temper prices are 4mm 0.50, 5mm 0.60, 6mm 0.65, 8mm 0.95, 10mm 1.00, 12mm 1.20. The calculator uses the code table (4mm 0.50, 5mm 0.55, 6mm 0.65, 8mm 0.75, 10mm 0.85, 12mm 0.95). Switching would change prices, so the Glass tab edits the code table. The workbook numbers are shown beside it and are not used.',
+    'Tempering add-ons are the workbook prices: 4mm 0.50, 5mm 0.60, 6mm 0.65, 8mm 0.95, 10mm 1.00, 12mm 1.20. They are edited on the Tempering tab. Saved quotes and orders keep the temper amount they were calculated with.',
     'Desicant YES is $0.10 per sq ft in the workbook. The sell formula does not add it. It is on Spacers and sealants with In price set to no.',
     'Butyl / primary sealant and corner keys are not in the workbook. Placeholder rows start at $0 and In price no.',
-    'Technoform $ per foot is listed, but spacer cell B51 is empty, so the $ per sq ft is $0. Those rows stay out of the price list, which is how the workbook loader already worked.',
-    'The second SKN176 and SKN176II rows share a name with the row above them. The loader kept the first row. The copies are on the Glass tab with In price no.',
+    'The spacer sheet cell B51 is not stored in this copy of the file (the cached Technoform columns are 0). The formula is D = C × B51, and B51 is the labour add-on at 150% (1.5). Technoform $ per sq ft is seeded from that formula and is in the price.',
+    'SKN176 and SKN176II EZP each have two workbook rows with the same short name and different tariff. Both stay in the price under a name that includes the sheet size and tariff. SKN176 is annealed only. SKN176II EZP is the temperable twin. The same twin rule applies to LoE / LoE Q, Solarban60 / Solarban60 VT, and Planitherm / Planitherm II EZP.',
     'Quote sheet markups (glass 30/40/60 and spacer 20/40/60) are that sample quote, not a second price list. Live markups are the Tier markups tab. Tier 4 at 75% and Tier 5 as a multiple of Tier 2 are ERP rules.',
     'Quote cell B1 (USD/CAD 1.40) is not a pricing constant. CAD uses the ERP exchange rate on the Currency tab.',
     'The MAC_IGU tab is the production ID list, not a price input.',
@@ -222,6 +221,9 @@ def _normalize(raw):
             'active': bool(row.get('active', True)),
             'in_price': bool(row.get('in_price')),
             'note': str(row.get('note') or ''),
+            'family': str(row.get('family') or ''),
+            'aliases': [str(name) for name in (row.get('aliases') or []) if name],
+            'width_label': str(row.get('width_label') or ''),
         })
     catalog['materials'] = materials
     temper = []
@@ -236,13 +238,9 @@ def _normalize(raw):
         temper.append({
             'thickness': thickness,
             'addon': _num(row.get('addon')),
-            'workbook': _num(row.get('workbook')),
         })
     if not temper:
-        temper = [
-            {'thickness': key, 'addon': value, 'workbook': EXCEL_TEMPER.get(key, 0)}
-            for key, value in TEMPER_PRICES.items()
-        ]
+        temper = [{'thickness': key, 'addon': value} for key, value in TEMPER_PRICES.items()]
     catalog['temper'] = temper
     stored = {row.get('key'): row for row in (raw.get('formula') or []) if isinstance(row, dict)}
     formula = []
@@ -312,6 +310,9 @@ def pricing_rows(catalog=None):
             'base_price': item['base_price'],
             'temperable': item['temperable'],
             'annealed': item['annealed'],
+            'family': item.get('family') or '',
+            'tariff_percent': item.get('tariff_percent'),
+            'aliases': list(item.get('aliases') or []),
         })
     return rows
 
@@ -375,10 +376,11 @@ def _sample_pairs(catalog):
     return pairs or [(2, 5), (2, 6), (3, 5)]
 
 
-def spacer_raw_sqf(price_per_ft, foot_factor, catalog):
+def spacer_raw_sqf(price_per_ft, foot_factor, catalog=None):
     unit = float(price_per_ft) * float(foot_factor)
     costs = []
-    for width, height in _sample_pairs(catalog):
+    pairs = _sample_pairs(catalog) if catalog is not None else [(2, 5), (2, 6), (3, 5)]
+    for width, height in pairs:
         area = width * height
         perimeter = 2 * width + 2 * height
         costs.append(unit * (perimeter / area))
@@ -422,10 +424,7 @@ def seed_catalog():
     catalog = _normalize({
         'source': source or 'built-in fallback',
         'materials': materials,
-        'temper': [
-            {'thickness': key, 'addon': value, 'workbook': EXCEL_TEMPER.get(key, 0)}
-            for key, value in TEMPER_PRICES.items()
-        ],
+        'temper': [{'thickness': key, 'addon': value} for key, value in TEMPER_PRICES.items()],
         'formula': [{'key': item['key'], 'value': item['value']} for item in FORMULA_DEFAULTS],
         'history': [{
             'at': _now(),
@@ -566,6 +565,68 @@ def _materials_from_workbook(path, priced):
             elif kind == 'glass' and isinstance(row[4], (int, float)):
                 item['raw_price'] = _num(row[4])
             materials.append(item)
+    return _finalize_seed(materials)
+
+
+def _sheet_label(width_in, height_in):
+    """Jumbo sheet in millimetres, rounded to the nearest 100, height x width."""
+    def near(inches):
+        return int(round(float(inches) * 25.4 / 100.0) * 100)
+    if not width_in or not height_in:
+        return ''
+    return f'{near(height_in)}x{near(width_in)}'
+
+
+def _finalize_seed(materials):
+    """Keep every same-name glass row, price Technoform from the labour add-on, and link twins."""
+    counts = {}
+    for item in materials:
+        if item.get('kind') == 'glass':
+            counts[item['name']] = counts.get(item['name'], 0) + 1
+    seen = set()
+    for item in materials:
+        if item.get('kind') == 'glass':
+            short = item['name']
+            if counts.get(short, 0) > 1:
+                label = _sheet_label(item.get('sheet_width'), item.get('sheet_height'))
+                tariff = _num(item.get('tariff_percent'))
+                full = f'{short} {label} MXC tariff {tariff:g}%'.replace('  ', ' ').strip()
+                if short not in seen:
+                    item['aliases'] = [short]
+                    seen.add(short)
+                item['name'] = full
+                item['in_price'] = True
+                item['note'] = ''
+            lowered = item['name'].lower()
+            if 'skn176' in lowered and 'ezp' not in lowered:
+                item['annealed'] = True
+                item['temperable'] = False
+            item['family'] = glass_family(item['name'])
+        if item.get('kind') == 'spacer' and 'technoform' in item['name'].lower() and item.get('price_per_ft'):
+            item['foot_factor'] = 1.5
+            raw = spacer_raw_sqf(item['price_per_ft'], item['foot_factor'])
+            item['raw_price'] = raw
+            item['base_price'] = _apply_tariff_waste(raw, item.get('tariff_percent') or 0, item.get('waste_percent') or 0)
+            item['in_price'] = item['base_price'] > 0
+            item['note'] = ''
+    extras = []
+    for item in materials:
+        if item.get('kind') != 'spacer' or 'technoform' not in item['name'].lower():
+            continue
+        match = re.search(r'\((\d+)\)', item.get('width_label') or '')
+        if not match:
+            continue
+        alt = int(match.group(1))
+        current = re.search(r'(\d+)\s*mm', item['name'])
+        if current and int(current.group(1)) == alt:
+            continue
+        clone = dict(item)
+        clone['id'] = f"{item['id']}-{alt}"
+        clone['name'] = f'Technoform {alt}mm / sqf'
+        clone['aliases'] = []
+        clone['note'] = f"Same spacer-sheet price as {item['name']} ({item.get('width_label')})."
+        extras.append(clone)
+    materials.extend(extras)
     return materials
 
 
@@ -584,6 +645,7 @@ def _attach_spacer(item, formula, spacer_sheet):
     item['price_per_ft'] = price
     item['foot_factor'] = 0 if price and used == 0 else (1 if not price else (used / price if price else 1))
     item['raw_price'] = _num(spacer_sheet.cell(row_number, 11).value)
+    item['width_label'] = str(spacer_sheet.cell(row_number, 2).value or '')
 
 
 def _attach_sealant(item, formula, sealant_sheet):
@@ -707,7 +769,7 @@ def update_temper(rows, user):
             by_thickness[thickness] = current
         new = _num(posted.get('addon'))
         if _changed(current.get('addon') or 0, new):
-            changes.append({'tab': 'glass', 'item': f'Temper {thickness}', 'field': 'addon', 'old': current.get('addon') or 0, 'new': new})
+            changes.append({'tab': 'temper', 'item': f'Temper {thickness}', 'field': 'addon', 'old': current.get('addon') or 0, 'new': new})
             current['addon'] = new
     return save_catalog(catalog, user, changes)
 

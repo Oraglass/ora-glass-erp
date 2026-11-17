@@ -531,6 +531,9 @@ def test_users_form_includes_company_default_and_user_tier(client):
     assert b'aria-readonly="true"' in body
     assert b'id="u-tier"' in body
     assert b'<option value="">Use company default</option>' in body
+    assert b'>Operations</option>' in body
+    assert b'Operations sees only the quotes they created.' in body
+    assert b'Sales force' not in body
     assert b'<option value="T5">Tier 5</option>' in body
     assert b'<option value="T1">Tier 1</option>' in body
     assert body.count(b"tier_override: document.getElementById('u-tier').value") == 2

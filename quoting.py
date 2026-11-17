@@ -10,7 +10,8 @@ from storage import TIER_ORDER, pricing_search_paths, resolve_pricing_path
 
 logger = logging.getLogger('ora_glass.quoting')
 
-TEMPER_PRICES = {'4mm': 0.50, '5mm': 0.55, '6mm': 0.65, '8mm': 0.75, '10mm': 0.85, '12mm': 0.95}
+# Workbook temper rows. These are the add-ons the calculator uses.
+TEMPER_PRICES = {'4mm': 0.50, '5mm': 0.60, '6mm': 0.65, '8mm': 0.95, '10mm': 1.00, '12mm': 1.20}
 
 # Used only when pricing_base.xlsx cannot be read. Numbers mirror the historical fallback.
 FALLBACK_PRICING = [
@@ -359,6 +360,63 @@ def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None, *
     }
 
 
+def glass_family(name):
+    """Shared key for an annealed product and its temperable twin (II EZP, Q-, VT)."""
+    text = str(name or '')
+    text = re.sub(r'\s+\d{3,5}x\d{3,5}.*$', '', text)
+    text = re.sub(r'\s+tariff\s+[\d.]+%.*$', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+II\s+EZP', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'II\s+EZP', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+VT\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bQ-', '', text)
+    return re.sub(r'\s+', ' ', text).strip().lower()
+
+
+def _find_named(pricing, name):
+    for row in pricing or []:
+        if row.get('name') == name:
+            return row
+        if name and name in (row.get('aliases') or []):
+            return row
+    return None
+
+
+def _glass_for(pricing, name, temper):
+    """Pick the annealed or temperable row when the selected product cannot be used that way.
+
+    A row with no temperable/annealed flags keeps today's behavior: the named
+    price, plus a flat temper add-on when tempering is selected.
+    """
+    item = _find_named(pricing, name)
+    if not item:
+        return None
+    if 'temperable' not in item and 'annealed' not in item:
+        return item
+    want_temper = str(temper or '') == 'yes'
+    allowed = item.get('temperable', True) if want_temper else item.get('annealed', True)
+    if allowed:
+        return item
+    family = item.get('family') or glass_family(item.get('name') or name)
+    thickness = str(item.get('thickness') or '')
+    tariff = item.get('tariff_percent')
+    pool = []
+    for row in pricing or []:
+        row_family = row.get('family') or glass_family(row.get('name'))
+        if row_family != family:
+            continue
+        if thickness and row.get('thickness') and str(row.get('thickness')) != thickness:
+            continue
+        if want_temper and not row.get('temperable'):
+            continue
+        if not want_temper and not row.get('annealed'):
+            continue
+        pool.append(row)
+    if not pool:
+        return item
+    same = [row for row in pool if row.get('tariff_percent') == tariff]
+    return (same or pool)[0]
+
+
 def calculate_price_sqf(
     data, tier, pricing, tiers, temper_prices=None, *,
     tier5_scale=2, unknown_temper=0.65, extra_per_sqf=0.0, triple_factor=1.0,
@@ -396,7 +454,7 @@ def calculate_price_sqf(
         name = data.get(key) or ''
         if not name or name == 'n/a':
             continue
-        item = next((row for row in pricing if row['name'] == name), None)
+        item = _glass_for(pricing, name, data.get(key.replace('glass', 'temper')))
         if not item:
             continue
         line = round(float(item['base_price']) * (1 + glass_markup), 2) * scale
@@ -404,7 +462,10 @@ def calculate_price_sqf(
             line *= third
         total += line
         if data.get(key.replace('glass', 'temper')) == 'yes':
-            thick = name.split()[-1] if name else ''
+            thick = str(item.get('thickness') or '')
+            if not thick.endswith('mm'):
+                last = name.split()[-1] if name else ''
+                thick = last if str(last).endswith('mm') else thick
             total += temper_prices.get(thick, temper_fallback)
     for key in ('spacer1', 'spacer2', 'sealant1', 'sealant2'):
         name = data.get(key) or ''

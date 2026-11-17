@@ -38,8 +38,15 @@ def test_seeded_catalog_matches_the_workbook_prices(data_dir):
             assert before == after, (spec, tier, before, after)
     assert options['extra_per_sqf'] == 0
     assert options['tier5_scale'] == 2
-    assert options['temper_prices']['5mm'] == 0.55
-    assert options['temper_prices']['12mm'] == 0.95
+    assert options['temper_prices']['5mm'] == 0.60
+    assert options['temper_prices']['6mm'] == 0.65
+    assert options['temper_prices']['8mm'] == 0.95
+    assert options['temper_prices']['10mm'] == 1.00
+    assert options['temper_prices']['12mm'] == 1.20
+    plain = calculate_price_sqf({'glass1': 'Clear Glass 5mm', 'temper1': 'n/a'}, 'T2', options['pricing'], tiers)
+    tempered = calculate_price_sqf({'glass1': 'Clear Glass 5mm', 'temper1': 'yes'}, 'T2', options['pricing'], tiers,
+                                   temper_prices=options['temper_prices'])
+    assert round(tempered - plain, 2) == 0.60
 
 
 def test_price_tabs_history_and_saved_quotes_keep_old_prices(client, data_dir):
@@ -69,9 +76,11 @@ def test_price_tabs_history_and_saved_quotes_keep_old_prices(client, data_dir):
     assert b'T5 CAD' in prices.data
     assert b'Double IGU' in prices.data
     assert b'Bronze 6mm' in prices.data
-    glass = client.get('/pricing?tab=glass')
-    assert b'Tempering add-on' in glass.data
-    assert b'0.55' in glass.data
+    temper = client.get('/pricing?tab=temper')
+    assert b'Add-on per sq ft' in temper.data
+    assert b'0.6' in temper.data
+    assert b'1.2' in temper.data
+    assert b'Tempering' in temper.data
     components = client.get('/pricing?tab=components')
     assert b'Desicant YES' in components.data
     assert b'Butyl / primary sealant' in components.data
@@ -127,6 +136,54 @@ def test_new_glass_can_be_priced_and_deactivated(client):
     }])
     removed = client.post('/api/calculate', json={'glass1': 'Test Glass 6mm', 'temper1': 'n/a', 'tier': 'T2'}).get_json()
     assert removed['price_sqf'] == 0
+
+
+def test_technoform_matches_the_spacer_sheet_average(data_dir):
+    import pricing_catalog
+    catalog = pricing_catalog.load_catalog()
+    expected = {
+        'Technoform 11mm / sqf': 0.51,
+        'Technoform 12mm / sqf': 0.52,
+        'Technoform 14mm / sqf': 0.54,
+        'Technoform 16mm / sqf': 0.55,
+        'Technoform 18mm / sqf': 0.60,
+        'Technoform 20mm / sqf': 0.61,
+        'Technoform 25mm / sqf': 0.65,
+        'Technoform 27mm / sqf': 0.69,
+    }
+    for name, rounded in expected.items():
+        row = next(item for item in catalog['materials'] if item['name'] == name)
+        assert row['in_price'] is True
+        assert row['foot_factor'] == 1.5
+        assert round(row['raw_price'], 2) == rounded
+        assert abs(row['base_price'] - row['raw_price'] * 1.05) < 1e-9
+
+
+def test_annealed_and_temperable_twins_both_price(data_dir):
+    """Today, before this change, the calculator used the exact glass name and added a flat temper charge.
+
+    It did not switch SKN176 to SKN176II EZP. The second workbook row of each short name was dropped.
+    """
+    import pricing_catalog
+    from storage import load_tiers
+    options = pricing_catalog.calc_options()
+    names = [row['name'] for row in options['pricing']]
+    assert 'SKN176 4mm 3300x5100 MXC tariff 15%' in names
+    assert 'SKN176 4mm 3300x5100 MXC tariff 0%' in names
+    assert 'SKN176II EZP 4mm 3300x5100 MXC tariff 15%' in names
+    annealed = calculate_price_sqf(
+        {'glass1': 'SKN176 4mm', 'temper1': 'n/a'}, 'T2', options['pricing'], load_tiers(),
+        temper_prices=options['temper_prices'],
+    )
+    tempered = calculate_price_sqf(
+        {'glass1': 'SKN176 4mm', 'temper1': 'yes'}, 'T2', options['pricing'], load_tiers(),
+        temper_prices=options['temper_prices'],
+    )
+    twin = next(row for row in options['pricing'] if row['name'] == 'SKN176II EZP 4mm 3300x5100 MXC tariff 15%')
+    tiers = load_tiers()
+    twin_sell = round(twin['base_price'] * (1 + tiers['T2']['glass_markup']), 2)
+    assert tempered == round(twin_sell + 0.50, 2)
+    assert annealed != tempered
 
 
 def test_markup_edit_is_logged(client):

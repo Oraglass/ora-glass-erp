@@ -104,6 +104,29 @@ def discount_amount(subtotal, discount):
     return value
 
 
+def apply_additional_discount(summary, percent):
+    """Subtract a company percent from the IGU subtotal. Zero leaves the summary unchanged."""
+    if not summary:
+        return summary
+    try:
+        rate = float(percent or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    if rate < 0:
+        rate = 0.0
+    if rate > 100:
+        rate = 100.0
+    amount = round(summary['igu_subtotal'] * rate / 100.0, 2) if rate else 0.0
+    if amount > summary['igu_total']:
+        amount = summary['igu_total']
+    updated = dict(summary)
+    updated['additional_discount_percent'] = rate
+    updated['additional_discount_amount'] = amount
+    updated['igu_total'] = round(summary['igu_total'] - amount, 2)
+    updated['total'] = round(summary['total'] - amount, 2)
+    return updated
+
+
 def price_summary(items, discount, charges):
     subtotal = round(sum(money(item.get('total')) for item in items or []), 2)
     kind = (discount or {}).get('type') or 'percent'

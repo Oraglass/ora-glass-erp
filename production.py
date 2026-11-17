@@ -11,7 +11,7 @@ import re
 
 from openpyxl import Workbook, load_workbook
 
-from quoting import DWG_KIND, SURCHARGE_KIND, load_pricing_workbook
+from quoting import DWG_KIND, SURCHARGE_KIND
 from storage import (
     atomic_write_json,
     data_dir,
@@ -144,21 +144,20 @@ def makeup_from_product_name(product_name):
     return _collapse(text)
 
 
-def _pricing_names(path):
-    try:
-        rows = load_pricing_workbook(path)
-    except (OSError, ValueError):
-        return [], []
+def _pricing_names(path=None):
+    """ERP glass and spacer names, including aliases and priced Technoform widths."""
+    import pricing_catalog
+    rows = pricing_catalog.pricing_rows()
     glass, spacers = [], []
     for item in rows:
-        name = item.get('name') or ''
-        lowered = name.lower()
-        if 'spacer' in lowered or 'technoform' in lowered:
-            spacers.append(name)
-        elif 'sealant' in lowered or lowered in {'n/a', ''}:
-            continue
-        elif 'mm' in lowered:
-            glass.append(name)
+        for name in [item.get('name') or ''] + list(item.get('aliases') or []):
+            lowered = name.lower()
+            if 'spacer' in lowered or 'technoform' in lowered:
+                spacers.append(name)
+            elif 'sealant' in lowered or lowered in {'n/a', ''}:
+                continue
+            elif 'mm' in lowered:
+                glass.append(name)
     return glass, spacers
 
 

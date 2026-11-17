@@ -144,33 +144,43 @@ label{display:block;font-size:12px;color:#666;font-weight:600;margin-bottom:4px}
 </div>
 <button class="btn" type="submit">Save glass</button>
 </form>
-<h3 style="color:#333;margin:22px 0 8px">Tempering add-on per sq ft</h3>
-<p class="note">This is the amount added when a lite is tempered. It is not marked up and it is the same at every tier. The workbook column is the Excel temper price, which the calculator does not use.</p>
+
+{% elif tab == 'temper' %}
+<p class="note">One add-on per thickness, in $ per sq ft. It is added when a lite is tempered, it is not marked up, and it is the same at every tier. The seeded amounts are the workbook prices: 4mm 0.50, 5mm 0.60, 6mm 0.65, 8mm 0.95, 10mm 1.00, 12mm 1.20. Quotes and orders already saved keep the temper amount they were calculated with.</p>
 <form method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="action" value="temper">
 <table>
-<thead><tr><th>Thickness</th><th>Add-on used</th><th>Workbook price (not used)</th></tr></thead>
+<thead><tr><th>Thickness</th><th>Add-on per sq ft</th></tr></thead>
 <tbody>
 {% for row in temper_rows %}
 <tr>
 <td><input name="thickness" value="{{ row.thickness }}" aria-label="Temper thickness"></td>
 <td><input name="addon" value="{{ row.addon }}" aria-label="Temper add-on"></td>
-<td>{{ '%.2f'|format(row.workbook) }}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
+<h3 style="color:#333;margin:18px 0 8px">Add a thickness</h3>
+<div class="row">
+<div><label>Thickness</label><input name="thickness" aria-label="New temper thickness" placeholder="15mm"></div>
+<div><label>Add-on per sq ft</label><input name="addon" aria-label="New temper add-on"></div>
+</div>
 <button class="btn" type="submit">Save temper add-ons</button>
 </form>
 
 {% elif tab == 'components' %}
-<p class="note">Spacers use $ per foot, averaged over the sample sizes on the Formula tab, then tariff and waste. Sealants use price per set, the sample IGU on the Formula tab, and the spacer width in millimetres from the sealant sheet, then tariff and waste. Desiccant, butyl / primary sealant, and corner keys add their base price once per sq ft only when In price is yes. Those three are off in the seeded catalog, which is how the sell price works today. Technoform stays out of the price while its base is $0. Quotes and orders already saved keep their prices.</p>
+<p class="note">Spacers use raw $ per foot. Superspacer uses that amount as-is. Technoform multiplies it by the labour add-on (spacer sheet B51, 1.5 = 150%), then averages three sample IGU sizes. That average is the resulting $ per sq ft. Waste is applied after that to get the base the sell price uses. Sealants use price per set. Desiccant, butyl, and corner keys are added only when In price is yes. Quotes and orders already saved keep their prices.</p>
 <form method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="action" value="components">
+{% for row in formula_rows if row.key == 'technoform_foot_factor' %}
+<label for="technoform_foot_factor">Technoform labour add-on (B51). 1.5 means 150%.
+<input class="narrow" id="technoform_foot_factor" name="technoform_foot_factor" value="{{ row.value }}" aria-label="Technoform labour add-on">
+</label>
+{% endfor %}
 <table>
-<thead><tr><th>Name</th><th>Kind</th><th>$/ft</th><th>Foot factor</th><th>$/set</th><th>Spacer mm</th><th>Raw $/sqf</th><th>Tariff %</th><th>Waste %</th><th>Base used</th><th>In price</th><th>Active</th></tr></thead>
+<thead><tr><th>Name</th><th>Kind</th><th>Raw $/ft</th><th>Labour add-on</th><th>$/set</th><th>Spacer mm</th><th>Resulting $/sqf</th><th>Tariff %</th><th>Waste %</th><th>Base used</th><th>In price</th><th>Active</th></tr></thead>
 <tbody>
 {% for row in component_rows %}
 <tr>
