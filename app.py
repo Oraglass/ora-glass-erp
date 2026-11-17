@@ -1143,6 +1143,11 @@ def bootstrap_once():
     if os.environ.get('AUTO_SEED', '1') != '0':
         apply_seed(issue_links=False)
     bootstrap_admin()
+    try:
+        import highq_owners
+        highq_owners.reassign_quote_owners()
+    except Exception:
+        logger.exception('HighQ quote owner fix failed')
     _state['bootstrapped'] = True
 
 
