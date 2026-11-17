@@ -51,9 +51,9 @@ def test_three_small_pieces_are_charged_as_eighteen_square_feet(client):
         'items': quote['items'], 'currency': 'usd', 'project': 'Minimum',
     })
     text = pdf_text(pdf.data)
-    assert b'TOTAL SQF' in text
+    assert b'Total SQ/FT' in text
     assert b'18.00' in text
-    assert b'PCS' in text
+    assert b'QTY' in text
 
     customers = load_customers()
     customers[customer_id]['minimum_sqf_per_piece'] = 9

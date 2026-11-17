@@ -429,7 +429,7 @@ async function downloadPDF(id) {
   const pdfRes = await fetch('/api/export-quote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || '', fx_rate: quote.fx_rate || '', additional_discount_percent: quote.additional_discount_percent || 0})
+      body: JSON.stringify({id: quote.id, items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || '', fx_rate: quote.fx_rate || '', additional_discount_percent: quote.additional_discount_percent || 0, type: quote.type || ''})
   });
   if (!pdfRes.ok) { alert('Could not build the PDF'); return; }
   const blob = await pdfRes.blob();

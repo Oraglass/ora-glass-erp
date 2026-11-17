@@ -359,8 +359,11 @@ const saveNewQuote = exportQuote;
 exportQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(quoteItems, 'sqf'))});
-  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items: quoteItems, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate})});
+  const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(quoteItems, 'sqf'))});
+  const savedBody = await saved.json().catch(() => ({}));
+  const exportBody = {items: quoteItems, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate, type: 'sqf'};
+  if (savedBody.id) exportBody.id = savedBody.id;
+  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(exportBody)});
   const blob = await res.blob();
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -372,8 +375,11 @@ exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
   const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
-  await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
-  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate})});
+  const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
+  const savedBody = await saved.json().catch(() => ({}));
+  const exportBody = {items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate, type: 'size'};
+  if (savedBody.id) exportBody.id = savedBody.id;
+  const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(exportBody)});
   const blob = await res.blob();
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

@@ -1869,212 +1869,134 @@ def calculate():
     return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate, 'minimum_sqf': minimum_sqf})
 
 
+def _address_lines(customer):
+    if not customer:
+        return []
+    lines = []
+    street = str(customer.get('address') or '').strip()
+    if street:
+        lines.append(street)
+    city = str(customer.get('city') or '').strip()
+    state = str(customer.get('state') or customer.get('province') or customer.get('us_state') or '').strip()
+    postal = str(customer.get('zip') or '').strip()
+    place = ', '.join(part for part in (city, state) if part)
+    if postal:
+        place = f'{place} {postal}'.strip()
+    if place:
+        lines.append(place)
+    country = str(customer.get('country') or '').strip()
+    if country and country not in {'United States', 'USA', 'US'}:
+        lines.append(country)
+    return lines
+
+
+def _pdf_document(source, kind, user=None):
+    """Fields the shared quote and order PDF knows how to print. The add-on is not one of them."""
+    import documents
+    import pricing_catalog
+    customers = load_customers()
+    customer_id = (source or {}).get('customer_id') or ''
+    customer = customers.get(customer_id)
+    if not customer and user and user.get('role') == 'customer':
+        customer = customers.get(user.get('customer_id') or '')
+    company = (source or {}).get('company') or (customer or {}).get('name') or ''
+    quote_by = (source or {}).get('user') or ''
+    updated_by = (source or {}).get('updated_by') or ''
+    if kind == 'order':
+        quote_id = source.get('quote_id')
+        quote = None
+        if quote_id not in (None, ''):
+            quote = next((row for row in load_quotes() if row.get('id') == quote_id), None)
+        if quote and quote.get('user'):
+            quote_by = quote.get('user')
+        elif source.get('approved_by'):
+            quote_by = source.get('approved_by')
+        log = source.get('changelog') or []
+        if log and isinstance(log[-1], dict) and log[-1].get('user'):
+            updated_by = log[-1].get('user')
+    return {
+        'kind': kind,
+        'id': '' if source.get('id') in (None, '') else source.get('id'),
+        'date': source.get('date') or source.get('approved_at') or '',
+        'project': source.get('project') or '',
+        'company': company,
+        'sold_to': _address_lines(customer),
+        'job_address': [],
+        'currency': source.get('currency') or 'usd',
+        'quote_by': quote_by,
+        'updated_by': updated_by,
+        'po': source.get('po') or source.get('customer_po') or '',
+        'payment_terms': (customer or {}).get('payment_terms') or '',
+        'remarks': source.get('notes') or source.get('remarks') or '',
+        'items': source.get('items') or [],
+        'extra_charges': source.get('extra_charges') or [],
+        'additional_discount_percent': source.get('additional_discount_percent') or 0,
+        'additional_discount_amount': source.get('additional_discount_amount') or 0,
+        'tax_label': source.get('tax_label') or '',
+        'tax_amount': source.get('tax_amount'),
+        'fx_rate': source.get('fx_rate') or 0,
+        'type': source.get('type') or ('size' if kind == 'order' else ''),
+        'weight_factor': pricing_catalog.formula_number('glass_lb_per_sqf_mm', 0.512),
+        '_builder': documents,
+    }
+
+
+def _pdf_bytes(document):
+    import documents
+    payload = dict(document)
+    payload.pop('_builder', None)
+    return documents.build_pdf(payload)
+
+
 @app.route('/api/export-quote', methods=['POST'])
 @module_required('quotes')
 def export_quote():
-    from xml.sax.saxutils import escape
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
-    items = data.get('items', [])
-    if not isinstance(items, list):
-        return json_error('Items must be a list', 400)
-    items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
-    drawing_note = DRAWING_NOTE if irregular_glass_lines(items) else ''
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.4*inch, bottomMargin=0.4*inch)
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle('Title', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
-    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, leading=10)
-    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=7, leading=9)
-    header_cell = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=7, fontName='Helvetica-Bold', textColor=colors.white)
-
-    elements = []
-
-    logo_path = 'logo.png' if os.path.exists('logo.png') else None
-    if logo_path:
-        logo = Image(logo_path, width=1.2*inch, height=0.8*inch)
-    else:
-        logo = Paragraph('<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style)
-
-    project = escape(str(data.get('project', '') or ''))
-    project_line = f'<br/><b>Project:</b> {project}' if project else ''
-    header_data = [[
-        logo,
-        Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
-        Paragraph('<font size="8"><b>Date:</b> ' + date.today().strftime("%m/%d/%Y") + '<br/><b>Time:</b> ' + datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%H:%M") + ' PST' + project_line + '</font>', small_style)
-    ]]
-    header_table = Table(header_data, colWidths=[1.5*inch, 3*inch, 2.5*inch])
-    header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 8))
-    elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-    elements.append(Spacer(1, 6))
-    if drawing_note:
-        note_style = ParagraphStyle('DrawingNote', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.HexColor('#9f1239'))
-        elements.append(Paragraph(escape(drawing_note), note_style))
-        elements.append(Spacer(1, 8))
-    tax_label = clean_text(data.get('tax_label'), 200)
-    if not tax_label:
-        viewer = current_user()
-        if viewer and viewer.get('role') == 'customer':
-            owner = load_customers().get(viewer.get('customer_id') or '')
-            tax_label = _canada_tax_fields(owner, data.get('ship_province')).get('tax_label') or ''
-    if tax_label:
-        elements.append(Paragraph('<b>Tax:</b> ' + escape(tax_label), small_style))
-        elements.append(Spacer(1, 8))
-    try:
-        shown_rate = float(data.get('fx_rate'))
-    except (TypeError, ValueError):
-        shown_rate = 0
-    if shown_rate <= 0:
-        shown_rate = _current_fx()[0]
-    elements.append(Paragraph(f'<b>USD/CAD:</b> {shown_rate:.4f}', small_style))
-    elements.append(Spacer(1, 8))
-
-    has_size = any(item.get('sqf') for item in items)
-    currency = data.get('currency', 'usd')
-    total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
-
-    def amount(value, fallback=0.0):
+    user = current_user()
+    stored = None
+    raw_id = data.get('id')
+    if raw_id not in (None, ''):
         try:
-            return float(value)
+            stored = _visible_quote(user, int(raw_id))
         except (TypeError, ValueError):
-            return fallback
-
-    if has_size:
-        unit = 'CAD' if currency == 'cad' else 'USD'
-        table_data = [[
-            Paragraph('<b>ID</b>', header_cell),
-            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph('<b>PCS</b>', header_cell),
-            Paragraph('<b>TOTAL SQF</b>', header_cell),
-            Paragraph(f'<b>{unit}/SQF</b>', header_cell),
-            Paragraph(f'<b>{unit}/PC</b>', header_cell),
-            Paragraph(f'<b>TOTAL {unit}</b>', header_cell)
-        ]]
-        total_sqf = 0
-        total_pcs = 0
-        total_line_sum = 0
-        for i, item in enumerate(items, 1):
-            price_sqf = amount(item.get('price_sqf', 0))
-            price_pc = amount(item.get('price_pc', 0))
-            sqf = amount(item.get('sqf', 0))
-            try:
-                pcs = int(item.get('pcs', 1) or 1)
-            except (TypeError, ValueError):
-                pcs = 1
-            # Stored line prices are already in the quote currency. Sum them as shown.
-            if item.get('total') not in (None, ''):
-                line_total = amount(item.get('total'))
-            else:
-                line_total = price_pc * pcs
-            total_sqf += sqf * pcs
-            total_pcs += pcs
-            total_line_sum += line_total
-            description = _item_description(item)
-            table_data.append([
-                Paragraph(f'({i})', cell_style),
-                Paragraph(description, cell_style),
-                Paragraph(str(pcs), cell_style),
-                Paragraph(f"{sqf * pcs:.2f}", cell_style),
-                Paragraph(f"${price_sqf:.2f}", cell_style),
-                Paragraph(f"${price_pc:.2f}", cell_style),
-                Paragraph(f"${line_total:.2f}", cell_style)
-            ])
-        table_data.append([
-            Paragraph('', cell_style),
-            Paragraph('<b>TOTAL</b>', total_style),
-            Paragraph(f'<b>{total_pcs}</b>', total_style),
-            Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
-            Paragraph('', cell_style),
-            Paragraph('', cell_style),
-            Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
-        ])
-        discount_percent, discount_amount = _export_discount(data, total_line_sum)
-        if discount_amount:
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'-${discount_amount:.2f}', total_style),
-            ])
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph('<b>Total</b>', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'<b>${total_line_sum - discount_amount:.2f}</b>', total_style),
-            ])
-        # Portrait letter with 0.4in margins is 7.7in wide.
-        col_widths = [0.38*inch, 2.92*inch, 0.48*inch, 0.85*inch, 0.95*inch, 0.90*inch, 1.22*inch]
+            stored = None
+    if stored:
+        document = _pdf_document(_with_quote_tax(stored), 'quote', user)
     else:
-        curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
-        table_data = [[
-            Paragraph('<b>ID</b>', header_cell),
-            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph(f'<b>{curr_label}</b>', header_cell)
-        ]]
-        total_price = 0.0
-        for i, item in enumerate(items, 1):
-            price_value = amount(item.get('price', 0))
-            total_price += price_value
-            price = escape(f'{price_value:.2f}')
-            description = _item_description(item)
-            table_data.append([
-                Paragraph(f'({i})', cell_style),
-                Paragraph(description, cell_style),
-                Paragraph(f"${price}", cell_style)
-            ])
-        table_data.append([
-            Paragraph('', cell_style),
-            Paragraph('<b>TOTAL</b>', total_style),
-            Paragraph(f'<b>${total_price:.2f}</b>', total_style),
-        ])
-        discount_percent, discount_amount = _export_discount(data, total_price)
-        if discount_amount:
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
-                Paragraph(f'-${discount_amount:.2f}', total_style),
-            ])
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph('<b>Total</b>', total_style),
-                Paragraph(f'<b>${total_price - discount_amount:.2f}</b>', total_style),
-            ])
-        col_widths = [0.4*inch, 5.5*inch, 1.1*inch]
-
-    items_table = Table(table_data, colWidths=col_widths)
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 20))
-
-    elements.append(Spacer(1, 10))
-    elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))
-
-    doc.build(elements)
-    buffer.seek(0)
+        items = data.get('items', [])
+        if not isinstance(items, list):
+            return json_error('Items must be a list', 400)
+        items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+        tax_label = clean_text(data.get('tax_label'), 200)
+        if not tax_label and user and user.get('role') == 'customer':
+            owner = load_customers().get(user.get('customer_id') or '')
+            tax_label = _canada_tax_fields(owner, data.get('ship_province')).get('tax_label') or ''
+        customer_id = ''
+        if user and user.get('role') == 'customer':
+            customer_id = user.get('customer_id') or ''
+        else:
+            customer_id = clean_text(data.get('customer_id'), 64)
+        customer = load_customers().get(customer_id or '')
+        document = _pdf_document({
+            'id': '',
+            'date': data.get('date') or date.today().isoformat(),
+            'project': clean_text(data.get('project'), 200),
+            'company': (customer or {}).get('name') or clean_text(data.get('company'), 200),
+            'customer_id': customer_id,
+            'currency': data.get('currency') or 'usd',
+            'user': user.get('email') if user else '',
+            'notes': clean_text(data.get('remarks') or data.get('notes'), 2000),
+            'items': items,
+            'extra_charges': data.get('extra_charges') or [],
+            'additional_discount_percent': data.get('additional_discount_percent') or 0,
+            'tax_label': tax_label,
+            'fx_rate': data.get('fx_rate') or 0,
+            'type': data.get('type') or '',
+            'po': clean_text(data.get('po'), 80),
+        }, 'quote', user)
+    buffer = BytesIO(_pdf_bytes(document))
     return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='ORA_Quote.pdf')
 
 
@@ -3423,6 +3345,9 @@ def save_quote():
         existing['type'] = quote_type
         existing['tier'] = tier
         existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
+        existing['updated_by'] = user.get('email') or ''
+        if 'notes' in data or 'remarks' in data:
+            existing['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
         if 'extra_charges' in data:
             existing['extra_charges'] = _copied_extras(data.get('extra_charges'))
         owner = customers.get(existing.get('customer_id') or '')
@@ -3448,6 +3373,8 @@ def save_quote():
         'type': quote_type,
         'tier': tier,
     }
+    if 'notes' in data or 'remarks' in data:
+        quote['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
     _stamp_terms(quote, quote['items'], new_discount, new_addon)
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
@@ -5032,6 +4959,21 @@ def download_production_excel(order_id):
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
         download_name=f'production-order-{order_id}.xlsx',
+    )
+
+
+@app.route('/api/orders/<int:order_id>/confirmation.pdf', methods=['GET'])
+@module_required('orders')
+def download_order_confirmation(order_id):
+    user = current_user()
+    order = _owned_order(user, order_id)
+    if not order:
+        return json_error('Not found', 404)
+    document = _pdf_document(order, 'order', user)
+    buffer = BytesIO(_pdf_bytes(document))
+    return send_file(
+        buffer, mimetype='application/pdf', as_attachment=True,
+        download_name=f'order-{order_id}.pdf',
     )
 
 

@@ -226,6 +226,7 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
+  buttons += '<a class="btn secondary" id="order-confirmation" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Download order confirmation</a>';
   if (STAFF) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {

@@ -1,0 +1,437 @@
+"""Quote and order confirmation PDFs in the production-software layout."""
+
+import math
+import os
+import re
+from datetime import date, datetime
+from io import BytesIO
+from xml.sax.saxutils import escape
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+from production import dimensions_mm_in, floor_code, lookup_product, makeup_from_spec
+from quoting import DRAWING_NOTE, area_sqf
+
+COMPANY_ADDRESS = '2312 Leatherwood Pl,<br/>Lynden, WA 98264,USA'
+TERMS = 'Ora Glass Inc Terms And Conditions of Sale apply.'
+GREY = colors.HexColor('#D9D9D9')
+PAGE_WIDTH = 7.7 * inch
+
+
+def currency_prefix(currency):
+    return 'C$' if str(currency or 'usd').lower() == 'cad' else 'US$'
+
+
+def money_text(currency, amount):
+    return f'{currency_prefix(currency)} {float(amount or 0):.2f}'
+
+
+def format_date(value):
+    text = str(value or '')[:10]
+    try:
+        return datetime.strptime(text, '%Y-%m-%d').strftime('%m/%d/%Y')
+    except ValueError:
+        if text:
+            return text
+        return date.today().strftime('%m/%d/%Y')
+
+
+def _number(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _pieces(item):
+    try:
+        pieces = int((item or {}).get('pcs') or 0)
+    except (TypeError, ValueError):
+        return 0
+    return pieces if pieces > 0 else 0
+
+
+def inch_fraction(inches):
+    """Nearest 1/32 inch, reduced, such as 49 1/4 or 77 23/32."""
+    number = _number(inches)
+    sign = '-' if number < 0 else ''
+    number = abs(number)
+    whole = math.floor(number + 1e-9)
+    numer = int(round((number - whole) * 32))
+    if numer >= 32:
+        whole += numer // 32
+        numer = numer % 32
+    if numer <= 0:
+        return f'{sign}{whole}'
+    divisor = math.gcd(numer, 32)
+    numer //= divisor
+    denom = 32 // divisor
+    if whole:
+        return f'{sign}{whole} {numer}/{denom}'
+    return f'{sign}{numer}/{denom}'
+
+
+def dimension_lines(width, height, unit):
+    """Inch fraction on the first line and whole millimetres on the second."""
+    if width in (None, '') or height in (None, ''):
+        return '', ''
+    try:
+        width_mm, height_mm, width_in, height_in = dimensions_mm_in(width, height, unit)
+    except (TypeError, ValueError):
+        return '', ''
+    wide = f'{inch_fraction(width_in)}<br/>{int(round(width_mm))} mm'
+    high = f'{inch_fraction(height_in)}<br/>{int(round(height_mm))} mm'
+    return wide, high
+
+
+def glass_thickness_mm(spec):
+    """Sum of the lite thicknesses. Spacers are not glass."""
+    total = 0.0
+    for index in (1, 2, 3):
+        name = str((spec or {}).get(f'glass{index}') or '')
+        if not name or name == 'n/a':
+            continue
+        match = re.search(r'(\d+(?:\.\d+)?)\s*mm', name, re.IGNORECASE)
+        if match:
+            total += float(match.group(1))
+    return total
+
+
+def real_area(item):
+    """Real square feet for the whole line. Charged area is not used for weight."""
+    pieces = _pieces(item) or 1
+    if item.get('real_sqf') not in (None, ''):
+        return _number(item.get('real_sqf')) * pieces
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
+        return area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')) * pieces
+    return _number(item.get('sqf')) * pieces
+
+
+def line_weight(item, factor):
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    thickness = glass_thickness_mm(spec)
+    rate = _number(factor)
+    if thickness <= 0 or rate <= 0:
+        return 0.0
+    return real_area(item) * thickness * rate
+
+
+def charged_sqf(item):
+    """Charged square feet for the line: pieces times the charged area of one piece."""
+    pieces = _pieces(item)
+    if pieces < 1:
+        pieces = 1 if item.get('sqf') not in (None, '') else 0
+    return _number(item.get('sqf')) * pieces
+
+
+def line_description(item):
+    """One component per line. The production ID leads the first line when it is known."""
+    if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return escape(str(item.get('name') or ''))
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    makeup = makeup_from_spec(spec) if spec else ''
+    if not makeup:
+        text = escape(str(item.get('name') or ''))
+    else:
+        parts = [part.strip() for part in makeup.split('+') if part.strip()]
+        product_id = ''
+        if spec:
+            product_id = str(lookup_product(spec, '').get('product_id') or '').strip()
+        lines = []
+        last = len(parts) - 1
+        for index, part in enumerate(parts):
+            if index == 0 and product_id:
+                shown = f'{product_id} - {part}'
+            elif index == 0:
+                shown = part
+            else:
+                shown = f'+{part}'
+            lines.append(escape(shown) + (' /' if index < last else ''))
+        text = '<br/>'.join(lines)
+    remark = str(item.get('remarks') or '').strip()
+    if remark:
+        text += '<br/>' + escape(remark)
+    return text
+
+
+def _styles():
+    base = getSampleStyleSheet()['Normal']
+    return {
+        'title': ParagraphStyle('DocTitle', parent=base, fontName='Helvetica-Bold', fontSize=16, leading=18),
+        'small': ParagraphStyle('DocSmall', parent=base, fontName='Helvetica', fontSize=8, leading=10),
+        'meta': ParagraphStyle('DocMeta', parent=base, fontName='Helvetica', fontSize=8, leading=10),
+        'cell': ParagraphStyle('DocCell', parent=base, fontName='Helvetica', fontSize=6.5, leading=8),
+        'desc': ParagraphStyle('DocDesc', parent=base, fontName='Helvetica', fontSize=6, leading=7.5),
+        'head': ParagraphStyle('DocHead', parent=base, fontName='Helvetica-Bold', fontSize=6, leading=7.5, alignment=TA_CENTER),
+        'num': ParagraphStyle('DocNum', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_RIGHT),
+        'center': ParagraphStyle('DocCenter', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
+        'foot': ParagraphStyle('DocFoot', parent=base, fontName='Helvetica', fontSize=8, leading=11),
+        'total': ParagraphStyle('DocTotal', parent=base, fontName='Helvetica-Bold', fontSize=8, leading=11, alignment=TA_RIGHT),
+    }
+
+
+def _logo(style):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.png')
+    if os.path.exists(path):
+        return Image(path, width=1.15 * inch, height=0.72 * inch)
+    return Paragraph('<font color="#C41E3A" size="16"><b>ORA</b></font><br/>GLASS', style)
+
+
+def _header(document, styles):
+    kind = document.get('kind') or 'quote'
+    if kind == 'order':
+        title = 'Order Confirmation'
+        number_label = 'Order'
+    else:
+        title = 'Quotation'
+        number_label = 'Quotation'
+    identifier = document.get('id')
+    identifier_text = '' if identifier in (None, '') else escape(str(identifier))
+    shown_date = format_date(document.get('date'))
+    meta = '<br/>'.join([
+        f'<b>{number_label}:</b> {identifier_text}&nbsp;&nbsp;&nbsp;<b>Date:</b> {escape(shown_date)}',
+        f'<b>Customer P.O.#:</b> {escape(str(document.get("po") or ""))}',
+        f'<b>Quote By:</b> {escape(str(document.get("quote_by") or ""))}&nbsp;&nbsp;&nbsp;<b>Pmt Mode:</b> {escape(str(document.get("payment_mode") or ""))}',
+        f'<b>Update By:</b> {escape(str(document.get("updated_by") or ""))}',
+        f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
+        f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
+    ])
+    rate = _number(document.get('fx_rate'))
+    if str(document.get('currency') or '').lower() == 'cad' and rate > 0:
+        meta += f'<br/>USD/CAD {rate:.4f}'
+    title_text = f'{escape(title)}<br/><font size="8">{COMPANY_ADDRESS}</font>'
+    header = Table(
+        [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
+        colWidths=[1.25 * inch, 3.05 * inch, 3.4 * inch],
+    )
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    sold = [f'<b>Sold To:</b> {escape(str(document.get("company") or ""))}']
+    sold.extend(escape(str(line)) for line in document.get('sold_to') or [] if str(line).strip())
+    job = [f'<b>Job Name:</b> {escape(str(document.get("project") or ""))}']
+    job.extend(escape(str(line)) for line in document.get('job_address') or [] if str(line).strip())
+    parties = Table(
+        [[Paragraph('<br/>'.join(sold), styles['small']), Paragraph('<br/>'.join(job), styles['small'])]],
+        colWidths=[3.85 * inch, 3.85 * inch],
+    )
+    parties.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 0.8, colors.black),
+        ('LINEAFTER', (0, 0), (0, 0), 0.4, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    remarks = str(document.get('remarks') or '').strip()
+    remark_line = f'<b>Remarks:</b> {escape(remarks)}' if remarks else '<b>Remarks:</b>'
+    return [header, Spacer(1, 6), parties, Spacer(1, 4), Paragraph(remark_line, styles['small']), Spacer(1, 6)]
+
+
+def _line_total(item):
+    if item.get('total') not in (None, ''):
+        return _number(item.get('total'))
+    if item.get('price') not in (None, ''):
+        return _number(item.get('price'))
+    return _number(item.get('price_pc')) * (_pieces(item) or 1)
+
+
+def _size_table(items, currency, styles):
+    prefix = currency_prefix(currency)
+    header = [
+        'ID', 'QTY', 'WIDTH', 'HEIGHT', 'FLOOR #', 'ITEM DESCRIPTION',
+        'SQF', f'{prefix}/SQF', f'{prefix}/PC', 'TOTAL',
+    ]
+    rows = [[Paragraph(label, styles['head']) for label in header]]
+    total_sqf = 0.0
+    total_pcs = 0
+    total_money = 0.0
+    for index, item in enumerate(items, 1):
+        pieces = _pieces(item)
+        shown_pieces = pieces or (1 if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'} and item.get('sqf') not in (None, '') else pieces)
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        has_size = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
+        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size else ('', '')
+        area = charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            area = 0.0
+        price_sqf = item.get('price_sqf')
+        price_pc = item.get('price_pc')
+        amount = _line_total(item)
+        total_pcs += shown_pieces
+        total_sqf += area
+        total_money += amount
+        rows.append([
+            Paragraph(f'({index})', styles['center']),
+            Paragraph(str(shown_pieces or ''), styles['center']),
+            Paragraph(wide, styles['center']),
+            Paragraph(high, styles['center']),
+            Paragraph(escape(floor_code(item)), styles['center']),
+            Paragraph(line_description(item), styles['desc']),
+            Paragraph(f'{area:.2f}' if area else '', styles['num']),
+            Paragraph(f'{_number(price_sqf):.2f}' if price_sqf not in (None, '', 0, '0') else '', styles['num']),
+            Paragraph(f'{_number(price_pc):.2f}' if price_pc not in (None, '') else '', styles['num']),
+            Paragraph(f'{amount:.2f}', styles['num']),
+        ])
+    widths = [
+        0.38 * inch, 0.38 * inch, 0.68 * inch, 0.68 * inch, 0.55 * inch,
+        2.15 * inch, 0.55 * inch, 0.72 * inch, 0.68 * inch, 0.93 * inch,
+    ]
+    table = Table(rows, colWidths=widths, repeatRows=1)
+    table.setStyle(_grid())
+    return table, total_pcs, total_sqf, total_money
+
+
+def _sqf_table(items, currency, styles):
+    label = 'CAD/SQF' if str(currency or '').lower() == 'cad' else 'USD/SQF'
+    rows = [[
+        Paragraph('ID', styles['head']),
+        Paragraph('ITEM DESCRIPTION', styles['head']),
+        Paragraph(label, styles['head']),
+    ]]
+    total_money = 0.0
+    total_pcs = 0
+    for index, item in enumerate(items, 1):
+        amount = _line_total(item)
+        total_money += amount
+        total_pcs += _pieces(item)
+        rows.append([
+            Paragraph(f'({index})', styles['center']),
+            Paragraph(line_description(item), styles['cell']),
+            Paragraph(f'{amount:.2f}', styles['num']),
+        ])
+    rows.append([
+        Paragraph('', styles['cell']),
+        Paragraph('<b>TOTAL</b>', styles['foot']),
+        Paragraph(f'<b>{total_money:.2f}</b>', styles['num']),
+    ])
+    table = Table(rows, colWidths=[0.45 * inch, 6.0 * inch, 1.25 * inch], repeatRows=1)
+    table.setStyle(_grid())
+    return table, total_pcs, 0.0, total_money
+
+
+def _grid():
+    return TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), GREY),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('LINEBELOW', (0, 0), (-1, -1), 0.4, colors.black),
+        ('LINEABOVE', (0, 0), (-1, 0), 0.6, colors.black),
+        ('BOX', (0, 0), (-1, -1), 0.6, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ])
+
+
+def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
+    currency = document.get('currency') or 'usd'
+    discount = _number(document.get('additional_discount_amount'))
+    if not discount:
+        percent = _number(document.get('additional_discount_percent'))
+        if percent:
+            discount = round(subtotal * percent / 100.0, 2)
+    tax_amount = document.get('tax_amount')
+    if tax_amount not in (None, ''):
+        tax_text = money_text(currency, tax_amount)
+        tax_value = _number(tax_amount)
+    else:
+        label = str(document.get('tax_label') or '').strip()
+        tax_text = label or 'AS APPLICABLE'
+        tax_value = 0.0
+    discount_text = money_text(currency, discount) if discount else ''
+    grand = round(subtotal - discount + tax_value, 2)
+    summary = Paragraph(
+        f'Total Pcs: {total_pcs}&nbsp;&nbsp;&nbsp;&nbsp;Total SQ/FT : {total_sqf:.2f}'
+        f'&nbsp;&nbsp;&nbsp;&nbsp;Total Weight: Appx. {weight:.2f} LBS',
+        styles['foot'],
+    )
+    signature = Paragraph(
+        'Accept Signature: ____________________<br/>Date: ____________________<br/>Name: ____________________',
+        styles['foot'],
+    )
+    totals = Paragraph(
+        f'Sub-Total: {money_text(currency, subtotal)}<br/>'
+        f'Tax: {escape(tax_text)}<br/>'
+        f'Discount: {escape(discount_text)}<br/>'
+        f'<b>Total: {money_text(currency, grand)}</b>',
+        styles['total'],
+    )
+    block = Table([[signature, totals]], colWidths=[4.4 * inch, 3.3 * inch])
+    block.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    return [
+        Spacer(1, 8),
+        summary,
+        Spacer(1, 8),
+        block,
+        Spacer(1, 12),
+        Paragraph(TERMS, styles['small']),
+    ]
+
+
+def is_size_document(document, items):
+    declared = str(document.get('type') or '').lower()
+    if declared == 'size':
+        return True
+    if declared == 'sqf':
+        return False
+    for item in items:
+        spec = item.get('spec') if isinstance(item, dict) and isinstance(item.get('spec'), dict) else None
+        if spec and spec.get('width') not in (None, ''):
+            return True
+        if isinstance(item, dict) and item.get('sqf') not in (None, '', 0, '0'):
+            return True
+    return False
+
+
+def build_pdf(document):
+    """Portrait letter PDF. The table header repeats when the lines continue onto another page."""
+    styles = _styles()
+    items = [item for item in (document.get('items') or []) if isinstance(item, dict)]
+    for extra in document.get('extra_charges') or []:
+        if isinstance(extra, dict) and str(extra.get('label') or '').strip():
+            items.append({'name': extra.get('label'), 'total': extra.get('amount'), 'pcs': ''})
+    remarks = str(document.get('remarks') or '').strip()
+    if any(item.get('irregular_shape') or item.get('irregular') for item in items) and DRAWING_NOTE not in remarks:
+        remarks = (remarks + '\n' + DRAWING_NOTE).strip()
+    prepared = dict(document)
+    prepared['remarks'] = remarks
+    size = is_size_document(prepared, items)
+    if size:
+        table, total_pcs, total_sqf, subtotal = _size_table(items, prepared.get('currency'), styles)
+    else:
+        table, total_pcs, total_sqf, subtotal = _sqf_table(items, prepared.get('currency'), styles)
+    weight = 0.0
+    factor = _number(prepared.get('weight_factor'), 0.512)
+    if size:
+        weight = sum(line_weight(item, factor) for item in items)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        leftMargin=0.4 * inch, rightMargin=0.4 * inch,
+        topMargin=0.38 * inch, bottomMargin=0.4 * inch,
+        title=prepared.get('project') or 'ORA Glass',
+    )
+    story = _header(prepared, styles)
+    story.append(table)
+    story.extend(_footer(prepared, total_pcs, total_sqf, subtotal, weight, styles))
+    doc.build(story)
+    return buffer.getvalue()
