@@ -65,23 +65,31 @@ def test_customer_currency_is_locked_and_staff_must_convert(client):
         'items': [item], 'currency': 'usd', 'project': 'Staff', 'type': 'size', 'tier': 'T2',
     })
     quote_id = staff.get_json()['id']
-    blocked = client.post(f'/api/quotes/{quote_id}/order', json={'customer_id': 'maple'})
-    assert blocked.status_code == 409
-    assert blocked.get_json()['currency_mismatch'] is True
-    assert blocked.get_json()['customer_currency'] == 'cad'
-    changed = client.post(f'/api/quotes/{quote_id}/currency', json={'currency': 'cad'})
-    assert changed.status_code == 200, changed.get_json()
-    assert changed.get_json()['currency'] == 'cad'
-    from app import PRICING
-    from quoting import reprice_size_line
-    from storage import load_tiers
-    expected = reprice_size_line(dict(SPEC), item.get('pcs') or 1, 'T2', 'cad', PRICING, load_tiers())
-    glass = next(row for row in changed.get_json()['items'] if row.get('spec'))
-    assert glass['price_sqf'] == expected['price_sqf']
+    staff_page = client.get('/quotes')
+    assert b'id="quote-customer"' in staff_page.data
+    assert b'No customer yet' in staff_page.data
     created = client.post(f'/api/quotes/{quote_id}/order', json={'customer_id': 'maple'})
     assert created.status_code == 200, created.get_json()
+    assert 'Converted this quote to CAD' in created.get_json()['currency_notice']
     order = next(row for row in load_orders() if row['id'] == created.get_json()['order_id'])
     assert order['currency'] == 'cad'
+    converted = next(row for row in load_quotes() if row['id'] == quote_id)
+    assert converted['currency'] == 'cad'
+    from app import PRICING
+    from quoting import reprice_size_line
+    from storage import load_tiers, save_quotes
+    expected = reprice_size_line(dict(SPEC), item.get('pcs') or 1, 'T2', 'cad', PRICING, load_tiers())
+    assert order['items'][0]['price_sqf'] == expected['price_sqf']
+    stale = next(row for row in load_quotes() if row['id'] == quote_id)
+    stale['order_id'] = None
+    stale['currency'] = 'usd'
+    stale['customer_id'] = 'maple'
+    save_quotes([row if row['id'] != quote_id else stale for row in load_quotes()])
+    copied = client.post(f'/api/quotes/{quote_id}/copy', json={})
+    assert copied.status_code == 200, copied.get_json()
+    copy = next(row for row in load_quotes() if row['id'] == copied.get_json()['id'])
+    assert copy['customer_id'] == 'maple'
+    assert copy['currency'] == 'cad'
 
 
 def test_intercompany_uses_the_erp_rate_in_effect_on_the_invoice_date(client):

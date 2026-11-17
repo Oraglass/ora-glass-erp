@@ -416,25 +416,8 @@ async function submitOrder(event) {
     });
   }
   const payload = await res.json().catch(() => ({}));
-  if (payload.currency_mismatch) {
-    const box = document.getElementById('currency-mismatch');
-    const label = String(payload.customer_currency || '').toUpperCase();
-    box.hidden = false;
-    box.innerHTML = esc(payload.error) + ' <button type="button" class="btn" id="change-quote-currency">Change to ' + esc(label) + '</button>';
-    document.getElementById('change-quote-currency').addEventListener('click', async () => {
-      const changed = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/currency', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({currency: payload.customer_currency})
-      });
-      const body = await changed.json().catch(() => ({}));
-      if (!changed.ok) { alert(body.error || 'Could not change the currency'); return; }
-      const quote = catalog.find(item => String(item.id) === String(pendingQuoteId));
-      if (quote) { quote.currency = body.currency; quote.items = body.items; }
-      box.hidden = true;
-    });
-    return;
-  }
   if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
+  if (payload.currency_notice) alert(payload.currency_notice);
   if (payload.credit_warning) alert(payload.credit_warning);
   closeOrderDialog();
   loadCatalog();

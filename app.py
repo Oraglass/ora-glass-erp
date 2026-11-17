@@ -1343,7 +1343,11 @@ def quote_template_context(user):
         'currency_locked': user.get('role') == 'customer',
         'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
-            {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
+            {
+                'id': customer_id,
+                'name': (customer or {}).get('name') or customer_id,
+                'currency': _required_currency(customer),
+            }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
         'import_glass': [item.get('name') for item in GLASS],
@@ -2924,14 +2928,39 @@ def save_quote():
                         pass
         currency = required
     else:
-        customer_id = None
-        company = 'ORA'
+        raw_customer = clean_text(data.get('customer_id'), 64)
+        customer = customers.get(raw_customer) if raw_customer else None
+        if raw_customer and not customer:
+            return json_error('Unknown customer.', 400)
+        if customer:
+            customer_id = raw_customer
+            company = customer.get('name') or 'Customer'
+            required = _required_currency(customer)
+            currency_changed = currency != required
+            if currency_changed and quote_type != 'size':
+                from quoting import CAD_RATE
+                factor = CAD_RATE if required == 'cad' else (1 / CAD_RATE)
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ('price', 'total', 'price_sqf', 'price_pc'):
+                        if item.get(key) in (None, ''):
+                            continue
+                        try:
+                            item[key] = round(float(item[key]) * factor, 2)
+                        except (TypeError, ValueError):
+                            pass
+            currency = required
+        else:
+            customer_id = None
+            customer = None
+            company = 'ORA'
     tiers = load_tiers()
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
     if not tier:
         return json_error('That pricing tier is not available.', 400)
     project = clean_text(data.get('project'), 200)
-    if user.get('role') == 'customer' and quote_type == 'size' and currency_changed:
+    if currency_changed and quote_type == 'size':
         items = _repriced_quote_items(items, tier, currency, tiers)
     priced = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     quote_id = data.get('id')
@@ -2944,6 +2973,8 @@ def save_quote():
         if not existing or existing.get('status') != 'draft':
             return json_error('That quote cannot be replaced.', 400)
         existing['project'] = project
+        existing['customer_id'] = customer_id
+        existing['company'] = company
         existing['items'] = _repriced_quote_items(items, tier, currency, tiers) if quote_type == 'size' else priced
         existing['currency'] = currency
         existing['type'] = quote_type
@@ -3093,6 +3124,9 @@ def copy_quote(quote_id):
     else:
         customer_id = source.get('customer_id')
         company = source.get('company') or 'ORA'
+        owner_for_currency = customers.get(customer_id or '')
+        if owner_for_currency:
+            currency = _required_currency(owner_for_currency)
     note = _copy_note(quote_id)
     previous = clean_text(source.get('notes'), 2000)
     notes = previous if note in previous else (previous + '\n' + note).strip()
@@ -4330,18 +4364,17 @@ def convert_quote_to_order(quote_id):
             return json_error(error, 400)
         company_tier = _company_tier(customer, tiers)
         company = customer.get('name') or ''
-    currency = quote.get('currency') or 'usd'
+    currency = str(quote.get('currency') or 'usd').lower()
     expected = _required_currency(customer)
-    if str(currency).lower() != expected:
-        return jsonify({
-            'error': (
-                f'This quote is in {str(currency).upper()} but {company} is set up for {expected.upper()}. '
-                f'Change the quote to {expected.upper()} before creating the order.'
-            ),
-            'currency_mismatch': True,
-            'quote_currency': str(currency).lower(),
-            'customer_currency': expected,
-        }), 409
+    currency_notice = None
+    if currency != expected:
+        currency_notice = f'Converted this quote to {expected.upper()} for {company}.'
+        quote_tier = quote.get('tier') or company_tier
+        converted = _repriced_quote_items(quote.get('items'), quote_tier, expected, tiers)
+        quote['items'] = expand_irregular_lines(converted, load_pricing_settings()['irregular_shape_surcharge'])
+        quote['currency'] = expected
+        items = quote['items']
+        currency = expected
     priced_items = []
     for item in items:
         if item.get('kind') == 'irregular_surcharge':
@@ -4476,6 +4509,8 @@ def convert_quote_to_order(quote_id):
     }
     if warning:
         payload['credit_warning'] = warning
+    if currency_notice:
+        payload['currency_notice'] = currency_notice
     return jsonify(payload)
 
 
