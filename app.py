@@ -1924,7 +1924,8 @@ def export_quote():
         table_data = [[
             Paragraph('<b>ID</b>', header_cell),
             Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph('<b>SQF</b>', header_cell),
+            Paragraph('<b>PCS</b>', header_cell),
+            Paragraph('<b>TOTAL SQF</b>', header_cell),
             Paragraph(f'<b>{unit}/SQF</b>', header_cell),
             Paragraph(f'<b>{unit}/PC</b>', header_cell),
             Paragraph(f'<b>TOTAL {unit}</b>', header_cell)
@@ -1952,6 +1953,7 @@ def export_quote():
             table_data.append([
                 Paragraph(f'({i})', cell_style),
                 Paragraph(description, cell_style),
+                Paragraph(str(pcs), cell_style),
                 Paragraph(f"{sqf * pcs:.2f}", cell_style),
                 Paragraph(f"${price_sqf:.2f}", cell_style),
                 Paragraph(f"${price_pc:.2f}", cell_style),
@@ -1959,7 +1961,8 @@ def export_quote():
             ])
         table_data.append([
             Paragraph('', cell_style),
-            Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
+            Paragraph('<b>TOTAL</b>', total_style),
+            Paragraph(f'<b>{total_pcs}</b>', total_style),
             Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
             Paragraph('', cell_style),
             Paragraph('', cell_style),
@@ -1973,6 +1976,7 @@ def export_quote():
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
+                Paragraph('', cell_style),
                 Paragraph(f'-${discount_amount:.2f}', total_style),
             ])
             table_data.append([
@@ -1981,9 +1985,11 @@ def export_quote():
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
                 Paragraph('', cell_style),
+                Paragraph('', cell_style),
                 Paragraph(f'<b>${total_line_sum - discount_amount:.2f}</b>', total_style),
             ])
-        col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
+        # Portrait letter with 0.4in margins is 7.7in wide.
+        col_widths = [0.38*inch, 2.92*inch, 0.48*inch, 0.85*inch, 0.95*inch, 0.90*inch, 1.22*inch]
     else:
         curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
         table_data = [[

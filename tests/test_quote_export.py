@@ -49,7 +49,27 @@ def test_size_pdf_total_matches_line_totals_in_both_currencies(client):
         assert b'($50.00)' in text
         assert b'($2173.39)' in text
         assert wrong.encode() not in text
-        assert b'TOTAL \\(3 pcs\\)' in text
+        assert b'PCS' in text
+        assert b'TOTAL SQF' in text
+        assert b'TOTAL \\(3 pcs\\)' not in text
+        assert b'77.86' in text
+        assert b'20.00' in text
+
+
+def test_size_pdf_shows_pieces_on_each_line_and_sqf_quotes_do_not(client):
+    write_user('admin@oraglass.us', 'admin')
+    login(client, 'admin@oraglass.us')
+    size = export(client, [
+        {'name': 'Wide', 'sqf': 10, 'price_sqf': 2, 'price_pc': 20, 'total': 60, 'pcs': 3},
+    ], 'usd')
+    assert b'PCS' in size
+    assert b'TOTAL SQF' in size
+    assert b'30.00' in size
+    assert b'($60.00)' in size
+    sqf = export(client, [{'name': 'Clear', 'price': '4.00'}], 'usd')
+    assert b'PCS' not in sqf
+    assert b'TOTAL SQF' not in sqf
+    assert b'($4.00)' in sqf
 
 
 def test_sqf_pdf_total_matches_line_prices_in_both_currencies(client):
