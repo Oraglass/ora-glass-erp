@@ -242,6 +242,42 @@ PRICING, PRICING_SOURCE = load_pricing()
 GLASS, SPACERS, SEALANTS = classify(PRICING)
 logger.info('Loaded %s pricing rows from %s', len(PRICING), PRICING_SOURCE or 'built-in fallback')
 
+
+def _price_options():
+    import pricing_catalog
+    return pricing_catalog.calc_options()
+
+
+def _live_materials():
+    import pricing_catalog
+    return pricing_catalog.material_lists()
+
+
+def _sell_price(data, tier, tiers):
+    options = _price_options()
+    return calculate_price_sqf(
+        data, tier, options['pricing'], tiers,
+        temper_prices=options['temper_prices'],
+        tier5_scale=options['tier5_scale'],
+        unknown_temper=options['unknown_temper'],
+        extra_per_sqf=options['extra_per_sqf'],
+        triple_factor=options['triple_factor'],
+    )
+
+
+def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None):
+    options = _price_options()
+    return reprice_size_line(
+        spec, pcs, tier, currency, options['pricing'], tiers, fx_rate,
+        temper_prices=options['temper_prices'],
+        tier5_scale=options['tier5_scale'],
+        unknown_temper=options['unknown_temper'],
+        extra_per_sqf=options['extra_per_sqf'],
+        triple_factor=options['triple_factor'],
+        minimum_sqf=options['minimum_sqf'],
+        minimum_charge=options['minimum_charge'],
+    )
+
 _state = {'bootstrapped': False}
 
 
@@ -1105,8 +1141,6 @@ def inject_user():
     extras = []
     if user and _is_ora_staff(user):
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
-    if user and user.get('role') == 'admin':
-        extras.append({'id': 'currency-settings', 'label': 'Currency', 'endpoint': 'currency_settings'})
     if user and staff_can_order(user):
         extras.append({'id': 'shipments', 'label': 'Shipments', 'endpoint': 'shipments_page'})
     if extras:
@@ -1357,16 +1391,17 @@ def quote_template_context(user):
         effective = effective_tier_for(user, customers, tiers)
     locked = len(choices) <= 1
     locked_id = choices[0][0] if locked and choices else effective
+    glass, spacers, sealants = _live_materials()
     return {
-        'glass': GLASS,
-        'spacers': SPACERS,
-        'sealants': SEALANTS,
+        'glass': glass,
+        'spacers': spacers,
+        'sealants': sealants,
         'can_choose_tier': not locked,
         'tiers': choices,
         'default_tier': effective,
         'locked_tier': locked_id,
         'locked_tier_label': tier_label(locked_id, tiers),
-        'sealant_matches': sealant_match_map(SPACERS, SEALANTS),
+        'sealant_matches': sealant_match_map(spacers, sealants),
         'import_admin': user.get('role') == 'admin',
         'import_customer': user.get('role') == 'customer',
         'import_customer_id': user.get('customer_id') or '',
@@ -1383,8 +1418,8 @@ def quote_template_context(user):
             }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
-        'import_glass': [item.get('name') for item in GLASS],
-        'import_spacers': [item.get('name') for item in SPACERS],
+        'import_glass': [item.get('name') for item in glass],
+        'import_spacers': [item.get('name') for item in spacers],
     }
 
 
@@ -1748,7 +1783,7 @@ def calculate():
     tier = tier_for_request(user, clean_text(data.get('tier'), 20), customers, tiers)
     if not tier:
         return json_error('That pricing tier is not available.', 400)
-    price = calculate_price_sqf(data, tier, PRICING, tiers)
+    price = _sell_price(data, tier, tiers)
     try:
         supplied = float(data.get('fx_rate'))
     except (TypeError, ValueError):
@@ -2009,7 +2044,7 @@ def orders():
         can_edit=can_edit_orders(user),
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
-        glass_names=[item.get('name') for item in GLASS],
+        glass_names=[item.get('name') for item in _live_materials()[0]],
         irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
     )
 
@@ -2030,7 +2065,7 @@ def order_detail(order_id):
         can_edit=can_edit_orders(user),
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
-        glass_names=[item.get('name') for item in GLASS],
+        glass_names=[item.get('name') for item in _live_materials()[0]],
         irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
         focus_id=order_id,
     )
@@ -2230,62 +2265,237 @@ def inventory():
     return render_template('module.html', module='Inventory', note='')
 
 
+def _form_rows(fields):
+    columns = {field: request.form.getlist(field) for field in fields}
+    count = max((len(values) for values in columns.values()), default=0)
+    rows = []
+    for index in range(count):
+        rows.append({field: (values[index] if index < len(values) else '') for field, values in columns.items()})
+    return rows
+
+
+def _flag(value):
+    return str(value or '').strip().lower() in {'yes', '1', 'true', 'on'}
+
+
+def _save_currency_action(user):
+    import currency_rules
+    import pricing_catalog
+    action = clean_text(request.form.get('action'), 20)
+    try:
+        if action == 'countries':
+            before = currency_rules.load_currency_settings()['countries']
+            currency_rules.save_country_map({
+                'Canada': request.form.get('canada'),
+                'United States': request.form.get('united_states'),
+            })
+            after = currency_rules.load_currency_settings()['countries']
+            for name in ('Canada', 'United States'):
+                pricing_catalog.record_change('currency', name, 'currency', before.get(name), after.get(name), user.get('email'))
+            flash('Country currencies saved.', 'success')
+        elif action == 'rate':
+            old_rate, _effective = currency_rules.rate_on(date.today())
+            currency_rules.record_rate(
+                request.form.get('rate'),
+                request.form.get('effective') or date.today().isoformat(),
+                user.get('email'),
+            )
+            new_rate, _effective = currency_rules.rate_on(request.form.get('effective') or date.today().isoformat())
+            pricing_catalog.record_change('currency', 'ERP exchange rate', 'rate', old_rate, new_rate, user.get('email'))
+            flash('ERP exchange rate saved.', 'success')
+        else:
+            flash('Unknown currency action.', 'error')
+    except ValueError as exc:
+        flash(str(exc), 'error')
+
+
 @app.route('/pricing', methods=['GET', 'POST'])
 @module_required('pricing')
 def pricing_admin():
-    tiers = load_tiers()
+    import currency_rules
+    import pricing_catalog
+    user = current_user()
+    if user.get('role') != 'admin':
+        flash('Only an administrator can change pricing.', 'error')
+        return redirect(url_for('dashboard'))
+    tab = clean_text(request.values.get('tab') or 'markups', 20)
+    if tab not in pricing_catalog.TAB_IDS:
+        tab = 'markups'
     if request.method == 'POST':
-        errors = []
-        for key, cfg in list(tiers.items()):
-            if key == 'T5':
-                continue
-            glass_raw = request.form.get(f'glass_{key}', '')
-            spacer_raw = request.form.get(f'spacer_{key}', '')
-            label = clean_text(request.form.get(f'label_{key}'), 40)
-            try:
-                glass = float(glass_raw)
-                spacer = float(spacer_raw)
-            except (TypeError, ValueError):
-                errors.append(key)
-                continue
-            if not label or glass < 0 or spacer < 0 or glass > 2000 or spacer > 2000:
-                errors.append(key)
-                continue
-            cfg['label'] = label
-            cfg['glass_markup'] = round(glass / 100.0, 6)
-            cfg['spacer_markup'] = round(spacer / 100.0, 6)
+        action = clean_text(request.form.get('action') or 'markups', 40)
+        if action in {'countries', 'rate'}:
+            _save_currency_action(user)
+            return redirect(url_for('pricing_admin', tab='currency'))
+        if action == 'markups':
+            _save_markups(user)
+            return redirect(url_for('pricing_admin', tab='markups'))
+        if action == 'glass':
+            rows = _material_posts(('id', 'name', 'thickness', 'sheet_width', 'sheet_height', 'raw_price', 'tariff_percent', 'waste_percent', 'temperable', 'annealed', 'in_price', 'active'), 'glass')
+            new_name = clean_text(request.form.get('new_name'), 120)
+            if new_name:
+                rows.append({
+                    'name': new_name,
+                    'kind': 'glass',
+                    'thickness': clean_text(request.form.get('new_thickness'), 20),
+                    'sheet_width': request.form.get('new_sheet_width'),
+                    'sheet_height': request.form.get('new_sheet_height'),
+                    'raw_price': request.form.get('new_raw_price'),
+                    'tariff_percent': request.form.get('new_tariff_percent'),
+                    'waste_percent': request.form.get('new_waste_percent'),
+                    'temperable': _flag(request.form.get('new_temperable')),
+                    'annealed': _flag(request.form.get('new_annealed')),
+                    'in_price': True,
+                    'active': True,
+                })
+            pricing_catalog.update_materials(rows, user.get('email'), 'glass')
+            flash('Glass prices saved. Saved quotes and orders keep their prices.', 'success')
+            return redirect(url_for('pricing_admin', tab='glass'))
+        if action == 'temper':
+            pricing_catalog.update_temper(_form_rows(('thickness', 'addon')), user.get('email'))
+            flash('Tempering add-ons saved. Saved quotes and orders keep their prices.', 'success')
+            return redirect(url_for('pricing_admin', tab='glass'))
+        if action == 'components':
+            rows = _material_posts(('id', 'name', 'price_per_ft', 'foot_factor', 'price_per_set', 'spacer_width_mm', 'raw_price', 'tariff_percent', 'waste_percent', 'in_price', 'active'), None)
+            new_name = clean_text(request.form.get('new_name'), 120)
+            if new_name:
+                kind = clean_text(request.form.get('new_kind'), 20)
+                if kind not in {'spacer', 'sealant', 'desiccant', 'butyl', 'corner'}:
+                    kind = 'spacer'
+                rows.append({
+                    'name': new_name,
+                    'kind': kind,
+                    'price_per_ft': request.form.get('new_price_per_ft'),
+                    'price_per_set': request.form.get('new_price_per_set'),
+                    'spacer_width_mm': request.form.get('new_spacer_width_mm'),
+                    'raw_price': request.form.get('new_raw_price'),
+                    'tariff_percent': request.form.get('new_tariff_percent'),
+                    'waste_percent': request.form.get('new_waste_percent'),
+                    'in_price': _flag(request.form.get('new_in_price')),
+                    'active': True,
+                })
+            pricing_catalog.update_materials(rows, user.get('email'), 'components')
+            flash('Component prices saved. Saved quotes and orders keep their prices.', 'success')
+            return redirect(url_for('pricing_admin', tab='components'))
+        if action == 'formula':
+            posted = {}
+            for row in pricing_catalog.FORMULA_DEFAULTS:
+                posted[row['key']] = request.form.get(row['key'])
+            pricing_catalog.update_formula(posted, user.get('email'))
+            flash('Formula settings saved. Saved quotes and orders keep their prices.', 'success')
+            return redirect(url_for('pricing_admin', tab='formula'))
+        flash('Unknown pricing action.', 'error')
+        return redirect(url_for('pricing_admin', tab=tab))
+    return _render_pricing(tab)
+
+
+def _material_posts(fields, kind):
+    rows = []
+    for posted in _form_rows(fields):
+        if not posted.get('id') and not posted.get('name'):
+            continue
+        item = {'id': posted.get('id') or '', 'name': clean_text(posted.get('name'), 120)}
+        if kind:
+            item['kind'] = kind
+        for key in ('thickness',):
+            if key in posted:
+                item[key] = clean_text(posted.get(key), 40)
+        for key in ('sheet_width', 'sheet_height', 'raw_price', 'tariff_percent', 'waste_percent', 'price_per_ft', 'foot_factor', 'price_per_set', 'spacer_width_mm'):
+            if key in posted:
+                item[key] = posted.get(key)
+        for key in ('temperable', 'annealed', 'in_price', 'active'):
+            if key in posted:
+                item[key] = _flag(posted.get(key))
+        rows.append(item)
+    return rows
+
+
+def _save_markups(user):
+    import pricing_catalog
+    tiers = load_tiers()
+    before = {key: dict(cfg) for key, cfg in tiers.items()}
+    errors = []
+    for key, cfg in list(tiers.items()):
+        if key == 'T5':
+            continue
+        glass_raw = request.form.get(f'glass_{key}', '')
+        spacer_raw = request.form.get(f'spacer_{key}', '')
+        label = clean_text(request.form.get(f'label_{key}'), 40)
         try:
-            surcharge = round(float(request.form.get('irregular_shape_surcharge', 50)), 2)
-            dwg_fee = round(float(request.form.get('dwg_creation_fee', 50)), 2)
+            glass = float(glass_raw)
+            spacer = float(spacer_raw)
         except (TypeError, ValueError):
-            surcharge = -1
-            dwg_fee = -1
-        if surcharge < 0 or surcharge > 100000:
-            errors.append('surcharge')
-        if dwg_fee < 0 or dwg_fee > 100000:
-            errors.append('dwg')
-        if errors:
-            flash('Check markup values for: ' + ', '.join(errors), 'error')
-        else:
-            save_tiers(tiers)
-            save_pricing_settings({'irregular_shape_surcharge': surcharge, 'dwg_creation_fee': dwg_fee})
-            flash('Tier markups saved. Tier 5 is twice Tier 2. Irregular shape surcharge and DWG drawing fee saved.', 'success')
-            return redirect(url_for('pricing_admin'))
-        tiers = load_tiers()
-    samples = []
-    for name in ('Clear Glass 4mm', 'Clear Glass 6mm', 'Bronze 6mm'):
-        payload = {'glass1': name, 'temper1': 'n/a'}
-        samples.append({
-            'name': name,
-            'tier2': calculate_price_sqf(payload, 'T2', PRICING, tiers),
-            'tier5': calculate_price_sqf(payload, 'T5', PRICING, tiers),
-        })
+            errors.append(key)
+            continue
+        if not label or glass < 0 or spacer < 0 or glass > 2000 or spacer > 2000:
+            errors.append(key)
+            continue
+        cfg['label'] = label
+        cfg['glass_markup'] = round(glass / 100.0, 6)
+        cfg['spacer_markup'] = round(spacer / 100.0, 6)
+    try:
+        surcharge = round(float(request.form.get('irregular_shape_surcharge', 50)), 2)
+        dwg_fee = round(float(request.form.get('dwg_creation_fee', 50)), 2)
+    except (TypeError, ValueError):
+        surcharge = -1
+        dwg_fee = -1
+    if surcharge < 0 or surcharge > 100000:
+        errors.append('surcharge')
+    if dwg_fee < 0 or dwg_fee > 100000:
+        errors.append('dwg')
+    if errors:
+        flash('Check markup values for: ' + ', '.join(errors), 'error')
+        return
+    save_tiers(tiers)
+    previous = load_pricing_settings()
+    save_pricing_settings({'irregular_shape_surcharge': surcharge, 'dwg_creation_fee': dwg_fee})
+    changes = []
+    for key, cfg in tiers.items():
+        if key == 'T5':
+            continue
+        old = before.get(key) or {}
+        if old.get('label') != cfg.get('label'):
+            changes.append({'tab': 'markups', 'item': key, 'field': 'label', 'old': old.get('label'), 'new': cfg.get('label')})
+        if old.get('glass_markup') != cfg.get('glass_markup'):
+            changes.append({'tab': 'markups', 'item': key, 'field': 'glass_markup', 'old': old.get('glass_markup'), 'new': cfg.get('glass_markup')})
+        if old.get('spacer_markup') != cfg.get('spacer_markup'):
+            changes.append({'tab': 'markups', 'item': key, 'field': 'spacer_markup', 'old': old.get('spacer_markup'), 'new': cfg.get('spacer_markup')})
+    if previous['irregular_shape_surcharge'] != surcharge:
+        changes.append({'tab': 'markups', 'item': 'Irregular shape surcharge', 'field': 'amount', 'old': previous['irregular_shape_surcharge'], 'new': surcharge})
+    if previous['dwg_creation_fee'] != dwg_fee:
+        changes.append({'tab': 'markups', 'item': 'DWG drawing creation', 'field': 'amount', 'old': previous['dwg_creation_fee'], 'new': dwg_fee})
+    if changes:
+        pricing_catalog.save_catalog(pricing_catalog.load_catalog(), user.get('email'), changes)
+    flash('Tier markups saved. Tier 5 is twice Tier 2. Irregular shape surcharge and DWG drawing fee saved.', 'success')
+
+
+def _render_pricing(tab):
+    import currency_rules
+    import pricing_catalog
+    tiers = load_tiers()
+    catalog = pricing_catalog.load_catalog()
+    rate, effective = currency_rules.rate_on(date.today())
+    settings = currency_rules.load_currency_settings()
+    price_rows = pricing_catalog.price_list(tiers, rate) if tab == 'prices' else []
     return render_template(
         'pricing.html',
+        tabs=pricing_catalog.TABS,
+        tab=tab,
         tiers=ordered_tiers(tiers),
-        sample_prices=samples,
         irregular_shape_surcharge=load_pricing_settings()['irregular_shape_surcharge'],
         dwg_creation_fee=load_pricing_settings()['dwg_creation_fee'],
+        glass_rows=[row for row in catalog['materials'] if row['kind'] == 'glass'],
+        component_rows=[row for row in catalog['materials'] if row['kind'] != 'glass'],
+        temper_rows=catalog['temper'],
+        formula_rows=catalog['formula'],
+        gaps=pricing_catalog.GAPS,
+        history=pricing_catalog.history_for(tab, catalog),
+        settings=settings,
+        current_rate=rate,
+        current_effective=effective,
+        today=date.today().isoformat(),
+        currency_history=list(reversed(settings['history'])),
+        price_rows=price_rows,
+        catalog_source=catalog.get('source') or '',
     )
 
 
@@ -2314,46 +2524,18 @@ def _write_production_file(order):
         logger.exception('Could not write the production Excel file')
 
 
+@app.route('/currency', methods=['GET', 'POST'])
 @app.route('/currency-settings', methods=['GET', 'POST'])
 @login_required
 def currency_settings():
-    """Country currencies and the hand-set USD/CAD rate. Not part of production settings."""
+    """Old currency page. The editor now lives on the Pricing currency tab."""
     user = current_user()
     if user.get('role') != 'admin':
         flash('Only an administrator can change currency settings.', 'error')
         return redirect(url_for('dashboard'))
-    import currency_rules
     if request.method == 'POST':
-        action = clean_text(request.form.get('action'), 20)
-        try:
-            if action == 'countries':
-                currency_rules.save_country_map({
-                    'Canada': request.form.get('canada'),
-                    'United States': request.form.get('united_states'),
-                })
-                flash('Country currencies saved.', 'success')
-            elif action == 'rate':
-                currency_rules.record_rate(
-                    request.form.get('rate'),
-                    request.form.get('effective') or date.today().isoformat(),
-                    user.get('email'),
-                )
-                flash('ERP exchange rate saved.', 'success')
-            else:
-                flash('Unknown currency action.', 'error')
-        except ValueError as exc:
-            flash(str(exc), 'error')
-        return redirect(url_for('currency_settings'))
-    settings = currency_rules.load_currency_settings()
-    rate, effective = currency_rules.rate_on(date.today())
-    return render_template(
-        'currency_settings.html',
-        settings=settings,
-        current_rate=rate,
-        current_effective=effective,
-        today=date.today().isoformat(),
-        history=list(reversed(settings['history'])),
-    )
+        _save_currency_action(user)
+    return redirect(url_for('pricing_admin', tab='currency'))
 
 
 @app.route('/production-settings', methods=['GET', 'POST'])
@@ -3102,7 +3284,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None):
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
-            priced = reprice_size_line(spec, item.get('pcs'), tier, currency, PRICING, tiers, fx_rate)
+            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate)
             copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
@@ -3263,7 +3445,8 @@ _IMPORT_COLUMNS = ('width', 'height', 'qty', 'glass', 'spacer', 'mark')
 
 
 def _catalog_names():
-    return [item['name'] for item in GLASS], [item['name'] for item in SPACERS]
+    glass, spacers, _sealants = _live_materials()
+    return [item['name'] for item in glass], [item['name'] for item in spacers]
 
 
 def _known_product(name, names):
@@ -3375,7 +3558,7 @@ def _import_spec(line):
     spacer = line.get('spacer_product') or ''
     sealant = ''
     if spacer:
-        sealant = suggest_sealant(spacer, SEALANTS).get('selected') or ''
+        sealant = suggest_sealant(spacer, _live_materials()[2]).get('selected') or ''
     return {
         'glass1': line.get('glass_product') or '',
         'temper1': 'n/a',
@@ -3400,7 +3583,7 @@ def _price_import_line(line, tier, currency, fx_rate=None):
     line['total'] = None
     if line.get('errors') or not line.get('glass_product') or not line.get('width') or not line.get('height') or not line.get('qty'):
         return
-    priced = reprice_size_line(_import_spec(line), line.get('qty'), tier, currency, PRICING, load_tiers(), fx_rate)
+    priced = _reprice(_import_spec(line), line.get('qty'), tier, currency, load_tiers(), fx_rate)
     line.update(priced)
 
 
@@ -4175,7 +4358,8 @@ def _dimension(value):
 def _known_priced_name(name):
     if not name or name == 'n/a':
         return True
-    return any(row.get('name') == name for row in PRICING)
+    import pricing_catalog
+    return name in pricing_catalog.known_names()
 
 
 def order_for_viewer(order, user, with_coverage=False):
@@ -4444,7 +4628,7 @@ def convert_quote_to_order(quote_id):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if not _usable_size_spec(spec):
             return json_error('This quote does not include the size inputs needed to reprice it.', 400)
-        priced = reprice_size_line(spec, item.get('pcs'), company_tier, currency, PRICING, tiers, _stored_fx(quote))
+        priced = _reprice(spec, item.get('pcs'), company_tier, currency, tiers, _stored_fx(quote))
         line = {
             'name': item.get('name') or '',
             'spec': spec,
@@ -4753,7 +4937,7 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None):
             return None, 'Quantity must be a whole number.'
         if pcs < 1 or pcs > 10000:
             return None, 'Quantity must be at least 1.'
-        priced = reprice_size_line(spec, pcs, tier, currency, PRICING, tiers, fx_rate)
+        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate)
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"

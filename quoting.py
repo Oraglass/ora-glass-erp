@@ -312,13 +312,17 @@ def area_sqf(width, height, unit):
     return (wide * high) / 144
 
 
-def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None):
+def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None, **price_options):
     """Price one per-size line in the quote currency.
 
     The USD sell price comes from the price list. CAD multiplies that once by the
     ERP exchange rate stored on the quote, not by a fixed 1.40 factor.
     """
-    usd = calculate_price_sqf(spec, tier, pricing, tiers)
+    usd = calculate_price_sqf(spec, tier, pricing, tiers, **{
+        key: price_options[key]
+        for key in ('temper_prices', 'tier5_scale', 'unknown_temper', 'extra_per_sqf', 'triple_factor')
+        if key in price_options
+    })
     if str(currency or 'usd').lower() == 'cad':
         if fx_rate in (None, ''):
             import currency_rules
@@ -329,32 +333,61 @@ def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None):
     else:
         rate = 1.0
     sqf = area_sqf((spec or {}).get('width'), (spec or {}).get('height'), (spec or {}).get('unit'))
+    billed = sqf
+    minimum_sqf = float(price_options.get('minimum_sqf') or 0)
+    if minimum_sqf > 0 and sqf < minimum_sqf:
+        billed = minimum_sqf
     price_sqf = round(usd * rate, 2)
-    price_pc = round(usd * sqf * rate, 2)
+    price_pc = round(usd * billed * rate, 2)
     try:
         pieces = int(pcs or 1)
     except (TypeError, ValueError):
         pieces = 1
     if pieces < 1:
         pieces = 1
+    total = round(price_pc * pieces, 2)
+    minimum_charge = float(price_options.get('minimum_charge') or 0)
+    if minimum_charge > 0 and total < minimum_charge:
+        total = round(minimum_charge, 2)
+        price_pc = round(total / pieces, 2)
     return {
         'sqf': round(sqf, 2),
         'price_sqf': price_sqf,
         'price_pc': price_pc,
         'pcs': pieces,
-        'total': round(price_pc * pieces, 2),
+        'total': total,
     }
 
 
-def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
+def calculate_price_sqf(
+    data, tier, pricing, tiers, temper_prices=None, *,
+    tier5_scale=2, unknown_temper=0.65, extra_per_sqf=0.0, triple_factor=1.0,
+):
     """Per-square-foot sell price. Sealants use the spacer markup, matching the existing engine.
 
-    Tier 5 is exactly twice the Tier 2 price of each glass, spacer, and sealant line.
-    Temper add-ons stay the same flat amount at every tier.
+    Tier 5 multiplies each glass, spacer, and sealant line. The default multiple is 2,
+    so Tier 5 stays twice Tier 2. Temper add-ons stay a flat amount at every tier.
     """
     temper_prices = TEMPER_PRICES if temper_prices is None else temper_prices
+    try:
+        scale = float(tier5_scale) if tier == 'T5' else 1.0
+    except (TypeError, ValueError):
+        scale = 2.0 if tier == 'T5' else 1.0
+    if scale < 0:
+        scale = 0.0
+    try:
+        temper_fallback = float(unknown_temper)
+    except (TypeError, ValueError):
+        temper_fallback = 0.65
+    try:
+        third = float(triple_factor)
+    except (TypeError, ValueError):
+        third = 1.0
+    try:
+        extra = float(extra_per_sqf or 0)
+    except (TypeError, ValueError):
+        extra = 0.0
     source = 'T2' if tier == 'T5' else tier
-    scale = 2 if tier == 'T5' else 1
     cfg = (tiers or {}).get(source) or (tiers or {}).get('T2') or {}
     glass_markup = _markup(cfg, 'glass_markup', 0.40)
     spacer_markup = _markup(cfg, 'spacer_markup', 0.40)
@@ -366,10 +399,13 @@ def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
         item = next((row for row in pricing if row['name'] == name), None)
         if not item:
             continue
-        total += round(float(item['base_price']) * (1 + glass_markup), 2) * scale
+        line = round(float(item['base_price']) * (1 + glass_markup), 2) * scale
+        if key == 'glass3':
+            line *= third
+        total += line
         if data.get(key.replace('glass', 'temper')) == 'yes':
             thick = name.split()[-1] if name else ''
-            total += temper_prices.get(thick, 0.65)
+            total += temper_prices.get(thick, temper_fallback)
     for key in ('spacer1', 'spacer2', 'sealant1', 'sealant2'):
         name = data.get(key) or ''
         if not name or name == 'n/a':
@@ -378,6 +414,7 @@ def calculate_price_sqf(data, tier, pricing, tiers, temper_prices=None):
         if not item:
             continue
         total += round(float(item['base_price']) * (1 + spacer_markup), 2) * scale
+    total += extra
     return round(total, 2)
 
 

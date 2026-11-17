@@ -101,10 +101,13 @@ def test_intercompany_uses_the_erp_rate_in_effect_on_the_invoice_date(client):
     assert rate == 1.25
     assert effective == '2020-01-01'
     assert currency_rules.rate_on('2099-06-01')[0] == 1.5
-    page = client.get('/currency-settings')
+    page = client.get('/currency-settings', follow_redirects=True)
     assert page.status_code == 200
     assert b'ERP exchange rate' in page.data
     assert b'admin@oraglass.us' in page.data
+    direct = client.get('/currency', follow_redirects=False)
+    assert direct.status_code == 302
+    assert 'tab=currency' in direct.headers['Location']
     denied = client.post('/logout')
     write_user('lee@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor', customer_tier='T2')
     assert login(client, 'lee@harbor.example').status_code == 302
