@@ -11,6 +11,7 @@ import re
 
 from openpyxl import Workbook, load_workbook
 
+from copy_notes import strip_copy_history
 from quoting import DWG_KIND, SURCHARGE_KIND
 from storage import (
     atomic_write_json,
@@ -494,7 +495,7 @@ def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
         'Width(In)': width_in,
         'Height(In)': height_in,
         'Quantity': quantity,
-        'Remarks': str(item.get('remarks') or '').strip(),
+        'Remarks': strip_copy_history(item.get('remarks')).strip(),
     }
 
 

@@ -22,6 +22,7 @@ from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import shipments
+from copy_notes import strip_copy_history
 from billing import (
     CURRENCIES,
     NEXT_STATUS,
@@ -1213,6 +1214,11 @@ def bootstrap_once():
         highq_owners.reassign_quote_owners()
     except Exception:
         logger.exception('HighQ quote owner fix failed')
+    try:
+        import copy_notes
+        copy_notes.strip_stored_copy_notes()
+    except Exception:
+        logger.exception('Copy history cleanup failed')
     _state['bootstrapped'] = True
 
 
@@ -1979,7 +1985,7 @@ def _pdf_document(source, kind, user=None):
         'updated_by': updated_by,
         'po': source.get('po') or source.get('customer_po') or '',
         'payment_terms': (customer or {}).get('payment_terms') or '',
-        'remarks': source.get('notes') or source.get('remarks') or '',
+        'remarks': strip_copy_history(source.get('notes') or source.get('remarks') or ''),
         'items': source.get('items') or [],
         'extra_charges': source.get('extra_charges') or [],
         'additional_discount_percent': source.get('additional_discount_percent') or 0,
@@ -2039,7 +2045,7 @@ def export_quote():
             'customer_id': customer_id,
             'currency': data.get('currency') or 'usd',
             'user': user.get('email') if user else '',
-            'notes': clean_text(data.get('remarks') or data.get('notes'), 2000),
+            'notes': strip_copy_history(clean_text(data.get('remarks') or data.get('notes'), 2000)),
             'items': items,
             'extra_charges': data.get('extra_charges') or [],
             'additional_discount_percent': data.get('additional_discount_percent') or 0,
@@ -3405,7 +3411,7 @@ def save_quote():
         existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
         existing['updated_by'] = user.get('email') or ''
         if 'notes' in data or 'remarks' in data:
-            existing['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
+            existing['notes'] = strip_copy_history(clean_text(data.get('notes') or data.get('remarks'), 2000))
         if 'job_address' in data:
             existing['job_address'] = clean_text(data.get('job_address'), 500)
         if 'extra_charges' in data:
@@ -3435,7 +3441,7 @@ def save_quote():
         'tier': tier,
     }
     if 'notes' in data or 'remarks' in data:
-        quote['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
+        quote['notes'] = strip_copy_history(clean_text(data.get('notes') or data.get('remarks'), 2000))
     _stamp_terms(quote, quote['items'], new_discount, new_addon)
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
@@ -3446,6 +3452,19 @@ def save_quote():
 
 def _quote_for_viewer(quote, user):
     row = dict(quote)
+    row.pop('copy_note', None)
+    row.pop('copied_from', None)
+    row['notes'] = strip_copy_history(row.get('notes') or '')
+    if isinstance(row.get('remarks'), str):
+        row['remarks'] = strip_copy_history(row.get('remarks'))
+    items = []
+    for item in row.get('items') or []:
+        if isinstance(item, dict):
+            item = dict(item)
+            if isinstance(item.get('remarks'), str):
+                item['remarks'] = strip_copy_history(item.get('remarks'))
+        items.append(item)
+    row['items'] = items
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -3456,10 +3475,6 @@ def _visible_quote(user, quote_id):
     if not (user_has_module(user, 'quotes') or user_has_module(user, 'quote-history')):
         return None
     return next((row for row in quotes_visible_to(user, load_quotes()) if row.get('id') == quote_id), None)
-
-
-def _copy_note(quote_id):
-    return f'Copied from quote #{quote_id}'
 
 
 def _copied_extras(raw):
@@ -3497,7 +3512,9 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             }
             copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
-                copied_line['remarks'] = clean_text(item.get('remarks'), 500)
+                remark = strip_copy_history(clean_text(item.get('remarks'), 500))
+                if remark:
+                    copied_line['remarks'] = remark
             floor = production.floor_code(item)
             if floor:
                 copied_line['floor'] = floor
@@ -3511,7 +3528,9 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             'currency': currency,
         }
         if item.get('remarks'):
-            plain['remarks'] = clean_text(item.get('remarks'), 500)
+            remark = strip_copy_history(clean_text(item.get('remarks'), 500))
+            if remark:
+                plain['remarks'] = remark
         floor = production.floor_code(item)
         if floor:
             plain['floor'] = floor
@@ -3566,9 +3585,7 @@ def copy_quote(quote_id):
         if owner_for_currency:
             currency = _required_currency(owner_for_currency)
     fx_rate = _stored_fx(source)
-    note = _copy_note(quote_id)
-    previous = clean_text(source.get('notes'), 2000)
-    notes = previous if note in previous else (previous + '\n' + note).strip()
+    notes = strip_copy_history(clean_text(source.get('notes'), 2000))
     quote_type = source.get('type') if source.get('type') in {'sqf', 'size'} else 'sqf'
     owner = customers.get(customer_id or '')
     ship = source.get('ship_province') or ''
@@ -3581,7 +3598,6 @@ def copy_quote(quote_id):
         'project': source.get('project') or '',
         'job_address': source.get('job_address') or '',
         'notes': notes,
-        'copy_note': note,
         'copied_from': quote_id,
         'items': _repriced_quote_items(
             source.get('items'), tier, currency, tiers, fx_rate,
@@ -3601,7 +3617,7 @@ def copy_quote(quote_id):
     _stamp_terms(copied, copied['items'], copy_discount, copy_addon)
     stored = append_quote(copied)
     _remember_igus(stored.get('items'), stored.get('date'))
-    return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
+    return jsonify({'success': True, 'id': stored['id']})
 
 
 @app.route('/api/quotes/<int:quote_id>/currency', methods=['POST'])
@@ -4391,6 +4407,30 @@ def order_day(order):
     return text[:10]
 
 
+def _clock(value):
+    """HH:MM:SS from a quote time or an order timestamp, so 9:05 sorts before 10:00."""
+    text = str(value or '').strip()
+    if 'T' in text:
+        text = text.split('T', 1)[1]
+    match = re.match(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', text)
+    if not match:
+        return ''
+    hour, minute, second = int(match.group(1)), match.group(2), match.group(3) or '00'
+    return f'{hour:02d}:{minute}:{second}'
+
+
+def _newest_key(record):
+    """Date, then time, then id. Reverse this to list the newest record first."""
+    approved = str(record.get('approved_at') or '')
+    day = str(record.get('date') or '')[:10] or approved[:10]
+    clock = _clock(record.get('time')) or _clock(approved)
+    try:
+        record_id = int(record.get('id') or 0)
+    except (TypeError, ValueError):
+        record_id = 0
+    return (day, clock, record_id)
+
+
 def filter_quote_rows(quotes):
     customer_id = clean_text(request.args.get('customer_id'), 80)
     user_email = clean_text(request.args.get('user'), 200)
@@ -4417,6 +4457,8 @@ def filter_quote_rows(quotes):
         rows.append(quote)
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (quote_total(row), row.get('id') or 0), reverse=sort == 'total_desc')
+    else:
+        rows.sort(key=_newest_key, reverse=True)
     return rows
 
 
@@ -4441,7 +4483,7 @@ def filter_order_rows(orders):
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (order_total_value(row), row.get('id') or 0), reverse=sort == 'total_desc')
     else:
-        rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
+        rows.sort(key=_newest_key, reverse=True)
     return rows
 
 
@@ -4581,6 +4623,24 @@ def _known_priced_name(name):
     return name in pricing_catalog.known_names()
 
 
+def _scrub_shown_text(value):
+    """Remove copy-history sentences from text that a screen or PDF will show."""
+    if isinstance(value, str):
+        return strip_copy_history(value)
+    if isinstance(value, dict):
+        return {key: _scrub_shown_text(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scrub_shown_text(item) for item in value]
+    return value
+
+
+def _shown_order_line(item):
+    row = production.present_order_line(item)
+    if isinstance(row.get('remarks'), str):
+        row['remarks'] = strip_copy_history(row.get('remarks'))
+    return row
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -4600,7 +4660,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'company': order.get('company') or '',
         'project': order.get('project') or '',
         'job_address': order.get('job_address') or '',
-        'notes': order.get('notes') or '',
+        'notes': strip_copy_history(order.get('notes') or ''),
         'approved_by': order.get('approved_by'),
         'converted_by': order.get('converted_by') or order.get('approved_by') or '',
         'approved_at': order.get('approved_at'),
@@ -4688,10 +4748,10 @@ def order_for_viewer(order, user, with_coverage=False):
                     changes.append(change)
             if changes:
                 changelog.append({'at': entry.get('at'), 'user': entry.get('user'), 'changes': changes})
-        base.update({'items': items, 'changelog': changelog, 'prices_visible': False})
+        base.update({'items': items, 'changelog': _scrub_shown_text(changelog), 'prices_visible': False})
         return base
     view = dict(base)
-    view['items'] = [production.present_order_line(item) for item in (order.get('items') or [])]
+    view['items'] = [_shown_order_line(item) for item in (order.get('items') or [])]
     view['shipping'] = shipments.shipment_progress(order)
     view['shipments'] = _public_shipments(order)
     view['billing_mode'] = _billing_mode(order)
@@ -4707,7 +4767,7 @@ def order_for_viewer(order, user, with_coverage=False):
     view['igu_total'] = summary.get('igu_total', view['igu_subtotal'])
     view['extras_total'] = summary.get('extras_total', 0)
     view['total'] = summary.get('total', money(order.get('total')))
-    view['changelog'] = list(order.get('changelog') or [])
+    view['changelog'] = _scrub_shown_text(list(order.get('changelog') or []))
     view['prices_visible'] = True
     if with_coverage:
         customer = dict(load_customers().get(order.get('customer_id') or '') or {})
@@ -4879,7 +4939,9 @@ def convert_quote_to_order(quote_id):
         }
         line.update(_size_price_fields(priced))
         if item.get('remarks'):
-            line['remarks'] = clean_text(item.get('remarks'), 500)
+            remark = strip_copy_history(clean_text(item.get('remarks'), 500))
+            if remark:
+                line['remarks'] = remark
         floor = production.floor_code(item)
         if floor:
             line['floor'] = clean_text(floor, 80)
@@ -5223,7 +5285,9 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
         if raw_item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
         if raw_item.get('remarks'):
-            line['remarks'] = clean_text(raw_item.get('remarks'), 500)
+            remark = strip_copy_history(clean_text(raw_item.get('remarks'), 500))
+            if remark:
+                line['remarks'] = remark
         floor = production.floor_code(raw_item)
         if floor:
             line['floor'] = clean_text(floor, 80)
@@ -5286,7 +5350,7 @@ def _edited_order(order, data, tiers):
     updated['items'] = items
     updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
     updated['job_address'] = clean_text(data.get('job_address'), 500) if 'job_address' in data else (order.get('job_address') or '')
-    updated['notes'] = clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or '')
+    updated['notes'] = strip_copy_history(clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or ''))
     if 'ship_province' in data:
         from storage import PROVINCE_CODES
         chosen = clean_text(data.get('ship_province'), 8).upper()

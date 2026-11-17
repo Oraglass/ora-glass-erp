@@ -419,7 +419,7 @@ async function loadCopiedQuote() {
   document.getElementById('project-name').value = quote.project || '';
   const jobAddress = document.getElementById('job-address');
   if (jobAddress) jobAddress.value = quote.job_address || '';
-  showCopyNote(quote.copy_note || quote.notes || '');
+  showCopyNote(quote.notes || '');
   showQuoteTax(quote.tax_label || '');
   if (quote.fx_rate) erpRate = Number(quote.fx_rate);
   selectedCurrency = quote.currency || 'usd';
