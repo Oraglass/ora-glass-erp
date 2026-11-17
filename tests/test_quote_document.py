@@ -77,6 +77,8 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert b'Raising Cane' in text
     assert b'Remarks:' in text
     assert b'COD' in text
+    assert b'GST/HST#' not in text
+    assert b'729631119' not in text
     assert b'QTY' in text
     assert b'WIDTH' in text
     assert b'HEIGHT' in text

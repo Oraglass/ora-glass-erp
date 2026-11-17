@@ -234,7 +234,10 @@ def test_removing_a_number_changes_new_documents_only(client):
     assert b'GST 5%' in confirmation
     assert b'PST 7%' not in confirmation
     assert b'PST:' in confirmation
+    assert b'GST/HST#' in confirmation
     assert b'729631119 RT0001' in confirmation
+    assert b'GST/HST#' in pdf_text(with_number)
+    assert b'729631119 RT0001' in pdf_text(with_number)
     quote_pdf = pdf_text(client.post('/api/export-quote', json={'id': quote_id}).data)
     assert b'GST 5%' in quote_pdf
     assert b'PST 7%' in quote_pdf

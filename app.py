@@ -2042,6 +2042,7 @@ def _pdf_document(source, kind, user=None):
         'pst_number': source.get('pst_number') or '',
         'qst_number': source.get('qst_number') or '',
         'seller_gst_number': source.get('seller_gst_number') or '',
+        'show_seller_gst': bool(source.get('show_seller_gst')),
         'ship_province': source.get('ship_province') or '',
         'type': source.get('type') or ('size' if kind == 'order' else ''),
         'weight_factor': pricing_catalog.formula_number('glass_lb_per_sqf_mm', 0.512),
@@ -3350,6 +3351,7 @@ def _apply_canada_tax(document, customer, ship_province=None, rates=None):
     document.update(_canada_tax_fields(customer, ship_province))
     document.update(_tax_number_snapshot(customer))
     document['seller_gst_number'] = tax_numbers.seller_gst_number()
+    document['show_seller_gst'] = True
     pretax = document.get('pretax_total')
     if pretax in (None, ''):
         pretax = document.get('total')
@@ -3399,6 +3401,7 @@ def _with_quote_tax(quote):
         row['pst_number'] = snapshot['pst_number']
         row['qst_number'] = snapshot['qst_number']
         row['seller_gst_number'] = tax_numbers.seller_gst_number()
+        row['show_seller_gst'] = True
         row['tax_lines'] = tax_numbers.tax_breakdown(
             row.get('ship_province'), _quote_pretax(row),
             snapshot['pst_number'], snapshot['qst_number'],
@@ -5259,7 +5262,8 @@ def convert_quote_to_order(quote_id):
         'tax_label': tax.get('tax_label') or '',
         'pst_number': snapshot['pst_number'],
         'qst_number': snapshot['qst_number'],
-        'seller_gst_number': tax_numbers.seller_gst_number(),
+        'seller_gst_number': tax_numbers.seller_gst_number() if tax else '',
+        'show_seller_gst': bool(tax),
         'drawings': [],
         'status': 'approved',
         'changelog': [],
@@ -6751,7 +6755,13 @@ def _render_invoice_pdf(invoice):
         logo,
         Paragraph(
             f"<b>{'Credit Note' if document_type(invoice) == 'credit_note' else 'Invoice'}</b>"
-            '<br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>',
+            '<br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA'
+            + (
+                f"<br/>Ora Glass (Canada) Inc. GST/HST# {escape(invoice.get('seller_gst_number'))}"
+                if invoice.get('show_seller_gst') and invoice.get('seller_gst_number')
+                else ''
+            )
+            + '</font>',
             title_style,
         ),
         Paragraph(
@@ -6781,10 +6791,6 @@ def _render_invoice_pdf(invoice):
         elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
     elif invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
         elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
-    if invoice.get('seller_gst_number') and invoice.get('issuer') == 'ca' and invoice.get('kind') != 'intercompany':
-        elements.append(Paragraph(
-            f"<b>GST/HST:</b> {escape(invoice.get('seller_gst_number'))}", label_style,
-        ))
     for line in invoice.get('tax_lines') or []:
         if not isinstance(line, dict):
             continue

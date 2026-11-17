@@ -204,10 +204,11 @@ def _header(document, styles):
         f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
         f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
     ])
-    registration = _registration_lines(document)
-    if registration:
-        meta += '<br/>' + '<br/>'.join(registration)
-    title_text = f'{escape(title)}<br/><font size="8">{COMPANY_ADDRESS}</font>'
+    address = COMPANY_ADDRESS
+    seller_gst = _seller_gst_line(document)
+    if seller_gst:
+        address += f'<br/>{seller_gst}'
+    title_text = f'{escape(title)}<br/><font size="8">{address}</font>'
     header = Table(
         [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
         colWidths=[1.25 * inch, 3.05 * inch, 3.4 * inch],
@@ -220,6 +221,9 @@ def _header(document, styles):
         ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
     ]))
     sold = [f'<b>Sold To:</b> {escape(str(document.get("company") or ""))}']
+    customer_tax = _customer_tax_id(document)
+    if customer_tax:
+        sold.append(customer_tax)
     sold.extend(escape(str(line)) for line in document.get('sold_to') or [] if str(line).strip())
     job = [f'<b>Job Name:</b> {escape(str(document.get("project") or ""))}']
     job.extend(escape(str(line)) for line in document.get('job_address') or [] if str(line).strip())
@@ -339,20 +343,26 @@ def _grid():
     ])
 
 
-def _registration_lines(document):
-    """Customer PST or QST, and Ora Glass Canada's GST/HST number. Blank numbers are omitted."""
+def _seller_gst_line(document):
+    """Ora Glass (Canada) Inc's number, under the Lynden address. US documents omit it."""
+    if not document.get('show_seller_gst'):
+        return ''
+    gst = str(document.get('seller_gst_number') or '').strip()
+    if not gst:
+        return ''
+    return f'Ora Glass (Canada) Inc. GST/HST# {escape(gst)}'
+
+
+def _customer_tax_id(document):
+    """The customer's PST or QST, printed with Sold To. Omitted when none is saved."""
     province = str(document.get('ship_province') or '').strip().upper()
-    lines = []
     qst = str(document.get('qst_number') or '').strip()
     pst = str(document.get('pst_number') or '').strip()
     if province == 'QC' and qst:
-        lines.append(f'<b>QST:</b> {escape(qst)}')
-    elif pst and province in {'BC', 'SK', 'MB'}:
-        lines.append(f'<b>PST:</b> {escape(pst)}')
-    gst = str(document.get('seller_gst_number') or '').strip()
-    if gst and (lines or province or document.get('tax_lines')):
-        lines.append(f'<b>GST/HST:</b> {escape(gst)}')
-    return lines
+        return f'<b>QST:</b> {escape(qst)}'
+    if pst and province in {'BC', 'SK', 'MB'}:
+        return f'<b>PST:</b> {escape(pst)}'
+    return ''
 
 
 def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
