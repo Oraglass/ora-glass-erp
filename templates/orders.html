@@ -270,6 +270,7 @@ function renderDetail(order) {
     + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.</p>'
+    + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
     + notes + jobText + jobForm + tax + (documents ? documentNote : invoice)
     + shipForm
     + '<div class="actions">' + buttons + '</div>'

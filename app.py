@@ -405,8 +405,11 @@ def effective_module_ids(user):
             chosen = [module_id for module_id in stored if module_id in CUSTOMER_CEILING]
         if 'dashboard' not in chosen:
             chosen.insert(0, 'dashboard')
-        # Sales force cannot open Orders, even if that checkbox is ticked.
-        if customer_subrole(user) != 'management':
+        # Orders follows "Can place production orders", not the module checkbox.
+        if can_place_production_orders(user):
+            if 'orders' not in chosen:
+                chosen.append('orders')
+        else:
             chosen = [module_id for module_id in chosen if module_id != 'orders']
         return chosen
     if stored is None:
@@ -819,6 +822,7 @@ def public_user(user, customers, tiers):
         'modules_label': modules_label(user),
         'customer_subrole': customer_subrole(user) if user.get('role') == 'customer' else None,
         'customer_subrole_label': customer_subrole_label(user) if user.get('role') == 'customer' else None,
+        'place_production_orders': can_place_production_orders(user) if user.get('role') == 'customer' else False,
         'edit_orders': bool(user.get('edit_orders')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'update_order_status': bool(user.get('update_order_status')) if user.get('role') in LEGACY_STAFF_ROLES else False,
         'record_payments': bool(user.get('record_payments')) if user.get('role') in LEGACY_STAFF_ROLES else False,
@@ -891,6 +895,29 @@ def customer_subrole(user):
 
 def customer_subrole_label(user):
     return 'Management' if customer_subrole(user) == 'management' else 'Operations'
+
+
+def can_place_production_orders(user):
+    """Customer privilege to send a quote to production.
+
+    A missing value keeps today's rule: Management can, Operations cannot.
+    Ora Glass staff are not this privilege; they use the Orders module.
+    """
+    if not user or user.get('role') != 'customer':
+        return False
+    if 'place_production_orders' in user:
+        return bool(user.get('place_production_orders'))
+    return customer_subrole(user) == 'management'
+
+
+def apply_place_production_orders(record, data):
+    if record.get('role') != 'customer':
+        record.pop('place_production_orders', None)
+        return
+    if 'place_production_orders' in data:
+        record['place_production_orders'] = bool(data.get('place_production_orders'))
+    elif 'place_production_orders' not in record:
+        record['place_production_orders'] = customer_subrole(record) == 'management'
 
 
 def apply_customer_subrole(record, data):
@@ -2696,7 +2723,7 @@ def quote_history():
     return render_template(
         'quote_history.html',
         note=scope_note(),
-        can_order=customer_subrole(user) == 'management' or staff,
+        can_order=can_place_production_orders(user) or staff,
         staff_order=staff,
         staff_tools=user.get('role') != 'customer',
         show_fx_rate=user.get('role') != 'customer',
@@ -2975,6 +3002,7 @@ def add_user():
     subrole_error = apply_customer_subrole(record, data)
     if subrole_error:
         return json_error(subrole_error, 400)
+    apply_place_production_orders(record, data)
     apply_order_privileges(record, data)
     apply_manage_time(record, data)
     apply_manage_payroll(record, data)
@@ -3044,6 +3072,7 @@ def update_user(email):
     subrole_error = apply_customer_subrole(user, data)
     if subrole_error:
         return json_error(subrole_error, 400)
+    apply_place_production_orders(user, data)
     apply_order_privileges(user, data)
     apply_manage_time(user, data)
     apply_manage_payroll(user, data)
@@ -4509,8 +4538,17 @@ def _order_prices_visible(user):
 
 def orders_visible_to(user, orders):
     if user.get('role') == 'customer':
+        if not can_place_production_orders(user):
+            return []
         customer_id = user.get('customer_id')
-        return [order for order in orders if order.get('customer_id') == customer_id]
+        own_company = [order for order in orders if order.get('customer_id') == customer_id]
+        if customer_subrole(user) == 'management':
+            return own_company
+        email = user.get('email')
+        return [
+            order for order in own_company
+            if (order.get('converted_by') or order.get('approved_by')) == email
+        ]
     return list(orders)
 
 
@@ -4564,6 +4602,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'job_address': order.get('job_address') or '',
         'notes': order.get('notes') or '',
         'approved_by': order.get('approved_by'),
+        'converted_by': order.get('converted_by') or order.get('approved_by') or '',
         'approved_at': order.get('approved_at'),
         'date': order.get('date'),
         'currency': order.get('currency') or 'usd',
@@ -4764,9 +4803,9 @@ def _customer_for_staff_order(data, customers, tiers, user, suggested=None):
 def convert_quote_to_order(quote_id):
     user = current_user()
     staff = staff_can_order(user)
-    management = customer_subrole(user) == 'management'
-    if not staff and not management:
-        return json_error('Only customer management, or Ora Glass staff with Orders, can send a quote to production.', 403)
+    customer_order = can_place_production_orders(user)
+    if not staff and not customer_order:
+        return json_error('You are not allowed to send a quote to production.', 403)
     if request.files or (request.content_type or '').startswith('multipart/'):
         data = request.form.to_dict(flat=True)
         if data.get('new_customer'):
@@ -4782,8 +4821,11 @@ def convert_quote_to_order(quote_id):
     quote = next((row for row in quotes if row.get('id') == quote_id), None)
     if not quote:
         return json_error('Not found', 404)
-    if management and quote.get('customer_id') != user.get('customer_id'):
-        return json_error('Not found', 404)
+    if customer_order:
+        if quote.get('customer_id') != user.get('customer_id'):
+            return json_error('Not found', 404)
+        if not quotes_visible_to(user, [quote]):
+            return json_error('Not found', 404)
     if quote.get('type') != 'size':
         return json_error('Only per-size quotes can be sent to production.', 400)
     if quote.get('order_id'):
@@ -4793,7 +4835,7 @@ def convert_quote_to_order(quote_id):
         return json_error('This quote has no lines.', 400)
     customers = load_customers()
     tiers = load_tiers()
-    if management:
+    if user.get('role') == 'customer':
         customer_id = user.get('customer_id')
         customer = customers.get(customer_id or '') or {}
         company_tier = _company_tier(customer, tiers)
@@ -4896,7 +4938,7 @@ def convert_quote_to_order(quote_id):
     warning = None
     if not credit_check['allowed']:
         message = credit_message(credit_check)
-        if management:
+        if user.get('role') == 'customer':
             return json_error(message, 400)
         warning = message
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -4932,6 +4974,7 @@ def convert_quote_to_order(quote_id):
         'status': 'approved',
         'changelog': [],
         'approved_by': user.get('email'),
+        'converted_by': user.get('email'),
         'approved_at': approved_at,
         'date': approved_at[:10],
     })
