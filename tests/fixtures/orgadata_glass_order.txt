@@ -1,0 +1,25 @@
+Open Windows / 1600 Savage Road / Richmond BC
+Date: 2026-11-16
+Glass/Panel Order
+Project name: AF17.0413.VLD.iKeith Pagnac.HH    Job number: 2026-00348
+Person in Charge: Alaleh Ashrafi
+Glass
+Name: 28 6UD80 + 6AGC Planibel G, 28mm ULTRACLEAR 6mm Optisolar UD80 (2) + 6mm AGC Planibel G (4) TEMPERED ARGON
+Configuration: 2x6mm
+Thickness: 6/16/6 = 28 mm   Spacer: Aluminium/Steel
+Position / Number | Quantity | Width [mm] | Height [mm] | Area [m²/Sum] | Perimeter [m/Sum] | Weight [kg/Sum]
+W01 / 1 1 542 1,288 0.70 3.66 20.9
+W01 / 2 1 497 1,221 0.61 3.44 18.2
+W02 / 1 1 792 1,221 0.97 4.03 29.0
+W02 / 2 1 860 1,288 1.11 4.30 33.2
+W03 / 1 1 1,015 1,441 1.46 4.91 43.9
+W03 / 2 1 942 1,374 1.30 4.63 38.8
+W04 / 1 1 627 1,227 0.77 3.71 23.1
+W04 / 2 1 695 1,294 0.90 3.98 27.0
+D05 / 1 2 1,103 1,881 4.15 5.97 62.2
+W06 / 1 1 599 1,377 0.83 3.95 24.8
+W06 / 2 1 745 1,444 1.08 4.38 32.3
+Sum: 12  13.85 52.91 415.6
+Page 1
+Sum Quantity: 12 Pcs. Sum Area: 13.85 m² Sum Perimeter: 52.91 m Sum Weight: 415.59 kg
+Page 2

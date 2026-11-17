@@ -67,6 +67,7 @@ from quoting import (
     suggest_sealant,
     tier_for_request,
 )
+import orgadata_import
 from order_import import (
     OrderImportError,
     add_import,
@@ -3685,6 +3686,8 @@ def _quote_for_viewer(quote, user):
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
+    row['has_source_pdf'] = bool(row.get('source_file'))
+    row.pop('source_file', None)
     return row
 
 
@@ -4581,6 +4584,475 @@ def finish_template_request(request_id):
         return json_error('Not found', 404)
     save_requests(rows)
     return jsonify(public_request(found))
+
+
+def _orgadata_owned(user, import_id):
+    record = next((row for row in orgadata_import.load_imports() if row.get('id') == import_id), None)
+    if not record or user.get('role') == 'shop':
+        return None
+    if user.get('role') == 'customer':
+        if record.get('customer_id') != user.get('customer_id'):
+            return None
+        if record.get('user') != user.get('email') and customer_subrole(user) != 'management':
+            return None
+    return record
+
+
+def _orgadata_choose_customer(user, requested, sender):
+    customers = load_customers()
+    matches = orgadata_import.matching_customers(sender, customers)
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id') or ''
+        customer = customers.get(customer_id)
+        if not customer:
+            return '', None, matches, 'Your account is not linked to a customer.'
+        return customer_id, customer, matches, ''
+    customer_id = clean_text(requested, 64)
+    if customer_id:
+        customer = customers.get(customer_id)
+        if not customer:
+            return '', None, matches, 'Unknown customer.'
+        return customer_id, customer, matches, ''
+    if len(matches) == 1:
+        return matches[0], customers.get(matches[0]), matches, ''
+    return '', None, matches, ''
+
+
+def _orgadata_apply_edits(mapped, edits, glass_names, spacer_names):
+    if not isinstance(edits, dict):
+        return mapped
+    for key, limit in (('project', 200), ('po', 80), ('contact', 200), ('reference_date', 10)):
+        if key in edits:
+            mapped[key] = clean_text(edits.get(key), limit)
+    incoming_blocks = edits.get('blocks') if isinstance(edits.get('blocks'), list) else []
+    for index, incoming in enumerate(incoming_blocks):
+        if index >= len(mapped.get('blocks') or []) or not isinstance(incoming, dict):
+            continue
+        block = mapped['blocks'][index]
+        for field, limit in (('name', 500), ('configuration', 80), ('thickness', 80), ('spacer_source', 80)):
+            if field in incoming:
+                block[field] = clean_text(incoming.get(field), limit)
+        lites_in = incoming.get('lites') if isinstance(incoming.get('lites'), list) else []
+        for lite_index, lite_in in enumerate(lites_in):
+            if lite_index >= len(block.get('lites') or []) or not isinstance(lite_in, dict):
+                continue
+            lite = block['lites'][lite_index]
+            if 'product' in lite_in:
+                lite['product'] = _known_product(lite_in.get('product'), glass_names)
+                lite['matched'] = bool(lite['product'])
+            if lite_in.get('temper') in {'yes', 'n/a'}:
+                lite['temper'] = lite_in.get('temper')
+        spacers_in = incoming.get('spacers') if isinstance(incoming.get('spacers'), list) else []
+        for spacer_index, spacer_in in enumerate(spacers_in):
+            if spacer_index >= len(block.get('spacers') or []) or not isinstance(spacer_in, dict):
+                continue
+            spacer = block['spacers'][spacer_index]
+            if 'product' in spacer_in:
+                spacer['product'] = _known_product(spacer_in.get('product'), spacer_names)
+                spacer['matched'] = bool(spacer['product'])
+    incoming_lines = edits.get('lines') if isinstance(edits.get('lines'), list) else []
+    by_number = {}
+    for block in mapped.get('blocks') or []:
+        for line in block.get('lines') or []:
+            by_number[line.get('line_number')] = line
+    for incoming in incoming_lines:
+        if not isinstance(incoming, dict):
+            continue
+        try:
+            number = int(incoming.get('line_number'))
+        except (TypeError, ValueError):
+            continue
+        line = by_number.get(number)
+        if not line:
+            continue
+        if 'floor' in incoming:
+            line['floor'] = clean_text(incoming.get('floor'), 80)
+        if 'qty' in incoming:
+            try:
+                line['qty'] = int(incoming.get('qty'))
+            except (TypeError, ValueError):
+                line['qty'] = 0
+        for key in ('width_mm', 'height_mm'):
+            if key in incoming:
+                try:
+                    line[key] = float(incoming.get(key))
+                except (TypeError, ValueError):
+                    line[key] = 0
+    return mapped
+
+
+def _orgadata_refresh_warnings(mapped):
+    mapped['warnings'] = [
+        warning for warning in (mapped.get('warnings') or [])
+        if not str(warning).startswith('Quantity ')
+    ]
+    total = 0
+    for block in mapped.get('blocks') or []:
+        block['warnings'] = [
+            warning for warning in (block.get('warnings') or [])
+            if not str(warning).startswith('Choose an ERP') and not str(warning).startswith('Quantity ')
+        ]
+        for lite in block.get('lites') or []:
+            if not lite.get('product'):
+                block['warnings'].append(f'Choose an ERP glass for {lite.get("source") or "this lite"}.')
+        for spacer in block.get('spacers') or []:
+            if not spacer.get('product') and (spacer.get('source') or spacer.get('gap_mm')):
+                block['warnings'].append(
+                    f'Choose an ERP spacer for {spacer.get("source") or "the spacer"} {spacer.get("gap_mm")} mm.'
+                )
+        got = 0
+        for line in block.get('lines') or []:
+            try:
+                got += int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                pass
+        total += got
+        if block.get('sum_qty') is not None and got != block.get('sum_qty'):
+            block['warnings'].append(f'Quantity {got} does not match the Sum: row ({block.get("sum_qty")}).')
+    if mapped.get('sum_quantity') is not None and total != mapped.get('sum_quantity'):
+        mapped['warnings'].append(
+            f'Quantity {total} does not match Sum Quantity: {mapped.get("sum_quantity")} Pcs.'
+        )
+    return mapped
+
+
+def _orgadata_ready(block):
+    lites = block.get('lites') or []
+    if not lites or any(not lite.get('product') for lite in lites):
+        return False
+    needed = max(len(lites) - 1, 0)
+    spacers = (block.get('spacers') or [])[:needed]
+    if len(spacers) < needed or any(not spacer.get('product') for spacer in spacers):
+        return False
+    return True
+
+
+def _orgadata_spec(block, width_mm, height_mm):
+    sealants = _live_materials()[2]
+    spec = {
+        'width': width_mm,
+        'height': height_mm,
+        'unit': 'mm',
+        'argon': bool(block.get('argon')),
+    }
+    lites = block.get('lites') or []
+    spacers = block.get('spacers') or []
+    for index, lite in enumerate(lites[:3], 1):
+        spec[f'glass{index}'] = lite.get('product') or ''
+        spec[f'temper{index}'] = lite.get('temper') if lite.get('temper') in {'yes', 'n/a'} else 'n/a'
+        if index <= len(spacers) and index < 3:
+            spacer = spacers[index - 1].get('product') or ''
+            spec[f'spacer{index}'] = spacer
+            spec[f'sealant{index}'] = suggest_sealant(spacer, sealants).get('selected') or '' if spacer else ''
+    for index in range(len(lites) + 1, 4):
+        spec.setdefault(f'glass{index}', '')
+        spec.setdefault(f'temper{index}', 'n/a')
+        spec.setdefault(f'spacer{index}', '')
+        spec.setdefault(f'sealant{index}', '')
+    return spec
+
+
+def _orgadata_aliases_from(mapped):
+    glass = {}
+    spacer = {}
+    for block in mapped.get('blocks') or []:
+        for lite in block.get('lites') or []:
+            if lite.get('source') and lite.get('product'):
+                glass[lite['source']] = lite['product']
+        for item in block.get('spacers') or []:
+            if item.get('product'):
+                spacer[f'{item.get("source") or ""} {item.get("gap_mm")}'] = item['product']
+    return glass, spacer
+
+
+def _orgadata_preview(record, user, edits=None):
+    path = upload_abspath(record.get('stored'))
+    if not path:
+        return {'id': record.get('id'), 'source': orgadata_import.SOURCE_LABEL, 'error': 'The uploaded file is missing.', 'blocks': [], 'lines': []}
+    try:
+        parsed = orgadata_import.parse_pdf(path)
+    except orgadata_import.OrgadataImportError as exc:
+        return {'id': record.get('id'), 'source': orgadata_import.SOURCE_LABEL, 'error': str(exc), 'blocks': [], 'lines': []}
+    requested = (edits or {}).get('customer_id') if isinstance(edits, dict) else None
+    if requested in (None, ''):
+        requested = record.get('customer_id')
+    customer_id, customer, matches, error = _orgadata_choose_customer(user, requested, parsed.get('sender'))
+    if error:
+        return {'id': record.get('id'), 'source': orgadata_import.SOURCE_LABEL, 'error': error, 'blocks': [], 'lines': []}
+    if customer_id and customer_id != record.get('customer_id'):
+        record['customer_id'] = customer_id
+        record['company'] = (customer or {}).get('name') or ''
+        orgadata_import.replace_import(record.get('id'), record)
+    glass_names, spacer_names = _catalog_names()
+    aliases = orgadata_import.aliases_for(customer_id)
+    mapped = orgadata_import.map_document(parsed, glass_names, spacer_names, aliases)
+    mapped = _orgadata_apply_edits(mapped, edits or {}, glass_names, spacer_names)
+    mapped = _orgadata_refresh_warnings(mapped)
+    if isinstance(edits, dict) and edits.get('remember') and customer_id:
+        glass, spacer = _orgadata_aliases_from(mapped)
+        orgadata_import.remember_aliases(customer_id, glass, spacer)
+    if customer and user.get('role') == 'customer' and customer_id not in matches and parsed.get('sender'):
+        mapped['warnings'] = list(mapped.get('warnings') or []) + [
+            f'This file is from {parsed.get("sender")}. The quote stays on your company.',
+        ]
+    currency = _required_currency(customer) if customer else 'usd'
+    tier = _import_tier(user, (edits or {}).get('tier') if isinstance(edits, dict) else '')
+    fx_rate = _current_fx()[0]
+    addon = _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000))
+    minimum = _effective_minimum(customer)
+    lines = []
+    blocks_out = []
+    for index, block in enumerate(mapped.get('blocks') or []):
+        ready = _orgadata_ready(block)
+        product_id = ''
+        missing_id = False
+        sample = None
+        for line in block.get('lines') or []:
+            if line.get('width_mm') and line.get('height_mm'):
+                sample = line
+                break
+        if ready and sample:
+            spec = _orgadata_spec(block, sample.get('width_mm'), sample.get('height_mm'))
+            found = production.lookup_product(spec)
+            product_id = str(found.get('product_id') or '').strip()
+            missing_id = not product_id
+            if missing_id:
+                block['warnings'].append(
+                    'No production ID yet. Staff can add it in Production settings. This import does not invent one.'
+                )
+        block_lines = []
+        for line in block.get('lines') or []:
+            warnings = []
+            try:
+                width = float(line.get('width_mm') or 0)
+                height = float(line.get('height_mm') or 0)
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                width = height = 0
+                qty = 0
+            if width <= 0 or height <= 0:
+                warnings.append('Width and height must be millimetres greater than zero.')
+            if qty < 1:
+                warnings.append('Quantity must be a whole number.')
+            priced = {}
+            if ready and not warnings and tier:
+                spec = _orgadata_spec(block, width, height)
+                priced = _reprice(spec, qty, tier, currency, load_tiers(), fx_rate, addon, minimum)
+            width_in = height_in = None
+            if width > 0 and height > 0:
+                _wmm, _hmm, width_in, height_in = production.dimensions_mm_in(width, height, 'mm')
+            row = {
+                'line_number': line.get('line_number'),
+                'block': index,
+                'floor': line.get('floor') or '',
+                'qty': qty,
+                'width_mm': width,
+                'height_mm': height,
+                'width_in': width_in,
+                'height_in': height_in,
+                'product_id': product_id if ready else '',
+                'product_id_missing': missing_id if ready else False,
+                'price_sqf': priced.get('price_sqf'),
+                'price_pc': priced.get('price_pc'),
+                'sqf': priced.get('sqf'),
+                'real_sqf': priced.get('real_sqf'),
+                'minimum_sqf': priced.get('minimum_sqf') or 0,
+                'total': priced.get('total'),
+                'warnings': warnings,
+            }
+            block_lines.append(row)
+            lines.append(row)
+        blocks_out.append({
+            'name': block.get('name') or '',
+            'configuration': block.get('configuration') or '',
+            'thickness': block.get('thickness') or '',
+            'spacer_source': block.get('spacer_source') or '',
+            'tempered': bool(block.get('tempered')),
+            'argon': bool(block.get('argon')),
+            'sum_qty': block.get('sum_qty'),
+            'lites': block.get('lites') or [],
+            'spacers': block.get('spacers') or [],
+            'product_id': product_id if ready else '',
+            'product_id_missing': missing_id if ready else False,
+            'warnings': block.get('warnings') or [],
+            'lines': block_lines,
+        })
+    body = {
+        'id': record.get('id'),
+        'source': orgadata_import.SOURCE_LABEL,
+        'filename': record.get('filename') or '',
+        'sender': mapped.get('sender') or '',
+        'customer_id': customer_id,
+        'customer_matches': matches,
+        'project': mapped.get('project') or '',
+        'po': mapped.get('po') or '',
+        'contact': mapped.get('contact') or '',
+        'reference_date': mapped.get('reference_date') or '',
+        'currency': currency,
+        'tier': tier or '',
+        'sum_quantity': mapped.get('sum_quantity'),
+        'warnings': mapped.get('warnings') or [],
+        'blocks': blocks_out,
+        'lines': lines,
+        'can_set_production_id': _is_ora_staff(user),
+        'error': '',
+    }
+    if user.get('role') != 'customer':
+        body['fx_rate'] = fx_rate
+    return body
+
+
+def _orgadata_quote_items(preview):
+    items = []
+    blocked = False
+    for block in preview.get('blocks') or []:
+        if any(not lite.get('matched') for lite in block.get('lites') or []):
+            blocked = True
+        if any(not spacer.get('matched') for spacer in block.get('spacers') or []):
+            blocked = True
+        for line in block.get('lines') or []:
+            if line.get('warnings') or line.get('total') in (None, ''):
+                blocked = True
+            width_in, height_in = production.dimensions_mm_in(line.get('width_mm'), line.get('height_mm'), 'mm')[2:]
+            spec = _orgadata_spec(block, line.get('width_mm'), line.get('height_mm'))
+            items.append({
+                'name': production.makeup_from_spec(spec) or block.get('name') or 'Glass',
+                'floor': line.get('floor') or '',
+                'pcs': line.get('qty'),
+                'sqf': line.get('sqf'),
+                'real_sqf': line.get('real_sqf') if line.get('real_sqf') not in (None, '') else line.get('sqf'),
+                'minimum_sqf': line.get('minimum_sqf') or 0,
+                'price_sqf': line.get('price_sqf'),
+                'price_pc': line.get('price_pc'),
+                'total': line.get('total'),
+                'spec': spec,
+                'width_in': width_in,
+                'height_in': height_in,
+            })
+    if blocked:
+        return None, 'Choose an ERP glass and spacer for every lite before creating the quote.'
+    if not items:
+        return None, 'The file has no size rows.'
+    return items, None
+
+
+@app.route('/api/orgadata-imports', methods=['POST'])
+@module_required('quotes')
+def create_orgadata_import():
+    user = current_user()
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return json_error('Choose a PDF.', 400)
+    payload = upload.read(9 * 1024 * 1024)
+    try:
+        kind, ext = check_upload(upload.filename, payload)
+    except OrderImportError as exc:
+        return json_error(str(exc), 400)
+    if kind != 'pdf' or ext != 'pdf':
+        return json_error('Upload a PDF.', 400)
+    stored_name = store_upload(upload.filename, payload)
+    path = upload_abspath(stored_name)
+    try:
+        parsed = orgadata_import.parse_pdf(path)
+    except orgadata_import.OrgadataImportError as exc:
+        return json_error(str(exc), 400)
+    customer_id, customer, _matches, error = _orgadata_choose_customer(
+        user, request.form.get('customer_id'), parsed.get('sender'),
+    )
+    if error:
+        return json_error(error, 400)
+    record = orgadata_import.add_import({
+        'customer_id': customer_id,
+        'company': (customer or {}).get('name') or '',
+        'user': user.get('email'),
+        'filename': safe_filename(upload.filename),
+        'stored': stored_name,
+        'sender': parsed.get('sender') or '',
+        'status': 'preview',
+    })
+    return jsonify(_orgadata_preview(record, user))
+
+
+@app.route('/api/orgadata-imports/<int:import_id>/preview', methods=['POST'])
+@module_required('quotes')
+def preview_orgadata_import(import_id):
+    user = current_user()
+    record = _orgadata_owned(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    return jsonify(_orgadata_preview(record, user, data))
+
+
+@app.route('/api/orgadata-imports/<int:import_id>/quote', methods=['POST'])
+@module_required('quotes')
+def quote_from_orgadata(import_id):
+    user = current_user()
+    record = _orgadata_owned(user, import_id)
+    if not record:
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    data = dict(data)
+    data['remember'] = True if data.get('remember', True) else False
+    preview = _orgadata_preview(record, user, data)
+    if preview.get('error'):
+        return json_error(preview['error'], 400)
+    if not preview.get('customer_id'):
+        return json_error('Choose a customer company.', 400)
+    items, error = _orgadata_quote_items(preview)
+    if error:
+        return json_error(error, 400)
+    customer = load_customers().get(preview['customer_id'])
+    tier = preview.get('tier')
+    if not tier:
+        return json_error('That pricing tier is not available.', 400)
+    contact = clean_text(preview.get('contact'), 200)
+    notes = f'Person in Charge: {contact}' if contact else ''
+    discount, addon = _saved_or_company_terms(None, customer)
+    quote = {
+        'date': date.today().isoformat(),
+        'time': datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M'),
+        'user': user.get('email'),
+        'company': (customer or {}).get('name') or record.get('company') or '',
+        'customer_id': preview['customer_id'],
+        'project': clean_text(preview.get('project'), 200),
+        'po': clean_text(preview.get('po'), 80),
+        'reference_date': clean_text(preview.get('reference_date'), 10),
+        'notes': notes,
+        'items': items,
+        'currency': preview.get('currency') or 'usd',
+        'fx_rate': _current_fx()[0],
+        'type': 'size',
+        'tier': tier,
+        'status': 'draft',
+        'source': orgadata_import.SOURCE_LABEL,
+        'source_file': record.get('stored') or '',
+        'source_filename': record.get('filename') or '',
+        'orgadata_import_id': record.get('id'),
+    }
+    _stamp_terms(quote, items, discount, addon)
+    quote.update(_canada_tax_fields(customer, None))
+    stored = append_quote(quote)
+    _remember_igus(stored.get('items'), stored.get('date'))
+    record['status'] = 'quoted'
+    record['quote_id'] = stored['id']
+    record['customer_id'] = preview['customer_id']
+    orgadata_import.replace_import(record['id'], record)
+    shown = _quote_for_viewer(_with_quote_tax(stored), user)
+    return jsonify({'success': True, 'id': stored['id'], 'source': orgadata_import.SOURCE_LABEL, 'quote': shown})
+
+
+@app.route('/api/quotes/<int:quote_id>/source-pdf', methods=['GET'])
+@module_required('quotes')
+def download_orgadata_pdf(quote_id):
+    user = current_user()
+    quote = _visible_quote(user, quote_id)
+    if not quote or quote.get('source') != orgadata_import.SOURCE_LABEL:
+        return json_error('Not found', 404)
+    path = upload_abspath(quote.get('source_file'))
+    if not path:
+        return json_error('The PDF is missing.', 404)
+    return send_file(path, as_attachment=True, download_name=quote.get('source_filename') or 'orgadata-glass-order.pdf')
 
 
 @app.route('/api/quotes/clear', methods=['POST'])
