@@ -612,6 +612,30 @@ def _qbo_tax_label(customer):
     return quickbooks.tax_code_name(customer.get('qbo_tax_code'))
 
 
+def _required_currency(customer):
+    import currency_rules
+    return currency_rules.customer_currency(customer or {})
+
+
+def _shown_credit_currency(customer):
+    import quickbooks
+    if quickbooks.is_canadian(customer):
+        return _required_currency(customer)
+    return str((customer or {}).get('credit_currency') or 'usd').lower()
+
+
+def _lock_credit_currency(customer):
+    import quickbooks
+    if quickbooks.is_canadian(customer):
+        customer['credit_currency'] = _required_currency(customer)
+
+
+def _erp_fx(day):
+    """CAD per 1 USD from the rate history, for the invoice date."""
+    import currency_rules
+    return currency_rules.rate_on(day)
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -638,7 +662,7 @@ def public_customer(customer_id, customer, tiers, user_count):
         'payment_terms': customer.get('payment_terms') or 'Net 30',
         'payment_terms_days': payment_term_days(customer),
         'credit_limit': money(customer.get('credit_limit') or 0),
-        'credit_currency': str(customer.get('credit_currency') or 'usd').lower(),
+        'credit_currency': _shown_credit_currency(customer),
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
         'status': customer.get('status') or 'active',
@@ -949,6 +973,7 @@ def apply_customer_fields(customer, data, tiers, creating):
         })
         if credit_error:
             return credit_error
+    _lock_credit_currency(customer)
     if creating or 'credit_approved' in data:
         customer['credit_approved'] = bool(data.get('credit_approved'))
     if creating or 'tier' in data:
@@ -1048,6 +1073,8 @@ def inject_user():
     extras = []
     if user and _is_ora_staff(user):
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
+    if user and user.get('role') == 'admin':
+        extras.append({'id': 'currency-settings', 'label': 'Currency', 'endpoint': 'currency_settings'})
     if user and staff_can_order(user):
         extras.append({'id': 'shipments', 'label': 'Shipments', 'endpoint': 'shipments_page'})
     if extras:
@@ -1218,6 +1245,28 @@ def role_display_name(user):
     return {'sales': 'Ora Glass employee', 'production': 'Ora Glass employee', 'viewer': 'Ora Glass employee'}.get(role, role)
 
 
+def _own_customer(user):
+    if not user or user.get('role') != 'customer':
+        return None
+    return load_customers().get(user.get('customer_id') or '')
+
+
+def _customer_uses_resale(user):
+    import quickbooks
+    customer = _own_customer(user)
+    return bool(customer) and not quickbooks.is_canadian(customer)
+
+
+def _canada_tax_label(user):
+    import quickbooks
+    customer = _own_customer(user)
+    if not customer or not quickbooks.is_canadian(customer):
+        return ''
+    if str(customer.get('province') or '').upper() == 'QC':
+        return 'QST number'
+    return 'PST number'
+
+
 def _resale_warnings(user):
     import resale
     customers = load_customers()
@@ -1258,6 +1307,8 @@ def dashboard():
         template_requests=open_request_count() if user.get('role') == 'admin' else 0,
         qbo_expired=_quickbooks_expired(user),
         resale_warnings=_resale_warnings(user),
+        show_resale=_customer_uses_resale(user),
+        canada_tax_label=_canada_tax_label(user),
     )
 
 
@@ -1289,6 +1340,8 @@ def quote_template_context(user):
         'import_customer_id': user.get('customer_id') or '',
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'drawing_note': DRAWING_NOTE,
+        'currency_locked': user.get('role') == 'customer',
+        'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
             {'id': customer_id, 'name': (customer or {}).get('name') or customer_id}
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
@@ -1944,14 +1997,56 @@ def customers_page():
     )
 
 
+def _save_canada_tax_number(customer, form):
+    province = str(customer.get('province') or '').upper()
+    if province == 'QC':
+        customer['qst_number'] = clean_text(form.get('qst_number'), 40)
+    else:
+        customer['pst_number'] = clean_text(form.get('pst_number'), 40)
+
+
+def _canada_tax_page(customer_id, user):
+    import quickbooks
+    customer = load_customers().get(customer_id)
+    if not customer:
+        return json_error('Unknown customer.', 404) if wants_json() else redirect(url_for('customers_page'))
+    province = str(customer.get('province') or '').upper()
+    kind = 'qst' if province == 'QC' else 'pst'
+    can_edit = user.get('role') == 'admin' or (
+        user.get('role') == 'customer' and user.get('customer_id') == customer_id
+    )
+    if request.method == 'POST' and can_edit:
+        customers = load_customers()
+        current = customers.get(customer_id) or customer
+        _save_canada_tax_number(current, request.form)
+        customers[customer_id] = current
+        save_customers(customers)
+        flash('Tax number saved.', 'success')
+        customer = current
+    return render_template(
+        'company_tax.html',
+        customer_id=customer_id,
+        company=customer.get('name') or customer_id,
+        province=province,
+        kind=kind,
+        pst_number=customer.get('pst_number') or '',
+        qst_number=customer.get('qst_number') or '',
+        can_edit=can_edit,
+        canadian=quickbooks.is_canadian(customer),
+    )
+
+
 def _resale_page(customer_id):
     import resale
+    import quickbooks
     user = current_user()
     if not _can_view_resale(user, customer_id):
         return forbidden()
     customer = load_customers().get(customer_id)
     if not customer:
         return json_error('Unknown customer.', 404) if wants_json() else redirect(url_for('customers_page'))
+    if quickbooks.is_canadian(customer):
+        return _canada_tax_page(customer_id, user)
     from storage import US_STATES
     return render_template(
         'resale.html',
@@ -1964,7 +2059,7 @@ def _resale_page(customer_id):
     )
 
 
-@app.route('/company')
+@app.route('/company', methods=['GET', 'POST'])
 @login_required
 def company_page():
     user = current_user()
@@ -1973,7 +2068,7 @@ def company_page():
     return _resale_page(user.get('customer_id'))
 
 
-@app.route('/customers/<cid>/resale')
+@app.route('/customers/<cid>/resale', methods=['GET', 'POST'])
 @login_required
 def customer_resale_page(cid):
     if not _can_review_resale(current_user()):
@@ -1985,10 +2080,13 @@ def customer_resale_page(cid):
 @login_required
 def customer_resale_list(cid):
     import resale
+    import quickbooks
     user = current_user()
     if not _can_view_resale(user, cid):
         return json_error('Access denied', 403)
     customer = load_customers().get(cid)
+    if customer and quickbooks.is_canadian(customer):
+        return json_error('A Canadian company uses a PST or QST number, not a US resale certificate.', 400)
     if not customer:
         return json_error('Unknown customer.', 404)
     return jsonify([resale.public_certificate(row) for row in customer.get('resale_certificates') or []])
@@ -1998,7 +2096,11 @@ def customer_resale_list(cid):
 @login_required
 def customer_resale_upload(cid):
     import resale
+    import quickbooks
     user = current_user()
+    customer = load_customers().get(cid)
+    if customer and quickbooks.is_canadian(customer):
+        return json_error('A Canadian company uses a PST or QST number, not a US resale certificate.', 400)
     if user.get('role') == 'customer':
         if user.get('customer_id') != cid:
             return json_error('Access denied', 403)
@@ -2031,9 +2133,13 @@ def customer_resale_upload(cid):
 @login_required
 def customer_resale_review(cid, certificate_id):
     import resale
+    import quickbooks
     user = current_user()
     if not _can_review_resale(user):
         return json_error('Access denied', 403)
+    customer = load_customers().get(cid)
+    if customer and quickbooks.is_canadian(customer):
+        return json_error('A Canadian company uses a PST or QST number, not a US resale certificate.', 400)
     data = json_body() or {}
     try:
         record = resale.review_certificate(
@@ -2055,7 +2161,10 @@ def customer_resale_file(cid, certificate_id):
     user = current_user()
     if not _can_view_resale(user, cid):
         return json_error('Access denied', 403)
+    import quickbooks
     customer = load_customers().get(cid) or {}
+    if quickbooks.is_canadian(customer):
+        return json_error('A Canadian company uses a PST or QST number, not a US resale certificate.', 400)
     found = next((row for row in customer.get('resale_certificates') or [] if row.get('id') == certificate_id), None)
     if not found:
         return json_error('Unknown certificate.', 404)
@@ -2153,6 +2262,48 @@ def _write_production_file(order):
         production.write_order_workbook(order)
     except Exception:
         logger.exception('Could not write the production Excel file')
+
+
+@app.route('/currency-settings', methods=['GET', 'POST'])
+@login_required
+def currency_settings():
+    """Country currencies and the hand-set USD/CAD rate. Not part of production settings."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        flash('Only an administrator can change currency settings.', 'error')
+        return redirect(url_for('dashboard'))
+    import currency_rules
+    if request.method == 'POST':
+        action = clean_text(request.form.get('action'), 20)
+        try:
+            if action == 'countries':
+                currency_rules.save_country_map({
+                    'Canada': request.form.get('canada'),
+                    'United States': request.form.get('united_states'),
+                })
+                flash('Country currencies saved.', 'success')
+            elif action == 'rate':
+                currency_rules.record_rate(
+                    request.form.get('rate'),
+                    request.form.get('effective') or date.today().isoformat(),
+                    user.get('email'),
+                )
+                flash('ERP exchange rate saved.', 'success')
+            else:
+                flash('Unknown currency action.', 'error')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('currency_settings'))
+    settings = currency_rules.load_currency_settings()
+    rate, effective = currency_rules.rate_on(date.today())
+    return render_template(
+        'currency_settings.html',
+        settings=settings,
+        current_rate=rate,
+        current_effective=effective,
+        today=date.today().isoformat(),
+        history=list(reversed(settings['history'])),
+    )
 
 
 @app.route('/production-settings', methods=['GET', 'POST'])
@@ -2749,12 +2900,29 @@ def save_quote():
         quote_type = 'sqf'
     user = current_user()
     customers = load_customers()
+    currency_changed = False
     if user.get('role') == 'customer':
         customer_id = user.get('customer_id')
         customer = customers.get(customer_id or '')
         if not customer:
             return json_error('Your account is not linked to a customer.', 400)
         company = customer.get('name') or 'Customer'
+        required = _required_currency(customer)
+        currency_changed = currency != required
+        if currency_changed and quote_type != 'size':
+            from quoting import CAD_RATE
+            factor = CAD_RATE if required == 'cad' else (1 / CAD_RATE)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                for key in ('price', 'total', 'price_sqf', 'price_pc'):
+                    if item.get(key) in (None, ''):
+                        continue
+                    try:
+                        item[key] = round(float(item[key]) * factor, 2)
+                    except (TypeError, ValueError):
+                        pass
+        currency = required
     else:
         customer_id = None
         company = 'ORA'
@@ -2763,6 +2931,8 @@ def save_quote():
     if not tier:
         return json_error('That pricing tier is not available.', 400)
     project = clean_text(data.get('project'), 200)
+    if user.get('role') == 'customer' and quote_type == 'size' and currency_changed:
+        items = _repriced_quote_items(items, tier, currency, tiers)
     priced = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     quote_id = data.get('id')
     if quote_id not in (None, ''):
@@ -2919,6 +3089,7 @@ def copy_quote(quote_id):
         if not customer or source.get('customer_id') != customer_id:
             return json_error('Not found', 404)
         company = customer.get('name') or source.get('company') or 'Customer'
+        currency = _required_currency(customer)
     else:
         customer_id = source.get('customer_id')
         company = source.get('company') or 'ORA'
@@ -2951,6 +3122,49 @@ def copy_quote(quote_id):
     stored = append_quote(copied)
     _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id'], 'copy_note': note})
+
+
+@app.route('/api/quotes/<int:quote_id>/currency', methods=['POST'])
+@login_required
+def change_quote_currency(quote_id):
+    """Reprice a quote in the customer's currency. Staff and the quote's owner can do this."""
+    user = current_user()
+    quote = _visible_quote(user, quote_id)
+    if not quote:
+        return json_error('Not found', 404)
+    if quote.get('order_id'):
+        return json_error('This quote was already sent to production.', 409)
+    data = json_body() or {}
+    requested = clean_text(data.get('currency'), 8).lower()
+    if requested not in {'usd', 'cad'}:
+        return json_error('Currency must be usd or cad.', 400)
+    if user.get('role') == 'customer' and quote.get('customer_id') != user.get('customer_id'):
+        return json_error('Not found', 404)
+    if user.get('role') != 'customer' and not _is_ora_staff(user):
+        return json_error('You do not have permission to change this quote.', 403)
+    customers = load_customers()
+    tiers = load_tiers()
+    tier = quote.get('tier') or _tier_for_copy(user, quote, customers, tiers)
+    items = _repriced_quote_items(quote.get('items'), tier, requested, tiers)
+    from quoting import CAD_RATE
+    if quote.get('type') != 'size' and str(quote.get('currency') or 'usd').lower() != requested:
+        factor = CAD_RATE if requested == 'cad' else (1 / CAD_RATE)
+        for item in items:
+            if item.get('spec'):
+                continue
+            for key in ('price', 'total'):
+                if item.get(key) in (None, ''):
+                    continue
+                try:
+                    item[key] = round(float(item[key]) * factor, 2)
+                except (TypeError, ValueError):
+                    pass
+    quote['items'] = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+    quote['currency'] = requested
+    saved = replace_quote(quote_id, quote)
+    if not saved:
+        return json_error('Not found', 404)
+    return jsonify(saved)
 
 
 _IMPORT_COLUMNS = ('width', 'height', 'qty', 'glass', 'spacer', 'mark')
@@ -3821,6 +4035,8 @@ def order_customer_choices():
             'tier_label': tier_label(known, tiers) if known else '',
             'kind': 'account',
             'province': customer.get('province') or '',
+            'country': customer.get('country') or '',
+            'currency': _required_currency(customer),
         })
     rows.sort(key=lambda row: (row['name'].lower(), row['id']))
     return jsonify(rows)
@@ -3915,6 +4131,7 @@ def order_for_viewer(order, user, with_coverage=False):
                 'currency': row.get('currency') or 'usd',
                 'fx_rate': row.get('fx_rate'),
                 'fx_date': row.get('fx_date') or '',
+                'fx_source': row.get('fx_source') or '',
                 'qbo_warning': row.get('qbo_warning') or '',
                 'total': money(row.get('total')),
                 'voided': bool(row.get('voided')),
@@ -4026,6 +4243,8 @@ def _order_only_from_request(data, customers, tiers, user, suggested=None):
     customer['email'] = clean_text(new_customer.get('email'), 200)
     customer['phone'] = clean_text(new_customer.get('phone'), 40)
     customer['address'] = clean_text(new_customer.get('address'), 300)
+    country = clean_text(new_customer.get('country') or 'United States', 80)
+    customer['country'] = 'Canada' if country.lower() in {'canada', 'ca'} else 'United States'
     terms_error = apply_payment_terms(customer, new_customer)
     if terms_error:
         return None, None, terms_error
@@ -4039,6 +4258,7 @@ def _order_only_from_request(data, customers, tiers, user, suggested=None):
     else:
         customer['credit_limit'] = 0
         customer['credit_currency'] = 'usd'
+    _lock_credit_currency(customer)
     customers[customer_id] = customer
     save_customers(customers)
     return customer_id, customer, None
@@ -4111,6 +4331,17 @@ def convert_quote_to_order(quote_id):
         company_tier = _company_tier(customer, tiers)
         company = customer.get('name') or ''
     currency = quote.get('currency') or 'usd'
+    expected = _required_currency(customer)
+    if str(currency).lower() != expected:
+        return jsonify({
+            'error': (
+                f'This quote is in {str(currency).upper()} but {company} is set up for {expected.upper()}. '
+                f'Change the quote to {expected.upper()} before creating the order.'
+            ),
+            'currency_mismatch': True,
+            'quote_currency': str(currency).lower(),
+            'customer_currency': expected,
+        }), 409
     priced_items = []
     for item in items:
         if item.get('kind') == 'irregular_surcharge':
@@ -4266,7 +4497,9 @@ def download_production_excel(order_id):
     order = _owned_order(user, order_id)
     if not order:
         return json_error('Not found', 404)
-    payload = production.workbook_bytes(order.get('items') or [])
+    import currency_rules
+    rate, _effective = currency_rules.rate_on(order.get('date'))
+    payload = production.workbook_bytes(order.get('items') or [], order.get('currency'), rate)
     try:
         production.write_order_workbook(order)
     except Exception:
@@ -4936,10 +5169,7 @@ def _issue_delivery_invoices(order, user):
     currency = str(base.get('currency') or 'usd').lower()
     invoice_day = date.fromisoformat(base['invoice_date'])
     if currency == 'cad':
-        try:
-            rate, fx_date = quickbooks.fetch_fx_rate(invoice_day)
-        except quickbooks.QuickBooksError as exc:
-            return None, str(exc)
+        rate, fx_date = _erp_fx(invoice_day)
         usd_total = quickbooks.cad_to_usd(base.get('total'), rate)
     else:
         rate, fx_date = 1.0, invoice_day.isoformat()
@@ -4978,6 +5208,7 @@ def _issue_delivery_invoices(order, user):
         'balance': usd_total,
         'fx_rate': rate,
         'fx_date': fx_date,
+        'fx_source': 'erp',
         'fx_pair': 'FXUSDCAD',
         'cad_total': money(base.get('total')) if currency == 'cad' else None,
     })
@@ -5084,10 +5315,7 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
         invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
         currency = str(order.get('currency') or 'usd').lower()
         if currency == 'cad':
-            try:
-                rate, fx_date = quickbooks.fetch_fx_rate(invoice_day)
-            except quickbooks.QuickBooksError as exc:
-                return None, str(exc)
+            rate, fx_date = _erp_fx(invoice_day)
             usd_total = quickbooks.cad_to_usd(summary.get('total'), rate)
         else:
             rate, fx_date = 1.0, invoice_day.isoformat()
@@ -5113,6 +5341,7 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
             'currency': 'usd',
             'fx_rate': rate,
             'fx_date': fx_date,
+            'fx_source': 'erp',
             'fx_pair': 'FXUSDCAD',
             'cad_total': money(summary.get('total')) if currency == 'cad' else None,
             'company': 'Ora Glass (Canada) Inc',
@@ -5370,7 +5599,9 @@ def create_document():
     else:
         issuer = 'us'
     if not currency:
-        currency = str(customer.get('credit_currency') or 'usd').lower()
+        currency = _shown_credit_currency(customer)
+    if issuer == 'ca' and quickbooks.is_canadian(customer) and data.get('order_id') in (None, ''):
+        currency = _required_currency(customer)
     if currency not in CURRENCIES:
         return json_error('Currency must be USD or CAD.', 400)
     reason = clean_text(data.get('reason'), 300)

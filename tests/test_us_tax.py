@@ -86,14 +86,17 @@ def test_open_windows_is_an_export_and_intercompany_is_untaxed(client, monkeypat
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
-    assert load_customers()['open-windows']['export_no_tax'] is True
+    assert load_customers()['open-windows']['country'] == 'Canada'
+    assert load_customers()['open-windows']['credit_currency'] == 'cad'
     assert login(client, 'admin@oraglass.us').status_code == 302
     fake = TaxTransport()
     try:
         _connect_us(client, fake)
         exported = _invoice(client, 'open-windows')
         assert exported.status_code == 200, exported.get_json()
-        assert _posted(fake)[-1]['Line'][0]['SalesItemLineDetail']['TaxCodeRef']['value'] == 'NON'
+        assert exported.get_json()['issuer'] == 'ca'
+        assert exported.get_json()['currency'] == 'cad'
+        assert _posted(fake) == []
         customers = load_customers()
         customers['ora-glass-canada'] = {
             'id': 'ora-glass-canada', 'name': 'Ora Glass (Canada) Inc', 'books_entity': 'ca',
@@ -227,3 +230,54 @@ def test_state_suggestion_and_automated_sales_tax(client, monkeypatch):
         assert load_customers()['harbor']['qbo_tax_code'] == '12'
     finally:
         quickbooks.TRANSPORT = None
+
+
+def test_canadian_company_uses_pst_or_qst_instead_of_a_resale_certificate(client):
+    write_user('admin@oraglass.us', 'admin')
+    write_user('lee@maple.example', 'customer', customer_id='maple', customer_name='Maple Glass', customer_subrole='management')
+    write_user('anne@quebec.example', 'customer', customer_id='quebec', customer_name='Quebec Glass', customer_subrole='management')
+    customers = load_customers()
+    customers['maple'].update({'country': 'Canada', 'province': 'BC', 'pst_number': '', 'qst_number': ''})
+    customers['quebec'].update({'country': 'Canada', 'province': 'QC'})
+    customers['maple']['resale_certificates'] = [{
+        'id': 'old', 'number': 'RC', 'state': 'CA', 'expires': '2000-01-01',
+        'status': 'verified', 'filename': 'old.pdf', 'stored': 'abcdabcdabcdabcd.pdf',
+    }]
+    save_customers(customers)
+    assert resale.resale_covers_tax(load_customers()['maple']) is False
+    assert resale.warnings_for(load_customers()) == []
+    assert resale.resale_label(load_customers()['maple']) == ''
+
+    assert login(client, 'lee@maple.example').status_code == 302
+    page = client.get('/company')
+    assert page.status_code == 200
+    assert b'Upload a certificate' not in page.data
+    assert b'PST number' in page.data
+    assert b'US resale certificate' in page.data
+    saved = client.post('/company', data={'pst_number': 'PST-100'})
+    assert saved.status_code == 200
+    assert load_customers()['maple']['pst_number'] == 'PST-100'
+    assert b'PST-100' in saved.data
+    dashboard = client.get('/dashboard')
+    assert b'Resale certificate' not in dashboard.data
+    assert b'PST number' in dashboard.data
+    blocked = client.post('/api/customers/maple/resale', data={
+        'number': 'RC-1', 'state': 'CA', 'file': (io.BytesIO(PDF), 'cert.pdf'),
+    }, content_type='multipart/form-data')
+    assert blocked.status_code == 400
+    client.post('/logout')
+
+    assert login(client, 'anne@quebec.example').status_code == 302
+    quebec = client.get('/company')
+    assert b'QST number' in quebec.data
+    assert b'Upload a certificate' not in quebec.data
+    client.post('/logout')
+
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/customers').get_json()
+    maple = next(row for row in listed if row['id'] == 'maple')
+    assert maple['pst_number'] == 'PST-100'
+    assert maple['resale_label'] == ''
+    staff = client.get('/customers/maple/resale')
+    assert b'PST number' in staff.data
+    assert b'Upload a certificate' not in staff.data

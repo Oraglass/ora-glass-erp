@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ORA Glass ERP - Currency</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.container{max-width:900px;margin:20px auto;padding:0 20px}
+.card{background:white;border-radius:8px;padding:20px;margin-bottom:16px}
+.note{font-size:13px;color:#555;line-height:1.5;margin:8px 0 16px}
+label{display:block;font-size:12px;color:#666;font-weight:600;margin-bottom:4px}
+input,select{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:end;margin-bottom:12px}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:2px solid #ddd}
+td{padding:8px;border-bottom:1px solid #eee}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container">
+<div class="card">
+<h2 style="color:#333">Currency</h2>
+<p class="note">A customer's country chooses the quote and order currency. Customer users cannot change it. Ora Glass staff can price a quote in either currency, and must convert it before it is confirmed for a customer whose country uses the other one. This is separate from Production settings.</p>
+<p class="note">The rate in effect today is <strong>{{ '%.4f'|format(current_rate) }}</strong> CAD per 1 USD, from {{ current_effective }}.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="countries">
+<div class="row">
+<div><label for="canada">Canada</label>
+<select id="canada" name="canada">
+<option value="cad" {% if settings.countries['Canada'] == 'cad' %}selected{% endif %}>CAD</option>
+<option value="usd" {% if settings.countries['Canada'] == 'usd' %}selected{% endif %}>USD</option>
+</select></div>
+<div><label for="united_states">United States</label>
+<select id="united_states" name="united_states">
+<option value="usd" {% if settings.countries['United States'] == 'usd' %}selected{% endif %}>USD</option>
+<option value="cad" {% if settings.countries['United States'] == 'cad' %}selected{% endif %}>CAD</option>
+</select></div>
+<button class="btn" type="submit">Save countries</button>
+</div>
+</form>
+</div>
+<div class="card">
+<h2 style="color:#333;font-size:18px">ERP exchange rate</h2>
+<p class="note">CAD per 1 USD. This is not a daily Bank of Canada rate. Intercompany invoices from Ora Glass Inc to Ora Glass (Canada) Inc, and the production Excel unit price, use the rate in effect on the invoice or order date. Changing it adds a row to the history. It does not edit QuickBooks.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="rate">
+<div class="row">
+<div><label for="rate">CAD per 1 USD</label><input id="rate" name="rate" type="number" min="0.0001" step="0.0001" required value="{{ '%.4f'|format(current_rate) }}"></div>
+<div><label for="effective">Effective date</label><input id="effective" name="effective" type="date" required value="{{ today }}"></div>
+<button class="btn" type="submit">Save rate</button>
+</div>
+</form>
+<table>
+<thead><tr><th>Effective</th><th>Rate</th><th>Saved</th><th>User</th></tr></thead>
+<tbody>
+{% for row in history %}
+<tr><td>{{ row.effective }}</td><td>{{ row.rate }}</td><td>{{ row.at }}</td><td>{{ row.user }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</div>
+</body>
+</html>

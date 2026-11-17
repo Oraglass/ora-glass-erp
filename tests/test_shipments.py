@@ -144,20 +144,36 @@ def test_open_windows_and_canada_invoice_per_shipment(client, monkeypatch):
     monkeypatch.setattr(quickbooks, 'FX_FETCH', lambda url: {'observations': [{'d': '2026-07-29', 'FXUSDCAD': {'v': '1.4000'}}]})
     order_id = _order(client, pcs=4)
     customers = load_customers()
-    customers['harbor-glass'].update({'id': 'open-windows', 'name': 'Open Windows Inc'})
-    # The order points at harbor-glass. Point that record at the Open Windows name.
     customers['harbor-glass']['name'] = 'Open Windows Inc'
-    customers['harbor-glass']['id'] = 'harbor-glass'
+    customers['harbor-glass']['country'] = 'Canada'
     save_customers(customers)
+    from storage import load_orders, save_orders
+    orders = load_orders()
+    order = next(row for row in orders if row['id'] == order_id)
+    order['currency'] = 'cad'
+    order['company'] = 'Open Windows Inc'
+    save_orders(orders)
     first = _ship(client, order_id, 1, 'XF260729003')
     assert first.status_code == 200, first.get_json()
+    partial_rows = [row for row in load_invoices() if row.get('order_id') == order_id]
+    assert len(partial_rows) == 1
+    assert partial_rows[0]['kind'] == 'intercompany'
+    assert partial_rows[0]['issuer'] == 'us'
+    assert partial_rows[0]['currency'] == 'usd'
+    assert partial_rows[0]['fx_rate'] == 1.4
+    assert partial_rows[0]['fx_source'] == 'erp'
+    assert partial_rows[0]['company'] == 'Ora Glass (Canada) Inc'
     second = _ship(client, order_id, 3, 'XF260729004')
     assert second.status_code == 200, second.get_json()
     invoices = [row for row in load_invoices() if row.get('order_id') == order_id]
-    assert len(invoices) == 2
-    assert all(row['issuer'] == 'us' and row['kind'] == 'customer' for row in invoices)
-    assert all(row['company'] == 'Open Windows Inc' for row in invoices)
-    assert {row['shipment_number'] for row in invoices} == {'XF260729003', 'XF260729004'}
+    intercompany = [row for row in invoices if row['kind'] == 'intercompany']
+    customer_invoice = [row for row in invoices if row['kind'] == 'customer']
+    assert len(intercompany) == 2
+    assert {row['shipment_number'] for row in intercompany} == {'XF260729003', 'XF260729004'}
+    assert len(customer_invoice) == 1
+    assert customer_invoice[0]['issuer'] == 'ca'
+    assert customer_invoice[0]['currency'] == 'cad'
+    assert customer_invoice[0]['company'] == 'Open Windows Inc'
 
     customers = load_customers()
     customers['maple'] = {

@@ -80,8 +80,16 @@ def latest_verified(customer):
     return verified[-1] if verified else None
 
 
+def applies_to(customer):
+    """US resale certificates are only for US companies. Canada uses a PST or QST number."""
+    import quickbooks
+    return not quickbooks.is_canadian(customer)
+
+
 def resale_covers_tax(customer, today=None):
     """A verified certificate with no expiry, or an expiry on or after today, is untaxed."""
+    if not applies_to(customer):
+        return False
     cert = latest_verified(customer)
     if not cert:
         return False
@@ -96,6 +104,8 @@ def resale_covers_tax(customer, today=None):
 
 def certificate_alert(customer, today=None):
     """None, or ('expiring'|'expired', days, certificate). Days are negative once expired."""
+    if not applies_to(customer):
+        return None
     cert = latest_verified(customer)
     expires = str((cert or {}).get('expires') or '').strip()
     if not expires:
@@ -116,6 +126,8 @@ def certificate_alert(customer, today=None):
 
 
 def resale_label(customer, today=None):
+    if not applies_to(customer):
+        return ''
     rows = _certificates(customer)
     if not rows:
         return ''
@@ -138,7 +150,7 @@ def warnings_for(customers, today=None):
     notes = []
     day = today or tax_today()
     for customer_id, customer in customers.items():
-        if not isinstance(customer, dict) or customer.get('books_entity'):
+        if not isinstance(customer, dict) or customer.get('books_entity') or not applies_to(customer):
             continue
         alert = certificate_alert(customer, day)
         if not alert:
@@ -179,6 +191,10 @@ def public_certificate(row):
 
 
 def add_certificate(customer_id, filename, payload, number, state, expires, user_email, verified=False):
+    customers = load_customers()
+    customer = customers.get(customer_id)
+    if customer and not applies_to(customer):
+        raise ResaleError('A Canadian company uses a PST or QST number, not a US resale certificate.')
     if not number:
         raise ResaleError('Certificate number is required.')
     state = str(state or '').strip().upper()
@@ -190,8 +206,6 @@ def add_certificate(customer_id, filename, payload, number, state, expires, user
             date.fromisoformat(expires)
         except ValueError:
             raise ResaleError('Expiry must be a date, or left blank.')
-    customers = load_customers()
-    customer = customers.get(customer_id)
     if not customer:
         raise ResaleError('Unknown customer.')
     stored, content_type = store_certificate_file(customer_id, filename, payload)
@@ -228,6 +242,8 @@ def review_certificate(customer_id, certificate_id, status, reviewer, note=''):
     customer = customers.get(customer_id)
     if not customer:
         raise ResaleError('Unknown customer.')
+    if not applies_to(customer):
+        raise ResaleError('A Canadian company uses a PST or QST number, not a US resale certificate.')
     found = None
     for row in _certificates(customer):
         if row.get('id') == certificate_id:

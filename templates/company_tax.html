@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - {{ 'QST number' if kind == 'qst' else 'PST number' }}</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
+.wrap{max-width:720px;margin:0 auto;padding:20px}
+.card{background:#fff;border-radius:10px;padding:18px;margin-bottom:14px}
+h1{margin:0 0 8px;font-size:22px}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px;max-width:360px}
+input{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
+button{background:#9f1830;color:#fff;border:0;border-radius:6px;padding:10px 14px;font:600 14px 'Segoe UI',Arial,sans-serif;cursor:pointer;margin-top:12px}
+.note{color:#555;font-size:13px;line-height:1.45}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="wrap">
+<div class="card">
+<h1>{{ company }}</h1>
+<p class="note" id="canada-tax-note">A Canadian company is not asked for a US resale certificate. {% if kind == 'qst' %}Quebec uses the QST number.{% else %}The PST number is used instead.{% endif %} With that number on file, delivery to the province is GST only.</p>
+{% if province %}<p class="note">Province: {{ province }}</p>{% endif %}
+</div>
+<div class="card">
+{% if can_edit %}
+<form method="post" id="canada-tax-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{% if kind == 'qst' %}
+<label for="qst-number">QST number<input id="qst-number" name="qst_number" maxlength="40" value="{{ qst_number }}"></label>
+{% else %}
+<label for="pst-number">PST number<input id="pst-number" name="pst_number" maxlength="40" value="{{ pst_number }}"></label>
+{% endif %}
+<button type="submit">Save</button>
+</form>
+{% else %}
+<p class="note" id="canada-tax-value">{% if kind == 'qst' %}QST number: {{ qst_number or 'Not on file' }}{% else %}PST number: {{ pst_number or 'Not on file' }}{% endif %}</p>
+{% endif %}
+</div>
+</div>
+</body>
+</html>

@@ -448,7 +448,7 @@ def find_link(kind, erp_id=None, qbo_id=None):
     return None
 
 
-def upsert_link(kind, erp_id, qbo_id, sync_token, origin, realm_id=None):
+def upsert_link(kind, erp_id, qbo_id, sync_token, origin, realm_id=None, qbo_currency=None):
     key = _connection_key()
     rows = load_links()
     for row in rows:
@@ -462,6 +462,8 @@ def upsert_link(kind, erp_id, qbo_id, sync_token, origin, realm_id=None):
             row['connection'] = key
             if realm_id:
                 row['realm_id'] = str(realm_id)
+            if qbo_currency:
+                row['qbo_currency'] = str(qbo_currency).lower()
             save_links(rows)
             return row
     record = {
@@ -474,6 +476,8 @@ def upsert_link(kind, erp_id, qbo_id, sync_token, origin, realm_id=None):
     }
     if realm_id:
         record['realm_id'] = str(realm_id)
+    if qbo_currency:
+        record['qbo_currency'] = str(qbo_currency).lower()
     rows.append(record)
     save_links(rows)
     return record
@@ -967,7 +971,10 @@ def link_customer(qbo_id, customer_id):
     remote = _customer_record(qbo_id)
     qbo_id = str(remote.get('Id'))
     realm = remote.get('realm_id') or _active_realm()
-    upsert_link('customer', customer_id, qbo_id, remote.get('SyncToken'), 'qbo', realm_id=realm)
+    upsert_link(
+        'customer', customer_id, qbo_id, remote.get('SyncToken'), 'qbo',
+        realm_id=realm, qbo_currency=(remote.get('CurrencyRef') or {}).get('value'),
+    )
     for other_id, other in customers.items():
         if other_id != customer_id and str(other.get('qbo_id') or '') == qbo_id:
             other.pop('qbo_id', None)
@@ -1052,7 +1059,10 @@ def apply_import(decisions):
             remote = _customer_record(qbo_id)
             customers[customer_id] = _customer_from_qbo(remote, customer_id)
             customers[customer_id]['qbo_origin'] = True
-        upsert_link('customer', customer_id, qbo_id, row.get('sync_token'), 'qbo', realm_id=_active_realm())
+        upsert_link(
+            'customer', customer_id, qbo_id, row.get('sync_token'), 'qbo',
+            realm_id=_active_realm(), qbo_currency=row.get('currency'),
+        )
         customers[customer_id]['qbo_id'] = str(qbo_id)
         linked.append(customer_id)
     save_customers(customers)
@@ -1657,6 +1667,41 @@ def _document_lines(invoice, tax_code=None):
     return lines
 
 
+def note_usd_canada_links(customers):
+    """Flag a Canada-company link that is already USD. Do not change QuickBooks."""
+    preview = _load('qbo_import_preview_ca.json', [])
+    known = {}
+    if isinstance(preview, list):
+        for row in preview:
+            if isinstance(row, dict) and row.get('qbo_id') is not None:
+                known[str(row.get('qbo_id'))] = str(row.get('currency') or '').lower()
+    with connection_scope('ca'):
+        settings = load_settings()
+        flagged = set(str(item) for item in (settings.get('usd_customer_flags') or []))
+        fresh = False
+        for link in load_links():
+            if link.get('kind') != 'customer' or (link.get('connection') or 'us') != 'ca':
+                continue
+            customer_id = str(link.get('erp_id') or '')
+            customer = (customers or {}).get(customer_id) or {}
+            if not is_canadian(customer):
+                continue
+            remote = str(link.get('qbo_currency') or known.get(str(link.get('qbo_id'))) or '').lower()
+            if remote != 'usd' or customer_id in flagged:
+                continue
+            flagged.add(customer_id)
+            fresh = True
+            log(
+                'error',
+                f"{customer.get('name') or customer_id} is linked to QuickBooks customer {link.get('qbo_id')} "
+                'in the Canada company as USD. That QuickBooks customer was not changed.',
+            )
+        if fresh:
+            settings = load_settings()
+            settings['usd_customer_flags'] = sorted(flagged)
+            save_settings(settings)
+
+
 def push_customer(customer_id):
     customers = load_customers()
     customer = customers.get(customer_id) or {}
@@ -1669,9 +1714,20 @@ def push_customer(customer_id):
     if not customer:
         return None
     existing = find_link('customer', erp_id=customer_id)
-    currency = str(customer.get('credit_currency') or 'usd').upper()
-    if currency not in {'USD', 'CAD'}:
-        currency = 'USD'
+    if _connection_key() == 'ca' or is_canadian(customer):
+        currency = 'CAD'
+    else:
+        currency = str(customer.get('credit_currency') or 'usd').upper()
+        if currency not in {'USD', 'CAD'}:
+            currency = 'USD'
+    if existing and _connection_key() == 'ca' and str(existing.get('qbo_currency') or '').lower() == 'usd':
+        note_usd_canada_links(customers)
+        log(
+            'error',
+            f"{customer.get('name') or customer_id} is already a USD customer in the Canada QuickBooks company. "
+            'The ERP left that customer unchanged.',
+        )
+        return None
     payload = {
         'DisplayName': customer.get('name') or customer_id,
         'CompanyName': customer.get('name') or '',
@@ -1698,7 +1754,11 @@ def push_customer(customer_id):
             data = _post_entity('customer', payload)
         remote = data.get('Customer') or {}
         if remote:
-            upsert_link('customer', customer_id, remote.get('Id'), remote.get('SyncToken'), existing.get('origin') if existing else 'erp')
+            remote_currency = str((remote.get('CurrencyRef') or {}).get('value') or currency).lower()
+            upsert_link(
+                'customer', customer_id, remote.get('Id'), remote.get('SyncToken'),
+                existing.get('origin') if existing else 'erp', qbo_currency=remote_currency,
+            )
             log('info', f"Saved {customer.get('name')} in QuickBooks.")
         return remote
     except QuickBooksError as exc:
@@ -1795,9 +1855,12 @@ def push_document(invoice):
     if not customer_link:
         log('error', f"Invoice {invoice.get('id')} was not sent because the customer is not in QuickBooks.")
         return None
+    invoice_currency = str(invoice.get('currency') or 'usd').upper()
+    if _connection_key() == 'ca':
+        invoice_currency = 'CAD'
     payload = {
         'CustomerRef': {'value': customer_link['qbo_id']},
-        'CurrencyRef': {'value': str(invoice.get('currency') or 'usd').upper()},
+        'CurrencyRef': {'value': invoice_currency},
         'TxnDate': invoice.get('invoice_date') or _today(),
         'Line': _document_lines(invoice, tax_code),
         'PrivateNote': invoice.get('reason') or invoice.get('project') or '',
@@ -2038,7 +2101,10 @@ def _ingest_customer_change(row):
     customers[customer_id] = _customer_from_qbo(row, customer_id)
     customers[customer_id]['qbo_id'] = str(row.get('Id'))
     save_customers(customers)
-    upsert_link('customer', customer_id, row.get('Id'), row.get('SyncToken'), 'qbo')
+    upsert_link(
+        'customer', customer_id, row.get('Id'), row.get('SyncToken'), 'qbo',
+        qbo_currency=(row.get('CurrencyRef') or {}).get('value'),
+    )
     log('info', f"Added {row.get('DisplayName')} from QuickBooks.")
 
 

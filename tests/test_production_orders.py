@@ -160,6 +160,10 @@ def test_management_converts_a_per_size_quote_once_at_company_tier(client):
 
 def test_sales_force_cannot_open_orders_or_see_company_tier_prices(client):
     _company_users(client)
+    from storage import load_customers, save_customers
+    customers = load_customers()
+    customers['harbor-glass']['country'] = 'Canada'
+    save_customers(customers)
     assert login(client, 'sales@harbor.example').status_code == 302
     saved = client.post('/api/quotes', json={
         'items': [_size_item()],

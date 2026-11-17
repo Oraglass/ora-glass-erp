@@ -49,7 +49,7 @@ td.actions{width:11rem}
 </div>
 <p class="help" style="margin-top:8px">The tier on this page is the company default. On the Users page, set a different tier for an individual person when they should not use that default.</p>
 <table>
-<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>State / Province</th><th>QBO tax code</th><th>Resale</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>State / Province</th><th>QBO tax code</th><th>Resale / tax no.</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
 <tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
@@ -181,7 +181,7 @@ function render() {
     const actions = CAN_MANAGE
       ? '<td class="actions"><div class="row-actions"><div class="row-actions-main"><button class="act act-primary" type="button" data-action="edit" data-id="' + esc(c.id) + '">Edit</button></div><button class="act act-danger" type="button" data-action="delete" data-id="' + esc(c.id) + '">Delete</button></div></td>'
       : '';
-    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.country === 'Canada' ? (c.province || '—') : (c.us_state || '—')) + '</td><td>' + esc(c.export_no_tax ? 'Export' : taxLabel(c)) + '</td><td>' + esc(c.resale_label || '—') + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
+    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.country === 'Canada' ? (c.province || '—') : (c.us_state || '—')) + '</td><td>' + esc(c.export_no_tax ? 'Export' : taxLabel(c)) + '</td><td>' + esc(taxIdLabel(c)) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
   }).join('');
 }
 async function loadCustomers() {
@@ -211,7 +211,17 @@ function openModal(customer) {
   fillTaxCodes(customer ? (customer.qbo_tax_code || '') : '');
   if (!customer || !customer.qbo_tax_code) suggestTaxCode();
   const resale = document.getElementById('resale-link');
-  if (resale) resale.innerHTML = customer ? '<a href="/customers/' + encodeURIComponent(customer.id) + '/resale">Resale certificates</a>' : '';
+  if (resale) {
+    if (customer && customer.country === 'Canada') {
+      resale.textContent = customer.province === 'QC'
+        ? 'Quebec uses the QST number instead of a US resale certificate.'
+        : 'This company uses a PST number instead of a US resale certificate.';
+    } else if (customer) {
+      resale.innerHTML = '<a href="/customers/' + encodeURIComponent(customer.id) + '/resale">Resale certificates</a>';
+    } else {
+      resale.textContent = '';
+    }
+  }
   document.getElementById('c-phone').value = customer ? (customer.phone || '') : '';
   document.getElementById('c-email').value = customer ? (customer.email || '') : '';
   const knownTerms = ['Due on receipt', 'Net 15', 'Net 30', 'Net 45', 'Net 60', 'Custom'];
@@ -223,6 +233,7 @@ function openModal(customer) {
   document.getElementById('c-terms-days').style.display = terms === 'Custom' ? 'block' : 'none';
   document.getElementById('c-credit-limit').value = customer ? (customer.credit_limit || 0) : 0;
   document.getElementById('c-credit-currency').value = customer ? (customer.credit_currency || 'usd') : 'usd';
+  syncCanadaFields();
   document.getElementById('c-tier').value = customer ? customer.tier : 'T2';
   document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
@@ -301,6 +312,13 @@ function suggestTaxCode() {
   const state = document.getElementById('c-us-state').value;
   if (state && stateTax[state]) select.value = stateTax[state];
 }
+function taxIdLabel(customer) {
+  if (customer.country === 'Canada') {
+    if (customer.province === 'QC') return customer.qst_number ? 'QST ' + customer.qst_number : 'No QST number';
+    return customer.pst_number ? 'PST ' + customer.pst_number : 'No PST number';
+  }
+  return customer.resale_label || '—';
+}
 function taxLabel(customer) {
   if (customer.tax_exempt) {
     const exempt = taxCodes.find(code => String(code.id) === String(exemptCode || customer.qbo_tax_code));
@@ -317,6 +335,13 @@ function syncCanadaFields() {
   const canada = document.getElementById('c-country').value === 'Canada';
   document.getElementById('c-pst-number').closest('.form-group').hidden = !canada;
   document.getElementById('c-qst-number').closest('.form-group').hidden = !canada;
+  const currency = document.getElementById('c-credit-currency');
+  if (canada) {
+    currency.value = 'cad';
+    currency.disabled = true;
+  } else if (currency.disabled) {
+    currency.disabled = false;
+  }
 }
 document.getElementById('c-country').addEventListener('change', () => {
   const selected = document.getElementById('c-tax-code').value;

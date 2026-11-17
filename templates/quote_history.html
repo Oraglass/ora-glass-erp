@@ -77,6 +77,9 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 <div id="new-customer-fields" hidden>
 <div class="form-group"><label for="new-name">Customer name</label><input type="text" id="new-name" autocomplete="off"></div>
+<div class="form-group"><label for="new-country">Country</label>
+<select id="new-country"><option value="United States">United States</option><option value="Canada">Canada</option></select>
+</div>
 <div class="form-group"><label for="new-contact">Contact</label><input type="text" id="new-contact" autocomplete="off"></div>
 <div class="form-group"><label for="new-email">Email</label><input type="text" id="new-email" autocomplete="off"></div>
 <div class="form-group"><label for="new-phone">Phone</label><input type="text" id="new-phone" autocomplete="off"></div>
@@ -96,10 +99,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 <div class="form-group"><label for="new-credit">Credit limit</label>
 <input type="number" id="new-credit" min="0" step="0.01" value="0">
 <select id="new-credit-currency"><option value="usd">USD</option><option value="cad">CAD</option></select>
-<p class="help">Admin only. Staff cannot set a credit limit; it stays 0 until an admin changes it.</p>
+<p class="help">Admin only. Staff cannot set a credit limit; it stays 0 until an admin changes it. A Canadian company is CAD.</p>
 </div>
 {% endif %}
 </div>
+<p id="currency-mismatch" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px"></p>
 <div id="drawing-panel"></div>
 <div class="form-group" id="tier-fields" hidden>
 <label for="order-tier">Pricing tier</label>
@@ -325,7 +329,7 @@ async function openOrderDialog(quoteId) {
   const select = document.getElementById('order-customer');
   const options = ['<option value="">Choose a customer</option>'].concat(customers.map(row => {
     const label = row.name;
-    return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '" data-province="' + esc(row.province || '') + '">' + esc(label) + '</option>';
+    return '<option value="' + esc(row.id) + '" data-kind="' + esc(row.kind) + '" data-tier="' + esc(row.tier || '') + '" data-province="' + esc(row.province || '') + '" data-currency="' + esc(row.currency || '') + '">' + esc(label) + '</option>';
   })).concat(['<option value="__new__">New customer...</option>']);
   select.innerHTML = options.join('');
   if (quote && quote.customer_id && customers.some(row => row.id === quote.customer_id)) {
@@ -365,6 +369,7 @@ async function submitOrder(event) {
   if (select.value === '__new__') {
     body.new_customer = {
       name: document.getElementById('new-name').value,
+      country: document.getElementById('new-country').value,
       contact: document.getElementById('new-contact').value,
       email: document.getElementById('new-email').value,
       phone: document.getElementById('new-phone').value,
@@ -411,6 +416,24 @@ async function submitOrder(event) {
     });
   }
   const payload = await res.json().catch(() => ({}));
+  if (payload.currency_mismatch) {
+    const box = document.getElementById('currency-mismatch');
+    const label = String(payload.customer_currency || '').toUpperCase();
+    box.hidden = false;
+    box.innerHTML = esc(payload.error) + ' <button type="button" class="btn" id="change-quote-currency">Change to ' + esc(label) + '</button>';
+    document.getElementById('change-quote-currency').addEventListener('click', async () => {
+      const changed = await fetch('/api/quotes/' + encodeURIComponent(pendingQuoteId) + '/currency', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({currency: payload.customer_currency})
+      });
+      const body = await changed.json().catch(() => ({}));
+      if (!changed.ok) { alert(body.error || 'Could not change the currency'); return; }
+      const quote = catalog.find(item => String(item.id) === String(pendingQuoteId));
+      if (quote) { quote.currency = body.currency; quote.items = body.items; }
+      box.hidden = true;
+    });
+    return;
+  }
   if (!res.ok) { alert(payload.error || 'Could not create the order'); return; }
   if (payload.credit_warning) alert(payload.credit_warning);
   closeOrderDialog();

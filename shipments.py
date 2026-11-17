@@ -107,10 +107,13 @@ def is_open_windows(customer):
 
 
 def billing_mode(order, customer, canadian):
-    """How this order is invoiced once staff record shipments."""
-    if is_open_windows(customer):
-        return 'open_windows'
-    if canadian:
+    """How this order is invoiced once staff record shipments.
+
+    Every Canadian customer, including Open Windows, is invoiced the same way:
+    Ora Glass Inc bills Ora Glass (Canada) Inc in USD on each shipment, and
+    Ora Glass (Canada) Inc bills the customer in CAD when the order is fully shipped.
+    """
+    if canadian or is_open_windows(customer):
         return 'canada'
     if (order or {}).get('partial_invoicing'):
         return 'us_partial'
@@ -218,7 +221,12 @@ def shipment_progress(order):
         invoiced_value += row['price_pc'] * invoiced
         remaining_sqf += row['sqf_each'] * left
         if left or left_invoice:
-            exported = production.line_export(items[index], quantity=left, serial=row['serial'])
+            import currency_rules
+            rate, _effective = currency_rules.rate_on((order or {}).get('date'))
+            exported = production.line_export(
+                items[index], quantity=left, serial=row['serial'],
+                currency=(order or {}).get('currency'), fx_rate=rate,
+            )
             lines.append({
                 'index': index,
                 'serial': exported['Serial Number'],
