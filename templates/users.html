@@ -97,7 +97,11 @@ td.actions{width:15.5rem;vertical-align:middle}
 <option value="sales">Operations</option>
 <option value="management">Management</option>
 </select>
-<p class="help">Operations sees only the quotes they created. Management sees every quote from their company and can send a per-size quote to production.</p>
+<p class="help">Operations sees only the quotes they created. Management sees every quote from their company.</p>
+</div>
+<div class="form-group" id="place-orders-group" style="display:none">
+<label><input type="checkbox" id="u-place-orders"> Can place production orders</label>
+<p class="help">Lets this person send a per-size quote to production and open Orders. Management starts with this on. Operations starts with it off. Only an administrator can change it.</p>
 </div>
 <div class="form-group"><label for="u-company">Company</label><select id="u-company"><option value="">None</option></select><p class="help">Required for customer users. Staff can leave this empty.</p></div>
 <div class="form-group" id="company-tier-group" style="display:none">
@@ -286,6 +290,7 @@ function onRoleChanged() {
   else renderModuleChecks(new Set());
   syncStaffPrivileges();
   syncRoleExtras();
+  syncPlaceOrders(true);
   updateTierFields();
 }
 function syncRoleExtras() {
@@ -437,6 +442,7 @@ async function openAdd() {
   document.getElementById('u-role').value = 'customer';
   document.getElementById('u-subrole').value = 'sales';
   onRoleChanged();
+  syncPlaceOrders(true);
   document.getElementById('u-tier').value = '';
   document.getElementById('u-employee-number').value = '';
   document.getElementById('u-pin').value = '';
@@ -463,6 +469,8 @@ async function openEdit(user) {
   document.getElementById('password-group').style.display = 'none';
   document.getElementById('u-role').value = user.role;
   document.getElementById('u-subrole').value = user.customer_subrole || 'sales';
+  document.getElementById('u-place-orders').checked = !!user.place_production_orders;
+  syncPlaceOrders(false);
   document.getElementById('subrole-group').style.display = user.role === 'customer' ? 'block' : 'none';
   renderModuleChecks(new Set(user.modules || []));
   document.getElementById('u-edit-orders').checked = !!user.edit_orders;
@@ -499,10 +507,19 @@ document.getElementById('u-tier').addEventListener('change', () => {
   updateTierFields();
 });
 document.getElementById('u-role').addEventListener('change', onRoleChanged);
+function syncPlaceOrders(useDefault) {
+  const group = document.getElementById('place-orders-group');
+  const customer = document.getElementById('u-role').value === 'customer';
+  if (group) group.style.display = customer ? 'block' : 'none';
+  if (customer && useDefault) {
+    document.getElementById('u-place-orders').checked = document.getElementById('u-subrole').value === 'management';
+  }
+}
 document.getElementById('u-subrole').addEventListener('change', () => {
   const selected = new Set(collectModules());
   if (document.getElementById('u-subrole').value === 'management') selected.add('orders');
   renderModuleChecks(selected);
+  syncPlaceOrders(true);
 });
 document.getElementById('allowed-tiers').addEventListener('change', updateTierFields);
 const addUserButton = document.getElementById('add-user');
@@ -534,6 +551,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         allowed_tiers: collectAllowed(),
         modules: collectModules(),
         customer_subrole: document.getElementById('u-subrole').value,
+        place_production_orders: document.getElementById('u-place-orders').checked,
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
@@ -563,6 +581,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
         allowed_tiers: collectAllowed(),
         modules: collectModules(),
         customer_subrole: document.getElementById('u-subrole').value,
+        place_production_orders: document.getElementById('u-place-orders').checked,
         edit_orders: document.getElementById('u-edit-orders').checked,
         update_order_status: document.getElementById('u-update-order-status').checked,
         record_payments: document.getElementById('u-record-payments').checked,
