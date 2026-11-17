@@ -4407,6 +4407,30 @@ def order_day(order):
     return text[:10]
 
 
+def _clock(value):
+    """HH:MM:SS from a quote time or an order timestamp, so 9:05 sorts before 10:00."""
+    text = str(value or '').strip()
+    if 'T' in text:
+        text = text.split('T', 1)[1]
+    match = re.match(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', text)
+    if not match:
+        return ''
+    hour, minute, second = int(match.group(1)), match.group(2), match.group(3) or '00'
+    return f'{hour:02d}:{minute}:{second}'
+
+
+def _newest_key(record):
+    """Date, then time, then id. Reverse this to list the newest record first."""
+    approved = str(record.get('approved_at') or '')
+    day = str(record.get('date') or '')[:10] or approved[:10]
+    clock = _clock(record.get('time')) or _clock(approved)
+    try:
+        record_id = int(record.get('id') or 0)
+    except (TypeError, ValueError):
+        record_id = 0
+    return (day, clock, record_id)
+
+
 def filter_quote_rows(quotes):
     customer_id = clean_text(request.args.get('customer_id'), 80)
     user_email = clean_text(request.args.get('user'), 200)
@@ -4433,6 +4457,8 @@ def filter_quote_rows(quotes):
         rows.append(quote)
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (quote_total(row), row.get('id') or 0), reverse=sort == 'total_desc')
+    else:
+        rows.sort(key=_newest_key, reverse=True)
     return rows
 
 
@@ -4457,7 +4483,7 @@ def filter_order_rows(orders):
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (order_total_value(row), row.get('id') or 0), reverse=sort == 'total_desc')
     else:
-        rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
+        rows.sort(key=_newest_key, reverse=True)
     return rows
 
 
