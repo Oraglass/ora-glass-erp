@@ -208,7 +208,8 @@ function renderQuotes(rows) {
     return;
   }
   tbody.innerHTML = rows.map(quote => {
-    const total = (quote.items || []).reduce((sum, item) => sum + parseFloat(item.total || item.price || 0), 0);
+    const subtotal = (quote.items || []).reduce((sum, item) => sum + parseFloat(item.total || item.price || 0), 0);
+    const total = subtotal - (Number(quote.additional_discount_amount) || 0);
     let status = '-';
     if (quote.order_id) {
       status = 'Approved for order. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
@@ -428,7 +429,7 @@ async function downloadPDF(id) {
   const pdfRes = await fetch('/api/export-quote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || '', fx_rate: quote.fx_rate || ''})
+      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || '', fx_rate: quote.fx_rate || '', additional_discount_percent: quote.additional_discount_percent || 0})
   });
   if (!pdfRes.ok) { alert('Could not build the PDF'); return; }
   const blob = await pdfRes.blob();
@@ -463,6 +464,8 @@ function showQuoteDetail(quote) {
     + rateNote
     + (quote.notes && quote.notes !== note ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + '<table><thead><tr><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
+    + (Number(quote.additional_discount_amount) ? '<p style="margin-top:8px;font-weight:600">Additional discount (' + esc(quote.additional_discount_percent) + '%)  -$' + Number(quote.additional_discount_amount).toFixed(2) + '</p>' : '')
+    + (typeof internalPriceNote === 'function' ? internalPriceNote(quote) : '')
     + (extras ? '<p class="help">Extras</p><ul>' + extras + '</ul>' : '')
     + '<p style="margin-top:10px"><button type="button" class="copy-btn" data-action="copy" data-id="' + esc(quote.id) + '" style="background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer">Copy quote</button></p>';
   box.scrollIntoView({block: 'nearest'});
@@ -551,5 +554,14 @@ const orderCancel = document.getElementById('order-cancel');
 if (orderCancel) orderCancel.addEventListener('click', closeOrderDialog);
 loadCatalog();
 </script>
+{% if staff_tools %}
+<script>
+function internalPriceNote(quote) {
+  const pct = Number(quote.price_addon_percent || 0);
+  if (!pct) return '';
+  return '<p class="note">Add-on % used on this quote: ' + pct + '</p>';
+}
+</script>
+{% endif %}
 </body>
 </html>

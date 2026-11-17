@@ -74,7 +74,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 {% if currency_locked %}<p class="note" id="currency-lock">Currency is {{ locked_currency|upper }} for this company.</p>{% else %}
 <div class="form-group" style="max-width:360px;margin:0 0 12px">
 <label for="quote-customer">Customer</label>
-<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}">{{ company.name }}</option>{% endfor %}</select>
+<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}" data-discount="{{ company.discount_percent }}">{{ company.name }}</option>{% endfor %}</select>
 <p class="note">Currency follows the customer. USD and CAD can be changed only while no customer is selected.</p>
 <p id="currency-lock-note" hidden style="margin:8px 0 0;color:#9a3412;font-weight:600"></p>
 </div>
@@ -176,6 +176,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <p id="quote-tax-lines" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <p id="drawing-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px;font-weight:600">{{ drawing_note }}</p>
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
+<p id="company-discount-line" hidden style="margin:12px 0 0;font-size:14px;font-weight:600"></p>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
 </div>
 </div>
@@ -398,6 +399,7 @@ async function loadCopiedQuote() {
   if (!res.ok) return;
   const quote = await res.json();
   draftQuoteId = quote.id;
+  if (quote.additional_discount_percent != null) companyDiscountPercent = Number(quote.additional_discount_percent);
   draftExtras = quote.extra_charges || [];
   draftShipProvince = quote.ship_province || '';
   draftTaxLabel = quote.tax_label || '';
@@ -499,6 +501,57 @@ if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
   lockQuoteCurrency(currency, note);
 });
 loadCopiedQuote();
+let companyDiscountPercent = {{ company_discount_percent|tojson }};
+function quoteDiscountPercent() {
+  const pick = document.getElementById('quote-customer');
+  if (pick && pick.value) {
+    const option = pick.options[pick.selectedIndex];
+    return Number(option.getAttribute('data-discount') || 0);
+  }
+  return Number(companyDiscountPercent || 0);
+}
+function refreshCompanyDiscount() {
+  const line = document.getElementById('company-discount-line');
+  if (!line || typeof sizeQuoteItems === 'undefined') return;
+  const percent = quoteDiscountPercent();
+  let subtotal = 0;
+  sizeQuoteItems.forEach(item => { subtotal += Number(item.total) || 0; });
+  if (!percent || !subtotal) { line.hidden = true; line.textContent = ''; return; }
+  const amount = (subtotal * percent / 100).toFixed(2);
+  line.hidden = false;
+  line.textContent = 'Additional discount (' + percent + '%)  -$' + amount;
+}
+if (typeof renderSizeQuoteList === 'function') {
+  const renderSizeQuoteListOriginal = renderSizeQuoteList;
+  renderSizeQuoteList = function () {
+    renderSizeQuoteListOriginal();
+    refreshCompanyDiscount();
+  };
+}
+const quoteCustomerDiscount = document.getElementById('quote-customer');
+if (quoteCustomerDiscount) quoteCustomerDiscount.addEventListener('change', refreshCompanyDiscount);
+const originalFetch = window.fetch;
+window.fetch = function (url, options) {
+  if (typeof url === 'string' && url.indexOf('/api/calculate') === 0 && options && options.body) {
+    try {
+      const body = JSON.parse(options.body);
+      const pick = document.getElementById('quote-customer');
+      if (pick && pick.value) body.customer_id = pick.value;
+      options = Object.assign({}, options, {body: JSON.stringify(body)});
+    } catch (error) {}
+  }
+  if (typeof url === 'string' && (url.indexOf('/api/quotes') === 0 || url.indexOf('/api/export-quote') === 0) && options && options.body && options.headers && String(options.headers['Content-Type'] || '').indexOf('application/json') !== -1) {
+    try {
+      const body = JSON.parse(options.body);
+      const percent = quoteDiscountPercent();
+      if (percent) body.additional_discount_percent = percent;
+      const pick = document.getElementById('quote-customer');
+      if (pick && pick.value && !body.customer_id) body.customer_id = pick.value;
+      options = Object.assign({}, options, {body: JSON.stringify(body)});
+    } catch (error) {}
+  }
+  return originalFetch.call(this, url, options);
+};
 </script>
 </body>
 </html>

@@ -54,9 +54,10 @@ def test_dimensions_and_price_per_square_foot_round_trip():
 def test_workbook_seed_matches_erp_configurations():
     report = production.seed_report()
     assert report['sheet_rows'] == 169
-    assert report['matched'] == 146
-    assert len(report['unmatched']) == 23
+    assert report['matched'] == 163
     missing_names = {row['product_name'] for row in report['unmatched']}
+    assert len(report['unmatched']) == 6
+    assert all('Technoform' not in name for name in missing_names)
     assert any('Solarban70' in name for name in missing_names)
     assert any('Reeded' in name for name in missing_names)
 

@@ -6,33 +6,46 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.header{background:#C41E3A;color:white;padding:15px 30px;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-size:22px}.header a{color:white;text-decoration:none}
-.container{max-width:900px;margin:20px auto;padding:0 20px}
+.container{max-width:1200px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
-.note{font-size:13px;color:#555;line-height:1.5;margin:12px 0 18px}
-.callout{background:#fff7ed;border:1px solid #fdba74;color:#9a3412;padding:12px;border-radius:6px;font-size:13px;margin-bottom:16px}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.tabs a{padding:8px 14px;border-radius:6px;text-decoration:none;color:#333;background:#f3f4f6;font-size:14px}
+.tabs a.active{background:#C41E3A;color:white}
+.note{font-size:13px;color:#555;line-height:1.5;margin:8px 0 16px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
-td{padding:10px;border-bottom:1px solid #eee;vertical-align:middle}
-input{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
-.btn{background:#C41E3A;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;margin-top:16px}
-.badge{display:inline-block;background:#ffedd5;color:#9a3412;border-radius:4px;padding:2px 6px;font-size:11px;margin-left:6px}
+th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:2px solid #ddd}
+td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
+input,select{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.btn{background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer;margin-top:12px}
+label{display:block;font-size:12px;color:#666;font-weight:600;margin-bottom:4px}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:end;margin-bottom:12px}
+.narrow{max-width:140px}
+.history{margin-top:22px}
+.gaps li{margin:6px 0}
+.off{color:#9a3412}
 </style>
 </head>
 <body>
 {% set show_back = true %}
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
-<h2 style="color:#333">Tier markups</h2>
-<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is always twice the Tier 2 price of each glass, spacer, and sealant. Editing Tier 2 updates Tier 5. Temper add-ons stay the same at every tier. The irregular shape surcharge is a flat amount per piece in the quote currency. The DWG drawing creation fee is a flat amount per file that is not a .dwg. Neither amount is marked up by tier. Quotes and orders already saved keep the rate they were given.</p>
-<form method="POST">
+<h2 style="color:#333;margin-bottom:12px">Pricing</h2>
+<nav class="tabs" aria-label="Pricing">
+{% for item in tabs %}
+<a href="{{ url_for('pricing_admin', tab=item.id) }}" class="{{ 'active' if tab == item.id else '' }}">{{ item.label }}</a>
+{% endfor %}
+</nav>
+
+{% if tab == 'markups' %}
+<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is the Tier 2 price times the formula multiplier (2 unless that setting is changed). Editing Tier 2 updates that Tier 2 price. Temper add-ons stay the same at every tier. The irregular shape surcharge is a flat amount per piece in the quote currency. The DWG drawing creation fee is a flat amount per file that is not a .dwg. Neither amount is marked up by tier. Quotes and orders already saved keep the prices they were given.</p>
+<form method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-<label style="display:block;font-size:12px;color:#666;margin-bottom:8px">Irregular shape surcharge per piece
-<input name="irregular_shape_surcharge" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(irregular_shape_surcharge) }}" style="max-width:160px;margin-top:4px">
+<input type="hidden" name="action" value="markups">
+<label>Irregular shape surcharge per piece
+<input class="narrow" name="irregular_shape_surcharge" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(irregular_shape_surcharge) }}">
 </label>
-<label style="display:block;font-size:12px;color:#666;margin-bottom:12px">DWG drawing creation per non-DWG file
-<input name="dwg_creation_fee" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(dwg_creation_fee) }}" style="max-width:160px;margin-top:4px">
+<label>DWG drawing creation per non-DWG file
+<input class="narrow" name="dwg_creation_fee" type="number" min="0" max="100000" step="0.01" required value="{{ '%.2f'|format(dwg_creation_fee) }}">
 </label>
 <table>
 <thead><tr><th>Tier</th><th>Label</th><th>Glass markup %</th><th>Spacer markup %</th></tr></thead>
@@ -49,20 +62,227 @@ input{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:1
 </table>
 <button class="btn" type="submit">Save markups</button>
 </form>
-<h3 style="color:#333;margin-top:22px">Price per square foot</h3>
-<p class="note">Annealed glass only. Tier 5 is twice Tier 2 on each line.</p>
-<table id="price-table">
-<thead><tr><th>Product</th><th>Tier 2</th><th>Tier 5</th></tr></thead>
+
+{% elif tab == 'currency' %}
+<p class="note">A customer's country chooses the quote and order currency. Customer users cannot change it. Ora Glass staff can price a quote in either currency, and must convert it before it is confirmed for a customer whose country uses the other one. CAD prices on new quotes use this ERP rate. Quotes and orders already saved keep the rate stored on them.</p>
+<p class="note">The rate in effect today is <strong>{{ '%.4f'|format(current_rate) }}</strong> CAD per 1 USD, from {{ current_effective }}.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="countries">
+<div class="row">
+<div><label for="canada">Canada</label>
+<select id="canada" name="canada">
+<option value="cad" {% if settings.countries['Canada'] == 'cad' %}selected{% endif %}>CAD</option>
+<option value="usd" {% if settings.countries['Canada'] == 'usd' %}selected{% endif %}>USD</option>
+</select></div>
+<div><label for="united_states">United States</label>
+<select id="united_states" name="united_states">
+<option value="usd" {% if settings.countries['United States'] == 'usd' %}selected{% endif %}>USD</option>
+<option value="cad" {% if settings.countries['United States'] == 'cad' %}selected{% endif %}>CAD</option>
+</select></div>
+<button class="btn" type="submit">Save countries</button>
+</div>
+</form>
+<h3 style="color:#333;font-size:18px">ERP exchange rate</h3>
+<p class="note">CAD per 1 USD. This is not a daily Bank of Canada rate. Intercompany invoices from Ora Glass Inc to Ora Glass (Canada) Inc, and the production Excel unit price, use the rate in effect on the invoice or order date. Changing it adds a row to the history. It does not edit QuickBooks.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="rate">
+<div class="row">
+<div><label for="rate">CAD per 1 USD</label><input id="rate" name="rate" type="number" min="0.0001" step="0.0001" required value="{{ '%.4f'|format(current_rate) }}"></div>
+<div><label for="effective">Effective date</label><input id="effective" name="effective" type="date" required value="{{ today }}"></div>
+<button class="btn" type="submit">Save rate</button>
+</div>
+</form>
+<table>
+<thead><tr><th>Effective</th><th>Rate</th><th>Saved</th><th>User</th></tr></thead>
 <tbody>
-{% for row in sample_prices %}
+{% for row in currency_history %}
+<tr><td>{{ row.effective }}</td><td>{{ row.rate }}</td><td>{{ row.at }}</td><td>{{ row.user }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+
+{% elif tab == 'glass' %}
+<p class="note">Each glass row is seeded from the pricing workbook. Base used is the price the sell formula multiplies: raw price &times; (1 + tariff %) &times; (1 + waste %). Saving a row recomputes that base only when the raw price, tariff, or waste changed. In price = no keeps the row out of new calculations. Deactivate hides it as well. The second copy of a duplicated workbook name stays out of the price. Quotes and orders already saved keep their prices.</p>
+<p class="note">Seeded from {{ catalog_source }}.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="glass">
+<table>
+<thead><tr><th>Name</th><th>Thickness</th><th>Sheet W</th><th>Sheet H</th><th>Raw $/sqf</th><th>Tariff %</th><th>Waste %</th><th>Base used</th><th>Temperable</th><th>Annealed</th><th>In price</th><th>Active</th></tr></thead>
+<tbody>
+{% for row in glass_rows %}
 <tr>
-<td>{{ row.name }}</td>
-<td>${{ '%.2f'|format(row.tier2) }}</td>
-<td>${{ '%.2f'|format(row.tier5) }}</td>
+<td><input type="hidden" name="id" value="{{ row.id }}"><input name="name" value="{{ row.name }}" aria-label="Glass name"></td>
+<td><input name="thickness" value="{{ row.thickness }}" aria-label="Thickness"></td>
+<td><input name="sheet_width" value="{{ row.sheet_width }}" aria-label="Sheet width"></td>
+<td><input name="sheet_height" value="{{ row.sheet_height }}" aria-label="Sheet height"></td>
+<td><input name="raw_price" value="{{ row.raw_price }}" aria-label="Raw price"></td>
+<td><input name="tariff_percent" value="{{ row.tariff_percent }}" aria-label="Tariff percent"></td>
+<td><input name="waste_percent" value="{{ row.waste_percent }}" aria-label="Waste percent"></td>
+<td>{{ '%.5f'|format(row.base_price) }}{% if row.note %}<div class="note off">{{ row.note }}</div>{% endif %}</td>
+<td><select name="temperable" aria-label="Temperable"><option value="yes" {% if row.temperable %}selected{% endif %}>yes</option><option value="no" {% if not row.temperable %}selected{% endif %}>no</option></select></td>
+<td><select name="annealed" aria-label="Annealed"><option value="yes" {% if row.annealed %}selected{% endif %}>yes</option><option value="no" {% if not row.annealed %}selected{% endif %}>no</option></select></td>
+<td><select name="in_price" aria-label="In price"><option value="yes" {% if row.in_price %}selected{% endif %}>yes</option><option value="no" {% if not row.in_price %}selected{% endif %}>no</option></select></td>
+<td><select name="active" aria-label="Active"><option value="yes" {% if row.active %}selected{% endif %}>yes</option><option value="no" {% if not row.active %}selected{% endif %}>no</option></select></td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
+<h3 style="color:#333;margin:18px 0 8px">Add a glass</h3>
+<div class="row">
+<div><label>Name</label><input name="new_name" aria-label="New glass name"></div>
+<div><label>Thickness</label><input name="new_thickness" aria-label="New thickness"></div>
+<div><label>Sheet W</label><input name="new_sheet_width" aria-label="New sheet width"></div>
+<div><label>Sheet H</label><input name="new_sheet_height" aria-label="New sheet height"></div>
+<div><label>Raw $/sqf</label><input name="new_raw_price" aria-label="New raw price"></div>
+<div><label>Tariff %</label><input name="new_tariff_percent" aria-label="New tariff"></div>
+<div><label>Waste %</label><input name="new_waste_percent" aria-label="New waste"></div>
+<div><label>Temperable</label><select name="new_temperable"><option value="yes">yes</option><option value="no">no</option></select></div>
+<div><label>Annealed</label><select name="new_annealed"><option value="yes">yes</option><option value="no">no</option></select></div>
+</div>
+<button class="btn" type="submit">Save glass</button>
+</form>
+
+{% elif tab == 'temper' %}
+<p class="note">One add-on per thickness, in $ per sq ft. It is added when a lite is tempered, it is not marked up, and it is the same at every tier. The seeded amounts are the workbook prices: 4mm 0.50, 5mm 0.60, 6mm 0.65, 8mm 0.95, 10mm 1.00, 12mm 1.20. Quotes and orders already saved keep the temper amount they were calculated with.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="temper">
+<table>
+<thead><tr><th>Thickness</th><th>Add-on per sq ft</th></tr></thead>
+<tbody>
+{% for row in temper_rows %}
+<tr>
+<td><input name="thickness" value="{{ row.thickness }}" aria-label="Temper thickness"></td>
+<td><input name="addon" value="{{ row.addon }}" aria-label="Temper add-on"></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<h3 style="color:#333;margin:18px 0 8px">Add a thickness</h3>
+<div class="row">
+<div><label>Thickness</label><input name="thickness" aria-label="New temper thickness" placeholder="15mm"></div>
+<div><label>Add-on per sq ft</label><input name="addon" aria-label="New temper add-on"></div>
+</div>
+<button class="btn" type="submit">Save temper add-ons</button>
+</form>
+
+{% elif tab == 'components' %}
+<p class="note">Spacers use raw $ per foot. Superspacer uses that amount as-is. Technoform multiplies it by the labour add-on (spacer sheet B51, 1.5 = 150%), then averages three sample IGU sizes. That average is the resulting $ per sq ft. Waste is applied after that to get the base the sell price uses. Sealants use price per set. Desiccant, butyl, and corner keys are added only when In price is yes. Quotes and orders already saved keep their prices.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="components">
+{% for row in formula_rows if row.key == 'technoform_foot_factor' %}
+<label for="technoform_foot_factor">Technoform labour add-on (B51). 1.5 means 150%.
+<input class="narrow" id="technoform_foot_factor" name="technoform_foot_factor" value="{{ row.value }}" aria-label="Technoform labour add-on">
+</label>
+{% endfor %}
+<table>
+<thead><tr><th>Name</th><th>Kind</th><th>Raw $/ft</th><th>Labour add-on</th><th>$/set</th><th>Spacer mm</th><th>Resulting $/sqf</th><th>Tariff %</th><th>Waste %</th><th>Base used</th><th>In price</th><th>Active</th></tr></thead>
+<tbody>
+{% for row in component_rows %}
+<tr>
+<td><input type="hidden" name="id" value="{{ row.id }}"><input name="name" value="{{ row.name }}" aria-label="Component name"></td>
+<td>{{ row.kind }}</td>
+<td><input name="price_per_ft" value="{{ row.price_per_ft }}" aria-label="Price per foot"></td>
+<td><input name="foot_factor" value="{{ row.foot_factor }}" aria-label="Foot factor"></td>
+<td><input name="price_per_set" value="{{ row.price_per_set }}" aria-label="Price per set"></td>
+<td><input name="spacer_width_mm" value="{{ row.spacer_width_mm }}" aria-label="Spacer width mm"></td>
+<td><input name="raw_price" value="{{ row.raw_price }}" aria-label="Raw price per sqf"></td>
+<td><input name="tariff_percent" value="{{ row.tariff_percent }}" aria-label="Tariff percent"></td>
+<td><input name="waste_percent" value="{{ row.waste_percent }}" aria-label="Waste percent"></td>
+<td>{{ '%.5f'|format(row.base_price) }}{% if row.note %}<div class="note off">{{ row.note }}</div>{% endif %}</td>
+<td><select name="in_price" aria-label="In price"><option value="yes" {% if row.in_price %}selected{% endif %}>yes</option><option value="no" {% if not row.in_price %}selected{% endif %}>no</option></select></td>
+<td><select name="active" aria-label="Active"><option value="yes" {% if row.active %}selected{% endif %}>yes</option><option value="no" {% if not row.active %}selected{% endif %}>no</option></select></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<h3 style="color:#333;margin:18px 0 8px">Add a component</h3>
+<div class="row">
+<div><label>Name</label><input name="new_name" aria-label="New component name"></div>
+<div><label>Kind</label><select name="new_kind" aria-label="New component kind"><option value="spacer">spacer</option><option value="sealant">sealant</option><option value="desiccant">desiccant</option><option value="butyl">butyl</option><option value="corner">corner key</option></select></div>
+<div><label>$/ft</label><input name="new_price_per_ft" aria-label="New price per foot"></div>
+<div><label>$/set</label><input name="new_price_per_set" aria-label="New price per set"></div>
+<div><label>Spacer mm</label><input name="new_spacer_width_mm" aria-label="New spacer width"></div>
+<div><label>Raw $/sqf</label><input name="new_raw_price" aria-label="New component raw price"></div>
+<div><label>Tariff %</label><input name="new_tariff_percent"></div>
+<div><label>Waste %</label><input name="new_waste_percent"></div>
+<div><label>In price</label><select name="new_in_price"><option value="no">no</option><option value="yes">yes</option></select></div>
+</div>
+<button class="btn" type="submit">Save components</button>
+</form>
+
+{% elif tab == 'formula' %}
+<p class="note">These are the remaining constants in the pricing calculation. Each one says where it is used. The seeded values are the ones the calculator already used, so saving this page without a change does not change a price. Changing a spacer or sealant constant recomputes those component bases for new calculations. Quotes and orders already saved keep their prices.</p>
+<form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="formula">
+<table>
+<thead><tr><th>Setting</th><th>Value</th><th>Where it is used</th></tr></thead>
+<tbody>
+{% for row in formula_rows %}
+<tr>
+<td>{{ row.key }}</td>
+<td><input name="{{ row.key }}" value="{{ row.value }}" aria-label="{{ row.key }}"></td>
+<td class="note">{{ row.description }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<button class="btn" type="submit">Save formula settings</button>
+</form>
+<h3 style="color:#333;margin:22px 0 8px">Workbook inputs that are not the sell price</h3>
+<ul class="gaps note">
+{% for gap in gaps %}
+<li>{{ gap }}</li>
+{% endfor %}
+</ul>
+
+{% elif tab == 'prices' %}
+<p class="note">Read-only sell price per sq ft for every glass, tempered lite, spacer, sealant, and same-glass double IGU (both lites, the spacer, and the sealant the quote screen would pick). USD is the calculator price. CAD is that price times the ERP rate in effect today ({{ '%.4f'|format(current_rate) }}). A triple is a double plus a third lite; there is no separate triple price list. This replaces the old three-glass sample.</p>
+<label for="price-search">Search</label>
+<input id="price-search" placeholder="Glass, spacer, or IGU" style="max-width:360px;margin-bottom:12px">
+<table id="price-table">
+<thead><tr><th>Kind</th><th>Configuration</th><th>T1 USD</th><th>T1 CAD</th><th>T2 USD</th><th>T2 CAD</th><th>T3 USD</th><th>T3 CAD</th><th>T4 USD</th><th>T4 CAD</th><th>T5 USD</th><th>T5 CAD</th></tr></thead>
+<tbody>
+{% for row in price_rows %}
+<tr data-q="{{ row.kind }} {{ row.label }}">
+<td>{{ row.kind }}</td>
+<td>{{ row.label }}</td>
+{% for tier in ('T1', 'T2', 'T3', 'T4', 'T5') %}
+<td>{{ '%.2f'|format(row.prices[tier].usd) }}</td>
+<td>{{ '%.2f'|format(row.prices[tier].cad) }}</td>
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<script>
+document.getElementById('price-search').addEventListener('input', function () {
+  var query = this.value.trim().toLowerCase();
+  document.querySelectorAll('#price-table tbody tr').forEach(function (row) {
+    row.style.display = !query || row.getAttribute('data-q').toLowerCase().indexOf(query) !== -1 ? '' : 'none';
+  });
+});
+</script>
+{% endif %}
+
+<div class="history">
+<h3 style="color:#333;margin-bottom:8px">Change history</h3>
+<table>
+<thead><tr><th>Date</th><th>User</th><th>Item</th><th>Field</th><th>Old</th><th>New</th></tr></thead>
+<tbody>
+{% for row in history %}
+<tr><td>{{ row.at }}</td><td>{{ row.user }}</td><td>{{ row.item }}</td><td>{{ row.field }}</td><td>{{ row.old }}</td><td>{{ row.new }}</td></tr>
+{% else %}
+<tr><td colspan="6">No changes on this tab yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
 </div></div>
 </body>
 </html>

@@ -162,11 +162,14 @@ function totalsTable(order) {
   const discount = order.discount || {type: 'percent', value: 0};
   const label = discount.type === 'percent' ? esc(discount.value) + '%' : 'fixed';
   const charges = (order.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td class="num">' + money(order, charge.amount) + '</td></tr>').join('');
+  const extraDiscount = Number(order.additional_discount_amount) ? '<tr><td>Additional discount (' + esc(order.additional_discount_percent) + '%)</td><td class="num">-' + money(order, order.additional_discount_amount) + '</td></tr>' : '';
+  const internal = (typeof internalPriceNote === 'function') ? internalPriceNote(order) : '';
   return '<table class="totals"><tr><td>IGU subtotal</td><td class="num" id="view-igu-subtotal">' + money(order, order.igu_subtotal) + '</td></tr>'
     + '<tr><td>Discount (' + label + ')</td><td class="num">-' + money(order, order.discount_amount) + '</td></tr>'
+    + extraDiscount
     + '<tr><td>IGU total</td><td class="num" id="view-igu-total">' + money(order, order.igu_total) + '</td></tr>'
     + charges
-    + '<tr><td><b>Grand total</b></td><td class="num"><b>' + money(order, order.total) + '</b></td></tr></table>';
+    + '<tr><td><b>Grand total</b></td><td class="num"><b>' + money(order, order.total) + '</b></td></tr></table>' + internal;
 }
 function coverageBlock(order) {
   const cover = order.coverage;
@@ -557,5 +560,14 @@ if (editor) {
 }
 loadCustomers().then(load);
 </script>
+{% if staff_view %}
+<script>
+function internalPriceNote(order) {
+  const pct = Number(order.price_addon_percent || 0);
+  if (!pct) return '';
+  return '<p class="note">Add-on % used on this order: ' + pct + '</p>';
+}
+</script>
+{% endif %}
 </body>
 </html>

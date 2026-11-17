@@ -1657,7 +1657,7 @@ def _document_lines(invoice, tax_code=None):
     if not lines and money(invoice.get('total')) > 0:
         total = money(invoice.get('total'))
         lines.append(_sales_line(default_item, 1, total, total, default_item, tax_code))
-    discount = money(invoice.get('discount_amount'))
+    discount = money(invoice.get('discount_amount')) + money(invoice.get('additional_discount_amount'))
     if discount > 0:
         lines.append({
             'Amount': discount,
