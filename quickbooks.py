@@ -504,6 +504,7 @@ def _card(key, label, currency):
             'tax_code': settings.get('tax_code') or DEFAULT_TAX,
             'province_tax': dict(settings.get('province_tax') or {}),
             'tax_exempt_code': settings.get('tax_exempt_code') or '',
+            'gst_number': settings.get('gst_number') or '',
             'tax_codes': _tax_code_choices(settings),
             'automated_sales_tax': detect_automated_sales_tax(settings) if key == 'us' else False,
             'state_tax': dict(settings.get('state_tax') or {}) if key == 'us' else {},
@@ -1474,15 +1475,16 @@ def resolve_canada_tax(customer, ship_province=None):
     province = str(ship_province or customer.get('province') or '').strip().upper()
     place = PROVINCE_NAMES.get(province) or province or 'the ship-to province'
     codes = _province_codes(province, settings)
+    from tax_numbers import saved_number
     if province in PST_PROVINCES:
-        if str(customer.get('pst_number') or '').strip():
+        if saved_number(customer.get('pst_number')):
             code = codes.get('gst_only') or ''
             label = f'GST only, shipped to {place} (PST number on file)'
         else:
             code = codes.get('with_pst') or ''
             label = f'GST + PST, shipped to {place}'
     elif province == 'QC':
-        if str(customer.get('qst_number') or '').strip():
+        if saved_number(customer.get('qst_number')):
             code = codes.get('gst_only') or ''
             label = f'GST only, shipped to {place} (QST number on file)'
         else:
@@ -1811,6 +1813,24 @@ def _post_entity(entity, payload):
         raise
 
 
+def _canada_invoice_memo(invoice):
+    """Customer-facing registration numbers. Omitted when the customer has none."""
+    if (invoice or {}).get('issuer') != 'ca' or (invoice or {}).get('kind') == 'intercompany':
+        return ''
+    province = str(invoice.get('ship_province') or '').strip().upper()
+    lines = []
+    qst = str(invoice.get('qst_number') or '').strip()
+    pst = str(invoice.get('pst_number') or '').strip()
+    if province == 'QC' and qst:
+        lines.append(f'QST: {qst}')
+    elif pst and province in {'BC', 'SK', 'MB'}:
+        lines.append(f'PST: {pst}')
+    gst = str(invoice.get('seller_gst_number') or '').strip()
+    if gst:
+        lines.insert(0, f'GST# {gst}')
+    return '\n'.join(lines)
+
+
 def push_document(invoice):
     key = (invoice or {}).get('issuer') or 'us'
     if _connection_key() != key:
@@ -1865,6 +1885,12 @@ def push_document(invoice):
         'Line': _document_lines(invoice, tax_code),
         'PrivateNote': invoice.get('reason') or invoice.get('project') or '',
     }
+    memo = _canada_invoice_memo(invoice)
+    if memo and _connection_key() == 'ca':
+        # CustomerMemo prints on the QuickBooks invoice. Custom fields need a
+        # DefinitionId already created in the company, so a missing one would
+        # reject the invoice. The memo does not.
+        payload['CustomerMemo'] = {'value': memo}
     if kind == 'invoice' and invoice.get('due_date'):
         payload['DueDate'] = invoice['due_date']
     customer = load_customers().get(invoice.get('customer_id') or '') or {}

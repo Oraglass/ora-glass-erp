@@ -165,12 +165,14 @@ function totalsTable(order) {
   const label = discount.type === 'percent' ? esc(discount.value) + '%' : 'fixed';
   const charges = (order.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td class="num">' + money(order, charge.amount) + '</td></tr>').join('');
   const extraDiscount = Number(order.additional_discount_amount) ? '<tr><td>Additional discount (' + esc(order.additional_discount_percent) + '%)</td><td class="num">-' + money(order, order.additional_discount_amount) + '</td></tr>' : '';
+  const taxes = (order.tax_lines || []).map(line => '<tr><td>' + esc(line.name) + ' ' + esc(line.rate) + '%</td><td class="num">' + money(order, line.amount) + '</td></tr>').join('');
   const internal = (typeof internalPriceNote === 'function') ? internalPriceNote(order) : '';
   return '<table class="totals"><tr><td>IGU subtotal</td><td class="num" id="view-igu-subtotal">' + money(order, order.igu_subtotal) + '</td></tr>'
     + '<tr><td>Discount (' + label + ')</td><td class="num">-' + money(order, order.discount_amount) + '</td></tr>'
     + extraDiscount
     + '<tr><td>IGU total</td><td class="num" id="view-igu-total">' + money(order, order.igu_total) + '</td></tr>'
     + charges
+    + taxes
     + '<tr><td><b>Grand total</b></td><td class="num"><b>' + money(order, order.total) + '</b></td></tr></table>' + internal;
 }
 function coverageBlock(order) {

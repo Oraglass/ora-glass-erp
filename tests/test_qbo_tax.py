@@ -349,31 +349,44 @@ def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, mon
         assert british_columbia['tax_label'] == 'GST + PST, shipped to British Columbia'
         assert _last_canada_tax(fake) == '7'
 
-        numbered = client.put('/api/customers/maple-glass', json={
-            'country': 'Canada', 'province': 'BC', 'pst_number': 'PST-123456', 'qbo_tax_code': '',
+        numbered = client.post('/api/customers/maple-glass/tax-number', json={
+            'field': 'pst_number', 'number': 'PST-123456', 'number_confirm': 'PST-123456',
+            'reason': 'PST registration',
         })
-        assert numbered.status_code == 200
+        assert numbered.status_code == 200, numbered.get_json()
+        assert load_customers()['maple-glass']['pst_number'] == 'PST-123456'
+        ignored = client.put('/api/customers/maple-glass', json={'pst_number': 'SHOULD-NOT-STICK'})
+        assert ignored.status_code == 200
         assert load_customers()['maple-glass']['pst_number'] == 'PST-123456'
         exempt_pst = invoice('BC', 'BC with PST number')
         assert exempt_pst['tax_label'] == 'GST only, shipped to British Columbia (PST number on file)'
         assert _last_canada_tax(fake) == '5'
 
         client.put('/api/customers/maple-glass', json={
-            'country': 'Canada', 'province': 'QC', 'pst_number': '', 'qst_number': '', 'qbo_tax_code': '',
-            'tax_code_override': False,
+            'country': 'Canada', 'province': 'QC', 'qbo_tax_code': '', 'tax_code_override': False,
         })
+        removed_pst = client.post('/api/customers/maple-glass/tax-number', json={
+            'field': 'pst_number', 'number': '', 'number_confirm': '',
+            'reason': 'Moved to Quebec', 'remove': True,
+        })
+        assert removed_pst.status_code == 200, removed_pst.get_json()
         quebec = invoice('QC', 'Delivered to Quebec')
         assert quebec['tax_label'] == 'GST + QST, shipped to Quebec'
         assert _last_canada_tax(fake) == '8'
-        client.put('/api/customers/maple-glass', json={
-            'country': 'Canada', 'province': 'QC', 'qst_number': 'QST-999', 'qbo_tax_code': '',
+        client.post('/api/customers/maple-glass/tax-number', json={
+            'field': 'qst_number', 'number': 'QST-9999', 'number_confirm': 'QST-9999',
+            'reason': 'QST registration',
         })
         quebec_registered = invoice('QC', 'Quebec with QST number')
         assert quebec_registered['tax_label'] == 'GST only, shipped to Quebec (QST number on file)'
         assert _last_canada_tax(fake) == '5'
 
         client.put('/api/customers/maple-glass', json={
-            'country': 'Canada', 'province': 'AB', 'qst_number': '', 'pst_number': '', 'qbo_tax_code': '',
+            'country': 'Canada', 'province': 'AB', 'qbo_tax_code': '',
+        })
+        client.post('/api/customers/maple-glass/tax-number', json={
+            'field': 'qst_number', 'number': '', 'number_confirm': '',
+            'reason': 'Left Quebec', 'remove': True,
         })
         alberta = invoice('AB', 'Delivered to Alberta')
         assert alberta['tax_label'] == 'GST, shipped to Alberta'
@@ -417,7 +430,9 @@ def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, mon
         })
         assert pdf.status_code == 200
         assert pdf.mimetype == 'application/pdf'
-        assert b'GST + PST, shipped to British Columbia' in _pdf_text(pdf.data)
+        text = _pdf_text(pdf.data)
+        assert b'GST 5%' in text
+        assert b'PST 7%' in text
         client.post('/logout')
         assert login(client, 'admin@oraglass.us').status_code == 302
         created = client.post(
@@ -437,8 +452,10 @@ def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, mon
         assert stored['qbo_tax_code'] == '6'
         assert stored['tax_label'] == 'HST, shipped to Ontario'
         assert _last_canada_tax(fake) == '6'
+        posted = json.loads([call for call in _posts(fake, '/invoice') if '/123146408064299/' in call[1]][-1][2])
+        assert '729631119 RT0001' in posted.get('CustomerMemo', {}).get('value', '')
         invoice_pdf = client.get(f"/api/invoices/{stored['id']}/pdf")
         assert invoice_pdf.status_code == 200
-        assert b'HST, shipped to Ontario' in _pdf_text(invoice_pdf.data)
+        assert b'HST 13%' in _pdf_text(invoice_pdf.data)
     finally:
         quickbooks.TRANSPORT = None

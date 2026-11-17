@@ -204,7 +204,7 @@ def _header(document, styles):
         f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
         f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
     ])
-    title_text = f'{escape(title)}<br/><font size="8">{COMPANY_ADDRESS}</font>'
+    title_text = f'{escape(title)}<br/><font size="8">{header_address_block(document)}</font>'
     header = Table(
         [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
         colWidths=[1.25 * inch, 3.05 * inch, 3.4 * inch],
@@ -217,6 +217,9 @@ def _header(document, styles):
         ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
     ]))
     sold = [f'<b>Sold To:</b> {escape(str(document.get("company") or ""))}']
+    customer_tax = _customer_tax_id(document)
+    if customer_tax:
+        sold.append(customer_tax)
     sold.extend(escape(str(line)) for line in document.get('sold_to') or [] if str(line).strip())
     job = [f'<b>Job Name:</b> {escape(str(document.get("project") or ""))}']
     job.extend(escape(str(line)) for line in document.get('job_address') or [] if str(line).strip())
@@ -336,6 +339,43 @@ def _grid():
     ])
 
 
+def canada_bill(document):
+    """CAD documents are billed by Ora Glass (Canada) Inc. USD documents, including intercompany, are Ora Glass Inc."""
+    if str((document or {}).get('kind') or '') == 'intercompany':
+        return False
+    issuer = str((document or {}).get('issuer') or '')
+    if issuer == 'us':
+        return False
+    if issuer == 'ca':
+        return True
+    return str((document or {}).get('currency') or 'usd').lower() == 'cad'
+
+
+def header_address_block(document):
+    """Company name above the Lynden address. The GST number sits under the address on Canada bills only."""
+    name = 'Ora Glass (Canada) Inc.' if canada_bill(document) else 'Ora Glass Inc.'
+    block = escape(name) + '<br/>' + COMPANY_ADDRESS
+    if canada_bill(document):
+        gst = str((document or {}).get('seller_gst_number') or '').strip()
+        if gst:
+            block += f'<br/>GST# {escape(gst)}'
+    return block
+
+
+def _customer_tax_id(document):
+    """The customer's PST or QST, printed with Sold To on Canada bills only."""
+    if not canada_bill(document):
+        return ''
+    province = str(document.get('ship_province') or '').strip().upper()
+    qst = str(document.get('qst_number') or '').strip()
+    pst = str(document.get('pst_number') or '').strip()
+    if province == 'QC' and qst:
+        return f'<b>QST:</b> {escape(qst)}'
+    if pst and province in {'BC', 'SK', 'MB'}:
+        return f'<b>PST:</b> {escape(pst)}'
+    return ''
+
+
 def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
     currency = document.get('currency') or 'usd'
     discount = _number(document.get('additional_discount_amount'))
@@ -343,17 +383,32 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
         percent = _number(document.get('additional_discount_percent'))
         if percent:
             discount = round(subtotal * percent / 100.0, 2)
-    tax_amount = document.get('tax_amount')
-    if tax_amount not in (None, ''):
-        tax_text = money_text(currency, tax_amount)
-        tax_value = _number(tax_amount)
+    taxable = round(subtotal - discount, 2)
+    supplied = [row for row in (document.get('tax_lines') or []) if isinstance(row, dict)]
+    tax_rows = []
+    tax_value = 0.0
+    if supplied:
+        import tax_numbers
+        for row in supplied:
+            amount = tax_numbers.tax_amount(taxable, row.get('rate'))
+            tax_value += amount
+            rate = str(row.get('rate') or '')
+            label = f"{row.get('name') or 'Tax'} {rate}%"
+            tax_rows.append((label, money_text(currency, amount)))
+        tax_value = round(tax_value, 2)
     else:
-        label = str(document.get('tax_label') or '').strip()
-        tax_text = label or 'AS APPLICABLE'
-        tax_value = 0.0
-    if tax_text == 'AS APPLICABLE':
-        tax_text = '- AS APPLICABLE'
-    grand = round(subtotal - discount + tax_value, 2)
+        tax_amount = document.get('tax_amount')
+        if tax_amount not in (None, ''):
+            tax_text = money_text(currency, tax_amount)
+            tax_value = _number(tax_amount)
+        else:
+            label = str(document.get('tax_label') or '').strip()
+            tax_text = label or 'AS APPLICABLE'
+            tax_value = 0.0
+        if tax_text == 'AS APPLICABLE':
+            tax_text = '- AS APPLICABLE'
+        tax_rows.append(('Tax:', tax_text))
+    grand = round(taxable + tax_value, 2)
     summary = Paragraph(
         f'Total Pcs: {total_pcs}&nbsp;&nbsp;&nbsp;&nbsp;Total SQ/FT : {total_sqf:.2f}'
         f'&nbsp;&nbsp;&nbsp;&nbsp;Total Weight: Appx. {weight:.2f} LBS',
@@ -365,18 +420,23 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
     )
     rows = [
         [Paragraph('Sub-Total:', styles['sum_label']), Paragraph(money_text(currency, subtotal), styles['sum_amount'])],
-        [Paragraph('Tax:', styles['sum_label']), Paragraph(escape(tax_text), styles['sum_amount'])],
     ]
     if discount > 0:
         rows.append([
             Paragraph('Discount:', styles['sum_label']),
             Paragraph(money_text(currency, discount), styles['sum_amount']),
         ])
+    for label, amount in tax_rows:
+        shown = label if str(label).endswith(':') else f'{label}:'
+        rows.append([
+            Paragraph(escape(shown), styles['sum_label']),
+            Paragraph(escape(str(amount)), styles['sum_amount']),
+        ])
     rows.append([
         Paragraph('<b>Total:</b>', styles['sum_label']),
         Paragraph(f'<b>{money_text(currency, grand)}</b>', styles['sum_amount']),
     ])
-    totals = Table(rows, colWidths=[0.9 * inch, 2.35 * inch])
+    totals = Table(rows, colWidths=[1.35 * inch, 1.9 * inch])
     totals.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
