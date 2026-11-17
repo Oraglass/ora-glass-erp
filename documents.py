@@ -204,11 +204,7 @@ def _header(document, styles):
         f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
         f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
     ])
-    address = COMPANY_ADDRESS
-    seller_gst = _seller_gst_line(document)
-    if seller_gst:
-        address += f'<br/>{seller_gst}'
-    title_text = f'{escape(title)}<br/><font size="8">{address}</font>'
+    title_text = f'{escape(title)}<br/><font size="8">{header_address_block(document)}</font>'
     header = Table(
         [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
         colWidths=[1.25 * inch, 3.05 * inch, 3.4 * inch],
@@ -343,18 +339,33 @@ def _grid():
     ])
 
 
-def _seller_gst_line(document):
-    """Ora Glass (Canada) Inc's number, under the Lynden address. US documents omit it."""
-    if not document.get('show_seller_gst'):
-        return ''
-    gst = str(document.get('seller_gst_number') or '').strip()
-    if not gst:
-        return ''
-    return f'Ora Glass (Canada) Inc. GST/HST# {escape(gst)}'
+def canada_bill(document):
+    """CAD documents are billed by Ora Glass (Canada) Inc. USD documents, including intercompany, are Ora Glass Inc."""
+    if str((document or {}).get('kind') or '') == 'intercompany':
+        return False
+    issuer = str((document or {}).get('issuer') or '')
+    if issuer == 'us':
+        return False
+    if issuer == 'ca':
+        return True
+    return str((document or {}).get('currency') or 'usd').lower() == 'cad'
+
+
+def header_address_block(document):
+    """Company name above the Lynden address. The GST number sits under the address on Canada bills only."""
+    name = 'Ora Glass (Canada) Inc.' if canada_bill(document) else 'Ora Glass Inc.'
+    block = escape(name) + '<br/>' + COMPANY_ADDRESS
+    if canada_bill(document):
+        gst = str((document or {}).get('seller_gst_number') or '').strip()
+        if gst:
+            block += f'<br/>GST# {escape(gst)}'
+    return block
 
 
 def _customer_tax_id(document):
-    """The customer's PST or QST, printed with Sold To. Omitted when none is saved."""
+    """The customer's PST or QST, printed with Sold To on Canada bills only."""
+    if not canada_bill(document):
+        return ''
     province = str(document.get('ship_province') or '').strip().upper()
     qst = str(document.get('qst_number') or '').strip()
     pst = str(document.get('pst_number') or '').strip()

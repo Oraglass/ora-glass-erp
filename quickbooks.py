@@ -1827,7 +1827,7 @@ def _canada_invoice_memo(invoice):
         lines.append(f'PST: {pst}')
     gst = str(invoice.get('seller_gst_number') or '').strip()
     if gst:
-        lines.insert(0, f'Ora Glass (Canada) Inc. GST/HST# {gst}')
+        lines.insert(0, f'GST# {gst}')
     return '\n'.join(lines)
 
 

@@ -77,8 +77,13 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert b'Raising Cane' in text
     assert b'Remarks:' in text
     assert b'COD' in text
-    assert b'GST/HST#' not in text
+    assert b'Ora Glass Inc.' in text
+    assert b'Canada' not in text
+    assert b'GST#' not in text
     assert b'729631119' not in text
+    from pathlib import Path
+    Path('/opt/cursor/artifacts').mkdir(parents=True, exist_ok=True)
+    Path('/opt/cursor/artifacts/usd-quote.pdf').write_bytes(pdf.data)
     assert b'QTY' in text
     assert b'WIDTH' in text
     assert b'HEIGHT' in text

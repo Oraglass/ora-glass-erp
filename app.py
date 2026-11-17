@@ -6737,6 +6737,7 @@ def _render_invoice_pdf(invoice):
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    import documents
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
@@ -6755,13 +6756,12 @@ def _render_invoice_pdf(invoice):
         logo,
         Paragraph(
             f"<b>{'Credit Note' if document_type(invoice) == 'credit_note' else 'Invoice'}</b>"
-            '<br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA'
-            + (
-                f"<br/>Ora Glass (Canada) Inc. GST/HST# {escape(invoice.get('seller_gst_number'))}"
-                if invoice.get('show_seller_gst') and invoice.get('seller_gst_number')
-                else ''
-            )
-            + '</font>',
+            + '<br/><font size="8">' + documents.header_address_block({
+                'issuer': invoice.get('issuer'),
+                'kind': invoice.get('kind'),
+                'currency': invoice.get('currency'),
+                'seller_gst_number': invoice.get('seller_gst_number') or '',
+            }) + '</font>',
             title_style,
         ),
         Paragraph(
@@ -6787,9 +6787,9 @@ def _render_invoice_pdf(invoice):
         label_style,
     ))
     province = str(invoice.get('ship_province') or '').upper()
-    if province == 'QC' and invoice.get('qst_number'):
+    if documents.canada_bill(invoice) and province == 'QC' and invoice.get('qst_number'):
         elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
-    elif invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
+    elif documents.canada_bill(invoice) and invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
         elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
     for line in invoice.get('tax_lines') or []:
         if not isinstance(line, dict):

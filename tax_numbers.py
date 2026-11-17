@@ -19,7 +19,7 @@ from storage import append_tax_number_history, load_customers, load_tax_number_h
 FIELDS = {
     'pst_number': 'PST number',
     'qst_number': 'QST number',
-    'gst_number': 'GST/HST number',
+    'gst_number': 'GST number',
 }
 # Statutory rates. A saved PST number drops the provincial tax in BC, SK, and MB.
 # A saved QST number drops QST. HST provinces stay HST.
