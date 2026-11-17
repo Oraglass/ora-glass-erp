@@ -1483,7 +1483,8 @@ def quote_template_context(user):
         'import_customer_id': user.get('customer_id') or '',
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'drawing_note': DRAWING_NOTE,
-        'erp_rate': _current_fx()[0],
+        'erp_rate': _current_fx()[0] if user.get('role') != 'customer' else 1,
+        'show_fx_rate': user.get('role') != 'customer',
         'company_discount_percent': _percent((customers.get(user.get('customer_id') or '') or {}).get('additional_discount_percent')) if user.get('role') == 'customer' else 0,
         'company_minimum_sqf': _effective_minimum(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else 0,
         'formula_minimum_sqf': float(_price_options().get('minimum_sqf') or 0),
@@ -1877,7 +1878,13 @@ def calculate():
     except (TypeError, ValueError):
         supplied = 0
     fx_rate = supplied if supplied > 0 else _current_fx()[0]
-    return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate, 'minimum_sqf': minimum_sqf})
+    body = {'price_sqf': price, 'tier': tier, 'minimum_sqf': minimum_sqf}
+    if user.get('role') == 'customer':
+        if _required_currency(customer) == 'cad':
+            body['price_sqf'] = round(price * fx_rate, 2)
+    else:
+        body['fx_rate'] = fx_rate
+    return jsonify(body)
 
 
 def _job_lines(value):
@@ -1952,7 +1959,6 @@ def _pdf_document(source, kind, user=None):
         'additional_discount_amount': source.get('additional_discount_amount') or 0,
         'tax_label': source.get('tax_label') or '',
         'tax_amount': source.get('tax_amount'),
-        'fx_rate': source.get('fx_rate') or 0,
         'type': source.get('type') or ('size' if kind == 'order' else ''),
         'weight_factor': pricing_catalog.formula_number('glass_lb_per_sqf_mm', 0.512),
         '_builder': documents,
@@ -2011,7 +2017,6 @@ def export_quote():
             'extra_charges': data.get('extra_charges') or [],
             'additional_discount_percent': data.get('additional_discount_percent') or 0,
             'tax_label': tax_label,
-            'fx_rate': data.get('fx_rate') or 0,
             'type': data.get('type') or '',
             'po': clean_text(data.get('po'), 80),
         }, 'quote', user)
@@ -2097,6 +2102,7 @@ def orders():
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
         can_job_address=can_edit_job_address(user),
+        show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -2119,6 +2125,7 @@ def order_detail(order_id):
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
         can_job_address=can_edit_job_address(user, order),
+        show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -2692,6 +2699,7 @@ def quote_history():
         can_order=customer_subrole(user) == 'management' or staff,
         staff_order=staff,
         staff_tools=user.get('role') != 'customer',
+        show_fx_rate=user.get('role') != 'customer',
         order_tiers=[
             {'id': tid, 'label': (cfg or {}).get('label') or tid}
             for tid, cfg in ordered_tiers()
@@ -3411,6 +3419,7 @@ def _quote_for_viewer(quote, user):
     row = dict(quote)
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
+        row.pop('fx_rate', None)
     return row
 
 
@@ -3496,7 +3505,7 @@ def get_quote(quote_id):
     quote = _visible_quote(user, quote_id)
     if not quote:
         return json_error('Not found', 404)
-    return jsonify(_with_quote_tax(quote))
+    return jsonify(_with_quote_tax(_quote_for_viewer(quote, user)))
 
 
 @app.route('/api/quotes/<int:quote_id>/copy', methods=['POST'])
@@ -4576,25 +4585,32 @@ def order_for_viewer(order, user, with_coverage=False):
         ],
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
-        'documents': [
-            {
-                'id': row.get('id'),
-                'number': row.get('number'),
-                'doc_type': document_type(row),
-                'issuer': row.get('issuer') or 'us',
-                'kind': row.get('kind') or 'customer',
-                'currency': row.get('currency') or 'usd',
-                'fx_rate': row.get('fx_rate'),
-                'fx_date': row.get('fx_date') or '',
-                'fx_source': row.get('fx_source') or '',
-                'qbo_warning': row.get('qbo_warning') or '',
-                'total': money(row.get('total')),
-                'voided': bool(row.get('voided')),
-            }
-            for row in load_invoices()
-            if row.get('order_id') == order.get('id')
-        ],
+        'documents': [],
     }
+    staff_view = user.get('role') != 'customer'
+    if staff_view and order.get('fx_rate') not in (None, ''):
+        base['fx_rate'] = order.get('fx_rate')
+    documents = []
+    for row in load_invoices():
+        if row.get('order_id') != order.get('id'):
+            continue
+        document = {
+            'id': row.get('id'),
+            'number': row.get('number'),
+            'doc_type': document_type(row),
+            'issuer': row.get('issuer') or 'us',
+            'kind': row.get('kind') or 'customer',
+            'currency': row.get('currency') or 'usd',
+            'qbo_warning': row.get('qbo_warning') or '',
+            'total': money(row.get('total')),
+            'voided': bool(row.get('voided')),
+        }
+        if staff_view:
+            document['fx_rate'] = row.get('fx_rate')
+            document['fx_date'] = row.get('fx_date') or ''
+            document['fx_source'] = row.get('fx_source') or ''
+        documents.append(document)
+    base['documents'] = documents
     owner = load_customers().get(order.get('customer_id') or '') or {}
     tax = _canada_tax_fields(owner, order.get('ship_province'))
     if tax:

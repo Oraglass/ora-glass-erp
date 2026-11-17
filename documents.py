@@ -202,9 +202,6 @@ def _header(document, styles):
         f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
         f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
     ])
-    rate = _number(document.get('fx_rate'))
-    if str(document.get('currency') or '').lower() == 'cad' and rate > 0:
-        meta += f'<br/>USD/CAD {rate:.4f}'
     title_text = f'{escape(title)}<br/><font size="8">{COMPANY_ADDRESS}</font>'
     header = Table(
         [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
