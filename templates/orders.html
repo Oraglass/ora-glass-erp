@@ -215,7 +215,10 @@ function renderDetail(order) {
     const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
     const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
     const floor = item.floor || item.mark || item.location || '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const each = Number(item.sqf);
+    const qty = Number(item.pcs);
+    const lineSqf = item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(lineSqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -265,7 +268,7 @@ function renderDetail(order) {
     + shipForm
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
-    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Total sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
@@ -454,6 +457,7 @@ function collectItems() {
     if (item.remarks) row.remarks = item.remarks;
     if (item.floor) row.floor = item.floor;
     if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
+    if (item.minimum_sqf != null && item.minimum_sqf !== '') row.minimum_sqf = item.minimum_sqf;
     return row;
   });
   return items;

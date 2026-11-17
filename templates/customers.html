@@ -139,6 +139,10 @@ td.actions{width:11rem}
 <input type="number" id="c-addon" min="0" max="1000" step="0.01" placeholder="0">
 <p class="help">Increases this company's unit prices. It is not shown to the customer.</p>
 </div>
+<div class="form-group"><label for="c-minimum-sqf">Minimum sq ft per piece</label>
+<input type="number" id="c-minimum-sqf" min="0" max="100000" step="0.01" placeholder="0">
+<p class="help">A smaller piece is charged as this many square feet. Blank or 0 uses the Pricing formula minimum, or no minimum when that is also 0.</p>
+</div>
 {% endif %}
 </div>
 <div class="form-row">
@@ -249,6 +253,8 @@ function openModal(customer) {
   if (discountField) discountField.value = customer && customer.additional_discount_percent ? customer.additional_discount_percent : '';
   const addonField = document.getElementById('c-addon');
   if (addonField) addonField.value = customer && customer.price_addon_percent ? customer.price_addon_percent : '';
+  const minimumField = document.getElementById('c-minimum-sqf');
+  if (minimumField) minimumField.value = customer && customer.minimum_sqf_per_piece ? customer.minimum_sqf_per_piece : '';
   document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
   document.getElementById('customer-modal').classList.add('active');
@@ -279,6 +285,7 @@ function payload() {
     tier: document.getElementById('c-tier').value,
     additional_discount_percent: document.getElementById('c-discount') ? document.getElementById('c-discount').value : '',
     price_addon_percent: document.getElementById('c-addon') ? document.getElementById('c-addon').value : '',
+    minimum_sqf_per_piece: document.getElementById('c-minimum-sqf') ? document.getElementById('c-minimum-sqf').value : '',
     status: document.getElementById('c-status').value,
     credit_approved: document.getElementById('c-credit').checked
   };

@@ -292,8 +292,20 @@ def _sell_price(data, tier, tiers, price_factor=1):
     return round(price * (price_factor or 1), 2)
 
 
-def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _effective_minimum(customer):
+    """Company minimum per piece wins. Otherwise the Pricing formula minimum is used."""
+    try:
+        company = float((customer or {}).get('minimum_sqf_per_piece') or 0)
+    except (TypeError, ValueError):
+        company = 0.0
+    if company > 0:
+        return company
+    return float(_price_options().get('minimum_sqf') or 0)
+
+
+def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=None):
     options = _price_options()
+    minimum = options['minimum_sqf'] if minimum_sqf is None else minimum_sqf
     priced = reprice_size_line(
         spec, pcs, tier, currency, options['pricing'], tiers, fx_rate,
         temper_prices=options['temper_prices'],
@@ -301,10 +313,22 @@ def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1):
         unknown_temper=options['unknown_temper'],
         extra_per_sqf=options['extra_per_sqf'],
         triple_factor=options['triple_factor'],
-        minimum_sqf=options['minimum_sqf'],
+        minimum_sqf=minimum,
         minimum_charge=options['minimum_charge'],
     )
     return _scale_prices(priced, price_factor or 1)
+
+
+def _size_price_fields(priced):
+    return {
+        'sqf': priced['sqf'],
+        'real_sqf': priced.get('real_sqf', priced['sqf']),
+        'minimum_sqf': priced.get('minimum_sqf') or 0,
+        'price_sqf': priced['price_sqf'],
+        'price_pc': priced['price_pc'],
+        'pcs': priced['pcs'],
+        'total': priced['total'],
+    }
 
 _state = {'bootstrapped': False}
 
@@ -762,6 +786,7 @@ def public_customer(customer_id, customer, tiers, user_count):
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
         'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
+        'minimum_sqf_per_piece': _percent(customer.get('minimum_sqf_per_piece'), 100000),
         'status': customer.get('status') or 'active',
         'user_count': user_count,
     }
@@ -1082,6 +1107,8 @@ def apply_customer_fields(customer, data, tiers, creating):
         customer['additional_discount_percent'] = _percent(data.get('additional_discount_percent'))
     if creating or 'price_addon_percent' in data:
         customer['price_addon_percent'] = _percent(data.get('price_addon_percent'), 1000)
+    if creating or 'minimum_sqf_per_piece' in data:
+        customer['minimum_sqf_per_piece'] = _percent(data.get('minimum_sqf_per_piece'), 100000)
     if creating or 'status' in data:
         status = clean_text(data.get('status') or 'active', 20)
         if status not in {'active', 'inactive'}:
@@ -1447,6 +1474,8 @@ def quote_template_context(user):
         'drawing_note': DRAWING_NOTE,
         'erp_rate': _current_fx()[0],
         'company_discount_percent': _percent((customers.get(user.get('customer_id') or '') or {}).get('additional_discount_percent')) if user.get('role') == 'customer' else 0,
+        'company_minimum_sqf': _effective_minimum(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else 0,
+        'formula_minimum_sqf': float(_price_options().get('minimum_sqf') or 0),
         'currency_locked': user.get('role') == 'customer',
         'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
@@ -1455,6 +1484,7 @@ def quote_template_context(user):
                 'name': (customer or {}).get('name') or customer_id,
                 'currency': _required_currency(customer),
                 'discount_percent': _percent(customer.get('additional_discount_percent')),
+                'minimum_sqf': _effective_minimum(customer),
             }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
@@ -1830,12 +1860,13 @@ def calculate():
         requested = clean_text(data.get('customer_id'), 64)
         customer = customers.get(requested) if requested else None
     price = _sell_price(data, tier, tiers, _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000)))
+    minimum_sqf = _effective_minimum(customer)
     try:
         supplied = float(data.get('fx_rate'))
     except (TypeError, ValueError):
         supplied = 0
     fx_rate = supplied if supplied > 0 else _current_fx()[0]
-    return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate})
+    return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate, 'minimum_sqf': minimum_sqf})
 
 
 @app.route('/api/export-quote', methods=['POST'])
@@ -3214,6 +3245,45 @@ def _line_subtotal(items):
     return round(total, 2)
 
 
+def _charge_saved_size_lines(items, minimum):
+    """Bill each size line at the charged square feet and remember the minimum used.
+
+    Per-square-foot lines have no size spec and are left unchanged.
+    """
+    from quoting import area_sqf
+    try:
+        floor = float(minimum or 0)
+    except (TypeError, ValueError):
+        floor = 0.0
+    if floor < 0:
+        floor = 0.0
+    for item in items or []:
+        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if not spec or spec.get('width') in (None, '') or spec.get('height') in (None, ''):
+            continue
+        real = round(area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')), 2)
+        charged = round(max(real, floor), 2) if floor > 0 else real
+        item['real_sqf'] = real
+        item['minimum_sqf'] = floor
+        item['sqf'] = charged
+        try:
+            price_sqf = float(item.get('price_sqf') or 0)
+        except (TypeError, ValueError):
+            price_sqf = 0.0
+        try:
+            pieces = int(item.get('pcs') or 1)
+        except (TypeError, ValueError):
+            pieces = 1
+        if pieces < 1:
+            pieces = 1
+        if price_sqf and charged > real + 0.001:
+            item['price_pc'] = round(price_sqf * charged, 2)
+            item['total'] = round(item['price_pc'] * pieces, 2)
+    return items
+
+
 def _stamp_terms(document, items, discount_percent, addon_percent):
     document['additional_discount_percent'] = _percent(discount_percent)
     document['additional_discount_amount'] = round(
@@ -3345,6 +3415,7 @@ def save_quote():
         kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
         existing['items'] = _repriced_quote_items(
             items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
+            _effective_minimum(customer),
         ) if quote_type == 'size' else priced
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
@@ -3371,7 +3442,7 @@ def save_quote():
         'company': company,
         'customer_id': customer_id,
         'project': project,
-        'items': priced,
+        'items': _charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced,
         'currency': currency,
         'fx_rate': fx_rate,
         'type': quote_type,
@@ -3418,7 +3489,7 @@ def _copied_extras(raw):
     return charges
 
 
-def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
     for item in items or []:
@@ -3428,17 +3499,14 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
-            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor)
+            stored_minimum = item.get('minimum_sqf') if 'minimum_sqf' in item else minimum_sqf
+            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor, stored_minimum)
             copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
-                'sqf': priced['sqf'],
-                'price_sqf': priced['price_sqf'],
-                'price_pc': priced['price_pc'],
-                'pcs': priced['pcs'],
-                'total': priced['total'],
                 'irregular_shape': bool(item.get('irregular_shape')),
             }
+            copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
                 copied_line['remarks'] = clean_text(item.get('remarks'), 500)
             floor = production.floor_code(item)
@@ -4791,17 +4859,14 @@ def convert_quote_to_order(quote_id):
         priced = _reprice(
             spec, item.get('pcs'), company_tier, currency, tiers, _stored_fx(quote),
             _price_factor((customer or {}).get('price_addon_percent')),
+            _effective_minimum(customer),
         )
         line = {
             'name': item.get('name') or '',
             'spec': spec,
-            'sqf': priced['sqf'],
-            'price_sqf': priced['price_sqf'],
-            'price_pc': priced['price_pc'],
-            'pcs': priced['pcs'],
-            'total': priced['total'],
             'irregular_shape': bool(item.get('irregular_shape')),
         }
+        line.update(_size_price_fields(priced))
         if item.get('remarks'):
             line['remarks'] = clean_text(item.get('remarks'), 500)
         floor = production.floor_code(item)
@@ -5084,7 +5149,7 @@ def _apply_drawing_charges(items, order):
     return kept
 
 
-def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=None):
     if not isinstance(raw, list) or not raw:
         return None, 'An order needs at least one line.'
     items = []
@@ -5116,20 +5181,17 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1)
             return None, 'Quantity must be a whole number.'
         if pcs < 1 or pcs > 10000:
             return None, 'Quantity must be at least 1.'
-        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor)
+        line_minimum = raw_item.get('minimum_sqf') if 'minimum_sqf' in raw_item else minimum_sqf
+        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor, line_minimum)
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
         line = {
             'name': name,
             'spec': spec,
-            'sqf': priced['sqf'],
-            'price_sqf': priced['price_sqf'],
-            'price_pc': priced['price_pc'],
-            'pcs': priced['pcs'],
-            'total': priced['total'],
             'irregular_shape': bool(raw_item.get('irregular_shape')),
         }
+        line.update(_size_price_fields(priced))
         if raw_item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
         if raw_item.get('remarks'):
@@ -5173,6 +5235,7 @@ def _edited_order(order, data, tiers):
         items, error = _parse_order_items(
             data.get('items'), tier, currency, tiers, _stored_fx(order),
             _price_factor(order.get('price_addon_percent')),
+            _effective_minimum(load_customers().get(order.get('customer_id') or '')),
         )
         if error:
             return None, error

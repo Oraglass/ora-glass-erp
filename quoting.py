@@ -334,8 +334,13 @@ def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None, *
     else:
         rate = 1.0
     sqf = area_sqf((spec or {}).get('width'), (spec or {}).get('height'), (spec or {}).get('unit'))
+    try:
+        minimum_sqf = float(price_options.get('minimum_sqf') or 0)
+    except (TypeError, ValueError):
+        minimum_sqf = 0.0
+    if minimum_sqf < 0:
+        minimum_sqf = 0.0
     billed = sqf
-    minimum_sqf = float(price_options.get('minimum_sqf') or 0)
     if minimum_sqf > 0 and sqf < minimum_sqf:
         billed = minimum_sqf
     price_sqf = round(usd * rate, 2)
@@ -352,7 +357,9 @@ def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None, *
         total = round(minimum_charge, 2)
         price_pc = round(total / pieces, 2)
     return {
-        'sqf': round(sqf, 2),
+        'sqf': round(billed, 2),
+        'real_sqf': round(sqf, 2),
+        'minimum_sqf': round(minimum_sqf, 4) if minimum_sqf > 0 else 0,
         'price_sqf': price_sqf,
         'price_pc': price_pc,
         'pcs': pieces,

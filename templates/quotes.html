@@ -74,7 +74,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 {% if currency_locked %}<p class="note" id="currency-lock">Currency is {{ locked_currency|upper }} for this company.</p>{% else %}
 <div class="form-group" style="max-width:360px;margin:0 0 12px">
 <label for="quote-customer">Customer</label>
-<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}" data-discount="{{ company.discount_percent }}">{{ company.name }}</option>{% endfor %}</select>
+<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}" data-discount="{{ company.discount_percent }}" data-minimum="{{ company.minimum_sqf }}">{{ company.name }}</option>{% endfor %}</select>
 <p class="note">Currency follows the customer. USD and CAD can be changed only while no customer is selected.</p>
 <p id="currency-lock-note" hidden style="margin:8px 0 0;color:#9a3412;font-weight:600"></p>
 </div>
@@ -159,7 +159,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div></div>
 {{ tier_field('s-tier') }}
 <div id="size-result" class="result" style="display:none">
-<div style="font-size:14px;color:#666;margin-bottom:10px">Area: <strong id="area">0</strong> sqf | Pieces: <strong id="pcs">1</strong></div>
+<div style="font-size:14px;color:#666;margin-bottom:10px">Area: <strong id="area">0</strong> sqf | Pieces: <strong id="pcs">1</strong> | Total sqf: <strong id="area-total">0</strong></div>
+<p id="minimum-sqf-note" {% if not company_minimum_sqf %}hidden{% endif %} style="margin:0 0 10px;font-size:13px;color:#333">{% if company_minimum_sqf %}Pieces smaller than {{ company_minimum_sqf }} sq ft are charged as {{ company_minimum_sqf }} sq ft.{% endif %}</p>
 <div style="display:flex;gap:40px">
 <div><div class="result-price" style="font-size:20px"><span id="s-curr-label">USD</span> $<span id="s-price-sqf">0.00</span> / sqf</div></div>
 <div><div class="result-price" style="font-size:20px"><span id="s-curr-label2">USD</span> $<span id="s-price">0.00</span> / piece</div></div>
@@ -214,14 +215,14 @@ function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-b
 function removeSizeItem(i){sizeQuoteItems.splice(i,1);renderSizeQuoteList()}
 async function exportSizeQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;const items=sizeQuoteItems.map(i=>({name:i.name+' - '+i.size,sqf:i.sqf,price_sqf:i.priceSqf,price_pc:i.pricePc,total:i.total,pcs:i.pcs,spec:i.spec||null,irregular_shape:!!i.irregular_shape,surcharge_rate:i.surcharge_rate||null}));await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project,type:'size',tier:document.getElementById('s-tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 function checkSheetSize(){const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const unit=document.getElementById('unit').value;const glasses=['s-glass1','s-glass2','s-glass3'];let error='';for(const id of glasses){const el=document.getElementById(id);const sel=el.options[el.selectedIndex];if(sel&&sel.dataset.size){const match=sel.dataset.size.match(/(\d+)"x(\d+)"/);if(match){const sheetW=parseInt(match[1]);const sheetH=parseInt(match[2]);let inputW=w;let inputH=h;if(unit==='mm'){inputW=w/25.4;inputH=h/25.4}const fits=(inputW<=sheetW&&inputH<=sheetH)||(inputW<=sheetH&&inputH<=sheetW);if(!fits){error='Size exceeds sheet ('+sel.dataset.size+') for '+sel.value;break}}}}const errEl=document.getElementById('size-error');if(error){if(!errEl){const div=document.createElement('div');div.id='size-error';div.style.cssText='color:#C41E3A;font-size:13px;margin:10px 0;font-weight:bold;padding:10px;background:#fff0f0;border-radius:4px';const dimSection=document.querySelector('#tab-size .section');dimSection.parentNode.insertBefore(div,dimSection.nextSibling)}document.getElementById('size-error').textContent=error;document.getElementById('size-error').style.display='block';return false}else if(errEl){errEl.style.display='none'}return true}
-async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize())return;const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?erpRate:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);const pricePerPc=result.price_sqf*sqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block'}
+async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize())return;const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?erpRate:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);window.sizeMinimumSqf=Number(result.minimum_sqf)||0;const chargedSqf=Math.max(sqf,(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0);document.getElementById('area').textContent=chargedSqf.toFixed(2);const areaTotal=document.getElementById('area-total');if(areaTotal)areaTotal.textContent=(chargedSqf*pcs).toFixed(2);const minimumNote=document.getElementById('minimum-sqf-note');if(minimumNote){const shown=(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0;minimumNote.hidden=!(shown>0);minimumNote.textContent=shown>0?('Pieces smaller than '+shown+' sq ft are charged as '+shown+' sq ft.'):'';}const pricePerPc=result.price_sqf*chargedSqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block'}
 function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];if(g1)parts.push(cleanGlass(g1,t1));if(s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2,t2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3,t3));let totalMm=0;['s-glass1','s-glass2','s-glass3','s-spacer1','s-spacer2'].forEach(id=>{const val=document.getElementById(id).value;const m=val.match(/(\d+)mm/);if(m)totalMm+=parseInt(m[1])});const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
 document.getElementById('s-glass1').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size1').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass1','s-temper1');calculate();calcSize()});
 document.getElementById('s-glass2').addEventListener('change',function(){onLiteChange('s-','2');const sel=this.options[this.selectedIndex];document.getElementById('s-size2').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass2','s-temper2');calcSize()});
 document.getElementById('s-glass3').addEventListener('change',function(){onLiteChange('s-','3');const sel=this.options[this.selectedIndex];document.getElementById('s-size3').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass3','s-temper3');calcSize()});
 let lastUnit='in';
 function convertLength(value,fromUnit,toUnit){const number=parseFloat(value);if(!number||fromUnit===toUnit)return value;const converted=fromUnit==='in'?number*25.4:number/25.4;return Math.round(converted*10000)/10000}
-function convertQuoteUnits(toUnit){sizeQuoteItems.forEach(item=>{const spec=item.spec;if(!spec)return;const from=spec.unit==='mm'?'mm':'in';if(from===toUnit)return;spec.width=convertLength(spec.width,from,toUnit);spec.height=convertLength(spec.height,from,toUnit);spec.unit=toUnit;const w=parseFloat(spec.width)||0;const h=parseFloat(spec.height)||0;const sqf=toUnit==='mm'?(w*h)/92903.04:(w*h)/144;item.sqf=sqf.toFixed(2);item.size=spec.width+' x '+spec.height+' '+toUnit;const priceSqf=parseFloat(item.priceSqf)||0;const pcs=parseFloat(item.pcs)||1;const pricePc=priceSqf*sqf;item.pricePc=pricePc.toFixed(2);item.total=(pricePc*pcs).toFixed(2)});['width','height'].forEach(id=>{const field=document.getElementById(id);if(field&&field.value)field.value=convertLength(field.value,lastUnit,toUnit)});renderSizeQuoteList()}
+function convertQuoteUnits(toUnit){sizeQuoteItems.forEach(item=>{const spec=item.spec;if(!spec)return;const from=spec.unit==='mm'?'mm':'in';if(from===toUnit)return;spec.width=convertLength(spec.width,from,toUnit);spec.height=convertLength(spec.height,from,toUnit);spec.unit=toUnit;const w=parseFloat(spec.width)||0;const h=parseFloat(spec.height)||0;const realSqf=toUnit==='mm'?(w*h)/92903.04:(w*h)/144;const sqf=Math.max(realSqf,Number(window.draftMinimumSqf!=null?window.draftMinimumSqf:window.sizeMinimumSqf)||0);item.sqf=sqf.toFixed(2);item.real_sqf=Number(realSqf.toFixed(2));item.minimum_sqf=Number(window.draftMinimumSqf!=null?window.draftMinimumSqf:window.sizeMinimumSqf)||0;item.size=spec.width+' x '+spec.height+' '+toUnit;const priceSqf=parseFloat(item.priceSqf)||0;const pcs=parseFloat(item.pcs)||1;const pricePc=priceSqf*sqf;item.pricePc=pricePc.toFixed(2);item.total=(pricePc*pcs).toFixed(2)});['width','height'].forEach(id=>{const field=document.getElementById(id);if(field&&field.value)field.value=convertLength(field.value,lastUnit,toUnit)});renderSizeQuoteList()}
 document.getElementById('unit').addEventListener('change',function(){const next=this.value==='mm'?'mm':'in';if(next===lastUnit)return;convertQuoteUnits(next);lastUnit=next;calculate();calcSize()});
 document.getElementById('s-spacer2').addEventListener('change',function(){updateSealant('s-spacer2','s-sealant2');calcSize()});
 document.getElementById('s-spacer1').addEventListener('change',function(){updateSealant('s-spacer1','s-sealant1');calcSize()});
@@ -370,7 +371,7 @@ const saveNewSizeQuote = exportSizeQuote;
 exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
+  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
   await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
   const res = await fetch('/api/export-quote', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate})});
   const blob = await res.blob();
@@ -389,7 +390,8 @@ function lineFromStored(item, currency, project) {
     name, size, total: item.total, sqf: item.sqf, priceSqf: item.price_sqf || item.price,
     pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
     irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate,
-    remarks: item.remarks || '', floor: item.floor || item.mark || ''
+    remarks: item.remarks || '', floor: item.floor || item.mark || '',
+    minimum_sqf: item.minimum_sqf, real_sqf: item.real_sqf
   };
 }
 async function loadCopiedQuote() {
@@ -400,6 +402,8 @@ async function loadCopiedQuote() {
   const quote = await res.json();
   draftQuoteId = quote.id;
   if (quote.additional_discount_percent != null) companyDiscountPercent = Number(quote.additional_discount_percent);
+  const storedMinimum = (quote.items || []).find(item => item && item.minimum_sqf != null);
+  if (storedMinimum) window.draftMinimumSqf = Number(storedMinimum.minimum_sqf) || 0;
   draftExtras = quote.extra_charges || [];
   draftShipProvince = quote.ship_province || '';
   draftTaxLabel = quote.tax_label || '';
@@ -478,6 +482,50 @@ function lockQuoteCurrency(currency, note) {
     noteEl.textContent = note || '';
   }
 }
+const formulaMinimumSqf = {{ formula_minimum_sqf|tojson }};
+function selectedCompanyMinimum() {
+  const pick = document.getElementById('quote-customer');
+  if (pick && pick.value) {
+    const option = pick.options[pick.selectedIndex];
+    return Number(option.getAttribute('data-minimum') || 0);
+  }
+  return Number(formulaMinimumSqf) || 0;
+}
+function showMinimumNote(minimum) {
+  const note = document.getElementById('minimum-sqf-note');
+  if (!note) return;
+  const shown = Number(minimum) || 0;
+  note.hidden = !(shown > 0);
+  note.textContent = shown > 0 ? ('Pieces smaller than ' + shown + ' sq ft are charged as ' + shown + ' sq ft.') : '';
+}
+function chargeSizeLine(item, minimum) {
+  const spec = item.spec;
+  if (!spec) return;
+  const w = parseFloat(spec.width) || 0;
+  const h = parseFloat(spec.height) || 0;
+  const real = spec.unit === 'mm' ? (w * h) / 92903.04 : (w * h) / 144;
+  const floor = Number(minimum) || 0;
+  const charged = floor > 0 ? Math.max(real, floor) : real;
+  item.real_sqf = Number(real.toFixed(2));
+  item.sqf = charged.toFixed(2);
+  item.minimum_sqf = floor;
+  const priceSqf = parseFloat(item.priceSqf) || 0;
+  const pcs = parseFloat(item.pcs) || 1;
+  if (!priceSqf) return;
+  const pricePc = priceSqf * charged;
+  item.pricePc = pricePc.toFixed(2);
+  item.total = (pricePc * pcs).toFixed(2);
+}
+function applyCompanyMinimum() {
+  window.draftMinimumSqf = null;
+  const minimum = selectedCompanyMinimum();
+  window.sizeMinimumSqf = minimum;
+  showMinimumNote(minimum);
+  (sizeQuoteItems || []).forEach(item => chargeSizeLine(item, minimum));
+  if (typeof renderSizeQuoteList === 'function') renderSizeQuoteList();
+  const result = document.getElementById('size-result');
+  if (result && result.style.display === 'block' && typeof calcSize === 'function') calcSize();
+}
 const quoteCustomer = document.getElementById('quote-customer');
 if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
   const option = this.options[this.selectedIndex];
@@ -490,6 +538,7 @@ if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
     });
     const noteEl = document.getElementById('currency-lock-note');
     if (noteEl) noteEl.hidden = true;
+    applyCompanyMinimum();
     return;
   }
   const currency = option.getAttribute('data-currency') || 'usd';
@@ -499,6 +548,7 @@ if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
     ? 'Converted this quote to ' + currency.toUpperCase() + ' for ' + name + '.'
     : 'Currency is ' + currency.toUpperCase() + ' for ' + name + '.';
   lockQuoteCurrency(currency, note);
+  applyCompanyMinimum();
 });
 loadCopiedQuote();
 let companyDiscountPercent = {{ company_discount_percent|tojson }};
