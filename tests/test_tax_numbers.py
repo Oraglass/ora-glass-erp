@@ -29,6 +29,33 @@ def _change(client, customer_id, field, number='', reason='Registration updated'
     })
 
 
+def test_each_province_has_its_own_tax_lines():
+    from tax_numbers import tax_breakdown, tax_total
+    cases = {
+        'BC': (['GST', 'PST'], ['5', '7'], 12.00),
+        'SK': (['GST', 'PST'], ['5', '6'], 11.00),
+        'MB': (['GST', 'RST'], ['5', '7'], 12.00),
+        'QC': (['GST', 'QST'], ['5', '9.975'], 14.98),
+        'ON': (['HST'], ['13'], 13.00),
+        'NB': (['HST'], ['15'], 15.00),
+        'NS': (['HST'], ['14'], 14.00),
+        'AB': (['GST'], ['5'], 5.00),
+        'YT': (['GST'], ['5'], 5.00),
+    }
+    for province, (names, rates, total) in cases.items():
+        lines = tax_breakdown(province, 100)
+        assert [row['name'] for row in lines] == names
+        assert [row['rate'] for row in lines] == rates
+        assert tax_total(lines) == total
+    exempt = tax_breakdown('BC', 100, pst_number='PST-10000')
+    assert [row['name'] for row in exempt] == ['GST']
+    assert tax_total(exempt) == 5.00
+    quebec = tax_breakdown('QC', 100, qst_number='QST-10000')
+    assert [row['name'] for row in quebec] == ['GST']
+    assert tax_breakdown('ON', 100, pst_number='PST-10000')[0]['name'] == 'HST'
+    assert tax_breakdown('   ', 100) == []
+
+
 def test_ship_to_tax_uses_only_a_saved_number():
     _codes()
     company = {'name': 'Harbor', 'country': 'Canada', 'province': 'BC'}
@@ -187,6 +214,10 @@ def test_removing_a_number_changes_new_documents_only(client):
     order = next(row for row in load_orders() if row['id'] == ordered.get_json()['order_id'])
     assert order['pst_number'] == 'PST-55555'
     assert 'GST only' in order['tax_label']
+    with_number = client.post('/api/export-quote', json={'id': quote_id}).data
+    assert b'GST 5%' in pdf_text(with_number)
+    assert b'PST 7%' not in pdf_text(with_number)
+    assert b'PST-55555' in pdf_text(with_number)
     removed = _change(client, 'harbor-tax', 'pst_number', reason='Registration cancelled', remove=True)
     assert removed.status_code == 200, removed.get_json()
     assert load_customers()['harbor-tax']['pst_number'] == ''
@@ -200,7 +231,27 @@ def test_removing_a_number_changes_new_documents_only(client):
     assert shown['tax_label'] == order['tax_label']
     assert shown['pst_number'] == 'PST-55555'
     confirmation = pdf_text(client.get(f"/api/orders/{order['id']}/confirmation.pdf").data)
-    assert b'GST only' in confirmation
-    assert b'GST + PST' not in confirmation
+    assert b'GST 5%' in confirmation
+    assert b'PST 7%' not in confirmation
+    assert b'PST:' in confirmation
+    assert b'729631119 RT0001' in confirmation
     quote_pdf = pdf_text(client.post('/api/export-quote', json={'id': quote_id}).data)
-    assert b'GST + PST' in quote_pdf
+    assert b'GST 5%' in quote_pdf
+    assert b'PST 7%' in quote_pdf
+    assert order['total'] == round(order['pretax_total'] + order['tax_total'], 2)
+    fresh_invoice = next(row for row in load_invoices() if row['id'] == after['id'])
+    assert fresh_invoice['total'] == round(fresh_invoice['pretax_total'] + fresh_invoice['tax_total'], 2)
+    assert fresh_invoice['seller_gst_number'] == '729631119 RT0001'
+    assert [(line['name'], line['rate']) for line in fresh_invoice['tax_lines']] == [('GST', '5'), ('PST', '7')]
+    from pathlib import Path
+    out = Path('/opt/cursor/artifacts')
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'bc-quote-with-pst.pdf').write_bytes(with_number)
+    (out / 'bc-quote-without-pst.pdf').write_bytes(client.post('/api/export-quote', json={'id': quote_id}).data)
+    again = tax_numbers_seed()
+    assert again == 0
+
+
+def tax_numbers_seed():
+    import tax_numbers
+    return tax_numbers.seed_seller_gst()

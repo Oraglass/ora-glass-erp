@@ -209,7 +209,8 @@ function renderQuotes(rows) {
   }
   tbody.innerHTML = rows.map(quote => {
     const subtotal = (quote.items || []).reduce((sum, item) => sum + parseFloat(item.total || item.price || 0), 0);
-    const total = subtotal - (Number(quote.additional_discount_amount) || 0);
+    const taxSum = (quote.tax_lines || []).reduce((sum, line) => sum + Number(line.amount || 0), 0);
+    const total = subtotal - (Number(quote.additional_discount_amount) || 0) + taxSum;
     let status = '-';
     if (quote.order_id) {
       status = 'Approved for order. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
@@ -227,7 +228,8 @@ function renderQuotes(rows) {
       }
     }
     const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
-    const taxNote = quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '';
+    const taxNote = (quote.tax_lines || []).map(line => '<div class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%</div>').join('')
+      || (quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '');
     return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
@@ -454,7 +456,9 @@ function showQuoteDetail(quote) {
   if (!box || !quote) return;
   const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
-  const tax = quote.tax_label ? '<p class="note">Tax: ' + esc(quote.tax_label) + '</p>' : '';
+  const tax = (quote.tax_lines || []).length
+    ? (quote.tax_lines || []).map(line => '<p class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%: $' + Number(line.amount || 0).toFixed(2) + '</p>').join('')
+    : (quote.tax_label ? '<p class="note">Tax: ' + esc(quote.tax_label) + '</p>' : '');
   {% if show_fx_rate %}
   const rateNote = quote.fx_rate ? '<p class="note">USD/CAD ' + esc(quote.fx_rate) + '</p>' : '';
   {% else %}

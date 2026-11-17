@@ -73,7 +73,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 {% if currency_locked %}<p class="note" id="currency-lock">Currency is {{ locked_currency|upper }} for this company.</p>{% else %}
 <div class="form-group" style="max-width:360px;margin:0 0 12px">
 <label for="quote-customer">Customer</label>
-<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}" data-discount="{{ company.discount_percent }}" data-minimum="{{ company.minimum_sqf }}">{{ company.name }}</option>{% endfor %}</select>
+<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}" data-discount="{{ company.discount_percent }}" data-minimum="{{ company.minimum_sqf }}" data-province="{{ company.province }}" data-pst="{{ company.pst_number }}" data-qst="{{ company.qst_number }}">{{ company.name }}</option>{% endfor %}</select>
 <p class="note">Currency follows the customer. USD and CAD can be changed only while no customer is selected.</p>
 <p id="currency-lock-note" hidden style="margin:8px 0 0;color:#9a3412;font-weight:600"></p>
 </div>
@@ -285,6 +285,8 @@ renderSizeQuoteList = function () {
     return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + quoteEsc(item.size) + '</td><td class="col-qty">' + quoteEsc(item.pcs) + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
+  const taxBase = sizeQuoteItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  if (typeof showQuoteTaxLines === 'function') showQuoteTaxLines(previewTaxLines(taxBase));
   const note = document.getElementById('drawing-note');
   if (note) note.hidden = !sizeQuoteItems.some(item => item.irregular_shape);
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
@@ -301,12 +303,39 @@ function showCopyNote(text) {
     note.textContent = text || '';
   });
 }
+const TAX_RATES = {{ tax_rates|tojson }};
+const OWN_TAX = {{ own_tax|tojson }};
+function previewTaxLines(base) {
+  const profile = OWN_TAX || (function () {
+    const pick = document.getElementById('quote-customer');
+    const option = pick && pick.selectedOptions && pick.selectedOptions[0];
+    if (!option || !option.value) return null;
+    return {province: option.getAttribute('data-province') || '', pst_number: option.getAttribute('data-pst') || '', qst_number: option.getAttribute('data-qst') || ''};
+  })();
+  if (!profile) return [];
+  let rows = TAX_RATES[String(profile.province || '').toUpperCase()] || [];
+  const saved = value => String(value || '').trim().length >= 5 && /\d/.test(String(value));
+  if (['BC', 'SK', 'MB'].indexOf(String(profile.province || '').toUpperCase()) >= 0 && saved(profile.pst_number)) {
+    rows = rows.filter(row => row[0] === 'GST');
+  }
+  if (String(profile.province || '').toUpperCase() === 'QC' && saved(profile.qst_number)) {
+    rows = rows.filter(row => row[0] === 'GST');
+  }
+  return rows.map(row => {
+    const amount = Math.round((Number(base) * Number(row[1]) / 100) * 100 + 1e-8) / 100;
+    return {name: row[0], rate: row[1], amount: amount};
+  });
+}
 function showQuoteTax(text) {
+  showQuoteTaxLines(text ? [{name: 'Tax', rate: '', amount: '', label: text}] : []);
+}
+function showQuoteTaxLines(lines) {
+  const text = (lines || []).map(line => line.label || (line.name + (line.rate !== '' && line.rate != null ? ' ' + line.rate + '%' : '') + (line.amount !== '' && line.amount != null ? ': $' + Number(line.amount).toFixed(2) : ''))).filter(Boolean).join(' · ');
   ['quote-tax', 'quote-tax-lines'].forEach(id => {
     const note = document.getElementById(id);
     if (!note) return;
     note.hidden = !text;
-    note.textContent = text ? 'Tax: ' + text : '';
+    note.textContent = text;
   });
 }
 function editSizeItem(index) {
@@ -420,7 +449,7 @@ async function loadCopiedQuote() {
   const jobAddress = document.getElementById('job-address');
   if (jobAddress) jobAddress.value = quote.job_address || '';
   showCopyNote(quote.notes || '');
-  showQuoteTax(quote.tax_label || '');
+  showQuoteTaxLines(quote.tax_lines || []);
   if (quote.fx_rate) erpRate = Number(quote.fx_rate);
   selectedCurrency = quote.currency || 'usd';
   document.getElementById('btn-usd').classList.toggle('selected', selectedCurrency === 'usd');

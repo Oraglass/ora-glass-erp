@@ -1227,6 +1227,7 @@ def bootstrap_once():
     try:
         import tax_numbers
         tax_numbers.seed_current_numbers()
+        tax_numbers.seed_seller_gst()
     except Exception:
         logger.exception('Tax number history seed failed')
     _state['bootstrapped'] = True
@@ -1528,6 +1529,12 @@ def quote_template_context(user):
         'drawing_note': DRAWING_NOTE,
         'erp_rate': _current_fx()[0] if user.get('role') != 'customer' else 1,
         'show_fx_rate': user.get('role') != 'customer',
+        'tax_rates': __import__('tax_numbers').TAX_RATES,
+        'own_tax': {
+            'province': (customers.get(user.get('customer_id') or '') or {}).get('province') or '',
+            'pst_number': (customers.get(user.get('customer_id') or '') or {}).get('pst_number') or '',
+            'qst_number': (customers.get(user.get('customer_id') or '') or {}).get('qst_number') or '',
+        } if user.get('role') == 'customer' else None,
         'company_discount_percent': _percent((customers.get(user.get('customer_id') or '') or {}).get('additional_discount_percent')) if user.get('role') == 'customer' else 0,
         'company_minimum_sqf': _effective_minimum(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else 0,
         'formula_minimum_sqf': float(_price_options().get('minimum_sqf') or 0),
@@ -1540,6 +1547,9 @@ def quote_template_context(user):
                 'currency': _required_currency(customer),
                 'discount_percent': _percent(customer.get('additional_discount_percent')),
                 'minimum_sqf': _effective_minimum(customer),
+                'province': (customer or {}).get('province') or '',
+                'pst_number': (customer or {}).get('pst_number') or '',
+                'qst_number': (customer or {}).get('qst_number') or '',
             }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
@@ -1741,6 +1751,32 @@ def _quickbooks_save_settings(quickbooks, data):
             }
     settings['extra_items'] = cleaned
     quickbooks.save_settings(settings)
+    return jsonify(quickbooks.status_view())
+
+
+@app.route('/api/quickbooks/gst-number', methods=['POST'])
+@admin_required
+def change_seller_gst():
+    """Change Ora Glass (Canada) Inc's GST/HST number. The general settings save cannot."""
+    import quickbooks
+    import tax_numbers
+    data = json_body() or {}
+    user = current_user()
+    with quickbooks.connection_scope('ca'):
+        settings = quickbooks.load_settings()
+        current = settings.get('gst_number') or ''
+        stored, error = tax_numbers.validate_change(
+            current, data.get('number'), data.get('number_confirm'),
+            data.get('reason'), bool(data.get('remove')),
+        )
+        if error:
+            return json_error(error, 400)
+        settings['gst_number'] = stored
+        quickbooks.save_settings(settings)
+    tax_numbers.record_change(
+        {'gst_number': tax_numbers.normalize(current)}, tax_numbers.SELLER_GST_ID, 'gst_number',
+        stored, user.get('email') or '', data.get('reason'), request.remote_addr or '',
+    )
     return jsonify(quickbooks.status_view())
 
 
@@ -2002,6 +2038,11 @@ def _pdf_document(source, kind, user=None):
         'additional_discount_amount': source.get('additional_discount_amount') or 0,
         'tax_label': source.get('tax_label') or '',
         'tax_amount': source.get('tax_amount'),
+        'tax_lines': source.get('tax_lines') or [],
+        'pst_number': source.get('pst_number') or '',
+        'qst_number': source.get('qst_number') or '',
+        'seller_gst_number': source.get('seller_gst_number') or '',
+        'ship_province': source.get('ship_province') or '',
         'type': source.get('type') or ('size' if kind == 'order' else ''),
         'weight_factor': pricing_catalog.formula_number('glass_lb_per_sqf_mm', 0.512),
         '_builder': documents,
@@ -2046,7 +2087,7 @@ def export_quote():
         else:
             customer_id = clean_text(data.get('customer_id'), 64)
         customer = load_customers().get(customer_id or '')
-        document = _pdf_document({
+        document = _pdf_document(_with_quote_tax({
             'id': '',
             'date': data.get('date') or date.today().isoformat(),
             'project': clean_text(data.get('project'), 200),
@@ -2059,10 +2100,12 @@ def export_quote():
             'items': items,
             'extra_charges': data.get('extra_charges') or [],
             'additional_discount_percent': data.get('additional_discount_percent') or 0,
+            'additional_discount_amount': data.get('additional_discount_amount') or 0,
             'tax_label': tax_label,
+            'ship_province': data.get('ship_province') or '',
             'type': data.get('type') or '',
             'po': clean_text(data.get('po'), 80),
-        }, 'quote', user)
+        }), 'quote', user)
     buffer = BytesIO(_pdf_bytes(document))
     return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='ORA_Quote.pdf')
 
@@ -3301,11 +3344,46 @@ def _tax_number_snapshot(customer):
     }
 
 
-def _apply_canada_tax(document, customer, ship_province=None):
+def _apply_canada_tax(document, customer, ship_province=None, rates=None):
     """Store the tax result and the numbers that produced it. Later edits do not rewrite this."""
+    import tax_numbers
     document.update(_canada_tax_fields(customer, ship_province))
     document.update(_tax_number_snapshot(customer))
+    document['seller_gst_number'] = tax_numbers.seller_gst_number()
+    pretax = document.get('pretax_total')
+    if pretax in (None, ''):
+        pretax = document.get('total')
+    lines = tax_numbers.tax_breakdown(
+        document.get('ship_province'), pretax,
+        document.get('pst_number'), document.get('qst_number'), rates=rates,
+    )
+    document['tax_lines'] = lines
+    document['tax_total'] = tax_numbers.tax_total(lines)
+    document['pretax_total'] = round(float(pretax or 0), 2)
+    document['total'] = round(document['pretax_total'] + document['tax_total'], 2)
+    if 'balance' in document and not document.get('voided'):
+        document['balance'] = document['total']
     return document
+
+
+def _quote_pretax(quote):
+    goods = 0.0
+    for item in (quote or {}).get('items') or []:
+        if isinstance(item, dict):
+            raw = item.get('total') if item.get('total') not in (None, '') else item.get('price')
+            try:
+                goods += float(raw or 0)
+            except (TypeError, ValueError):
+                continue
+    extras = 0.0
+    for charge in (quote or {}).get('extra_charges') or []:
+        if isinstance(charge, dict):
+            try:
+                extras += float(charge.get('amount') or 0)
+            except (TypeError, ValueError):
+                continue
+    discount = float((quote or {}).get('additional_discount_amount') or 0)
+    return round(goods + extras - discount, 2)
 
 
 def _with_quote_tax(quote):
@@ -3313,9 +3391,19 @@ def _with_quote_tax(quote):
     owner = load_customers().get(row.get('customer_id') or '')
     tax = _canada_tax_fields(owner, row.get('ship_province'))
     if tax:
+        import tax_numbers
         row['ship_province'] = row.get('ship_province') or tax.get('ship_province') or ''
         row['tax_label'] = tax.get('tax_label') or ''
         row['qbo_tax_code'] = tax.get('qbo_tax_code') or ''
+        snapshot = _tax_number_snapshot(owner)
+        row['pst_number'] = snapshot['pst_number']
+        row['qst_number'] = snapshot['qst_number']
+        row['seller_gst_number'] = tax_numbers.seller_gst_number()
+        row['tax_lines'] = tax_numbers.tax_breakdown(
+            row.get('ship_province'), _quote_pretax(row),
+            snapshot['pst_number'], snapshot['qst_number'],
+        )
+        row['tax_total'] = tax_numbers.tax_total(row['tax_lines'])
     return row
 
 
@@ -4810,6 +4898,10 @@ def order_for_viewer(order, user, with_coverage=False):
         ],
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
+        'tax_lines': order.get('tax_lines') or [],
+        'tax_total': order.get('tax_total') or 0,
+        'pretax_total': order.get('pretax_total') if order.get('pretax_total') not in (None, '') else order.get('total'),
+        'seller_gst_number': order.get('seller_gst_number') or '',
         'documents': [],
     }
     staff_view = user.get('role') != 'customer'
@@ -5116,8 +5208,18 @@ def convert_quote_to_order(quote_id):
         {'igu_subtotal': grand, 'igu_total': grand, 'total': grand, 'discount_amount': 0},
         order_discount_percent,
     )
+    ship = _ship_province(data.get('ship_province'), customer)
+    tax = _canada_tax_fields(customer, ship)
+    snapshot = _tax_number_snapshot(customer)
+    import tax_numbers
+    tax_lines = tax_numbers.tax_breakdown(
+        tax.get('ship_province') or ship, commercial['total'],
+        snapshot['pst_number'], snapshot['qst_number'],
+    )
+    tax_due = tax_numbers.tax_total(tax_lines)
+    amount_due = round(commercial['total'] + tax_due, 2)
     credit_check = conversion_allowed(
-        commercial['total'], customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
+        amount_due, customer, str(currency).lower(), load_orders(), load_invoices(), load_payments(),
     )
     warning = None
     if not credit_check['allowed']:
@@ -5126,8 +5228,6 @@ def convert_quote_to_order(quote_id):
             return json_error(message, 400)
         warning = message
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    ship = _ship_province(data.get('ship_province'), customer)
-    tax = _canada_tax_fields(customer, ship)
     order = append_order({
         'quote_id': quote_id,
         'customer_id': customer_id,
@@ -5149,13 +5249,17 @@ def convert_quote_to_order(quote_id):
         'igu_subtotal': grand,
         'igu_total': commercial['igu_total'],
         'extras_total': 0,
-        'total': commercial['total'],
+        'pretax_total': commercial['total'],
+        'tax_lines': tax_lines,
+        'tax_total': tax_due,
+        'total': amount_due,
         'dwg_rate': pricing['dwg_creation_fee'] if irregular_lines else None,
         'ship_province': tax.get('ship_province') or ship,
         'qbo_tax_code': tax.get('qbo_tax_code') or '',
         'tax_label': tax.get('tax_label') or '',
-        'pst_number': _tax_number_snapshot(customer)['pst_number'],
-        'qst_number': _tax_number_snapshot(customer)['qst_number'],
+        'pst_number': snapshot['pst_number'],
+        'qst_number': snapshot['qst_number'],
+        'seller_gst_number': tax_numbers.seller_gst_number(),
         'drawings': [],
         'status': 'approved',
         'changelog': [],
@@ -6672,7 +6776,24 @@ def _render_invoice_pdf(invoice):
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
         label_style,
     ))
-    if invoice.get('tax_label'):
+    province = str(invoice.get('ship_province') or '').upper()
+    if province == 'QC' and invoice.get('qst_number'):
+        elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
+    elif invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
+        elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
+    if invoice.get('seller_gst_number') and invoice.get('issuer') == 'ca' and invoice.get('kind') != 'intercompany':
+        elements.append(Paragraph(
+            f"<b>GST/HST:</b> {escape(invoice.get('seller_gst_number'))}", label_style,
+        ))
+    for line in invoice.get('tax_lines') or []:
+        if not isinstance(line, dict):
+            continue
+        elements.append(Paragraph(
+            f"<b>{escape(str(line.get('name') or 'Tax'))} {escape(str(line.get('rate') or ''))}%:</b> "
+            f"{currency} ${money(line.get('amount')):.2f}",
+            label_style,
+        ))
+    if invoice.get('tax_label') and not invoice.get('tax_lines'):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))

@@ -19,13 +19,77 @@ from storage import append_tax_number_history, load_customers, load_tax_number_h
 FIELDS = {
     'pst_number': 'PST number',
     'qst_number': 'QST number',
+    'gst_number': 'GST/HST number',
 }
+# Statutory rates. A saved PST number drops the provincial tax in BC, SK, and MB.
+# A saved QST number drops QST. HST provinces stay HST.
+TAX_RATES = {
+    'BC': (('GST', '5'), ('PST', '7')),
+    'SK': (('GST', '5'), ('PST', '6')),
+    'MB': (('GST', '5'), ('RST', '7')),
+    'QC': (('GST', '5'), ('QST', '9.975')),
+    'ON': (('HST', '13'),),
+    'NB': (('HST', '15'),),
+    'NL': (('HST', '15'),),
+    'NS': (('HST', '14'),),
+    'PE': (('HST', '15'),),
+    'AB': (('GST', '5'),),
+    'NT': (('GST', '5'),),
+    'NU': (('GST', '5'),),
+    'YT': (('GST', '5'),),
+}
+PST_PROVINCES = {'BC', 'SK', 'MB'}
+SELLER_GST_ID = 'ora-glass-canada'
+SELLER_GST_INITIAL = '729631119 RT0001'
 # At least five characters, one digit, and no stray punctuation.
 _VALID = re.compile(r'^(?=.*\d)[A-Za-z0-9][A-Za-z0-9 -]{4,39}$')
 
 
 def normalize(value):
     return re.sub(r'\s+', ' ', str(value or '').replace('\xa0', ' ')).strip()
+
+
+def rate_schedule(province, pst_number='', qst_number=''):
+    """Name and percent for each tax that applies. Empty when the province is not Canadian."""
+    code = str(province or '').strip().upper()
+    rows = list(TAX_RATES.get(code) or ())
+    if code in PST_PROVINCES and saved_number(pst_number):
+        rows = [row for row in rows if row[0] == 'GST']
+    if code == 'QC' and saved_number(qst_number):
+        rows = [row for row in rows if row[0] == 'GST']
+    return [{'name': name, 'rate': rate} for name, rate in rows]
+
+
+def tax_amount(taxable, rate):
+    """Round half up to the cent. 100 at 9.975% is 9.98."""
+    from decimal import Decimal, ROUND_HALF_UP
+    base = Decimal(str(taxable or 0))
+    percent = Decimal(str(rate))
+    amount = (base * percent / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return float(amount)
+
+
+def tax_breakdown(province, taxable, pst_number='', qst_number='', rates=None):
+    """Dollar lines for a pretax total. A stored rate list freezes the regime."""
+    chosen = rates if rates is not None else rate_schedule(province, pst_number, qst_number)
+    lines = []
+    for row in chosen or []:
+        name = str(row.get('name') or '')
+        rate = str(row.get('rate') or '')
+        if not name or not rate:
+            continue
+        lines.append({
+            'name': name,
+            'rate': rate,
+            'amount': tax_amount(taxable, rate),
+        })
+    return lines
+
+
+def tax_total(lines):
+    from decimal import Decimal, ROUND_HALF_UP
+    total = sum((Decimal(str(row.get('amount') or 0)) for row in lines or []), Decimal('0'))
+    return float(total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
 
 
 def saved_number(value):
@@ -118,6 +182,32 @@ def seed_current_numbers():
         from storage import save_customers
         save_customers(customers)
     return added
+
+
+def seller_gst_number():
+    """Ora Glass (Canada) Inc GST/HST registration, or empty when it has not been set."""
+    import quickbooks
+    with quickbooks.connection_scope('ca'):
+        settings = quickbooks.load_settings()
+    return saved_number(settings.get('gst_number'))
+
+
+def seed_seller_gst():
+    """Store Adrian's public GST number once, only while the Canada setting is empty."""
+    import quickbooks
+    if history_for(SELLER_GST_ID):
+        return 0
+    with quickbooks.connection_scope('ca'):
+        settings = quickbooks.load_settings()
+        if saved_number(settings.get('gst_number')):
+            return 0
+        settings['gst_number'] = SELLER_GST_INITIAL
+        quickbooks.save_settings(settings)
+    record_change(
+        {'gst_number': ''}, SELLER_GST_ID, 'gst_number', SELLER_GST_INITIAL, '',
+        'Initial value', '',
+    )
+    return 1
 
 
 def history_pdf(customer_id, company, rows):

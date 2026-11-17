@@ -430,7 +430,9 @@ def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, mon
         })
         assert pdf.status_code == 200
         assert pdf.mimetype == 'application/pdf'
-        assert b'GST + PST, shipped to British Columbia' in _pdf_text(pdf.data)
+        text = _pdf_text(pdf.data)
+        assert b'GST 5%' in text
+        assert b'PST 7%' in text
         client.post('/logout')
         assert login(client, 'admin@oraglass.us').status_code == 302
         created = client.post(
@@ -450,8 +452,10 @@ def test_ship_to_province_and_registration_numbers_choose_canada_tax(client, mon
         assert stored['qbo_tax_code'] == '6'
         assert stored['tax_label'] == 'HST, shipped to Ontario'
         assert _last_canada_tax(fake) == '6'
+        posted = json.loads([call for call in _posts(fake, '/invoice') if '/123146408064299/' in call[1]][-1][2])
+        assert '729631119 RT0001' in posted.get('CustomerMemo', {}).get('value', '')
         invoice_pdf = client.get(f"/api/invoices/{stored['id']}/pdf")
         assert invoice_pdf.status_code == 200
-        assert b'HST, shipped to Ontario' in _pdf_text(invoice_pdf.data)
+        assert b'HST 13%' in _pdf_text(invoice_pdf.data)
     finally:
         quickbooks.TRANSPORT = None

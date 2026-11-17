@@ -89,7 +89,13 @@ function provinceTaxTable(card) {
     const cases = provinceCase(row.code, row.regime).map(item => '<div><span class="note">' + esc(item.label) + '</span><br>' + '<select data-tax="' + esc(row.code) + '" data-tax-field="' + esc(item.field) + '" aria-label="' + esc(row.name) + ' ' + esc(item.label) + '">' + taxOptions(codes, storedTax(mapping, row.code, item.field)) + '</select></div>').join('');
     return '<tr><td>' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.regime) + '</td><td>' + cases + '</td></tr>';
   }).join('');
-  return '<h2>Sales tax by ship-to province</h2><p class="note">Tax follows the province the goods are delivered to. Ontario, New Brunswick, Nova Scotia, Newfoundland and Labrador, and Prince Edward Island use one HST code. Alberta and the territories use one GST code. British Columbia, Manitoba, and Saskatchewan use GST+PST unless the customer has a PST number, then GST only. Quebec uses GST+QST unless the customer has a QST number, then GST only. A tax-exempt customer uses the zero-rated code. A code typed on the customer is used only when Override is ticked.</p>'
+  const gst = card.gst_number || '';
+  const gstBlock = '<h2>GST/HST registration</h2><p class="note">Ora Glass (Canada) Inc. This number is printed on Canadian quotes, order confirmations, and Canada invoices. Changing it uses the same locked flow as a customer PST number.</p>'
+    + '<p id="gst-current"><strong>' + (gst ? esc(gst) : 'Not on file') + '</strong></p>'
+    + '<button type="button" class="secondary" id="show-gst-change">Change GST/HST number</button>'
+    + '<div id="gst-change" hidden><div class="row"><label>New number<input id="gst-number" maxlength="40" autocomplete="off"></label><label>Enter it again<input id="gst-confirm" maxlength="40" autocomplete="off"></label><label>Reason<input id="gst-reason" maxlength="300"></label></div>'
+    + '<p><button type="button" id="save-gst">Save GST/HST change</button></p></div>';
+  return gstBlock + '<h2>Sales tax by ship-to province</h2><p class="note">Tax follows the province the goods are delivered to. Ontario, New Brunswick, Nova Scotia, Newfoundland and Labrador, and Prince Edward Island use one HST code. Alberta and the territories use one GST code. British Columbia, Manitoba, and Saskatchewan use GST+PST unless the customer has a PST number, then GST only. Quebec uses GST+QST unless the customer has a QST number, then GST only. A tax-exempt customer uses the zero-rated code. A code typed on the customer is used only when Override is ticked.</p>'
     + '<table id="province-tax"><thead><tr><th>Code</th><th>Province</th><th>Tax</th><th>QuickBooks tax code</th></tr></thead><tbody>'
     + rows
     + '<tr><td></td><td>Tax exempt</td><td>Zero-rated</td><td><select data-tax="exempt" aria-label="Exempt tax code">' + taxOptions(codes, card.tax_exempt_code || '') + '</select></td></tr>'
@@ -226,6 +232,23 @@ document.getElementById('connections').addEventListener('click', async (event) =
   const card = cardOf(button);
   const connection = (card && card.getAttribute('data-connection')) || button.getAttribute('data-connection') || 'us';
   try {
+    if (button.id === 'show-gst-change') {
+      const box = document.getElementById('gst-change');
+      if (box) box.hidden = false;
+      return;
+    }
+    if (button.id === 'save-gst') {
+      const next = document.getElementById('gst-number').value.trim();
+      const again = document.getElementById('gst-confirm').value.trim();
+      const current = document.getElementById('gst-current').textContent.trim();
+      if (next !== again) { alert('Enter the new number twice, and make both entries match.'); return; }
+      const oldText = current === 'Not on file' ? '(none)' : current;
+      if (!confirm('Change GST/HST number from "' + oldText + '" to "' + (next || '(none)') + '"?')) return;
+      render(await post('/api/quickbooks/gst-number', {
+        number: next, number_confirm: again, reason: document.getElementById('gst-reason').value
+      }));
+      return;
+    }
     if (action === 'sync') render(await post('/api/quickbooks/sync', {connection}));
     if (action === 'disconnect') render(await post('/api/quickbooks/disconnect', {connection}));
     if (action === 'save-mapping') {

@@ -204,6 +204,9 @@ def _header(document, styles):
         f'<b>Net:</b> {escape(str(document.get("payment_terms") or ""))}',
         f'<b>Dlv Method:</b> {escape(str(document.get("delivery_method") or ""))}',
     ])
+    registration = _registration_lines(document)
+    if registration:
+        meta += '<br/>' + '<br/>'.join(registration)
     title_text = f'{escape(title)}<br/><font size="8">{COMPANY_ADDRESS}</font>'
     header = Table(
         [[_logo(styles['small']), Paragraph(title_text, styles['title']), Paragraph(meta, styles['meta'])]],
@@ -336,6 +339,22 @@ def _grid():
     ])
 
 
+def _registration_lines(document):
+    """Customer PST or QST, and Ora Glass Canada's GST/HST number. Blank numbers are omitted."""
+    province = str(document.get('ship_province') or '').strip().upper()
+    lines = []
+    qst = str(document.get('qst_number') or '').strip()
+    pst = str(document.get('pst_number') or '').strip()
+    if province == 'QC' and qst:
+        lines.append(f'<b>QST:</b> {escape(qst)}')
+    elif pst and province in {'BC', 'SK', 'MB'}:
+        lines.append(f'<b>PST:</b> {escape(pst)}')
+    gst = str(document.get('seller_gst_number') or '').strip()
+    if gst and (lines or province or document.get('tax_lines')):
+        lines.append(f'<b>GST/HST:</b> {escape(gst)}')
+    return lines
+
+
 def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
     currency = document.get('currency') or 'usd'
     discount = _number(document.get('additional_discount_amount'))
@@ -343,17 +362,32 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
         percent = _number(document.get('additional_discount_percent'))
         if percent:
             discount = round(subtotal * percent / 100.0, 2)
-    tax_amount = document.get('tax_amount')
-    if tax_amount not in (None, ''):
-        tax_text = money_text(currency, tax_amount)
-        tax_value = _number(tax_amount)
+    taxable = round(subtotal - discount, 2)
+    supplied = [row for row in (document.get('tax_lines') or []) if isinstance(row, dict)]
+    tax_rows = []
+    tax_value = 0.0
+    if supplied:
+        import tax_numbers
+        for row in supplied:
+            amount = tax_numbers.tax_amount(taxable, row.get('rate'))
+            tax_value += amount
+            rate = str(row.get('rate') or '')
+            label = f"{row.get('name') or 'Tax'} {rate}%"
+            tax_rows.append((label, money_text(currency, amount)))
+        tax_value = round(tax_value, 2)
     else:
-        label = str(document.get('tax_label') or '').strip()
-        tax_text = label or 'AS APPLICABLE'
-        tax_value = 0.0
-    if tax_text == 'AS APPLICABLE':
-        tax_text = '- AS APPLICABLE'
-    grand = round(subtotal - discount + tax_value, 2)
+        tax_amount = document.get('tax_amount')
+        if tax_amount not in (None, ''):
+            tax_text = money_text(currency, tax_amount)
+            tax_value = _number(tax_amount)
+        else:
+            label = str(document.get('tax_label') or '').strip()
+            tax_text = label or 'AS APPLICABLE'
+            tax_value = 0.0
+        if tax_text == 'AS APPLICABLE':
+            tax_text = '- AS APPLICABLE'
+        tax_rows.append(('Tax:', tax_text))
+    grand = round(taxable + tax_value, 2)
     summary = Paragraph(
         f'Total Pcs: {total_pcs}&nbsp;&nbsp;&nbsp;&nbsp;Total SQ/FT : {total_sqf:.2f}'
         f'&nbsp;&nbsp;&nbsp;&nbsp;Total Weight: Appx. {weight:.2f} LBS',
@@ -365,18 +399,23 @@ def _footer(document, total_pcs, total_sqf, subtotal, weight, styles):
     )
     rows = [
         [Paragraph('Sub-Total:', styles['sum_label']), Paragraph(money_text(currency, subtotal), styles['sum_amount'])],
-        [Paragraph('Tax:', styles['sum_label']), Paragraph(escape(tax_text), styles['sum_amount'])],
     ]
     if discount > 0:
         rows.append([
             Paragraph('Discount:', styles['sum_label']),
             Paragraph(money_text(currency, discount), styles['sum_amount']),
         ])
+    for label, amount in tax_rows:
+        shown = label if str(label).endswith(':') else f'{label}:'
+        rows.append([
+            Paragraph(escape(shown), styles['sum_label']),
+            Paragraph(escape(str(amount)), styles['sum_amount']),
+        ])
     rows.append([
         Paragraph('<b>Total:</b>', styles['sum_label']),
         Paragraph(f'<b>{money_text(currency, grand)}</b>', styles['sum_amount']),
     ])
-    totals = Table(rows, colWidths=[0.9 * inch, 2.35 * inch])
+    totals = Table(rows, colWidths=[1.35 * inch, 1.9 * inch])
     totals.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
