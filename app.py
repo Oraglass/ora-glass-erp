@@ -292,8 +292,20 @@ def _sell_price(data, tier, tiers, price_factor=1):
     return round(price * (price_factor or 1), 2)
 
 
-def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _effective_minimum(customer):
+    """Company minimum per piece wins. Otherwise the Pricing formula minimum is used."""
+    try:
+        company = float((customer or {}).get('minimum_sqf_per_piece') or 0)
+    except (TypeError, ValueError):
+        company = 0.0
+    if company > 0:
+        return company
+    return float(_price_options().get('minimum_sqf') or 0)
+
+
+def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=None):
     options = _price_options()
+    minimum = options['minimum_sqf'] if minimum_sqf is None else minimum_sqf
     priced = reprice_size_line(
         spec, pcs, tier, currency, options['pricing'], tiers, fx_rate,
         temper_prices=options['temper_prices'],
@@ -301,10 +313,22 @@ def _reprice(spec, pcs, tier, currency, tiers, fx_rate=None, price_factor=1):
         unknown_temper=options['unknown_temper'],
         extra_per_sqf=options['extra_per_sqf'],
         triple_factor=options['triple_factor'],
-        minimum_sqf=options['minimum_sqf'],
+        minimum_sqf=minimum,
         minimum_charge=options['minimum_charge'],
     )
     return _scale_prices(priced, price_factor or 1)
+
+
+def _size_price_fields(priced):
+    return {
+        'sqf': priced['sqf'],
+        'real_sqf': priced.get('real_sqf', priced['sqf']),
+        'minimum_sqf': priced.get('minimum_sqf') or 0,
+        'price_sqf': priced['price_sqf'],
+        'price_pc': priced['price_pc'],
+        'pcs': priced['pcs'],
+        'total': priced['total'],
+    }
 
 _state = {'bootstrapped': False}
 
@@ -762,6 +786,7 @@ def public_customer(customer_id, customer, tiers, user_count):
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
         'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
+        'minimum_sqf_per_piece': _percent(customer.get('minimum_sqf_per_piece'), 100000),
         'status': customer.get('status') or 'active',
         'user_count': user_count,
     }
@@ -909,6 +934,17 @@ def staff_can_order(user):
 def _is_ora_staff(user):
     role = (user or {}).get('role') or ''
     return role == 'admin' or role in LEGACY_STAFF_ROLES
+
+
+def can_edit_job_address(user, order=None):
+    """Ora Glass staff with Orders, and Management at that company, can correct the job address."""
+    if not user:
+        return False
+    if order and user.get('role') == 'customer' and user.get('customer_id') != order.get('customer_id'):
+        return False
+    if staff_can_order(user):
+        return True
+    return user.get('role') == 'customer' and customer_subrole(user) == 'management'
 
 
 def can_edit_orders(user):
@@ -1082,6 +1118,8 @@ def apply_customer_fields(customer, data, tiers, creating):
         customer['additional_discount_percent'] = _percent(data.get('additional_discount_percent'))
     if creating or 'price_addon_percent' in data:
         customer['price_addon_percent'] = _percent(data.get('price_addon_percent'), 1000)
+    if creating or 'minimum_sqf_per_piece' in data:
+        customer['minimum_sqf_per_piece'] = _percent(data.get('minimum_sqf_per_piece'), 100000)
     if creating or 'status' in data:
         status = clean_text(data.get('status') or 'active', 20)
         if status not in {'active', 'inactive'}:
@@ -1445,8 +1483,11 @@ def quote_template_context(user):
         'import_customer_id': user.get('customer_id') or '',
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'drawing_note': DRAWING_NOTE,
-        'erp_rate': _current_fx()[0],
+        'erp_rate': _current_fx()[0] if user.get('role') != 'customer' else 1,
+        'show_fx_rate': user.get('role') != 'customer',
         'company_discount_percent': _percent((customers.get(user.get('customer_id') or '') or {}).get('additional_discount_percent')) if user.get('role') == 'customer' else 0,
+        'company_minimum_sqf': _effective_minimum(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else 0,
+        'formula_minimum_sqf': float(_price_options().get('minimum_sqf') or 0),
         'currency_locked': user.get('role') == 'customer',
         'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
@@ -1455,6 +1496,7 @@ def quote_template_context(user):
                 'name': (customer or {}).get('name') or customer_id,
                 'currency': _required_currency(customer),
                 'discount_percent': _percent(customer.get('additional_discount_percent')),
+                'minimum_sqf': _effective_minimum(customer),
             }
             for customer_id, customer in sorted(customers.items(), key=lambda item: ((item[1] or {}).get('name') or '').lower())
         ] if user.get('role') != 'customer' else [],
@@ -1830,214 +1872,155 @@ def calculate():
         requested = clean_text(data.get('customer_id'), 64)
         customer = customers.get(requested) if requested else None
     price = _sell_price(data, tier, tiers, _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000)))
+    minimum_sqf = _effective_minimum(customer)
     try:
         supplied = float(data.get('fx_rate'))
     except (TypeError, ValueError):
         supplied = 0
     fx_rate = supplied if supplied > 0 else _current_fx()[0]
-    return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate})
+    body = {'price_sqf': price, 'tier': tier, 'minimum_sqf': minimum_sqf}
+    if user.get('role') == 'customer':
+        if _required_currency(customer) == 'cad':
+            body['price_sqf'] = round(price * fx_rate, 2)
+    else:
+        body['fx_rate'] = fx_rate
+    return jsonify(body)
+
+
+def _job_lines(value):
+    if isinstance(value, list):
+        return [str(line).strip() for line in value if str(line).strip()]
+    text = str(value or '').replace('\r\n', '\n').replace('\r', '\n')
+    return [line.strip() for line in text.split('\n') if line.strip()]
+
+
+def _address_lines(customer):
+    if not customer:
+        return []
+    lines = []
+    street = str(customer.get('address') or '').strip()
+    if street:
+        lines.append(street)
+    city = str(customer.get('city') or '').strip()
+    state = str(customer.get('state') or customer.get('province') or customer.get('us_state') or '').strip()
+    postal = str(customer.get('zip') or '').strip()
+    place = ', '.join(part for part in (city, state) if part)
+    if postal:
+        place = f'{place} {postal}'.strip()
+    if place:
+        lines.append(place)
+    country = str(customer.get('country') or '').strip()
+    if country and country not in {'United States', 'USA', 'US'}:
+        lines.append(country)
+    return lines
+
+
+def _pdf_document(source, kind, user=None):
+    """Fields the shared quote and order PDF knows how to print. The add-on is not one of them."""
+    import documents
+    import pricing_catalog
+    customers = load_customers()
+    customer_id = (source or {}).get('customer_id') or ''
+    customer = customers.get(customer_id)
+    if not customer and user and user.get('role') == 'customer':
+        customer = customers.get(user.get('customer_id') or '')
+    company = (source or {}).get('company') or (customer or {}).get('name') or ''
+    quote_by = (source or {}).get('user') or ''
+    updated_by = (source or {}).get('updated_by') or ''
+    if kind == 'order':
+        quote_id = source.get('quote_id')
+        quote = None
+        if quote_id not in (None, ''):
+            quote = next((row for row in load_quotes() if row.get('id') == quote_id), None)
+        if quote and quote.get('user'):
+            quote_by = quote.get('user')
+        elif source.get('approved_by'):
+            quote_by = source.get('approved_by')
+        log = source.get('changelog') or []
+        if log and isinstance(log[-1], dict) and log[-1].get('user'):
+            updated_by = log[-1].get('user')
+    return {
+        'kind': kind,
+        'id': '' if source.get('id') in (None, '') else source.get('id'),
+        'date': source.get('date') or source.get('approved_at') or '',
+        'project': source.get('project') or '',
+        'company': company,
+        'sold_to': _address_lines(customer),
+        'job_address': _job_lines(source.get('job_address')),
+        'currency': source.get('currency') or 'usd',
+        'quote_by': quote_by,
+        'updated_by': updated_by,
+        'po': source.get('po') or source.get('customer_po') or '',
+        'payment_terms': (customer or {}).get('payment_terms') or '',
+        'remarks': source.get('notes') or source.get('remarks') or '',
+        'items': source.get('items') or [],
+        'extra_charges': source.get('extra_charges') or [],
+        'additional_discount_percent': source.get('additional_discount_percent') or 0,
+        'additional_discount_amount': source.get('additional_discount_amount') or 0,
+        'tax_label': source.get('tax_label') or '',
+        'tax_amount': source.get('tax_amount'),
+        'type': source.get('type') or ('size' if kind == 'order' else ''),
+        'weight_factor': pricing_catalog.formula_number('glass_lb_per_sqf_mm', 0.512),
+        '_builder': documents,
+    }
+
+
+def _pdf_bytes(document):
+    import documents
+    payload = dict(document)
+    payload.pop('_builder', None)
+    return documents.build_pdf(payload)
 
 
 @app.route('/api/export-quote', methods=['POST'])
 @module_required('quotes')
 def export_quote():
-    from xml.sax.saxutils import escape
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
-    items = data.get('items', [])
-    if not isinstance(items, list):
-        return json_error('Items must be a list', 400)
-    items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
-    drawing_note = DRAWING_NOTE if irregular_glass_lines(items) else ''
-
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.4*inch, rightMargin=0.4*inch, topMargin=0.4*inch, bottomMargin=0.4*inch)
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle('Title', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
-    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, leading=10)
-    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=7, leading=9)
-    header_cell = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=7, fontName='Helvetica-Bold', textColor=colors.white)
-
-    elements = []
-
-    logo_path = 'logo.png' if os.path.exists('logo.png') else None
-    if logo_path:
-        logo = Image(logo_path, width=1.2*inch, height=0.8*inch)
-    else:
-        logo = Paragraph('<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style)
-
-    project = escape(str(data.get('project', '') or ''))
-    project_line = f'<br/><b>Project:</b> {project}' if project else ''
-    header_data = [[
-        logo,
-        Paragraph('<b>Quotation</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title_style),
-        Paragraph('<font size="8"><b>Date:</b> ' + date.today().strftime("%m/%d/%Y") + '<br/><b>Time:</b> ' + datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%H:%M") + ' PST' + project_line + '</font>', small_style)
-    ]]
-    header_table = Table(header_data, colWidths=[1.5*inch, 3*inch, 2.5*inch])
-    header_table.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 8))
-    elements.append(HRFlowable(width="100%", thickness=1, color=colors.black))
-    elements.append(Spacer(1, 6))
-    if drawing_note:
-        note_style = ParagraphStyle('DrawingNote', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=colors.HexColor('#9f1239'))
-        elements.append(Paragraph(escape(drawing_note), note_style))
-        elements.append(Spacer(1, 8))
-    tax_label = clean_text(data.get('tax_label'), 200)
-    if not tax_label:
-        viewer = current_user()
-        if viewer and viewer.get('role') == 'customer':
-            owner = load_customers().get(viewer.get('customer_id') or '')
-            tax_label = _canada_tax_fields(owner, data.get('ship_province')).get('tax_label') or ''
-    if tax_label:
-        elements.append(Paragraph('<b>Tax:</b> ' + escape(tax_label), small_style))
-        elements.append(Spacer(1, 8))
-    try:
-        shown_rate = float(data.get('fx_rate'))
-    except (TypeError, ValueError):
-        shown_rate = 0
-    if shown_rate <= 0:
-        shown_rate = _current_fx()[0]
-    elements.append(Paragraph(f'<b>USD/CAD:</b> {shown_rate:.4f}', small_style))
-    elements.append(Spacer(1, 8))
-
-    has_size = any(item.get('sqf') for item in items)
-    currency = data.get('currency', 'usd')
-    total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold')
-
-    def amount(value, fallback=0.0):
+    user = current_user()
+    stored = None
+    raw_id = data.get('id')
+    if raw_id not in (None, ''):
         try:
-            return float(value)
+            stored = _visible_quote(user, int(raw_id))
         except (TypeError, ValueError):
-            return fallback
-
-    if has_size:
-        unit = 'CAD' if currency == 'cad' else 'USD'
-        table_data = [[
-            Paragraph('<b>ID</b>', header_cell),
-            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph('<b>SQF</b>', header_cell),
-            Paragraph(f'<b>{unit}/SQF</b>', header_cell),
-            Paragraph(f'<b>{unit}/PC</b>', header_cell),
-            Paragraph(f'<b>TOTAL {unit}</b>', header_cell)
-        ]]
-        total_sqf = 0
-        total_pcs = 0
-        total_line_sum = 0
-        for i, item in enumerate(items, 1):
-            price_sqf = amount(item.get('price_sqf', 0))
-            price_pc = amount(item.get('price_pc', 0))
-            sqf = amount(item.get('sqf', 0))
-            try:
-                pcs = int(item.get('pcs', 1) or 1)
-            except (TypeError, ValueError):
-                pcs = 1
-            # Stored line prices are already in the quote currency. Sum them as shown.
-            if item.get('total') not in (None, ''):
-                line_total = amount(item.get('total'))
-            else:
-                line_total = price_pc * pcs
-            total_sqf += sqf * pcs
-            total_pcs += pcs
-            total_line_sum += line_total
-            description = _item_description(item)
-            table_data.append([
-                Paragraph(f'({i})', cell_style),
-                Paragraph(description, cell_style),
-                Paragraph(f"{sqf * pcs:.2f}", cell_style),
-                Paragraph(f"${price_sqf:.2f}", cell_style),
-                Paragraph(f"${price_pc:.2f}", cell_style),
-                Paragraph(f"${line_total:.2f}", cell_style)
-            ])
-        table_data.append([
-            Paragraph('', cell_style),
-            Paragraph(f'<b>TOTAL ({total_pcs} pcs)</b>', total_style),
-            Paragraph(f'<b>{total_sqf:.2f}</b>', total_style),
-            Paragraph('', cell_style),
-            Paragraph('', cell_style),
-            Paragraph(f'<b>${total_line_sum:.2f}</b>', total_style)
-        ])
-        discount_percent, discount_amount = _export_discount(data, total_line_sum)
-        if discount_amount:
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'-${discount_amount:.2f}', total_style),
-            ])
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph('<b>Total</b>', total_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph('', cell_style),
-                Paragraph(f'<b>${total_line_sum - discount_amount:.2f}</b>', total_style),
-            ])
-        col_widths = [0.4*inch, 3.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 1*inch]
+            stored = None
+    if stored:
+        document = _pdf_document(_with_quote_tax(stored), 'quote', user)
     else:
-        curr_label = 'CAD/SQF' if currency == 'cad' else 'USD/SQF'
-        table_data = [[
-            Paragraph('<b>ID</b>', header_cell),
-            Paragraph('<b>ITEM DESCRIPTION</b>', header_cell),
-            Paragraph(f'<b>{curr_label}</b>', header_cell)
-        ]]
-        total_price = 0.0
-        for i, item in enumerate(items, 1):
-            price_value = amount(item.get('price', 0))
-            total_price += price_value
-            price = escape(f'{price_value:.2f}')
-            description = _item_description(item)
-            table_data.append([
-                Paragraph(f'({i})', cell_style),
-                Paragraph(description, cell_style),
-                Paragraph(f"${price}", cell_style)
-            ])
-        table_data.append([
-            Paragraph('', cell_style),
-            Paragraph('<b>TOTAL</b>', total_style),
-            Paragraph(f'<b>${total_price:.2f}</b>', total_style),
-        ])
-        discount_percent, discount_amount = _export_discount(data, total_price)
-        if discount_amount:
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph(f'Additional discount ({discount_percent:g}%)', total_style),
-                Paragraph(f'-${discount_amount:.2f}', total_style),
-            ])
-            table_data.append([
-                Paragraph('', cell_style),
-                Paragraph('<b>Total</b>', total_style),
-                Paragraph(f'<b>${total_price - discount_amount:.2f}</b>', total_style),
-            ])
-        col_widths = [0.4*inch, 5.5*inch, 1.1*inch]
-
-    items_table = Table(table_data, colWidths=col_widths)
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 20))
-
-    elements.append(Spacer(1, 10))
-    elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))
-
-    doc.build(elements)
-    buffer.seek(0)
+        items = data.get('items', [])
+        if not isinstance(items, list):
+            return json_error('Items must be a list', 400)
+        items = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
+        tax_label = clean_text(data.get('tax_label'), 200)
+        if not tax_label and user and user.get('role') == 'customer':
+            owner = load_customers().get(user.get('customer_id') or '')
+            tax_label = _canada_tax_fields(owner, data.get('ship_province')).get('tax_label') or ''
+        customer_id = ''
+        if user and user.get('role') == 'customer':
+            customer_id = user.get('customer_id') or ''
+        else:
+            customer_id = clean_text(data.get('customer_id'), 64)
+        customer = load_customers().get(customer_id or '')
+        document = _pdf_document({
+            'id': '',
+            'date': data.get('date') or date.today().isoformat(),
+            'project': clean_text(data.get('project'), 200),
+            'job_address': clean_text(data.get('job_address'), 500),
+            'company': (customer or {}).get('name') or clean_text(data.get('company'), 200),
+            'customer_id': customer_id,
+            'currency': data.get('currency') or 'usd',
+            'user': user.get('email') if user else '',
+            'notes': clean_text(data.get('remarks') or data.get('notes'), 2000),
+            'items': items,
+            'extra_charges': data.get('extra_charges') or [],
+            'additional_discount_percent': data.get('additional_discount_percent') or 0,
+            'tax_label': tax_label,
+            'type': data.get('type') or '',
+            'po': clean_text(data.get('po'), 80),
+        }, 'quote', user)
+    buffer = BytesIO(_pdf_bytes(document))
     return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='ORA_Quote.pdf')
 
 
@@ -2118,6 +2101,8 @@ def orders():
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
+        can_job_address=can_edit_job_address(user),
+        show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -2139,6 +2124,8 @@ def order_detail(order_id):
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
+        can_job_address=can_edit_job_address(user, order),
+        show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -2712,6 +2699,7 @@ def quote_history():
         can_order=customer_subrole(user) == 'management' or staff,
         staff_order=staff,
         staff_tools=user.get('role') != 'customer',
+        show_fx_rate=user.get('role') != 'customer',
         order_tiers=[
             {'id': tid, 'label': (cfg or {}).get('label') or tid}
             for tid, cfg in ordered_tiers()
@@ -3208,6 +3196,45 @@ def _line_subtotal(items):
     return round(total, 2)
 
 
+def _charge_saved_size_lines(items, minimum):
+    """Bill each size line at the charged square feet and remember the minimum used.
+
+    Per-square-foot lines have no size spec and are left unchanged.
+    """
+    from quoting import area_sqf
+    try:
+        floor = float(minimum or 0)
+    except (TypeError, ValueError):
+        floor = 0.0
+    if floor < 0:
+        floor = 0.0
+    for item in items or []:
+        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if not spec or spec.get('width') in (None, '') or spec.get('height') in (None, ''):
+            continue
+        real = round(area_sqf(spec.get('width'), spec.get('height'), spec.get('unit')), 2)
+        charged = round(max(real, floor), 2) if floor > 0 else real
+        item['real_sqf'] = real
+        item['minimum_sqf'] = floor
+        item['sqf'] = charged
+        try:
+            price_sqf = float(item.get('price_sqf') or 0)
+        except (TypeError, ValueError):
+            price_sqf = 0.0
+        try:
+            pieces = int(item.get('pcs') or 1)
+        except (TypeError, ValueError):
+            pieces = 1
+        if pieces < 1:
+            pieces = 1
+        if price_sqf and charged > real + 0.001:
+            item['price_pc'] = round(price_sqf * charged, 2)
+            item['total'] = round(item['price_pc'] * pieces, 2)
+    return items
+
+
 def _stamp_terms(document, items, discount_percent, addon_percent):
     document['additional_discount_percent'] = _percent(discount_percent)
     document['additional_discount_amount'] = round(
@@ -3339,6 +3366,7 @@ def save_quote():
         kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
         existing['items'] = _repriced_quote_items(
             items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
+            _effective_minimum(customer),
         ) if quote_type == 'size' else priced
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
@@ -3346,6 +3374,11 @@ def save_quote():
         existing['type'] = quote_type
         existing['tier'] = tier
         existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
+        existing['updated_by'] = user.get('email') or ''
+        if 'notes' in data or 'remarks' in data:
+            existing['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
+        if 'job_address' in data:
+            existing['job_address'] = clean_text(data.get('job_address'), 500)
         if 'extra_charges' in data:
             existing['extra_charges'] = _copied_extras(data.get('extra_charges'))
         owner = customers.get(existing.get('customer_id') or '')
@@ -3365,12 +3398,15 @@ def save_quote():
         'company': company,
         'customer_id': customer_id,
         'project': project,
-        'items': priced,
+        'job_address': clean_text(data.get('job_address'), 500),
+        'items': _charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced,
         'currency': currency,
         'fx_rate': fx_rate,
         'type': quote_type,
         'tier': tier,
     }
+    if 'notes' in data or 'remarks' in data:
+        quote['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
     _stamp_terms(quote, quote['items'], new_discount, new_addon)
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
@@ -3383,6 +3419,7 @@ def _quote_for_viewer(quote, user):
     row = dict(quote)
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
+        row.pop('fx_rate', None)
     return row
 
 
@@ -3412,7 +3449,7 @@ def _copied_extras(raw):
     return charges
 
 
-def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
     for item in items or []:
@@ -3422,17 +3459,14 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
-            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor)
+            stored_minimum = item.get('minimum_sqf') if 'minimum_sqf' in item else minimum_sqf
+            priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor, stored_minimum)
             copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
-                'sqf': priced['sqf'],
-                'price_sqf': priced['price_sqf'],
-                'price_pc': priced['price_pc'],
-                'pcs': priced['pcs'],
-                'total': priced['total'],
                 'irregular_shape': bool(item.get('irregular_shape')),
             }
+            copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
                 copied_line['remarks'] = clean_text(item.get('remarks'), 500)
             floor = production.floor_code(item)
@@ -3471,7 +3505,7 @@ def get_quote(quote_id):
     quote = _visible_quote(user, quote_id)
     if not quote:
         return json_error('Not found', 404)
-    return jsonify(_with_quote_tax(quote))
+    return jsonify(_with_quote_tax(_quote_for_viewer(quote, user)))
 
 
 @app.route('/api/quotes/<int:quote_id>/copy', methods=['POST'])
@@ -3516,6 +3550,7 @@ def copy_quote(quote_id):
         'company': company,
         'customer_id': customer_id,
         'project': source.get('project') or '',
+        'job_address': source.get('job_address') or '',
         'notes': notes,
         'copy_note': note,
         'copied_from': quote_id,
@@ -4526,6 +4561,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'customer_id': order.get('customer_id'),
         'company': order.get('company') or '',
         'project': order.get('project') or '',
+        'job_address': order.get('job_address') or '',
         'notes': order.get('notes') or '',
         'approved_by': order.get('approved_by'),
         'approved_at': order.get('approved_at'),
@@ -4549,25 +4585,32 @@ def order_for_viewer(order, user, with_coverage=False):
         ],
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
-        'documents': [
-            {
-                'id': row.get('id'),
-                'number': row.get('number'),
-                'doc_type': document_type(row),
-                'issuer': row.get('issuer') or 'us',
-                'kind': row.get('kind') or 'customer',
-                'currency': row.get('currency') or 'usd',
-                'fx_rate': row.get('fx_rate'),
-                'fx_date': row.get('fx_date') or '',
-                'fx_source': row.get('fx_source') or '',
-                'qbo_warning': row.get('qbo_warning') or '',
-                'total': money(row.get('total')),
-                'voided': bool(row.get('voided')),
-            }
-            for row in load_invoices()
-            if row.get('order_id') == order.get('id')
-        ],
+        'documents': [],
     }
+    staff_view = user.get('role') != 'customer'
+    if staff_view and order.get('fx_rate') not in (None, ''):
+        base['fx_rate'] = order.get('fx_rate')
+    documents = []
+    for row in load_invoices():
+        if row.get('order_id') != order.get('id'):
+            continue
+        document = {
+            'id': row.get('id'),
+            'number': row.get('number'),
+            'doc_type': document_type(row),
+            'issuer': row.get('issuer') or 'us',
+            'kind': row.get('kind') or 'customer',
+            'currency': row.get('currency') or 'usd',
+            'qbo_warning': row.get('qbo_warning') or '',
+            'total': money(row.get('total')),
+            'voided': bool(row.get('voided')),
+        }
+        if staff_view:
+            document['fx_rate'] = row.get('fx_rate')
+            document['fx_date'] = row.get('fx_date') or ''
+            document['fx_source'] = row.get('fx_source') or ''
+        documents.append(document)
+    base['documents'] = documents
     owner = load_customers().get(order.get('customer_id') or '') or {}
     tax = _canada_tax_fields(owner, order.get('ship_province'))
     if tax:
@@ -4785,17 +4828,14 @@ def convert_quote_to_order(quote_id):
         priced = _reprice(
             spec, item.get('pcs'), company_tier, currency, tiers, _stored_fx(quote),
             _price_factor((customer or {}).get('price_addon_percent')),
+            _effective_minimum(customer),
         )
         line = {
             'name': item.get('name') or '',
             'spec': spec,
-            'sqf': priced['sqf'],
-            'price_sqf': priced['price_sqf'],
-            'price_pc': priced['price_pc'],
-            'pcs': priced['pcs'],
-            'total': priced['total'],
             'irregular_shape': bool(item.get('irregular_shape')),
         }
+        line.update(_size_price_fields(priced))
         if item.get('remarks'):
             line['remarks'] = clean_text(item.get('remarks'), 500)
         floor = production.floor_code(item)
@@ -4867,6 +4907,7 @@ def convert_quote_to_order(quote_id):
         'customer_id': customer_id,
         'company': company,
         'project': quote.get('project') or '',
+        'job_address': quote.get('job_address') or '',
         'notes': '',
         'currency': currency,
         'fx_rate': _stored_fx(quote),
@@ -4961,6 +5002,21 @@ def download_production_excel(order_id):
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
         download_name=f'production-order-{order_id}.xlsx',
+    )
+
+
+@app.route('/api/orders/<int:order_id>/confirmation.pdf', methods=['GET'])
+@module_required('orders')
+def download_order_confirmation(order_id):
+    user = current_user()
+    order = _owned_order(user, order_id)
+    if not order:
+        return json_error('Not found', 404)
+    document = _pdf_document(order, 'order', user)
+    buffer = BytesIO(_pdf_bytes(document))
+    return send_file(
+        buffer, mimetype='application/pdf', as_attachment=True,
+        download_name=f'order-{order_id}.pdf',
     )
 
 
@@ -5078,7 +5134,7 @@ def _apply_drawing_charges(items, order):
     return kept
 
 
-def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1):
+def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=None):
     if not isinstance(raw, list) or not raw:
         return None, 'An order needs at least one line.'
     items = []
@@ -5110,20 +5166,17 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1)
             return None, 'Quantity must be a whole number.'
         if pcs < 1 or pcs > 10000:
             return None, 'Quantity must be at least 1.'
-        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor)
+        line_minimum = raw_item.get('minimum_sqf') if 'minimum_sqf' in raw_item else minimum_sqf
+        priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor, line_minimum)
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
         line = {
             'name': name,
             'spec': spec,
-            'sqf': priced['sqf'],
-            'price_sqf': priced['price_sqf'],
-            'price_pc': priced['price_pc'],
-            'pcs': priced['pcs'],
-            'total': priced['total'],
             'irregular_shape': bool(raw_item.get('irregular_shape')),
         }
+        line.update(_size_price_fields(priced))
         if raw_item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
         if raw_item.get('remarks'):
@@ -5167,6 +5220,7 @@ def _edited_order(order, data, tiers):
         items, error = _parse_order_items(
             data.get('items'), tier, currency, tiers, _stored_fx(order),
             _price_factor(order.get('price_addon_percent')),
+            _effective_minimum(load_customers().get(order.get('customer_id') or '')),
         )
         if error:
             return None, error
@@ -5188,6 +5242,7 @@ def _edited_order(order, data, tiers):
     updated = dict(order)
     updated['items'] = items
     updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
+    updated['job_address'] = clean_text(data.get('job_address'), 500) if 'job_address' in data else (order.get('job_address') or '')
     updated['notes'] = clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or '')
     if 'ship_province' in data:
         from storage import PROVINCE_CODES
@@ -5206,23 +5261,30 @@ def _order_is_invoiced(order):
 @module_required('orders')
 def edit_order(order_id):
     user = current_user()
-    if not can_edit_orders(user):
-        return json_error('You do not have permission to edit orders.', 403)
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
-    if _order_is_invoiced(visible) and user.get('role') != 'admin':
+    address_only = not can_edit_orders(user)
+    if address_only:
+        if not can_edit_job_address(user, visible):
+            return json_error('You do not have permission to edit orders.', 403)
+        if set(data.keys()) - {'job_address'}:
+            return json_error('You can only edit the job address.', 403)
+    elif _order_is_invoiced(visible) and user.get('role') != 'admin':
         return json_error('This order has been invoiced and can only be changed by an administrator.', 403)
 
     def mutator(order):
-        if _order_is_invoiced(order) and user.get('role') != 'admin':
+        if _order_is_invoiced(order) and user.get('role') != 'admin' and not address_only:
             return None, 'This order has been invoiced and can only be changed by an administrator.'
         updated, error = _edited_order(order, data, load_tiers())
         if error:
             return None, error
+        if address_only:
+            _stamp_log(updated, user, diff_changes(order, updated))
+            return updated, None
         if order_status(order) in {'sent', 'made'}:
             customer = dict(load_customers().get(order.get('customer_id') or '') or {})
             customer.setdefault('id', order.get('customer_id'))

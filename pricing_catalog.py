@@ -94,12 +94,17 @@ FORMULA_DEFAULTS = (
     {
         'key': 'minimum_sqf',
         'value': 0,
-        'description': 'A line smaller than this many square feet is billed as this many square feet. 0 means there is no minimum size. The workbook has no minimum size.',
+        'description': 'Minimum charged square feet per piece when a company has none of its own. A smaller piece is billed as this many square feet. 0 means no global minimum. A company minimum, when set, is used instead.',
     },
     {
         'key': 'minimum_charge',
         'value': 0,
         'description': 'Minimum line total in the quote currency, after the per-sqf price. 0 means there is no minimum charge. The workbook has no minimum charge.',
+    },
+    {
+        'key': 'glass_lb_per_sqf_mm',
+        'value': 0.512,
+        'description': 'Approximate glass weight, in pounds, for one square foot of glass that is one millimetre thick. Quote and order PDFs multiply the real square feet by the lite thicknesses and this factor. 0.512 is about 2.5 kg per square metre per millimetre. Charged square feet are not used.',
     },
 )
 

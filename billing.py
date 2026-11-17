@@ -406,6 +406,12 @@ def diff_changes(before, after):
     changes = []
     if (before.get('project') or '') != (after.get('project') or ''):
         changes.append({'field': 'project', 'old': before.get('project') or '', 'new': after.get('project') or ''})
+    if (before.get('job_address') or '') != (after.get('job_address') or ''):
+        changes.append({
+            'field': 'job_address',
+            'old': before.get('job_address') or '',
+            'new': after.get('job_address') or '',
+        })
     if (before.get('notes') or '') != (after.get('notes') or ''):
         changes.append({'field': 'notes', 'old': before.get('notes') or '', 'new': after.get('notes') or ''})
     old_items = before.get('items') or []

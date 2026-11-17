@@ -74,6 +74,7 @@ a{color:#C41E3A}
 <p class="note" id="edit-lock-note"></p>
 <div class="edit-grid" style="grid-template-columns:1fr 1fr">
 <label>Project<input id="order-project" type="text"></label>
+<label>Job address<textarea id="order-job-address" rows="3" aria-label="Job address"></textarea></label>
 <label>Ship-to province<select id="order-ship-province" aria-label="Ship-to province"></select></label>
 <label>Customer notes<textarea id="order-notes" rows="2"></textarea></label>
 </div>
@@ -118,6 +119,7 @@ a{color:#C41E3A}
 const PRICES = {{ prices_visible|tojson }};
 const STAFF = {{ staff_view|tojson }};
 const CAN_EDIT = {{ can_edit|tojson }};
+const CAN_JOB_ADDRESS = {{ can_job_address|tojson }};
 const CAN_STATUS = {{ can_status|tojson }};
 const IS_ADMIN = {{ is_admin|tojson }};
 const GLASS = {{ glass_names|tojson }};
@@ -187,6 +189,7 @@ function coverageBlock(order) {
 }
 function describeChange(change) {
   const action = change.action;
+  if (change.field === 'job_address') return 'Job address: ' + (change.old || '(blank)') + ' → ' + (change.new || '(blank)');
   if (action === 'added') return 'Added ' + change.field + ': ' + JSON.stringify(change.new);
   if (action === 'removed') return 'Removed ' + change.field + ': ' + JSON.stringify(change.old);
   if (change.old !== undefined) return change.field + ': ' + JSON.stringify(change.old) + ' → ' + JSON.stringify(change.new);
@@ -215,7 +218,10 @@ function renderDetail(order) {
     const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
     const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
     const floor = item.floor || item.mark || item.location || '';
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(item.sqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const each = Number(item.sqf);
+    const qty = Number(item.pcs);
+    const lineSqf = item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(lineSqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
@@ -223,17 +229,20 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
+  buttons += '<a class="btn secondary" id="order-confirmation" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Download order confirmation</a>';
   if (STAFF) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
-    const fx = doc.fx_rate ? ' · FXUSDCAD ' + esc(doc.fx_rate) + ' on ' + esc(doc.fx_date || '') : '';
+    const fx = {% if show_fx_rate %}(doc.fx_rate ? ' · FXUSDCAD ' + esc(doc.fx_rate) + ' on ' + esc(doc.fx_date || '') : ''){% else %}''{% endif %};
     const warning = doc.qbo_warning ? '<br><span class="error">' + esc(doc.qbo_warning) + '</span>' : '';
     return '<a href="/invoices/' + esc(doc.id) + '">' + esc(kind) + ' ' + esc(doc.number) + '</a> · ' + esc(company) + ' · ' + esc(String(doc.currency || '').toUpperCase()) + fx + (doc.voided ? ' (void)' : '') + warning;
   }).join('<br>');
   const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
   const notes = order.notes ? '<p class="note">Notes: ' + esc(order.notes) + '</p>' : '';
+  const jobText = order.job_address ? '<p class="note">Job address<br>' + esc(order.job_address).replace(/\n/g, '<br>') + '</p>' : '';
+  const jobForm = (CAN_JOB_ADDRESS && !CAN_EDIT) ? '<form id="job-address-form" style="margin:8px 0"><label>Job address<textarea id="job-address-edit" rows="3" style="width:100%;max-width:420px">' + esc(order.job_address || '') + '</textarea></label><p class="help">This does not change the quote or the tax province.</p><button type="submit" class="btn small">Save job address</button></form>' : '';
   const tax = order.tax_label ? '<p class="note">Tax: ' + esc(order.tax_label) + '</p>' : '';
   const drawings = (order.drawings || []).map(drawing => {
     const href = '/api/orders/' + encodeURIComponent(order.id) + '/drawings/' + encodeURIComponent(drawing.line_id);
@@ -260,17 +269,29 @@ function renderDetail(order) {
     + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
     + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
-    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + (order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : '') + '.</p>'
-    + notes + tax + (documents ? documentNote : invoice)
+    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.</p>'
+    + notes + jobText + jobForm + tax + (documents ? documentNote : invoice)
     + shipForm
     + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
-    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Total sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
   const delivered = document.getElementById('mark-delivered');
   const edit = document.getElementById('edit-order');
+  const jobAddressForm = document.getElementById('job-address-form');
+  if (jobAddressForm) jobAddressForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id), {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_address: document.getElementById('job-address-edit').value})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not save the job address'); return; }
+    renderDetail(payload);
+    load();
+  });
   if (sent) sent.addEventListener('click', () => changeStatus('sent', 'Mark this order as sent to production? It will count against the customer credit limit.'));
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
@@ -372,6 +393,8 @@ function openEditor(order) {
   draft.extra_charges = draft.extra_charges || [];
   draft.discount = draft.discount || {type: 'percent', value: 0};
   document.getElementById('order-project').value = draft.project || '';
+  const jobField = document.getElementById('order-job-address');
+  if (jobField) jobField.value = draft.job_address || '';
   document.getElementById('order-notes').value = draft.notes || '';
   const ship = document.getElementById('order-ship-province');
   if (ship && !ship.options.length) {
@@ -454,6 +477,7 @@ function collectItems() {
     if (item.remarks) row.remarks = item.remarks;
     if (item.floor) row.floor = item.floor;
     if (item.surcharge_rate != null && item.surcharge_rate !== '') row.surcharge_rate = item.surcharge_rate;
+    if (item.minimum_sqf != null && item.minimum_sqf !== '') row.minimum_sqf = item.minimum_sqf;
     return row;
   });
   return items;
@@ -461,6 +485,7 @@ function collectItems() {
 async function saveOrder() {
   const body = {
     project: document.getElementById('order-project').value,
+    job_address: document.getElementById('order-job-address') ? document.getElementById('order-job-address').value : '',
     notes: document.getElementById('order-notes').value,
     ship_province: document.getElementById('order-ship-province') ? document.getElementById('order-ship-province').value : '',
     discount: {

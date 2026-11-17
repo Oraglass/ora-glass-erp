@@ -71,7 +71,8 @@ def test_floor_is_saved_copied_shown_and_exported(client):
         'items': stored['items'], 'currency': 'usd', 'project': 'Floor', 'type': 'size',
     })
     assert pdf.status_code == 200
-    assert 'Floor: W12' in _pdf_text(pdf.data)
+    assert 'W12' in _pdf_text(pdf.data)
+    assert 'FLOOR' in _pdf_text(pdf.data)
     created = client.post(f'/api/quotes/{quote_id}/order', json={'customer_id': 'harbor-glass'})
     order_id = created.get_json()['order_id']
     order = next(row for row in load_orders() if row['id'] == order_id)

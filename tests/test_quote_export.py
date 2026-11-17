@@ -45,11 +45,32 @@ def test_size_pdf_total_matches_line_totals_in_both_currencies(client):
     wrong = '3042.75'
     for currency in ('cad', 'usd'):
         text = export(client, lines, currency)
-        assert b'($2123.39)' in text
-        assert b'($50.00)' in text
-        assert b'($2173.39)' in text
+        assert b'2123.39' in text
+        assert b'50.00' in text
+        assert b'2173.39' in text
         assert wrong.encode() not in text
-        assert b'TOTAL \\(3 pcs\\)' in text
+        assert b'QTY' in text
+        assert b'Total SQ/FT' in text
+        assert b'TOTAL \\(3 pcs\\)' not in text
+        assert b'77.86' in text
+        assert b'20.00' in text
+
+
+def test_size_pdf_shows_pieces_on_each_line_and_sqf_quotes_do_not(client):
+    write_user('admin@oraglass.us', 'admin')
+    login(client, 'admin@oraglass.us')
+    size = export(client, [
+        {'name': 'Wide', 'sqf': 10, 'price_sqf': 2, 'price_pc': 20, 'total': 60, 'pcs': 3},
+    ], 'usd')
+    assert b'QTY' in size
+    assert b'Total SQ/FT' in size
+    assert b'30.00' in size
+    assert b'60.00' in size
+    sqf = export(client, [{'name': 'Clear', 'price': '4.00'}], 'usd')
+    assert b'QTY' not in sqf
+    assert b'WIDTH' not in sqf
+    assert b'Total SQ/FT' in sqf
+    assert b'4.00' in sqf
 
 
 def test_sqf_pdf_total_matches_line_prices_in_both_currencies(client):
@@ -61,9 +82,9 @@ def test_sqf_pdf_total_matches_line_prices_in_both_currencies(client):
     ]
     for currency in ('cad', 'usd'):
         text = export(client, lines, currency)
-        assert b'($27.27)' in text
-        assert b'($10.00)' in text
-        assert b'($37.27)' in text
+        assert b'27.27' in text
+        assert b'10.00' in text
+        assert b'37.27' in text
         assert b'52.18' not in text
 
 
@@ -88,7 +109,7 @@ def test_quote_history_reexport_uses_stored_line_totals(client):
     assert saved.status_code == 200
     stored = next(quote for quote in client.get('/api/quotes').get_json() if quote['project'] == 'Nistook')
     text = export(client, stored['items'], stored['currency'], stored['project'])
-    assert b'($2123.39)' in text
+    assert b'2123.39' in text
     assert b'2972.75' not in text
     assert b'2692 x 2687 mm' in text
 
