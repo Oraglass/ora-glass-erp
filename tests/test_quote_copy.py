@@ -34,7 +34,7 @@ def test_copy_is_a_new_draft_at_current_prices_and_the_original_stays(client):
     original = _save(client, [_line(pcs=2)], project='Lobby')
     quotes = load_quotes()
     original = next(row for row in quotes if row['id'] == original['id'])
-    original['notes'] = 'Call before noon'
+    original['notes'] = 'Call before noon\nCopied from quote #2'
     original['extra_charges'] = [{'label': 'Delivery', 'amount': 25}]
     original['order_id'] = 9
     original['items'].append({
@@ -51,7 +51,8 @@ def test_copy_is_a_new_draft_at_current_prices_and_the_original_stays(client):
     copied = client.post(f"/api/quotes/{original['id']}/copy", json={})
     assert copied.status_code == 200, copied.get_json()
     body = copied.get_json()
-    assert body['copy_note'] == f"Copied from quote #{original['id']}"
+    assert 'copy_note' not in body
+    assert 'Copied from quote' not in str(body)
     assert body['id'] != original['id']
     fresh = next(row for row in load_quotes() if row['id'] == body['id'])
     untouched = next(row for row in load_quotes() if row['id'] == original['id'])
@@ -62,8 +63,10 @@ def test_copy_is_a_new_draft_at_current_prices_and_the_original_stays(client):
     assert fresh['company'] == untouched['company']
     assert fresh['currency'] == 'usd'
     assert fresh['project'] == 'Lobby'
-    assert fresh['copy_note'] == f"Copied from quote #{original['id']}"
-    assert 'Call before noon' in fresh['notes']
+    assert 'copy_note' not in fresh
+    assert fresh['copied_from'] == original['id']
+    assert fresh['notes'] == 'Call before noon'
+    assert 'Copied from quote' not in fresh['notes']
     assert fresh['extra_charges'] == [{'label': 'Delivery', 'amount': 25}]
     assert not any(row.get('kind') == 'dwg_creation' for row in fresh['items'])
     assert untouched['order_id'] == 9
@@ -74,7 +77,11 @@ def test_copy_is_a_new_draft_at_current_prices_and_the_original_stays(client):
     expected = reprice_size_line(SPEC, 2, 'T2', 'usd', __import__('app').PRICING, load_tiers())
     assert glass['total'] == expected['total']
     assert glass['total'] != next(row['total'] for row in untouched['items'] if row.get('spec'))
-    assert client.get(f"/api/quotes/{fresh['id']}").status_code == 200
+    viewed_copy = client.get(f"/api/quotes/{fresh['id']}")
+    assert viewed_copy.status_code == 200
+    assert 'copy_note' not in viewed_copy.get_json()
+    assert 'copied_from' not in viewed_copy.get_json()
+    assert 'Copied from quote' not in str(viewed_copy.get_json())
     history = client.get('/quote-history')
     assert b'Copy quote' in history.data
     assert b'Details' in history.data
@@ -157,7 +164,9 @@ def test_copy_keeps_the_ship_to_province_and_resolves_canadian_tax(client):
     assert fresh['ship_province'] == 'ON'
     assert fresh['tax_label'] == 'HST, shipped to Ontario'
     assert fresh['qbo_tax_code'] == '6'
-    assert fresh['copy_note'] == f'Copied from quote #{original_id}'
+    assert 'copy_note' not in fresh
+    assert fresh['copied_from'] == original_id
+    assert 'Copied from quote' not in (fresh.get('notes') or '')
     assert next(row for row in load_quotes() if row['id'] == original_id)['ship_province'] == 'ON'
     viewed = client.get(f"/api/quotes/{fresh['id']}")
     assert viewed.status_code == 200

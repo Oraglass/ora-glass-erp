@@ -14,6 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from copy_notes import strip_copy_history
 from production import dimensions_mm_in, floor_code, lookup_product, makeup_from_spec
 from quoting import DRAWING_NOTE, area_sqf
 
@@ -154,7 +155,7 @@ def line_description(item):
                 shown = f'+{part}'
             lines.append(escape(shown) + (' /' if index < last else ''))
         text = '<br/>'.join(lines)
-    remark = str(item.get('remarks') or '').strip()
+    remark = strip_copy_history(item.get('remarks')).strip()
     if remark:
         text += '<br/>' + escape(remark)
     return text
@@ -232,7 +233,7 @@ def _header(document, styles):
         ('TOPPADDING', (0, 0), (-1, -1), 3),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
-    remarks = str(document.get('remarks') or '').strip()
+    remarks = strip_copy_history(document.get('remarks')).strip()
     remark_line = f'<b>Remarks:</b> {escape(remarks)}' if remarks else '<b>Remarks:</b>'
     return [header, Spacer(1, 6), parties, Spacer(1, 4), Paragraph(remark_line, styles['small']), Spacer(1, 6)]
 
@@ -425,7 +426,7 @@ def build_pdf(document):
     for extra in document.get('extra_charges') or []:
         if isinstance(extra, dict) and str(extra.get('label') or '').strip():
             items.append({'name': extra.get('label'), 'total': extra.get('amount'), 'pcs': ''})
-    remarks = str(document.get('remarks') or '').strip()
+    remarks = strip_copy_history(document.get('remarks')).strip()
     if any(item.get('irregular_shape') or item.get('irregular') for item in items) and DRAWING_NOTE not in remarks:
         remarks = (remarks + '\n' + DRAWING_NOTE).strip()
     prepared = dict(document)
