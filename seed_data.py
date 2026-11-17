@@ -19,6 +19,8 @@ SEED_CUSTOMER = {
     'city': '',
     'state': '',
     'zip': '',
+    'country': 'Canada',
+    'credit_currency': 'cad',
     'phone': '',
     'email': '',
     'credit_approved': False,

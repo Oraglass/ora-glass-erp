@@ -67,9 +67,17 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="tab" data-tab="import" onclick="showTab('import')">Import order</button>
 </div>
 <div class="currency-select">
-<div class="currency-btn" id="btn-usd" onclick="selectCurrency('usd')">USD</div>
-<div class="currency-btn" id="btn-cad" onclick="selectCurrency('cad')">CAD</div>
+<div class="currency-btn" id="btn-usd" onclick="selectCurrency('usd')" {% if currency_locked and locked_currency != 'usd' %}aria-disabled="true" style="pointer-events:none;opacity:.45"{% endif %}>USD</div>
+<div class="currency-btn" id="btn-cad" onclick="selectCurrency('cad')" {% if currency_locked and locked_currency != 'cad' %}aria-disabled="true" style="pointer-events:none;opacity:.45"{% endif %}>CAD</div>
 </div>
+{% if currency_locked %}<p class="note" id="currency-lock">Currency is {{ locked_currency|upper }} for this company.</p>{% else %}
+<div class="form-group" style="max-width:360px;margin:0 0 12px">
+<label for="quote-customer">Customer</label>
+<select id="quote-customer" aria-label="Customer"><option value="">No customer yet</option>{% for company in import_companies %}<option value="{{ company.id }}" data-currency="{{ company.currency }}">{{ company.name }}</option>{% endfor %}</select>
+<p class="note">Currency follows the customer. USD and CAD can be changed only while no customer is selected.</p>
+<p id="currency-lock-note" hidden style="margin:8px 0 0;color:#9a3412;font-weight:600"></p>
+</div>
+{% endif %}
 <div class="form-group" style="margin-bottom:15px;max-width:300px"><label>Project Name (optional)</label><input type="text" id="project-name" placeholder="Enter project name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
 <p id="copy-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="quote-tax" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
@@ -183,8 +191,11 @@ function showSize(glassId,sizeId){const el=document.getElementById(glassId);cons
 function updateSealant(spacerId,sealantId){const spacerVal=document.getElementById(spacerId).value;const sealantEl=document.getElementById(sealantId);const note=document.getElementById(sealantId+'-note');function setNote(text){if(note)note.textContent=text||''}if(!spacerVal||spacerVal==='n/a'){sealantEl.innerHTML='<option value="">n/a</option>';setNote('');return}const match=SEALANT_MATCH[spacerVal]||{selected:null,options:sealantOptions.map(function(s){return s.value}),message:'No matching sealant found. Choose a sealant.'};sealantEl.innerHTML='';if(!match.selected){const placeholder=document.createElement('option');placeholder.value='';placeholder.text='No matching sealant — choose one';placeholder.selected=true;sealantEl.appendChild(placeholder)}(match.options||[]).forEach(function(name){const opt=document.createElement('option');opt.value=name;opt.text=name;if(name===match.selected)opt.selected=true;sealantEl.appendChild(opt)});setNote(match.message)}
 function updateTemper(glassId,temperId){const glassEl=document.getElementById(glassId);const temperEl=document.getElementById(temperId);const selected=glassEl.options[glassEl.selectedIndex];if(!selected||!selected.value||selected.value==='n/a'){temperEl.innerHTML='<option value="n/a">Annealed</option>';return}const name=selected.value.toLowerCase();const isQ=name.includes('q-');const isVT=name.includes(' vt');const canTemper=isQ||isVT||name.includes('clear')||name.includes('solarcoat')||name.includes('bronze')||name.includes('ezp')||name.includes('sandblast');const canAnneal=!isQ&&!isVT&&!name.includes('i89');temperEl.innerHTML='';if(canAnneal){const opt=document.createElement('option');opt.value='n/a';opt.text='Annealed';if(!canTemper)opt.selected=true;temperEl.appendChild(opt)}if(canTemper){const opt=document.createElement('option');opt.value='yes';opt.text='Tempered';if(!canAnneal)opt.selected=true;temperEl.appendChild(opt)}}
 document.getElementById('glass1').addEventListener('change',function(){updateTemper('glass1','temper1');showSize('glass1','size1')});
-document.getElementById('glass2').addEventListener('change',function(){updateTemper('glass2','temper2');showSize('glass2','size2')});
-document.getElementById('glass3').addEventListener('change',function(){updateTemper('glass3','temper3');showSize('glass3','size3')});
+function liteIsEmpty(value){return !value||value==='n/a'}
+function clearSpacerAndSealant(prefix,which){const spacer=document.getElementById(prefix+'spacer'+which);const sealant=document.getElementById(prefix+'sealant'+which);const temper=document.getElementById(prefix+'temper'+which);if(spacer)spacer.value='';if(sealant)sealant.value='';if(temper)temper.value='n/a';if(spacer&&sealant)updateSealant(spacer.id,sealant.id)}
+function onLiteChange(prefix,layer){const glass=document.getElementById(prefix+'glass'+layer);if(!glass||!liteIsEmpty(glass.value))return;if(layer==='3')clearSpacerAndSealant(prefix,'2');if(layer==='2'){clearSpacerAndSealant(prefix,'1');const inner=document.getElementById(prefix+'glass3');if(inner)inner.value='';clearSpacerAndSealant(prefix,'2')}}
+document.getElementById('glass2').addEventListener('change',function(){onLiteChange('','2');updateTemper('glass2','temper2');showSize('glass2','size2')});
+document.getElementById('glass3').addEventListener('change',function(){onLiteChange('','3');updateTemper('glass3','temper3');showSize('glass3','size3')});
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
 document.getElementById('spacer2').addEventListener('change',()=>updateSealant('spacer2','sealant2'));
 function autoCalc(){if(!selectedCurrency)return;const g1=document.getElementById('glass1').value;const s1=document.getElementById('spacer1').value;const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;const g3=document.getElementById('glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}calculate()}
@@ -204,10 +215,12 @@ function checkSheetSize(){const w=parseFloat(document.getElementById('width').va
 async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize())return;const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?1.4:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);const pricePerPc=result.price_sqf*sqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block'}
 function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];if(g1)parts.push(cleanGlass(g1,t1));if(s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2,t2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3,t3));let totalMm=0;['s-glass1','s-glass2','s-glass3','s-spacer1','s-spacer2'].forEach(id=>{const val=document.getElementById(id).value;const m=val.match(/(\d+)mm/);if(m)totalMm+=parseInt(m[1])});const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
 document.getElementById('s-glass1').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size1').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass1','s-temper1');calculate();calcSize()});
-document.getElementById('s-glass2').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size2').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass2','s-temper2');calcSize()});
-document.getElementById('s-glass3').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size3').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass3','s-temper3');calcSize()});
+document.getElementById('s-glass2').addEventListener('change',function(){onLiteChange('s-','2');const sel=this.options[this.selectedIndex];document.getElementById('s-size2').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass2','s-temper2');calcSize()});
+document.getElementById('s-glass3').addEventListener('change',function(){onLiteChange('s-','3');const sel=this.options[this.selectedIndex];document.getElementById('s-size3').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass3','s-temper3');calcSize()});
 let lastUnit='in';
-document.getElementById('unit').addEventListener('change',function(){if(sizeQuoteItems.length>0&&this.value!==lastUnit){if(!confirm('Changing unit will clear your quote. Continue?')){this.value=lastUnit;return}sizeQuoteItems=[];renderSizeQuoteList()}lastUnit=this.value;calculate();calcSize()});
+function convertLength(value,fromUnit,toUnit){const number=parseFloat(value);if(!number||fromUnit===toUnit)return value;const converted=fromUnit==='in'?number*25.4:number/25.4;return Math.round(converted*10000)/10000}
+function convertQuoteUnits(toUnit){sizeQuoteItems.forEach(item=>{const spec=item.spec;if(!spec)return;const from=spec.unit==='mm'?'mm':'in';if(from===toUnit)return;spec.width=convertLength(spec.width,from,toUnit);spec.height=convertLength(spec.height,from,toUnit);spec.unit=toUnit;const w=parseFloat(spec.width)||0;const h=parseFloat(spec.height)||0;const sqf=toUnit==='mm'?(w*h)/92903.04:(w*h)/144;item.sqf=sqf.toFixed(2);item.size=spec.width+' x '+spec.height+' '+toUnit;const priceSqf=parseFloat(item.priceSqf)||0;const pcs=parseFloat(item.pcs)||1;const pricePc=priceSqf*sqf;item.pricePc=pricePc.toFixed(2);item.total=(pricePc*pcs).toFixed(2)});['width','height'].forEach(id=>{const field=document.getElementById(id);if(field&&field.value)field.value=convertLength(field.value,lastUnit,toUnit)});renderSizeQuoteList()}
+document.getElementById('unit').addEventListener('change',function(){const next=this.value==='mm'?'mm':'in';if(next===lastUnit)return;convertQuoteUnits(next);lastUnit=next;calculate();calcSize()});
 document.getElementById('s-spacer2').addEventListener('change',function(){updateSealant('s-spacer2','s-sealant2');calcSize()});
 document.getElementById('s-spacer1').addEventListener('change',function(){updateSealant('s-spacer1','s-sealant1');calcSize()});
 ['s-temper1','s-temper2','s-temper3','s-sealant1','s-sealant2','s-tier','width','height','pieces'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('change',calcSize)});
@@ -313,7 +326,8 @@ function editSizeItem(index) {
   set('width', spec.width);
   set('height', spec.height);
   set('pieces', item.pcs || spec.pcs || 1);
-  set('unit', spec.unit || 'in');
+  lastUnit = spec.unit === 'mm' ? 'mm' : 'in';
+  set('unit', lastUnit);
   const irregular = document.getElementById('s-irregular');
   if (irregular) irregular.checked = !!item.irregular_shape;
   sizeQuoteItems.splice(index, 1);
@@ -328,6 +342,8 @@ function quotePayload(items, type) {
     type,
     tier: document.getElementById(type === 'size' ? 's-tier' : 'tier').value
   };
+  const customerPick = document.getElementById('quote-customer');
+  if (customerPick && customerPick.value) body.customer_id = customerPick.value;
   if (draftQuoteId) {
     body.id = draftQuoteId;
     body.extra_charges = draftExtras;
@@ -389,6 +405,11 @@ async function loadCopiedQuote() {
   selectedCurrency = quote.currency || 'usd';
   document.getElementById('btn-usd').classList.toggle('selected', selectedCurrency === 'usd');
   document.getElementById('btn-cad').classList.toggle('selected', selectedCurrency === 'cad');
+  const customerPick = document.getElementById('quote-customer');
+  if (quote.customer_id && customerPick) {
+    customerPick.value = quote.customer_id;
+    if (typeof lockQuoteCurrency === 'function') lockQuoteCurrency(selectedCurrency, '');
+  }
   const tierId = quote.type === 'size' ? 's-tier' : 'tier';
   const tier = document.getElementById(tierId);
   if (tier && quote.tier && Array.from(tier.options || []).some(option => option.value === quote.tier)) tier.value = quote.tier;
@@ -398,6 +419,10 @@ async function loadCopiedQuote() {
     sizeQuoteItems = lines.map(item => lineFromStored(item, quote.currency, quote.project));
     if (sizeQuoteItems.some(item => item.remarks)) showRemarks = true;
     renderSizeQuoteList();
+    const savedUnit = (sizeQuoteItems[0] && sizeQuoteItems[0].spec && sizeQuoteItems[0].spec.unit) === 'mm' ? 'mm' : 'in';
+    lastUnit = savedUnit;
+    const unitField = document.getElementById('unit');
+    if (unitField) unitField.value = savedUnit;
   } else {
     showTab('sqf');
     quoteItems = lines.map(item => ({name: item.name, price: item.price || item.total, currency: quote.currency, project: quote.project, size: item.size || '-', pcs: item.pcs || '-', remarks: item.remarks || '', floor: item.floor || item.mark || ''}));
@@ -405,6 +430,67 @@ async function loadCopiedQuote() {
     renderQuoteList();
   }
 }
+let currencyLocked = {{ currency_locked|tojson }};
+const chooseCurrency = selectCurrency;
+selectCurrency = function (currency) {
+  if (currencyLocked) return;
+  chooseCurrency(currency);
+};
+function lockQuoteCurrency(currency, note) {
+  currencyLocked = true;
+  if (!selectedCurrency || selectedCurrency !== currency) {
+    const hadLines = quoteItems.length || sizeQuoteItems.length;
+    const previous = selectedCurrency;
+    if (hadLines && previous && previous !== currency) {
+      const factor = currency === 'cad' ? 1.4 : (1 / 1.4);
+      function scale(item) {
+        ['price', 'total', 'priceSqf', 'pricePc'].forEach(key => {
+          if (item[key] != null && item[key] !== '') item[key] = (Number(item[key]) * factor).toFixed(2);
+        });
+        item.currency = currency;
+      }
+      quoteItems.forEach(scale);
+      sizeQuoteItems.forEach(scale);
+      renderQuoteList();
+      renderSizeQuoteList();
+    }
+    selectedCurrency = currency;
+  }
+  document.getElementById('btn-usd').classList.toggle('selected', currency === 'usd');
+  document.getElementById('btn-cad').classList.toggle('selected', currency === 'cad');
+  document.querySelectorAll('.currency-btn').forEach(button => {
+    button.style.pointerEvents = 'none';
+    button.style.opacity = '0.45';
+    button.setAttribute('aria-disabled', 'true');
+  });
+  const noteEl = document.getElementById('currency-lock-note');
+  if (noteEl) {
+    noteEl.hidden = !note;
+    noteEl.textContent = note || '';
+  }
+}
+const quoteCustomer = document.getElementById('quote-customer');
+if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
+  const option = this.options[this.selectedIndex];
+  if (!this.value) {
+    currencyLocked = false;
+    document.querySelectorAll('.currency-btn').forEach(button => {
+      button.style.pointerEvents = '';
+      button.style.opacity = '';
+      button.removeAttribute('aria-disabled');
+    });
+    const noteEl = document.getElementById('currency-lock-note');
+    if (noteEl) noteEl.hidden = true;
+    return;
+  }
+  const currency = option.getAttribute('data-currency') || 'usd';
+  const name = option.textContent || 'this customer';
+  const converting = selectedCurrency && selectedCurrency !== currency && (quoteItems.length || sizeQuoteItems.length);
+  const note = converting
+    ? 'Converted this quote to ' + currency.toUpperCase() + ' for ' + name + '.'
+    : 'Currency is ' + currency.toUpperCase() + ' for ' + name + '.';
+  lockQuoteCurrency(currency, note);
+});
 loadCopiedQuote();
 </script>
 </body>

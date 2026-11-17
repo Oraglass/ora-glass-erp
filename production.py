@@ -466,8 +466,8 @@ def floor_code(item):
     return ''
 
 
-def line_export(item, quantity=None, serial=None):
-    """One production-Excel row. Quantity defaults to the line's piece count."""
+def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
+    """One production-Excel row. Unit Price is always USD per square foot."""
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
     found = lookup_product(spec, item.get('name') or '')
     width_mm, height_mm, width_in, height_in = dimensions_mm_in(
@@ -477,6 +477,8 @@ def line_export(item, quantity=None, serial=None):
         unit_price = float(item.get('price_sqf'))
     except (TypeError, ValueError):
         unit_price = None
+    if unit_price is not None and str(currency or '').lower() == 'cad' and fx_rate:
+        unit_price = round(unit_price / float(fx_rate), 4)
     if quantity is None:
         try:
             quantity = int(item.get('pcs') or 0)
@@ -497,7 +499,7 @@ def line_export(item, quantity=None, serial=None):
     }
 
 
-def export_lines(items):
+def export_lines(items, currency=None, fx_rate=None):
     """One production row per glass line. Surcharge and drawing charges are not units."""
     rows = []
     serial = 1
@@ -509,17 +511,17 @@ def export_lines(items):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        rows.append(line_export(item, serial=serial))
+        rows.append(line_export(item, serial=serial, currency=currency, fx_rate=fx_rate))
         serial += 1
     return rows
 
 
-def workbook_bytes(items):
+def workbook_bytes(items, currency=None, fx_rate=None):
     book = Workbook()
     sheet = book.active
     sheet.title = 'Production'
     sheet.append(list(PRODUCTION_HEADERS))
-    for row in export_lines(items):
+    for row in export_lines(items, currency=currency, fx_rate=fx_rate):
         values = []
         for header in PRODUCTION_HEADERS:
             value = row.get(header)
@@ -551,10 +553,12 @@ def present_order_line(item):
 
 def write_order_workbook(order):
     """Save the file generated when an order is confirmed. A blank product ID does not stop this."""
+    import currency_rules
+    rate, _effective = currency_rules.rate_on((order or {}).get('date'))
     folder = os.path.join(data_dir(), 'production_exports')
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{order.get('id')}.xlsx")
-    payload = workbook_bytes(order.get('items') or [])
+    payload = workbook_bytes(order.get('items') or [], (order or {}).get('currency'), rate)
     with open(path, 'wb') as handle:
         handle.write(payload)
     return path

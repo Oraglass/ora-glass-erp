@@ -629,8 +629,21 @@ def load_customers():
             if state:
                 customer['us_state'] = state
                 changed = True
+    try:
+        import currency_rules
+        if currency_rules.migrate_customer_currencies(data):
+            changed = True
+    except Exception:
+        import logging
+        logging.getLogger('ora_glass.currency').exception('Could not align Canadian credit currencies')
     if changed:
         save_customers(data)
+    try:
+        import quickbooks
+        quickbooks.note_usd_canada_links(data)
+    except Exception:
+        import logging
+        logging.getLogger('ora_glass.currency').exception('Could not check Canada QuickBooks currency links')
     return data
 
 
