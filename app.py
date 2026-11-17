@@ -612,6 +612,38 @@ def _qbo_tax_label(customer):
     return quickbooks.tax_code_name(customer.get('qbo_tax_code'))
 
 
+def _current_fx():
+    import currency_rules
+    return currency_rules.rate_on(date.today())
+
+
+def _stored_fx(record):
+    """The USD/CAD rate saved on a quote or order. Missing rates use the rate in effect today."""
+    try:
+        rate = float((record or {}).get('fx_rate'))
+    except (TypeError, ValueError):
+        rate = 0
+    if rate > 0:
+        return rate
+    rate, _effective = _current_fx()
+    return rate
+
+
+def _currency_factor(target, fx_rate):
+    """Multiply a USD amount to reach the target currency. CAD uses the stored ERP rate."""
+    if str(target or 'usd').lower() != 'cad':
+        return 1.0
+    return float(fx_rate) if fx_rate else 1.0
+
+
+def _switch_factor(target, fx_rate):
+    """Convert an amount that is already in the other currency."""
+    rate = float(fx_rate) if fx_rate else 1.0
+    if rate <= 0:
+        rate = 1.0
+    return rate if str(target or 'usd').lower() == 'cad' else (1 / rate)
+
+
 def _required_currency(customer):
     import currency_rules
     return currency_rules.customer_currency(customer or {})
@@ -1340,6 +1372,7 @@ def quote_template_context(user):
         'import_customer_id': user.get('customer_id') or '',
         'irregular_rate': load_pricing_settings()['irregular_shape_surcharge'],
         'drawing_note': DRAWING_NOTE,
+        'erp_rate': _current_fx()[0],
         'currency_locked': user.get('role') == 'customer',
         'locked_currency': _required_currency(customers.get(user.get('customer_id') or '')) if user.get('role') == 'customer' else '',
         'import_companies': [
@@ -1716,7 +1749,12 @@ def calculate():
     if not tier:
         return json_error('That pricing tier is not available.', 400)
     price = calculate_price_sqf(data, tier, PRICING, tiers)
-    return jsonify({'price_sqf': price, 'tier': tier})
+    try:
+        supplied = float(data.get('fx_rate'))
+    except (TypeError, ValueError):
+        supplied = 0
+    fx_rate = supplied if supplied > 0 else _current_fx()[0]
+    return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate})
 
 
 @app.route('/api/export-quote', methods=['POST'])
@@ -1781,6 +1819,14 @@ def export_quote():
     if tax_label:
         elements.append(Paragraph('<b>Tax:</b> ' + escape(tax_label), small_style))
         elements.append(Spacer(1, 8))
+    try:
+        shown_rate = float(data.get('fx_rate'))
+    except (TypeError, ValueError):
+        shown_rate = 0
+    if shown_rate <= 0:
+        shown_rate = _current_fx()[0]
+    elements.append(Paragraph(f'<b>USD/CAD:</b> {shown_rate:.4f}', small_style))
+    elements.append(Spacer(1, 8))
 
     has_size = any(item.get('sqf') for item in items)
     currency = data.get('currency', 'usd')
@@ -2904,6 +2950,15 @@ def save_quote():
         quote_type = 'sqf'
     user = current_user()
     customers = load_customers()
+    fx_rate, _fx_effective = _current_fx()
+    raw_id = data.get('id')
+    if raw_id not in (None, ''):
+        try:
+            prior = _visible_quote(user, int(raw_id))
+        except (TypeError, ValueError):
+            prior = None
+        if prior and prior.get('fx_rate'):
+            fx_rate = _stored_fx(prior)
     currency_changed = False
     if user.get('role') == 'customer':
         customer_id = user.get('customer_id')
@@ -2914,8 +2969,7 @@ def save_quote():
         required = _required_currency(customer)
         currency_changed = currency != required
         if currency_changed and quote_type != 'size':
-            from quoting import CAD_RATE
-            factor = CAD_RATE if required == 'cad' else (1 / CAD_RATE)
+            factor = _switch_factor(required, fx_rate)
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -2938,8 +2992,7 @@ def save_quote():
             required = _required_currency(customer)
             currency_changed = currency != required
             if currency_changed and quote_type != 'size':
-                from quoting import CAD_RATE
-                factor = CAD_RATE if required == 'cad' else (1 / CAD_RATE)
+                factor = _switch_factor(required, fx_rate)
                 for item in items:
                     if not isinstance(item, dict):
                         continue
@@ -2961,7 +3014,7 @@ def save_quote():
         return json_error('That pricing tier is not available.', 400)
     project = clean_text(data.get('project'), 200)
     if currency_changed and quote_type == 'size':
-        items = _repriced_quote_items(items, tier, currency, tiers)
+        items = _repriced_quote_items(items, tier, currency, tiers, fx_rate)
     priced = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     quote_id = data.get('id')
     if quote_id not in (None, ''):
@@ -2975,8 +3028,9 @@ def save_quote():
         existing['project'] = project
         existing['customer_id'] = customer_id
         existing['company'] = company
-        existing['items'] = _repriced_quote_items(items, tier, currency, tiers) if quote_type == 'size' else priced
+        existing['items'] = _repriced_quote_items(items, tier, currency, tiers, fx_rate) if quote_type == 'size' else priced
         existing['currency'] = currency
+        existing['fx_rate'] = fx_rate
         existing['type'] = quote_type
         existing['tier'] = tier
         existing['time'] = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%H:%M')
@@ -3001,6 +3055,7 @@ def save_quote():
         'project': project,
         'items': priced,
         'currency': currency,
+        'fx_rate': fx_rate,
         'type': quote_type,
         'tier': tier,
     }
@@ -3037,7 +3092,7 @@ def _copied_extras(raw):
     return charges
 
 
-def _repriced_quote_items(items, tier, currency, tiers):
+def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
     for item in items or []:
@@ -3047,7 +3102,7 @@ def _repriced_quote_items(items, tier, currency, tiers):
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
-            priced = reprice_size_line(spec, item.get('pcs'), tier, currency, PRICING, tiers)
+            priced = reprice_size_line(spec, item.get('pcs'), tier, currency, PRICING, tiers, fx_rate)
             copied_line = {
                 'name': item.get('name') or 'Glass',
                 'spec': spec,
@@ -3127,6 +3182,7 @@ def copy_quote(quote_id):
         owner_for_currency = customers.get(customer_id or '')
         if owner_for_currency:
             currency = _required_currency(owner_for_currency)
+    fx_rate = _stored_fx(source)
     note = _copy_note(quote_id)
     previous = clean_text(source.get('notes'), 2000)
     notes = previous if note in previous else (previous + '\n' + note).strip()
@@ -3143,7 +3199,8 @@ def copy_quote(quote_id):
         'notes': notes,
         'copy_note': note,
         'copied_from': quote_id,
-        'items': _repriced_quote_items(source.get('items'), tier, currency, tiers),
+        'items': _repriced_quote_items(source.get('items'), tier, currency, tiers, fx_rate),
+        'fx_rate': fx_rate,
         'extra_charges': _copied_extras(source.get('extra_charges')),
         'currency': currency,
         'type': quote_type,
@@ -3179,10 +3236,10 @@ def change_quote_currency(quote_id):
     customers = load_customers()
     tiers = load_tiers()
     tier = quote.get('tier') or _tier_for_copy(user, quote, customers, tiers)
-    items = _repriced_quote_items(quote.get('items'), tier, requested, tiers)
-    from quoting import CAD_RATE
+    fx_rate = _stored_fx(quote)
+    items = _repriced_quote_items(quote.get('items'), tier, requested, tiers, fx_rate)
     if quote.get('type') != 'size' and str(quote.get('currency') or 'usd').lower() != requested:
-        factor = CAD_RATE if requested == 'cad' else (1 / CAD_RATE)
+        factor = _switch_factor(requested, fx_rate)
         for item in items:
             if item.get('spec'):
                 continue
@@ -3195,6 +3252,7 @@ def change_quote_currency(quote_id):
                     pass
     quote['items'] = expand_irregular_lines(items, load_pricing_settings()['irregular_shape_surcharge'])
     quote['currency'] = requested
+    quote['fx_rate'] = fx_rate
     saved = replace_quote(quote_id, quote)
     if not saved:
         return json_error('Not found', 404)
@@ -3335,14 +3393,14 @@ def _import_spec(line):
     }
 
 
-def _price_import_line(line, tier, currency):
+def _price_import_line(line, tier, currency, fx_rate=None):
     line['price_sqf'] = None
     line['price_pc'] = None
     line['sqf'] = None
     line['total'] = None
     if line.get('errors') or not line.get('glass_product') or not line.get('width') or not line.get('height') or not line.get('qty'):
         return
-    priced = reprice_size_line(_import_spec(line), line.get('qty'), tier, currency, PRICING, load_tiers())
+    priced = reprice_size_line(_import_spec(line), line.get('qty'), tier, currency, PRICING, load_tiers(), fx_rate)
     line.update(priced)
 
 
@@ -3790,9 +3848,10 @@ def quote_from_import(import_id):
     tier = _import_tier(user, data.get('tier'))
     if not tier:
         return json_error('That pricing tier is not available.', 400)
+    fx_rate, _fx_effective = _current_fx()
     items = []
     for line in lines:
-        _price_import_line(line, tier, currency)
+        _price_import_line(line, tier, currency, fx_rate)
         spec = _import_spec(line)
         size = f"{_trim_num(line['width'])} x {_trim_num(line['height'])} in"
         parts = [line.get('mark') or '', line.get('glass_product') or '']
@@ -3826,6 +3885,7 @@ def quote_from_import(import_id):
         'project': clean_text(data.get('project') or record.get('project'), 200),
         'items': items,
         'currency': currency,
+        'fx_rate': fx_rate,
         'type': 'size',
         'tier': tier,
         'import_id': record.get('id'),
@@ -4364,13 +4424,15 @@ def convert_quote_to_order(quote_id):
             return json_error(error, 400)
         company_tier = _company_tier(customer, tiers)
         company = customer.get('name') or ''
+    if not quote.get('fx_rate'):
+        quote['fx_rate'] = _stored_fx(quote)
     currency = str(quote.get('currency') or 'usd').lower()
     expected = _required_currency(customer)
     currency_notice = None
     if currency != expected:
         currency_notice = f'Converted this quote to {expected.upper()} for {company}.'
         quote_tier = quote.get('tier') or company_tier
-        converted = _repriced_quote_items(quote.get('items'), quote_tier, expected, tiers)
+        converted = _repriced_quote_items(quote.get('items'), quote_tier, expected, tiers, _stored_fx(quote))
         quote['items'] = expand_irregular_lines(converted, load_pricing_settings()['irregular_shape_surcharge'])
         quote['currency'] = expected
         items = quote['items']
@@ -4382,7 +4444,7 @@ def convert_quote_to_order(quote_id):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
         if not _usable_size_spec(spec):
             return json_error('This quote does not include the size inputs needed to reprice it.', 400)
-        priced = reprice_size_line(spec, item.get('pcs'), company_tier, currency, PRICING, tiers)
+        priced = reprice_size_line(spec, item.get('pcs'), company_tier, currency, PRICING, tiers, _stored_fx(quote))
         line = {
             'name': item.get('name') or '',
             'spec': spec,
@@ -4456,6 +4518,7 @@ def convert_quote_to_order(quote_id):
         'project': quote.get('project') or '',
         'notes': '',
         'currency': currency,
+        'fx_rate': _stored_fx(quote),
         'tier': company_tier,
         'tier_label': tier_label(company_tier, tiers),
         'items': priced_items,
@@ -4658,7 +4721,7 @@ def _apply_drawing_charges(items, order):
     return kept
 
 
-def _parse_order_items(raw, tier, currency, tiers):
+def _parse_order_items(raw, tier, currency, tiers, fx_rate=None):
     if not isinstance(raw, list) or not raw:
         return None, 'An order needs at least one line.'
     items = []
@@ -4690,7 +4753,7 @@ def _parse_order_items(raw, tier, currency, tiers):
             return None, 'Quantity must be a whole number.'
         if pcs < 1 or pcs > 10000:
             return None, 'Quantity must be at least 1.'
-        priced = reprice_size_line(spec, pcs, tier, currency, PRICING, tiers)
+        priced = reprice_size_line(spec, pcs, tier, currency, PRICING, tiers, fx_rate)
         name = clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
@@ -4744,7 +4807,7 @@ def _edited_order(order, data, tiers):
     currency = order.get('currency') or 'usd'
     tier = order.get('tier')
     if 'items' in data:
-        items, error = _parse_order_items(data.get('items'), tier, currency, tiers)
+        items, error = _parse_order_items(data.get('items'), tier, currency, tiers, _stored_fx(order))
         if error:
             return None, error
     else:
@@ -5252,7 +5315,8 @@ def _issue_delivery_invoices(order, user):
     order['invoice_number'] = fresh_customer['number']
     order['intercompany_invoice_id'] = fresh_intercompany['id']
     order['intercompany_invoice_number'] = fresh_intercompany['number']
-    order['fx_rate'] = rate
+    if not order.get('fx_rate'):
+        order['fx_rate'] = rate
     order['fx_date'] = fx_date
     return f"{fresh_customer['number']} and {fresh_intercompany['number']}", None
 

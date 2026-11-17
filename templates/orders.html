@@ -257,7 +257,7 @@ function renderDetail(order) {
     + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
     + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
-    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + '.</p>'
+    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + (order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : '') + '.</p>'
     + notes + tax + (documents ? documentNote : invoice)
     + shipForm
     + '<div class="actions">' + buttons + '</div>'
