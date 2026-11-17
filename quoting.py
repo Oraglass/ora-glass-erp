@@ -298,9 +298,6 @@ def sealant_match_map(spacers, sealants):
     return mapping
 
 
-CAD_RATE = 1.4
-
-
 def area_sqf(width, height, unit):
     """Square feet from a width and height. Millimetres use the same divisor as the size calculator."""
     try:
@@ -315,10 +312,22 @@ def area_sqf(width, height, unit):
     return (wide * high) / 144
 
 
-def reprice_size_line(spec, pcs, tier, currency, pricing, tiers):
-    """Price one per-size line in the quote currency. CAD applies the 1.40 rate once."""
+def reprice_size_line(spec, pcs, tier, currency, pricing, tiers, fx_rate=None):
+    """Price one per-size line in the quote currency.
+
+    The USD sell price comes from the price list. CAD multiplies that once by the
+    ERP exchange rate stored on the quote, not by a fixed 1.40 factor.
+    """
     usd = calculate_price_sqf(spec, tier, pricing, tiers)
-    rate = CAD_RATE if str(currency or 'usd').lower() == 'cad' else 1.0
+    if str(currency or 'usd').lower() == 'cad':
+        if fx_rate in (None, ''):
+            import currency_rules
+            from datetime import date
+            rate, _effective = currency_rules.rate_on(date.today())
+        else:
+            rate = float(fx_rate)
+    else:
+        rate = 1.0
     sqf = area_sqf((spec or {}).get('width'), (spec or {}).get('height'), (spec or {}).get('unit'))
     price_sqf = round(usd * rate, 2)
     price_pc = round(usd * sqf * rate, 2)

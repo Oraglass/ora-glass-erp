@@ -61,8 +61,14 @@ def load_currency_settings():
             'at': str(row.get('at') or ''),
             'user': str(row.get('user') or ''),
         })
-    if history:
-        settings['history'] = history
+    seeded = not history
+    settings['history'] = history or _blank()['history']
+    if seeded:
+        save_currency_settings(settings)
+        logger.info(
+            'Seeded the ERP exchange rate at %s CAD per 1 USD. The fixed 1.40 quote factor is no longer used.',
+            DEFAULT_RATE,
+        )
     return settings
 
 

@@ -428,7 +428,7 @@ async function downloadPDF(id) {
   const pdfRes = await fetch('/api/export-quote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || ''})
+      body: JSON.stringify({items: quote.items, currency: quote.currency, project: quote.project, tax_label: quote.tax_label || '', fx_rate: quote.fx_rate || ''})
   });
   if (!pdfRes.ok) { alert('Could not build the PDF'); return; }
   const blob = await pdfRes.blob();
@@ -456,9 +456,11 @@ function showQuoteDetail(quote) {
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const note = quote.copy_note || quote.notes || '';
   const tax = quote.tax_label ? '<p class="note">Tax: ' + esc(quote.tax_label) + '</p>' : '';
+  const rateNote = quote.fx_rate ? '<p class="note">USD/CAD ' + esc(quote.fx_rate) + '</p>' : '';
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
     + (note ? '<p class="copy-note" style="color:#9f1239;font-weight:600;margin-bottom:8px">' + esc(note) + '</p>' : '')
     + tax
+    + rateNote
     + (quote.notes && quote.notes !== note ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + '<table><thead><tr><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
     + (extras ? '<p class="help">Extras</p><ul>' + extras + '</ul>' : '')
