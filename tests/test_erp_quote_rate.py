@@ -36,7 +36,8 @@ def test_cad_quote_stores_the_rate_and_ignores_a_later_change(client):
     currency_rules.record_rate(1.25, '2020-01-01', 'admin@oraglass.us')
     assert login(client, 'admin@oraglass.us').status_code == 302
     page = client.get('/quotes')
-    assert b'USD/CAD 1.2500' in page.data
+    assert b'USD/CAD' not in page.data
+    assert b'fx-rate-label' not in page.data
     item = _size_item()
     item['spec'] = dict(SPEC)
     saved = client.post('/api/quotes', json={
@@ -89,6 +90,7 @@ def test_cad_quote_stores_the_rate_and_ignores_a_later_change(client):
     customer_quotes = client.get('/quotes')
     assert b'USD/CAD' not in customer_quotes.data
     assert b'1.2500' not in customer_quotes.data
+    assert b'Currency is CAD for this company.' in customer_quotes.data
     customer_history = client.get('/quote-history')
     assert b'USD/CAD' not in customer_history.data
     customer_orders = client.get('/orders')
