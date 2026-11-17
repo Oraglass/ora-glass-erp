@@ -63,8 +63,8 @@ def test_admin_edits_lines_discount_and_charges_and_the_log_is_append_only(clien
     quote_id = _quote(client)
     client.post('/logout')
     assert login(client, 'boss@harbor.example').status_code == 302
-    denied = client.put(f'/api/orders/1', json={'project': 'Nope'})
-    assert denied.status_code == 403
+    denied = client.put('/api/orders/1', json={'project': 'Nope'})
+    assert denied.status_code == 404
     client.post('/logout')
 
     assert login(client, 'admin@oraglass.us').status_code == 302
@@ -125,6 +125,13 @@ def test_admin_edits_lines_discount_and_charges_and_the_log_is_append_only(clien
     assert len(fixed_body['changelog']) == 2
     assert client.delete(f'/api/orders/{order_id}/changelog').status_code == 404
 
+    client.post('/logout')
+    assert login(client, 'boss@harbor.example').status_code == 302
+    assert client.put(f'/api/orders/{order_id}', json={'project': 'Customer rename'}).status_code == 403
+    addressed = client.put(f'/api/orders/{order_id}', json={'job_address': '40 Site Lane'})
+    assert addressed.status_code == 200, addressed.get_json()
+    assert next(row for row in load_orders() if row['id'] == order_id)['job_address'] == '40 Site Lane'
+    assert next(row for row in load_quotes() if row['id'] == quote_id).get('job_address', '') == ''
     client.post('/logout')
     assert login(client, 'plain@oraglass.us').status_code == 302
     assert client.put(f'/api/orders/{order_id}', json={'notes': 'nope'}).status_code == 403

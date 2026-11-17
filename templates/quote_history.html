@@ -461,6 +461,7 @@ function showQuoteDetail(quote) {
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
     + (note ? '<p class="copy-note" style="color:#9f1239;font-weight:600;margin-bottom:8px">' + esc(note) + '</p>' : '')
     + tax
+    + (quote.job_address ? '<p class="note">Job address<br>' + esc(quote.job_address).replace(/\n/g, '<br>') + '</p>' : '')
     + rateNote
     + (quote.notes && quote.notes !== note ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + '<table><thead><tr><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'

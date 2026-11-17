@@ -936,6 +936,17 @@ def _is_ora_staff(user):
     return role == 'admin' or role in LEGACY_STAFF_ROLES
 
 
+def can_edit_job_address(user, order=None):
+    """Ora Glass staff with Orders, and Management at that company, can correct the job address."""
+    if not user:
+        return False
+    if order and user.get('role') == 'customer' and user.get('customer_id') != order.get('customer_id'):
+        return False
+    if staff_can_order(user):
+        return True
+    return user.get('role') == 'customer' and customer_subrole(user) == 'management'
+
+
 def can_edit_orders(user):
     """Admins can edit orders. Employees need the Edit orders privilege. Customers never can."""
     if not _is_ora_staff(user):
@@ -1869,6 +1880,13 @@ def calculate():
     return jsonify({'price_sqf': price, 'tier': tier, 'fx_rate': fx_rate, 'minimum_sqf': minimum_sqf})
 
 
+def _job_lines(value):
+    if isinstance(value, list):
+        return [str(line).strip() for line in value if str(line).strip()]
+    text = str(value or '').replace('\r\n', '\n').replace('\r', '\n')
+    return [line.strip() for line in text.split('\n') if line.strip()]
+
+
 def _address_lines(customer):
     if not customer:
         return []
@@ -1921,7 +1939,7 @@ def _pdf_document(source, kind, user=None):
         'project': source.get('project') or '',
         'company': company,
         'sold_to': _address_lines(customer),
-        'job_address': [],
+        'job_address': _job_lines(source.get('job_address')),
         'currency': source.get('currency') or 'usd',
         'quote_by': quote_by,
         'updated_by': updated_by,
@@ -1983,6 +2001,7 @@ def export_quote():
             'id': '',
             'date': data.get('date') or date.today().isoformat(),
             'project': clean_text(data.get('project'), 200),
+            'job_address': clean_text(data.get('job_address'), 500),
             'company': (customer or {}).get('name') or clean_text(data.get('company'), 200),
             'customer_id': customer_id,
             'currency': data.get('currency') or 'usd',
@@ -2077,6 +2096,7 @@ def orders():
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
+        can_job_address=can_edit_job_address(user),
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -2098,6 +2118,7 @@ def order_detail(order_id):
         prices_visible=_order_prices_visible(user),
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
+        can_job_address=can_edit_job_address(user, order),
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in _live_materials()[0]],
@@ -3348,6 +3369,8 @@ def save_quote():
         existing['updated_by'] = user.get('email') or ''
         if 'notes' in data or 'remarks' in data:
             existing['notes'] = clean_text(data.get('notes') or data.get('remarks'), 2000)
+        if 'job_address' in data:
+            existing['job_address'] = clean_text(data.get('job_address'), 500)
         if 'extra_charges' in data:
             existing['extra_charges'] = _copied_extras(data.get('extra_charges'))
         owner = customers.get(existing.get('customer_id') or '')
@@ -3367,6 +3390,7 @@ def save_quote():
         'company': company,
         'customer_id': customer_id,
         'project': project,
+        'job_address': clean_text(data.get('job_address'), 500),
         'items': _charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced,
         'currency': currency,
         'fx_rate': fx_rate,
@@ -3517,6 +3541,7 @@ def copy_quote(quote_id):
         'company': company,
         'customer_id': customer_id,
         'project': source.get('project') or '',
+        'job_address': source.get('job_address') or '',
         'notes': notes,
         'copy_note': note,
         'copied_from': quote_id,
@@ -4527,6 +4552,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'customer_id': order.get('customer_id'),
         'company': order.get('company') or '',
         'project': order.get('project') or '',
+        'job_address': order.get('job_address') or '',
         'notes': order.get('notes') or '',
         'approved_by': order.get('approved_by'),
         'approved_at': order.get('approved_at'),
@@ -4865,6 +4891,7 @@ def convert_quote_to_order(quote_id):
         'customer_id': customer_id,
         'company': company,
         'project': quote.get('project') or '',
+        'job_address': quote.get('job_address') or '',
         'notes': '',
         'currency': currency,
         'fx_rate': _stored_fx(quote),
@@ -5199,6 +5226,7 @@ def _edited_order(order, data, tiers):
     updated = dict(order)
     updated['items'] = items
     updated['project'] = clean_text(data.get('project'), 200) if 'project' in data else (order.get('project') or '')
+    updated['job_address'] = clean_text(data.get('job_address'), 500) if 'job_address' in data else (order.get('job_address') or '')
     updated['notes'] = clean_text(data.get('notes'), 2000) if 'notes' in data else (order.get('notes') or '')
     if 'ship_province' in data:
         from storage import PROVINCE_CODES
@@ -5217,23 +5245,30 @@ def _order_is_invoiced(order):
 @module_required('orders')
 def edit_order(order_id):
     user = current_user()
-    if not can_edit_orders(user):
-        return json_error('You do not have permission to edit orders.', 403)
     data = json_body()
     if data is None:
         return json_error('Expected a JSON object', 400)
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
-    if _order_is_invoiced(visible) and user.get('role') != 'admin':
+    address_only = not can_edit_orders(user)
+    if address_only:
+        if not can_edit_job_address(user, visible):
+            return json_error('You do not have permission to edit orders.', 403)
+        if set(data.keys()) - {'job_address'}:
+            return json_error('You can only edit the job address.', 403)
+    elif _order_is_invoiced(visible) and user.get('role') != 'admin':
         return json_error('This order has been invoiced and can only be changed by an administrator.', 403)
 
     def mutator(order):
-        if _order_is_invoiced(order) and user.get('role') != 'admin':
+        if _order_is_invoiced(order) and user.get('role') != 'admin' and not address_only:
             return None, 'This order has been invoiced and can only be changed by an administrator.'
         updated, error = _edited_order(order, data, load_tiers())
         if error:
             return None, error
+        if address_only:
+            _stamp_log(updated, user, diff_changes(order, updated))
+            return updated, None
         if order_status(order) in {'sent', 'made'}:
             customer = dict(load_customers().get(order.get('customer_id') or '') or {})
             customer.setdefault('id', order.get('customer_id'))

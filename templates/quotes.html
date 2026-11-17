@@ -79,7 +79,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <p id="currency-lock-note" hidden style="margin:8px 0 0;color:#9a3412;font-weight:600"></p>
 </div>
 {% endif %}
-<div class="form-group" style="margin-bottom:15px;max-width:300px"><label>Project Name (optional)</label><input type="text" id="project-name" placeholder="Enter project name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:15px">
+<div class="form-group" style="margin:0;max-width:300px;flex:1"><label for="project-name">Project / Job name (optional)</label><input type="text" id="project-name" placeholder="Enter project name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></div>
+<div class="form-group" style="margin:0;max-width:360px;flex:1"><label for="job-address">Job address (optional)</label><textarea id="job-address" rows="3" placeholder="Street, city, province or state, postal code, country" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px"></textarea><p class="help" style="margin:4px 0 0">Printed under Job Name. It does not change tax.</p></div>
+</div>
 <p id="copy-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="quote-tax" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <div id="tab-sqf" class="tab-content active">
@@ -343,6 +346,7 @@ function quotePayload(items, type) {
     currency: selectedCurrency,
     fx_rate: erpRate,
     project: document.getElementById('project-name').value,
+    job_address: document.getElementById('job-address') ? document.getElementById('job-address').value : '',
     type,
     tier: document.getElementById(type === 'size' ? 's-tier' : 'tier').value
   };
@@ -414,6 +418,8 @@ async function loadCopiedQuote() {
   draftShipProvince = quote.ship_province || '';
   draftTaxLabel = quote.tax_label || '';
   document.getElementById('project-name').value = quote.project || '';
+  const jobAddress = document.getElementById('job-address');
+  if (jobAddress) jobAddress.value = quote.job_address || '';
   showCopyNote(quote.copy_note || quote.notes || '');
   showQuoteTax(quote.tax_label || '');
   if (quote.fx_rate) {
