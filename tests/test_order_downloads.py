@@ -104,6 +104,7 @@ def test_customers_print_their_confirmation_and_staff_download_excel(client):
     detail = client.get(f'/orders/{order_id}')
     assert b'id="order-confirmation"' in detail.data or b'Print / Download PDF' in detail.data
     assert b'id="production-excel"' in detail.data or b'Download production Excel' in detail.data
+    assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
     workbook = client.get(f'/api/orders/{order_id}/production.xlsx')
     assert workbook.status_code == 200
     assert workbook.data.startswith(b'PK')

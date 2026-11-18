@@ -36,6 +36,12 @@
                 <p>Select a module to get started</p>
             </div>
         </div>
+        {% if review_count %}
+        <div class="import-notice" id="orders-awaiting-review">
+            <a href="/orders?status=submitted">{{ review_count }} order{% if review_count != 1 %}s{% endif %} awaiting Ora Glass review.</a>
+            These are quotes the customer sent to production. Approve them for production, or edit them and send the change back to the customer.
+        </div>
+        {% endif %}
         {% if template_requests %}
         <div class="import-notice">
             <a href="/quotes#import">{{ template_requests }} order form{% if template_requests != 1 %}s{% endif %} waiting for an import template.</a>

@@ -21,7 +21,13 @@ a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:8px}
 .error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge.submitted{background:#fff4e5;color:#9a3412}
+.badge.customer_review{background:#fde8ec;color:#9f1239}
+.badge.reapproved{background:#e0f2fe;color:#075985}
 .badge.approved{background:#fff3cd;color:#856404}
+.change-summary{background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:14px;margin:12px 0}
+#price-choice-box label{display:block;margin:8px 0}
+#price-choice-box textarea{width:100%;max-width:40rem;margin-top:4px}
 .badge.sent{background:#e7f1ff;color:#1d4ed8}
 .badge.made{background:#efe7ff;color:#6d28d9}
 .badge.delivered{background:#d4edda;color:#155724}
@@ -56,6 +62,9 @@ a{color:#C41E3A}
 {% endif %}
 <select id="order-status" aria-label="Status">
 <option value="">All statuses</option>
+<option value="submitted">Submitted - awaiting Ora Glass review</option>
+<option value="customer_review">Changed by Ora Glass - awaiting customer re-approval</option>
+<option value="reapproved">Re-approved by customer</option>
 <option value="approved">Approved</option>
 <option value="sent">Sent to production</option>
 <option value="made">Made</option>
@@ -102,6 +111,12 @@ a{color:#C41E3A}
 <input id="extra-amount" type="number" min="0" step="0.01" placeholder="Amount" aria-label="Charge amount">
 <button type="button" class="btn small secondary" id="add-extra">Add charge</button>
 </div>
+<div id="price-choice-box" hidden>
+<p class="note" id="price-choice-current"></p>
+<label class="note"><input type="radio" name="price_choice" value="apply"> Apply new price to customer</label>
+<label class="note"><input type="radio" name="price_choice" value="technical"> Technical change only - customer price unchanged</label>
+<label class="note">Note to the customer<textarea id="customer-note" rows="3" aria-label="Note to the customer"></textarea></label>
+</div>
 <table class="totals">
 <tr><td>IGU subtotal</td><td class="num" id="igu-subtotal"></td></tr>
 <tr><td>Discount</td><td class="num" id="discount-amount"></td></tr>
@@ -119,6 +134,8 @@ a{color:#C41E3A}
 const PRICES = {{ prices_visible|tojson }};
 const STAFF = {{ staff_view|tojson }};
 const CAN_EDIT = {{ can_edit|tojson }};
+const CAN_DECIDE = {{ can_decide|tojson }};
+const SPACERS = {{ spacer_names|tojson }};
 const CAN_JOB_ADDRESS = {{ can_job_address|tojson }};
 const CAN_STATUS = {{ can_status|tojson }};
 const IS_ADMIN = {{ is_admin|tojson }};
@@ -148,7 +165,7 @@ function orderPdfLink(order) {
   return '<a class="btn small secondary" id="list-pdf-' + esc(order.id) + '" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
 }
 function orderExcelLink(order) {
-  if (!STAFF) return '';
+  if (!STAFF || !order.excel_ready) return '';
   return ' <a class="btn small secondary" id="list-excel-' + esc(order.id) + '" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
 }
 function render(orders) {
@@ -235,12 +252,15 @@ function renderDetail(order) {
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
+  if (order.can_release) buttons += '<button type="button" class="btn" id="approve-production">Approve for production</button>';
+  if (order.can_respond) buttons += '<button type="button" class="btn" id="approve-changes">Approve changes</button><button type="button" class="btn secondary" id="reject-changes">Reject with comment</button>';
   if (CAN_STATUS && order.status === 'approved') buttons += '<button type="button" class="btn" id="mark-sent">Mark sent to production</button>';
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
   buttons += '<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
-  if (STAFF) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+  if (STAFF && order.excel_ready) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+  if (STAFF && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
@@ -278,7 +298,9 @@ function renderDetail(order) {
   const shipForm = STAFF ? '<div id="shipment-entry"><h3 style="color:#333;font-size:16px">Shipments</h3>' + shipHead + shipRows + partial
     + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
     + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
+  const summary = changeSummary(order);
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
+    + summary
     + '<div class="actions">' + buttons + '</div>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.</p>'
     + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
@@ -307,6 +329,16 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const release = document.getElementById('approve-production');
+  if (release) release.addEventListener('click', () => postDecision('/approve-production', {}, 'Approve this order for production? The production Excel can be downloaded after this.'));
+  const accept = document.getElementById('approve-changes');
+  if (accept) accept.addEventListener('click', () => postDecision('/customer-decision', {action: 'approve'}, 'Approve these changes and send the order back to Ora Glass?'));
+  const reject = document.getElementById('reject-changes');
+  if (reject) reject.addEventListener('click', () => {
+    const comment = window.prompt('Comment for Ora Glass');
+    if (!comment) return;
+    postDecision('/customer-decision', {action: 'reject', comment: comment}, '');
+  });
   const partialBox = document.getElementById('partial-invoicing');
   if (partialBox) partialBox.addEventListener('change', async () => {
     const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/partial-invoicing', {
@@ -393,6 +425,44 @@ async function changeStatus(status, message) {
   renderDetail(body);
   load();
 }
+function changeSummary(order) {
+  const change = order.change_summary;
+  if (!change && !(order.revisions || []).length) return '';
+  let html = '';
+  if (change) {
+    const prices = change.price_choice === 'apply' && change.old_total != null
+      ? '<p>Customer total ' + esc(moneyText(order.currency, change.old_total)) + ' → ' + esc(moneyText(order.currency, change.new_total)) + '</p>'
+      : (change.price_choice === 'technical' ? '<p>Technical change only. The customer total stays the same.</p>' : '');
+    const internal = (STAFF && change.internal_price_difference != null && change.price_choice === 'technical')
+      ? '<p class="note">Internal price difference ' + esc(moneyText(order.currency, change.internal_price_difference)) + '. This is not shown to the customer.</p>'
+      : '';
+    const lines = (change.lines || []).map(line => '<li><b>' + esc(line.name) + '</b><br>' + esc(line.before || 'New line') + '<br>→ ' + esc(line.after || '') + '</li>').join('');
+    html += '<div class="change-summary" id="change-summary"><h3 style="color:#333;font-size:16px">Changes from Ora Glass</h3>'
+      + '<p>' + esc(change.note || order.customer_note || '') + '</p>' + prices + internal
+      + (lines ? '<ul>' + lines + '</ul>' : '') + '</div>';
+  }
+  const history = (order.revisions || []).map(rev => '<li>Revision ' + esc(rev.number) + ' · ' + esc(rev.kind) + ' · ' + esc(rev.user) + ' · ' + esc(rev.note || rev.comment || '') + '</li>').join('');
+  if (history) html += '<div class="log" id="revision-history"><h3 style="color:#333">Revision history</h3><ul>' + history + '</ul></div>';
+  return html;
+}
+function optionList(names, current) {
+  const values = [''].concat(names || []);
+  return values.map(name => {
+    const label = name || 'n/a';
+    const selected = (current || '') === name || (!current && !name) ? ' selected' : '';
+    return '<option value="' + esc(name) + '"' + selected + '>' + esc(label) + '</option>';
+  }).join('');
+}
+async function postDecision(path, body, message) {
+  if (message && !confirm(message)) return;
+  const res = await fetch('/api/orders/' + currentOrder.id + path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not update the order'); return; }
+  renderDetail(payload);
+  load();
+}
 function blankSpec(glass, width, height, unit) {
   return {glass1: glass, temper1: 'n/a', spacer1: 'n/a', sealant1: 'n/a', glass2: 'n/a', temper2: 'n/a', spacer2: 'n/a', sealant2: 'n/a', glass3: 'n/a', temper3: 'n/a', width: Number(width), height: Number(height), unit: unit || 'in'};
 }
@@ -415,6 +485,14 @@ function openEditor(order) {
   if (ship) ship.value = draft.ship_province || '';
   document.getElementById('order-discount-type').value = draft.discount.type || 'percent';
   document.getElementById('order-discount-value').value = draft.discount.value || 0;
+  const review = order.status === 'submitted' || order.status === 'customer_review' || order.status === 'reapproved';
+  const choiceBox = document.getElementById('price-choice-box');
+  if (choiceBox) {
+    choiceBox.hidden = !review;
+    document.getElementById('price-choice-current').textContent = review
+      ? 'Customer total now ' + moneyText(order.currency, order.total) + '. Choose how this edit is shown to the customer.'
+      : '';
+  }
   document.getElementById('edit-lock-note').textContent = order.status === 'delivered'
     ? 'This order is invoiced. Saving changes the order and the change log. The issued invoice stays as it was.'
     : '';
@@ -433,7 +511,11 @@ function renderLines() {
   box.innerHTML = (draft.items || []).filter(item => item.kind !== 'irregular_surcharge').map((item, index) => {
     const spec = item.spec || {};
     const checked = item.irregular_shape ? ' checked' : '';
-    return '<div class="edit-grid"><input data-line="' + index + '" data-field="name" value="' + esc(item.name || '') + '" aria-label="Line name">'
+    const glass = '<div class="edit-grid"><label>Glass<select data-line="' + index + '" data-field="glass1" aria-label="Glass">' + optionList(GLASS, spec.glass1) + '</select></label>'
+      + '<label>Temper<select data-line="' + index + '" data-field="temper1" aria-label="Temper"><option value="n/a"' + (spec.temper1 === 'yes' ? '' : ' selected') + '>Annealed</option><option value="yes"' + (spec.temper1 === 'yes' ? ' selected' : '') + '>Tempered</option></select></label>'
+      + '<label>Spacer<select data-line="' + index + '" data-field="spacer1" aria-label="Spacer">' + optionList(SPACERS, spec.spacer1 && spec.spacer1 !== 'n/a' ? spec.spacer1 : '') + '</select></label>'
+      + '<label>Layer B<select data-line="' + index + '" data-field="glass2" aria-label="Layer B">' + optionList(GLASS, spec.glass2 && spec.glass2 !== 'n/a' ? spec.glass2 : '') + '</select></label></div>';
+    return glass + '<div class="edit-grid"><input data-line="' + index + '" data-field="name" value="' + esc(item.name || '') + '" aria-label="Line name">'
       + '<input data-line="' + index + '" data-field="width" type="number" step="0.01" value="' + esc(spec.width || '') + '" aria-label="Width">'
       + '<input data-line="' + index + '" data-field="height" type="number" step="0.01" value="' + esc(spec.height || '') + '" aria-label="Height">'
       + '<select data-line="' + index + '" data-field="unit" aria-label="Unit"><option value="in"' + (spec.unit === 'mm' ? '' : ' selected') + '>in</option><option value="mm"' + (spec.unit === 'mm' ? ' selected' : '') + '>mm</option></select>'
@@ -482,7 +564,8 @@ function collectItems() {
       else if (field === 'remarks') item.remarks = input.value;
       else if (field === 'floor') item.floor = input.value;
       else if (field === 'irregular') irregular = input.checked;
-      else spec[field] = field === 'unit' ? input.value : Number(input.value);
+      else if (field === 'width' || field === 'height') spec[field] = Number(input.value);
+      else spec[field] = input.value;
     });
     const row = {name: item.name, pcs: item.pcs, spec: spec, irregular_shape: irregular};
     if (item.remarks) row.remarks = item.remarks;
@@ -506,6 +589,15 @@ async function saveOrder() {
     extra_charges: draft.extra_charges,
     items: collectItems()
   };
+  const choiceBox = document.getElementById('price-choice-box');
+  if (choiceBox && !choiceBox.hidden) {
+    const selected = document.querySelector('input[name="price_choice"]:checked');
+    const note = document.getElementById('customer-note').value.trim();
+    if (!selected) { alert('Choose whether the new price applies to the customer.'); return; }
+    if (!note) { alert('Write a note to the customer explaining the change.'); return; }
+    body.price_choice = selected.value;
+    body.customer_note = note;
+  }
   const res = await fetch('/api/orders/' + currentOrder.id, {
     method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });
@@ -593,6 +685,11 @@ if (editor) {
   document.getElementById('order-discount-value').addEventListener('input', refreshPreview);
   document.getElementById('save-order').addEventListener('click', saveOrder);
   document.getElementById('cancel-edit').addEventListener('click', () => { editor.hidden = true; });
+}
+const initialStatus = new URLSearchParams(window.location.search).get('status');
+if (initialStatus) {
+  const statusSelect = document.getElementById('order-status');
+  if (statusSelect) statusSelect.value = initialStatus;
 }
 loadCustomers().then(load);
 </script>

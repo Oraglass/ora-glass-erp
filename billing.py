@@ -12,11 +12,17 @@ TERM_DAYS = {
 PAYMENT_METHODS = ('cheque', 'e-transfer', 'wire', 'card')
 CURRENCIES = ('usd', 'cad')
 STATUS_LABELS = {
+    'submitted': 'Submitted - awaiting Ora Glass review',
+    'customer_review': 'Changed by Ora Glass - awaiting customer re-approval',
+    'reapproved': 'Re-approved by customer',
     'approved': 'Approved',
     'sent': 'Sent to production',
     'made': 'Made',
     'delivered': 'Delivered',
 }
+# Staff can release these to production. Excel export waits until then.
+REVIEW_STATUSES = ('submitted', 'customer_review', 'reapproved')
+RELEASED_STATUSES = ('approved', 'sent', 'made', 'delivered')
 NEXT_STATUS = {
     'approved': 'sent',
     'sent': 'made',
