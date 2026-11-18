@@ -228,10 +228,11 @@ function renderDetail(order) {
     const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
     const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
     const floor = item.floor || item.mark || item.location || '';
+    const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
     const each = Number(item.sqf);
     const qty = Number(item.pcs);
-    const lineSqf = item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(floor) + '</td><td class="num">' + esc(lineSqf) + '</td><td class="num">' + esc(item.pcs) + '</td>' + prices + '</tr>';
+    const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
+    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(charge ? '' : floor) + '</td><td class="num">' + esc(lineSqf) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   let buttons = '';
