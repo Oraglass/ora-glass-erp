@@ -483,11 +483,17 @@ async function loadCopiedQuote() {
   }
 }
 let currencyLocked = {{ currency_locked|tojson }};
+const lockedCurrency = {{ locked_currency|tojson }};
 const chooseCurrency = selectCurrency;
 selectCurrency = function (currency) {
-  if (currencyLocked) return;
+  if (currencyLocked && currency !== lockedCurrency) return;
   chooseCurrency(currency);
 };
+if (currencyLocked && lockedCurrency) {
+  selectedCurrency = lockedCurrency;
+  const chosen = document.getElementById('btn-' + lockedCurrency);
+  if (chosen) chosen.classList.add('selected');
+}
 function lockQuoteCurrency(currency, note) {
   currencyLocked = true;
   if (!selectedCurrency || selectedCurrency !== currency) {
