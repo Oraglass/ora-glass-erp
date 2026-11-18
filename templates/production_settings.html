@@ -126,7 +126,7 @@ label.check{display:flex;gap:8px;align-items:center;font-size:14px;margin:8px 0}
 <tbody>
 {% for row in rows %}
 <tr>
-<td class="name"><input type="hidden" name="row_key" value="{{ row.key }}"><input type="hidden" name="product_name" value="{{ row.product_name }}"><div class="product-name">{{ row.product_name }}</div></td>
+<td class="name"><input type="hidden" name="row_key" value="{{ row.key }}"><input type="hidden" name="product_name" value="{{ row.product_name }}"><div class="product-name">{{ row.product_name }}{% if row.id_conflict %} <span class="missing">ID conflict ({{ row.conflict_ids|join(', ') }})</span>{% endif %}</div></td>
 <td><input type="text" name="product_id" value="{{ row.product_id }}" aria-label="Product ID" class="{{ 'missing' if row.missing else '' }}" placeholder="No production ID yet"></td>
 <td>{{ row.first_used or '—' }}</td>
 <td>{{ row.order_count }}</td>

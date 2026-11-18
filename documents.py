@@ -140,6 +140,8 @@ def real_area(item):
 
 
 def line_weight(item, factor):
+    if is_charge_line(item):
+        return 0.0
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
     thickness = glass_thickness_mm(spec)
     rate = _number(factor)
@@ -292,6 +294,59 @@ def _header(document, styles):
     return [header, Spacer(1, 6), parties, Spacer(1, 4), Paragraph(remark_line, styles['small']), Spacer(1, 6)]
 
 
+def is_charge_line(item):
+    """A fee or surcharge, not a piece of glass."""
+    if not isinstance(item, dict):
+        return False
+    if item.get('kind') in {'irregular_surcharge', 'dwg_creation', 'fee', 'surcharge', 'charge'}:
+        return True
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    has_glass = bool(spec and spec.get('width') not in (None, '')) or item.get('sqf') not in (None, '', 0, '0')
+    return not has_glass and item.get('pcs') in (None, '', 0, '0')
+
+
+def layout_lines(items):
+    """Glass in order, with each charge directly under the line it belongs to."""
+    glass = []
+    glass_by_id = {}
+    for item in items or []:
+        if not isinstance(item, dict) or is_charge_line(item):
+            continue
+        glass.append(item)
+        if item.get('line_id'):
+            glass_by_id[str(item.get('line_id'))] = len(glass) - 1
+    under = {index: [] for index in range(len(glass))}
+    tail = []
+    last = None
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if not is_charge_line(item):
+            if item.get('line_id') and str(item.get('line_id')) in glass_by_id:
+                last = glass_by_id[str(item.get('line_id'))]
+            else:
+                try:
+                    last = glass.index(item)
+                except ValueError:
+                    last = last
+            continue
+        parent = None
+        if item.get('drawing_for'):
+            parent = glass_by_id.get(str(item.get('drawing_for')))
+        elif item.get('kind') == 'irregular_surcharge':
+            parent = last
+        if parent is None:
+            tail.append(item)
+        else:
+            under[parent].append(item)
+    ordered = []
+    for index, item in enumerate(glass):
+        ordered.append(item)
+        ordered.extend(under.get(index) or [])
+    ordered.extend(tail)
+    return ordered
+
+
 def _line_total(item):
     if item.get('total') not in (None, ''):
         return _number(item.get('total'))
@@ -303,38 +358,42 @@ def _line_total(item):
 def _size_table(items, currency, styles):
     prefix = currency_prefix(currency)
     header = [
-        'ID', 'QTY', 'WIDTH', 'HEIGHT', 'FLOOR #', 'ITEM DESCRIPTION',
+        '', 'QTY', 'WIDTH', 'HEIGHT', 'FLOOR #', 'ITEM DESCRIPTION',
         'SQF', f'{prefix}/SQF', f'{prefix}/PC', 'TOTAL',
     ]
     rows = [[Paragraph(label, styles['head']) for label in header]]
     total_sqf = 0.0
     total_pcs = 0
     total_money = 0.0
-    for index, item in enumerate(items, 1):
-        pieces = _pieces(item)
-        shown_pieces = pieces or (1 if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'} and item.get('sqf') not in (None, '') else pieces)
+    number = 0
+    for item in layout_lines(items):
+        charge = is_charge_line(item)
+        pieces = 0 if charge else _pieces(item)
+        shown_pieces = pieces or (0 if charge or item.get('sqf') in (None, '') else pieces)
+        if not charge and not shown_pieces and item.get('sqf') not in (None, ''):
+            shown_pieces = 1
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         has_size = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
-        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size else ('', '')
-        area = charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0
-        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
-            area = 0.0
+        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size and not charge else ('', '')
+        area = 0.0 if charge else (charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0)
         price_sqf = item.get('price_sqf')
         price_pc = item.get('price_pc')
         amount = _line_total(item)
-        total_pcs += shown_pieces
-        total_sqf += area
+        if not charge:
+            number += 1
+            total_pcs += shown_pieces
+            total_sqf += area
         total_money += amount
         rows.append([
-            Paragraph(f'({index})', styles['center']),
-            Paragraph(str(shown_pieces or ''), styles['center']),
+            Paragraph('' if charge else str(number), styles['center']),
+            Paragraph('' if charge else str(shown_pieces or ''), styles['center']),
             Paragraph(wide, styles['center']),
             Paragraph(high, styles['center']),
-            Paragraph(escape(floor_code(item)), styles['center']),
+            Paragraph('' if charge else escape(floor_code(item)), styles['center']),
             Paragraph(line_description(item), styles['desc']),
-            Paragraph(f'{area:.2f}' if area else '', styles['num']),
-            Paragraph(f'{_number(price_sqf):.2f}' if price_sqf not in (None, '', 0, '0') else '', styles['num']),
-            Paragraph(f'{_number(price_pc):.2f}' if price_pc not in (None, '') else '', styles['num']),
+            Paragraph('' if charge or not area else f'{area:.2f}', styles['num']),
+            Paragraph('' if charge or price_sqf in (None, '', 0, '0') else f'{_number(price_sqf):.2f}', styles['num']),
+            Paragraph('' if charge or price_pc in (None, '') else f'{_number(price_pc):.2f}', styles['num']),
             Paragraph(f'{amount:.2f}', styles['num']),
         ])
     widths = [
@@ -349,18 +408,22 @@ def _size_table(items, currency, styles):
 def _sqf_table(items, currency, styles):
     label = 'CAD/SQF' if str(currency or '').lower() == 'cad' else 'USD/SQF'
     rows = [[
-        Paragraph('ID', styles['head']),
+        Paragraph('', styles['head']),
         Paragraph('ITEM DESCRIPTION', styles['head']),
         Paragraph(label, styles['head']),
     ]]
     total_money = 0.0
     total_pcs = 0
-    for index, item in enumerate(items, 1):
+    number = 0
+    for item in layout_lines(items):
         amount = _line_total(item)
         total_money += amount
-        total_pcs += _pieces(item)
+        charge = is_charge_line(item)
+        if not charge:
+            number += 1
+            total_pcs += _pieces(item) or 1
         rows.append([
-            Paragraph(f'({index})', styles['center']),
+            Paragraph('' if charge else str(number), styles['center']),
             Paragraph(line_description(item), styles['cell']),
             Paragraph(f'{amount:.2f}', styles['num']),
         ])
@@ -550,7 +613,7 @@ def build_pdf(document):
     weight = 0.0
     factor = _number(prepared.get('weight_factor'), 0.512)
     if size:
-        weight = sum(line_weight(item, factor) for item in items)
+        weight = sum(line_weight(item, factor) for item in items if not is_charge_line(item))
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=letter,

@@ -1224,6 +1224,10 @@ def bootstrap_once():
     except Exception:
         logger.exception('Copy history cleanup failed')
     try:
+        production.migrate_registry_names()
+    except Exception:
+        logger.exception('Production ID name migration failed')
+    try:
         import tax_numbers
         tax_numbers.seed_current_numbers()
         tax_numbers.seed_seller_gst()
@@ -7389,9 +7393,10 @@ def _render_invoice_pdf(invoice):
     ]]
     for item in invoice.get('items') or []:
         description = _item_description(item)
+        quantity = '' if documents.is_charge_line(item) else item.get('pcs') or ''
         table_data.append([
             Paragraph(description, cell_style),
-            Paragraph(escape(str(item.get('pcs') or '')), cell_style),
+            Paragraph(escape(str(quantity)), cell_style),
             Paragraph(f"${money(item.get('total')):.2f}", cell_style),
         ])
     items_table = Table(table_data, colWidths=[5.2 * inch, 0.8 * inch, 1.3 * inch])

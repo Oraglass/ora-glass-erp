@@ -159,13 +159,76 @@ def strip_inch_overall(name):
     return _INCH_PREFIX.sub(r'\1 - ', text, count=1)
 
 
+# Piece size appended by the quote page: " - 615 x 2230 mm" or " - 20 x 30 in".
+_SIZE_SUFFIX = re.compile(
+    r'\s+-\s+\d+(?:\.\d+)?\s+x\s+\d+(?:\.\d+)?\s*(?:mm|in)\b\s*$',
+    re.IGNORECASE,
+)
+
+
+def strip_size_suffix(name):
+    """Drop a trailing piece size. The build does not include the width and height."""
+    text = _collapse(str(name or '').replace('\r', '\n').replace('\n', ' '))
+    return _SIZE_SUFFIX.sub('', text).strip()
+
+
 def makeup_from_product_name(product_name):
-    """Drop the overall thickness prefix from a MAC_IGU product name."""
-    text = strip_inch_overall(product_name)
+    """Drop the overall thickness, the inch part, and any piece size from a product name."""
+    text = strip_size_suffix(product_name)
+    text = strip_inch_overall(text)
     text = text.replace(' / ', '+')
     text = re.sub(r'\s*\+\s*', '+', text)
     text = re.sub(r'^\d+\s*-\s*', '', text)
     return _collapse(text)
+
+
+def _overall_mm(makeup):
+    total = 0.0
+    for part in str(makeup or '').split('+'):
+        match = re.match(r'\s*(\d+(?:\.\d+)?)mm', part, re.IGNORECASE)
+        if match:
+            total += float(match.group(1))
+    if total <= 0:
+        return ''
+    if float(total).is_integer():
+        return str(int(total))
+    return str(total)
+
+
+def canonical_build(name):
+    """Registry identity for a line description: the build, with no inch part and no piece size.
+
+    Returns (makeup key, production name). The production name is `24 - makeup`.
+    """
+    text = strip_size_suffix(name)
+    text = strip_inch_overall(text)
+    makeup = makeup_from_product_name(text)
+    if not makeup:
+        return '', ''
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*-\s+', text)
+    if match:
+        mm = match.group(1)
+        if mm.endswith('.0'):
+            mm = mm[:-2]
+    else:
+        mm = _overall_mm(makeup)
+    normalized = f'{mm} - {makeup}' if mm else makeup
+    return makeup.casefold(), normalized
+
+
+def production_name_for_makeup(makeup, seeded=None):
+    """Production-software name. A workbook row keeps that sheet's text."""
+    key = _collapse(makeup).casefold()
+    if not key:
+        return ''
+    if seeded is None:
+        seeded = seed_products()[0]
+    seed = seeded.get(key) or {}
+    sheet_name = str(seed.get('product_name') or '').strip()
+    if sheet_name:
+        return sheet_name
+    mm = _overall_mm(makeup)
+    return f'{mm} - {makeup}' if mm else makeup
 
 
 def _filename_part(value):
@@ -356,6 +419,9 @@ def production_catalog():
             current['product_name'] = str(saved.get('product_name')).strip()
         current['first_used'] = str(saved.get('first_used') or '')
         current['order_ids'] = [item for item in (saved.get('order_ids') or []) if item not in (None, '')]
+        if saved.get('id_conflict'):
+            current['id_conflict'] = True
+            current['conflict_ids'] = [str(item) for item in (saved.get('conflict_ids') or []) if str(item).strip()]
         seeded[key] = current
     for record in seeded.values():
         record.setdefault('first_used', '')
@@ -405,6 +471,8 @@ def registry_rows():
             'first_used': record.get('first_used') or '',
             'order_count': len(record.get('order_ids') or []),
             'missing': not product_id,
+            'id_conflict': bool(record.get('id_conflict')),
+            'conflict_ids': list(record.get('conflict_ids') or []),
         })
     rows.sort(key=lambda row: (not row['missing'], row['product_name'].casefold()))
     return rows
@@ -429,12 +497,17 @@ def remember_configurations(items, used_on, order_id=None):
             if used_on and not row.get('first_used'):
                 row['first_used'] = str(used_on)[:10]
                 changed = True
-            if key not in seeded and not row.get('product_name'):
-                row['product_name'] = str(item.get('name') or makeup).strip()[:300]
+            wanted = production_name_for_makeup(makeup, seeded)
+            if key in seeded:
+                if row.get('product_name') and row.get('product_name') != wanted:
+                    row.pop('product_name', None)
+                    changed = True
+            elif row.get('product_name') != wanted:
+                row['product_name'] = wanted[:300]
+                changed = True
+            if row.get('label') != makeup:
                 row['label'] = makeup
                 changed = True
-            elif 'label' not in row:
-                row['label'] = makeup
             if order_id not in (None, ''):
                 order_ids = [entry for entry in (row.get('order_ids') or [])]
                 if order_id not in order_ids and str(order_id) not in {str(entry) for entry in order_ids}:
@@ -595,8 +668,8 @@ def drop_pending_upload(token):
 
 
 def _registry_hit(record):
-    """A registry row counts only when it has a production Product ID."""
-    if not record:
+    """A registry row counts only when it has a production Product ID and that ID is not in conflict."""
+    if not record or record.get('id_conflict'):
         return None
     product_id = str(record.get('product_id') or '').strip()
     product_name = str(record.get('product_name') or '').strip()
@@ -626,33 +699,36 @@ def lookup_product(spec, fallback_name=''):
     name = ''
     product_id = ''
     if record:
-        product_id = str(record.get('product_id') or '').strip()
         name = str(record.get('product_name') or '').strip()
+        if not record.get('id_conflict'):
+            product_id = str(record.get('product_id') or '').strip()
     if not name:
-        name = str(fallback_name or '').strip()
+        name = production_name_for_makeup(makeup) if makeup else ''
+    if not name:
+        _key, name = canonical_build(fallback_name)
     return {'product_id': product_id, 'product_name': name, 'known': record is not None}
 
 
 def excel_identity(item):
     """Production Excel name and ID. A match uses the registry text exactly."""
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
-    found = lookup_product(spec, '')
-    hit = None
-    if found.get('product_id') and found.get('product_name'):
-        hit = {'product_id': found['product_id'], 'product_name': found['product_name']}
-    if hit is None:
-        hit = registry_for_name(item.get('name') or '')
+    found = lookup_product(spec, item.get('name') or '')
+    if makeup_from_spec(spec) and found.get('product_name'):
+        return {
+            'product_id': found['product_id'],
+            'product_name': found['product_name'],
+            'matched': bool(found['product_id']),
+        }
+    hit = registry_for_name(item.get('name') or '')
     if hit:
         return {
             'product_id': hit['product_id'],
             'product_name': hit['product_name'],
             'matched': True,
         }
-    fallback = strip_inch_overall(item.get('name') or found.get('product_name') or '')
-    if '+' in fallback or 'mm' in fallback.casefold():
-        fallback = fallback.replace(' / ', '+')
-        fallback = re.sub(r'\s*\+\s*', '+', fallback)
-        fallback = _collapse(fallback)
+    _key, fallback = canonical_build(item.get('name') or found.get('product_name') or '')
+    if not fallback:
+        fallback = strip_size_suffix(strip_inch_overall(item.get('name') or ''))
     return {'product_id': '', 'product_name': fallback, 'matched': False}
 
 
@@ -748,6 +824,161 @@ def present_order_line(item):
     row['production_name'] = found['product_name']
     row['production_note'] = '' if found['product_id'] else 'No production ID yet'
     return row
+
+
+def _usage(rows):
+    order_ids = []
+    seen = set()
+    first = ''
+    for row in rows:
+        for order_id in row.get('order_ids') or []:
+            if order_id in (None, '') or str(order_id) in seen:
+                continue
+            seen.add(str(order_id))
+            order_ids.append(order_id)
+        used = str(row.get('first_used') or '')[:10]
+        if used and (not first or used < first):
+            first = used
+    return first, order_ids
+
+
+def _product_ids(rows):
+    found = []
+    for row in rows:
+        product_id = str(row.get('product_id') or '').strip()
+        if product_id and product_id not in found:
+            found.append(product_id)
+    return found
+
+
+def migrate_registry_names():
+    """Rewrite stored registry rows to the production build name.
+
+    A line description such as '24 (15/16") - makeup - 615 x 2230 mm' becomes
+    '24 - makeup'. Rows that collapse to the same build are merged. One
+    non-empty Product ID is kept. Two different IDs are both kept and flagged.
+    Order ids move with the build, and orders whose lines use that build are
+    counted on it. A second run changes nothing.
+    """
+    import logging
+    from storage import load_orders
+
+    logger = logging.getLogger('ora_glass.production')
+    path = production_catalog_path()
+    with lock_for(path):
+        saved = _saved_overrides()
+        if not saved:
+            return {'renamed': [], 'merged': [], 'conflicts': []}
+        seeded = seed_products()[0]
+        groups = {}
+        order = []
+        for key, row in saved.items():
+            if not isinstance(row, dict):
+                continue
+            source = row.get('product_name') or row.get('label') or key
+            canonical, normalized = canonical_build(source)
+            if not canonical:
+                canonical, normalized = str(key), strip_size_suffix(strip_inch_overall(source))
+            if canonical not in groups:
+                order.append(canonical)
+                groups[canonical] = []
+            groups[canonical].append((key, row, normalized))
+        new_saved = {}
+        renamed = []
+        merged = []
+        conflicts = []
+        for canonical in order:
+            entries = groups[canonical]
+            seed = seeded.get(canonical) or {}
+            sheet_name = str(seed.get('product_name') or '').strip()
+            normalized = sheet_name or entries[0][2]
+            makeup = str(seed.get('label') or '') or makeup_from_product_name(normalized)
+            ids = _product_ids(row for _key, row, _name in entries)
+            first, order_ids = _usage(row for _key, row, _name in entries)
+            before = [str(row.get('product_name') or key) for key, row, _name in entries]
+            explicit_blank = any(
+                key == canonical and 'product_id' in row and not str(row.get('product_id') or '').strip()
+                for key, row, _name in entries
+            )
+            if len(ids) > 1:
+                conflicts.append({
+                    'product_name': normalized,
+                    'ids': ids,
+                    'from': before,
+                    'order_ids': order_ids,
+                })
+                for product_id in ids:
+                    owned = [row for _key, row, _name in entries if str(row.get('product_id') or '').strip() == product_id]
+                    owned_first, owned_orders = _usage(owned or [row for _key, row, _name in entries])
+                    storage_key = canonical if product_id == ids[0] else f'{canonical}\x1f{product_id}'
+                    new_saved[storage_key] = {
+                        'label': makeup,
+                        'product_name': normalized,
+                        'product_id': product_id,
+                        'first_used': owned_first,
+                        'order_ids': owned_orders,
+                        'id_conflict': True,
+                        'conflict_ids': ids,
+                    }
+                continue
+            row = {'label': makeup, 'first_used': first, 'order_ids': order_ids}
+            if ids:
+                row['product_id'] = ids[0]
+            elif explicit_blank:
+                row['product_id'] = ''
+            if not sheet_name:
+                row['product_name'] = normalized
+            elif ids and ids[0] != str(seed.get('product_id') or '').strip():
+                row['product_name'] = normalized
+            new_saved[canonical] = row
+            changed_name = any(name != normalized for name in before)
+            if len(entries) > 1:
+                merged.append({
+                    'product_name': normalized,
+                    'product_id': ids[0] if ids else '',
+                    'from': before,
+                    'order_ids': order_ids,
+                })
+            elif changed_name or any(key != canonical for key, _row, _name in entries):
+                renamed.append({
+                    'before': before[0],
+                    'after': normalized,
+                    'product_id': ids[0] if ids else '',
+                    'order_ids': order_ids,
+                })
+        conflict_keys = {key for key, row in new_saved.items() if row.get('id_conflict')}
+        for order_row in load_orders():
+            order_id = order_row.get('id')
+            if order_id in (None, ''):
+                continue
+            for item in order_row.get('items') or []:
+                if not isinstance(item, dict) or item.get('kind') in {SURCHARGE_KIND, DWG_KIND}:
+                    continue
+                spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+                makeup = makeup_from_spec(spec) if spec else ''
+                if not makeup:
+                    makeup = makeup_from_product_name(item.get('name') or '')
+                key = makeup.casefold()
+                if not key or key not in new_saved or key in conflict_keys or new_saved[key].get('id_conflict'):
+                    continue
+                current = new_saved[key]
+                linked = list(current.get('order_ids') or [])
+                if order_id not in linked and str(order_id) not in {str(entry) for entry in linked}:
+                    linked.append(order_id)
+                    current['order_ids'] = linked
+                    if not current.get('first_used'):
+                        current['first_used'] = str(order_row.get('date') or '')[:10]
+        if new_saved != saved:
+            atomic_write_json(path, {'products': new_saved})
+            logger.info(
+                'Production ID names normalized: %s renamed, %s merged, %s ID conflicts.',
+                len(renamed), len(merged), len(conflicts),
+            )
+            for row in renamed + merged:
+                logger.info('Production build %s from %s', row.get('after') or row.get('product_name'), row.get('before') or row.get('from'))
+            for row in conflicts:
+                logger.warning('Production ID conflict for %s: %s', row['product_name'], ', '.join(row['ids']))
+        return {'renamed': renamed, 'merged': merged, 'conflicts': conflicts}
 
 
 def write_order_workbook(order):

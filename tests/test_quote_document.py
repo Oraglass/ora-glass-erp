@@ -117,7 +117,7 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert b'12' in text
     assert b'305 mm' in text
     assert b'18.00' in text
-    assert b'Total Pcs:' in text
+    assert b'Total Pcs: 3' in text
     assert b'Total SQ/FT' in text
     assert b'Total Weight:' in text
     assert b'Appx.' in text
@@ -180,6 +180,48 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     formula = client.get('/pricing?tab=formula')
     assert b'glass_lb_per_sqf_mm' in formula.data
     assert b'0.512' in formula.data
+
+
+def test_charges_are_not_counted_as_pieces_and_the_id_column_is_blank():
+    items = [
+        {
+            'name': 'Lite A', 'pcs': 4, 'sqf': 6, 'real_sqf': 6,
+            'price_sqf': 1, 'price_pc': 6, 'total': 24, 'floor': 'W1', 'line_id': 'g1',
+            'spec': {'glass1': 'Clear Glass 4mm', 'width': 24, 'height': 36, 'unit': 'in'},
+        },
+        {
+            'kind': 'irregular_surcharge', 'name': 'Irregular shape surcharge – Lite A',
+            'pcs': 4, 'price_pc': 50, 'total': 200,
+        },
+        {
+            'name': 'Lite B', 'pcs': 10, 'sqf': 6, 'real_sqf': 6,
+            'price_sqf': 1, 'price_pc': 6, 'total': 60, 'line_id': 'g2',
+            'spec': {'glass1': 'Clear Glass 4mm', 'width': 20, 'height': 30, 'unit': 'in'},
+        },
+        {
+            'kind': 'dwg_creation', 'name': 'DWG drawing creation',
+            'pcs': 1, 'price_pc': 75, 'total': 75, 'drawing_for': 'g1',
+        },
+    ]
+    payload = documents.build_pdf({
+        'kind': 'order', 'id': 1, 'type': 'size', 'currency': 'usd', 'project': 'Order 1',
+        'company': 'HighQ Developments Inc', 'date': '2026-11-18',
+        'items': items, 'extra_charges': [{'label': 'Delivery', 'amount': 40}],
+        'weight_factor': 0.512,
+    })
+    text = pdf_text(payload)
+    assert b'Total Pcs: 14' in text
+    assert b'Total SQ/FT : 84.00' in text
+    assert b'(ID)' not in text
+    assert b'\\(1\\)' not in text
+    assert b'\\(4\\)' not in text
+    assert b'Irregular shape surcharge' in text
+    assert b'DWG drawing creation' in text
+    assert b'Delivery' in text
+    assert text.find(b'DWG drawing creation') < text.find(b'(2)')
+    from pathlib import Path
+    Path('/opt/cursor/artifacts').mkdir(parents=True, exist_ok=True)
+    Path('/opt/cursor/artifacts/order-1-pieces.pdf').write_bytes(payload)
 
 
 def test_table_header_repeats_when_the_quote_breaks_onto_another_page(client):

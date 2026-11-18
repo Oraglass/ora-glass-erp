@@ -125,8 +125,11 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     assert glass['remarks'] == 'Tempered edge'
     assert glass['floor'] == 'L3'
     assert 'mark' not in glass
+    build_name = production.production_name_for_makeup(production.makeup_from_spec(stored['items'][0]['spec']))
+    assert ' x ' not in build_name
+    assert '"' not in build_name
     rows = production.registry_rows()
-    custom = next(row for row in rows if row['product_name'] == stored['items'][0]['name'])
+    custom = next(row for row in rows if row['product_name'] == build_name)
     assert custom['product_id'] == ''
     assert custom['first_used']
     assert custom['order_count'] == 0
@@ -139,7 +142,7 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     order = next(row for row in load_orders() if row['id'] == order_id)
     assert order['items'][0]['remarks'] == 'Tempered edge'
     assert order['items'][0]['floor'] == 'L3'
-    counted = next(row for row in production.registry_rows() if row['product_name'] == stored['items'][0]['name'])
+    counted = next(row for row in production.registry_rows() if row['product_name'] == build_name)
     assert counted['order_count'] == 1
     detail = client.get(f'/api/orders/{order_id}').get_json()
     assert detail['items'][0]['production_note'] == 'No production ID yet'
@@ -155,7 +158,7 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     assert header == list(production.PRODUCTION_HEADERS)
     values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
     assert values[2] in (None, '')
-    assert values[3] == stored['items'][0]['name']
+    assert values[3] == build_name
     assert values[10] == 'Tempered edge'
     assert values[1] == 'L3'
 
@@ -283,6 +286,11 @@ def test_excel_uses_the_registry_name_and_a_customer_project_po_filename():
     assert production.strip_inch_overall('22 (15/16") - 6mmClear Glass') == '22 - 6mmClear Glass'
     assert production.strip_inch_overall('28 (1 1/4") - 6mmClear Glass') == '28 - 6mmClear Glass'
     assert production.strip_inch_overall('24 (2") - 4mmClear Glass') == '24 - 4mmClear Glass'
+    sized = quoted + ' - 1000 x 2000 mm'
+    sized_row = production.excel_identity({'name': sized, 'spec': {}})
+    assert sized_row['product_id'] == '84'
+    assert sized_row['product_name'] == row['product_name']
+    assert '1000' not in sized_row['product_name']
     unmatched = production.excel_identity({'name': example, 'spec': {}})
     assert unmatched['matched'] is False
     assert unmatched['product_id'] == ''
@@ -304,3 +312,135 @@ def test_excel_uses_the_registry_name_and_a_customer_project_po_filename():
     header = production.content_disposition(named)
     assert 'filename*=UTF-8\'\'' in header
     assert 'Caf%C3%A9%20Glass.Job-12.PO-1.xlsx' in header
+
+
+_CLEAR = (
+    '24 (15/16") - 4mmClear Glass Tempered+16mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered'
+)
+_LIVE_ROWS = (
+    _CLEAR + ' - 615 x 2230 mm',
+    '32 (1 1/4") - 4mmLoE Q-270 Tempered+24mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered - 940 x 3260 mm',
+    '32 (1 1/4") - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered - 940 x 3260 mm',
+    '42 (1 5/8") - 4mmLoE Q-270 Tempered+16mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered+14mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered - 686 x 1866 mm',
+    '42 (1 5/8") - 4mmSolarban60 VT Tempered+16mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered+14mmSuperSpacer with Argon(Polysulfide)'
+    '+4mmClear Glass Tempered - 686 x 1866 mm',
+)
+
+
+def test_line_descriptions_collapse_to_the_build_and_existing_rows_are_migrated(data_dir):
+    import json
+    from storage import save_orders
+
+    other_size = _CLEAR + ' - 800 x 1200 mm'
+    conflict_a = (
+        '28 (1 1/8") - 6mmClear Glass+16mmSuperSpacer with Argon(Polysulfide)'
+        '+6mmClear Glass - 100 x 200 mm'
+    )
+    conflict_b = (
+        '28 (1 1/8") - 6mmClear Glass+16mmSuperSpacer with Argon(Polysulfide)'
+        '+6mmClear Glass - 300 x 400 mm'
+    )
+    products = {}
+    for name in _LIVE_ROWS:
+        products[name.casefold()] = {
+            'product_name': name,
+            'product_id': '',
+            'label': name,
+            'order_ids': [4] if '615 x 2230' in name else [],
+            'first_used': '2026-11-01',
+        }
+    products[other_size.casefold()] = {
+        'product_name': other_size,
+        'product_id': '501',
+        'order_ids': [9],
+        'first_used': '2026-11-02',
+    }
+    products[conflict_a.casefold()] = {
+        'product_name': conflict_a, 'product_id': '11', 'order_ids': [2], 'first_used': '2026-11-01',
+    }
+    products[conflict_b.casefold()] = {
+        'product_name': conflict_b, 'product_id': '22', 'order_ids': [3], 'first_used': '2026-11-03',
+    }
+    seeded_line = (
+        '24 (15/16") - 4mmSolarban60+16mmSuperSpacer with Argon(Polysulfide)'
+        '+4mmClear Glass - 500 x 900 mm'
+    )
+    products[seeded_line.casefold()] = {
+        'product_name': seeded_line, 'product_id': '', 'order_ids': [8], 'first_used': '2026-11-01',
+    }
+    path = data_dir / 'production_products.json'
+    path.write_text(json.dumps({'products': products}), encoding='utf-8')
+    save_orders([{
+        'id': 15,
+        'date': '2026-11-04',
+        'items': [{
+            'name': _LIVE_ROWS[0],
+            'spec': {
+                'glass1': 'Clear Glass 4mm', 'temper1': 'yes',
+                'spacer1': 'Superspacer 16mm / sqf', 'sealant1': 'Polysulfide',
+                'glass2': 'Clear Glass 4mm', 'temper2': 'yes',
+                'width': 615, 'height': 2230, 'unit': 'mm',
+            },
+        }],
+    }])
+    report = production.migrate_registry_names()
+    clear_name = (
+        '24 - 4mmClear Glass Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+    )
+    assert clear_name in {row['product_name'] for row in report['merged']}
+    saved = {row['product_name']: row for row in production.registry_rows()}
+    clear = saved[clear_name]
+    assert clear['product_id'] == '501'
+    assert clear['order_count'] == 3
+    seeded_name = '24 - 4mmSolarban60+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    assert saved[seeded_name]['product_id'] == '84'
+    assert saved[seeded_name]['order_count'] == 1
+    assert '615' not in clear_name and '"' not in clear_name
+    expected = {
+        '32 - 4mmLoE Q-270 Tempered+24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '32 - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '42 - 4mmLoE Q-270 Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+        '+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '42 - 4mmSolarban60 VT Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+        '+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+    }
+    for name in expected:
+        assert saved[name]['product_id'] == ''
+        assert ' x ' not in name
+    flagged = [row for row in production.registry_rows() if row['id_conflict']]
+    assert {row['product_id'] for row in flagged} == {'11', '22'}
+    assert all(row['conflict_ids'] == ['11', '22'] for row in flagged)
+    again = path.read_text(encoding='utf-8')
+    production.migrate_registry_names()
+    assert path.read_text(encoding='utf-8') == again
+
+    production.remember_configurations([
+        {'name': _LIVE_ROWS[0], 'spec': {
+            'glass1': 'Clear Glass 4mm', 'temper1': 'yes',
+            'spacer1': 'Superspacer 16mm / sqf', 'sealant1': 'n/a',
+            'glass2': 'Bronze 6mm', 'temper2': 'n/a',
+            'width': 500, 'height': 800, 'unit': 'mm',
+        }},
+        {'name': 'same build, other size - 900 x 1100 mm', 'spec': {
+            'glass1': 'Clear Glass 4mm', 'temper1': 'yes',
+            'spacer1': 'Superspacer 16mm / sqf', 'sealant1': 'n/a',
+            'glass2': 'Bronze 6mm', 'temper2': 'n/a',
+            'width': 900, 'height': 1100, 'unit': 'mm',
+        }},
+    ], '2026-11-18', order_id=20)
+    created = [
+        row for row in production.registry_rows()
+        if row['product_name'].startswith('26 - 4mmClear Glass Tempered+16mm')
+    ]
+    assert len(created) == 1
+    assert created[0]['product_name'] == (
+        '26 - 4mmClear Glass Tempered+16mmSuperSpacer with Argon(Polysulfide)+6mmBronze'
+    )
+    assert created[0]['order_count'] == 1
+    assert ' x ' not in created[0]['product_name']
