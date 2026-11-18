@@ -2725,6 +2725,55 @@ def currency_settings():
     return redirect(url_for('pricing_admin', tab='currency'))
 
 
+def _production_id_confirmed():
+    return request.form.get('confirmed') == 'yes' and request.form.get('acknowledged') == 'yes'
+
+
+def _audit_production_ids(changes):
+    user = current_user() or {}
+    reason = clean_text(request.form.get('reason'), 500)
+    when = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    production.append_id_audit([
+        {
+            'at': when,
+            'user': user.get('email') or '',
+            'key': change.get('key') or '',
+            'product_name': change.get('product_name') or '',
+            'old': change.get('old_id') or '',
+            'new': change.get('new_id') or '',
+            'reason': reason,
+            'order_count': change.get('order_count') or 0,
+        }
+        for change in changes or []
+    ])
+
+
+def _production_id_review(list_filter, plan, mode, pending, replace, unmatched):
+    rows = production.registry_rows()
+    if list_filter == 'missing':
+        rows = [row for row in rows if row['missing']]
+    review = {
+        'changes': plan.get('changes') or [],
+        'duplicates': plan.get('duplicates') or [],
+        'sensitive': any(change.get('replaces_existing') for change in (plan.get('changes') or [])),
+        'mode': mode,
+        'pending': pending,
+        'replace': replace,
+        'unmatched': unmatched or [],
+    }
+    return render_template(
+        'production_settings.html',
+        tabs=production.PRODUCTION_TABS,
+        tab='ids',
+        rows=rows,
+        list_filter=list_filter,
+        seed=production.seed_report(),
+        settings=production.load_export_settings(),
+        headers=production.PRODUCTION_HEADERS,
+        review=review,
+    )
+
+
 @app.route('/production-settings', methods=['GET', 'POST'])
 def production_settings():
     _user, response = _production_staff()
@@ -2761,13 +2810,38 @@ def production_settings():
             if not rows:
                 flash('That file needs Product ID and Product Name columns.', 'error')
                 return redirect(url_for('production_settings', tab='ids', filter=list_filter))
-            result = production.apply_product_upload(rows, replace=request.form.get('replace_ids') == 'on')
-            flash(
-                f"Matched {len(result['matched'])} names. "
-                f"{len(result['unmatched'])} names were not in the registry. "
-                f"{len(result['kept'])} existing IDs were left unchanged.",
-                'success',
+            replace = request.form.get('replace_ids') == 'on'
+            planned = production._upload_plan(rows, replace=replace)
+            if not planned['updates']:
+                flash(
+                    f"Matched {len(planned['matched'])} names. "
+                    f"{len(planned['unmatched'])} names were not in the registry. "
+                    f"{len(planned['kept'])} existing IDs were left unchanged.",
+                    'success',
+                )
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            token = secrets.token_hex(8)
+            production.save_pending_upload(token, rows, replace)
+            return _production_id_review(
+                list_filter, production.id_change_plan(planned['updates']),
+                'upload', token, replace, planned['unmatched'],
             )
+        if action == 'upload_confirm':
+            token = clean_text(request.form.get('pending'), 40)
+            pending = production.load_pending_upload(token)
+            if not pending:
+                flash('That upload review expired. Upload the file again.', 'error')
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            planned = production._upload_plan(pending.get('rows') or [], replace=bool(pending.get('replace')))
+            plan = production.id_change_plan(planned['updates'])
+            if plan['duplicates'] or not _production_id_confirmed():
+                return _production_id_review(
+                    list_filter, plan, 'upload', token, bool(pending.get('replace')), planned['unmatched'],
+                )
+            production.apply_product_upload(pending.get('rows') or [], replace=bool(pending.get('replace')))
+            _audit_production_ids(plan['changes'])
+            production.drop_pending_upload(token)
+            flash('Production IDs saved.', 'success')
             return redirect(url_for('production_settings', tab='ids', filter=list_filter))
         keys = request.form.getlist('row_key')
         ids = request.form.getlist('product_id')
@@ -2775,7 +2849,14 @@ def production_settings():
         updates = {}
         for key, product_id, product_name in zip(keys, ids, names):
             updates[key] = {'product_id': product_id, 'product_name': product_name}
+        plan = production.id_change_plan(updates)
+        if not plan['changes'] and not plan['duplicates']:
+            flash('No Product IDs changed.', 'success')
+            return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+        if plan['duplicates'] or not _production_id_confirmed():
+            return _production_id_review(list_filter, plan, 'ids', '', False, [])
         production.save_production_overrides(updates)
+        _audit_production_ids(plan['changes'])
         flash('Production IDs saved.', 'success')
         return redirect(url_for('production_settings', tab='ids', filter=list_filter))
     rows = production.registry_rows()
@@ -2790,6 +2871,7 @@ def production_settings():
         seed=production.seed_report(),
         settings=production.load_export_settings(),
         headers=production.PRODUCTION_HEADERS,
+        review=None,
     )
 
 

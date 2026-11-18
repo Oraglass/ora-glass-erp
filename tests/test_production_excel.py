@@ -159,10 +159,25 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     assert values[10] == 'Tempered edge'
     assert values[1] == 'L3'
 
+    refused = client.post('/production-settings?filter=missing', data={
+        'action': 'ids',
+        'tab': 'ids',
+        'filter': 'missing',
+        'row_key': counted['key'],
+        'product_id': '501',
+        'product_name': counted['product_name'],
+    })
+    assert refused.status_code == 200
+    assert b'I checked these IDs against the production software' in refused.data
+    assert b'Confirm save' in refused.data
+    assert counted['product_name'].encode() in refused.data
+    assert next(row for row in production.registry_rows() if row['key'] == counted['key'])['product_id'] == ''
     filled = client.post('/production-settings?filter=missing', data={
         'action': 'ids',
         'tab': 'ids',
         'filter': 'missing',
+        'confirmed': 'yes',
+        'acknowledged': 'yes',
         'row_key': counted['key'],
         'product_id': '501',
         'product_name': counted['product_name'],
@@ -192,6 +207,14 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
         'action': 'upload', 'tab': 'ids', 'replace_ids': 'on',
         'product_list': (product_file(), 'products.xlsx'),
     }, content_type='multipart/form-data')
+    assert replaced.status_code == 200
+    assert b'Confirm save' in replaced.data
+    assert next(row for row in production.registry_rows() if row['key'] == counted['key'])['product_id'] == '501'
+    pending = replaced.data.split(b'name="pending" value="', 1)[1].split(b'"', 1)[0].decode()
+    replaced = client.post('/production-settings', data={
+        'action': 'upload_confirm', 'tab': 'ids', 'pending': pending,
+        'confirmed': 'yes', 'acknowledged': 'yes', 'reason': 'Matched the production software',
+    })
     assert replaced.status_code == 302
     changed = next(row for row in production.registry_rows() if row['key'] == counted['key'])
     assert changed['product_id'] == '777'
@@ -199,6 +222,44 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     client.post('/logout')
     assert login(client, 'boss@harbor.example').status_code == 302
     assert client.get(f'/api/orders/{order_id}/production.xlsx').status_code == 403
+
+
+def test_duplicate_product_ids_are_blocked_and_changes_are_audited(client):
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    page = client.get('/production-settings?filter=all')
+    assert b'class="product-name"' in page.data
+    assert b'aria-label="Production product name"' not in page.data
+    rows = production.registry_rows()
+    first, second = rows[0], rows[1]
+    assert first['product_name'] != second['product_name']
+    assert first['product_name'].encode() in page.data
+    blocked = client.post('/production-settings', data={
+        'action': 'ids', 'tab': 'ids', 'confirmed': 'yes', 'acknowledged': 'yes',
+        'row_key': [first['key'], second['key']],
+        'product_id': ['900', '900'],
+        'product_name': [first['product_name'], second['product_name']],
+    })
+    assert blocked.status_code == 200
+    assert b'two different product names' in blocked.data
+    after = {row['key']: row['product_id'] for row in production.registry_rows()}
+    assert after[first['key']] == first['product_id']
+    assert after[second['key']] == second['product_id']
+    saved = client.post('/production-settings', data={
+        'action': 'ids', 'tab': 'ids', 'confirmed': 'yes', 'acknowledged': 'yes',
+        'reason': 'Checked in the production software',
+        'row_key': first['key'],
+        'product_id': '901',
+        'product_name': first['product_name'],
+    })
+    assert saved.status_code == 302
+    audit = production.load_id_audit()
+    assert audit[-1]['user'] == 'admin@oraglass.us'
+    assert audit[-1]['old'] == first['product_id']
+    assert audit[-1]['new'] == '901'
+    assert audit[-1]['product_name'] == first['product_name']
+    assert audit[-1]['reason'] == 'Checked in the production software'
+    assert audit[-1]['at']
 
 
 def test_excel_uses_the_registry_name_and_a_customer_project_po_filename():
