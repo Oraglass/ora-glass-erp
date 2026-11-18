@@ -32,6 +32,11 @@ def test_dimensions_and_price_per_square_foot_round_trip():
     assert rows[0]['Unit Price'] == 6.4
     assert rows[0]['Quantity'] == 1
     assert rows[0]['Product ID'] == '84'
+    assert rows[0]['Product Name'] == (
+        '24 - 4mmSolarban60+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    )
+    assert '(15/16' not in rows[0]['Product Name']
+    assert ' / ' not in rows[0]['Product Name']
     assert rows[0]['Width(mm)'] == 1000
     assert rows[0]['Height(mm)'] == 1000
     assert rows[0]['Width(In)'] == 39.370078
@@ -140,6 +145,11 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     assert detail['items'][0]['production_note'] == 'No production ID yet'
     download = client.get(f'/api/orders/{order_id}/production.xlsx')
     assert download.status_code == 200
+    disposition = download.headers['Content-Disposition']
+    expected_name = production.production_filename(order)
+    assert expected_name.endswith(f'.{order_id}.xlsx')
+    assert 'filename*=UTF-8\'\'' in disposition
+    assert expected_name.replace(' ', '%20') in disposition
     sheet = load_workbook(io.BytesIO(download.data)).active
     header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
     assert header == list(production.PRODUCTION_HEADERS)
@@ -149,10 +159,25 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     assert values[10] == 'Tempered edge'
     assert values[1] == 'L3'
 
+    refused = client.post('/production-settings?filter=missing', data={
+        'action': 'ids',
+        'tab': 'ids',
+        'filter': 'missing',
+        'row_key': counted['key'],
+        'product_id': '501',
+        'product_name': counted['product_name'],
+    })
+    assert refused.status_code == 200
+    assert b'I checked these IDs against the production software' in refused.data
+    assert b'Confirm save' in refused.data
+    assert counted['product_name'].encode() in refused.data
+    assert next(row for row in production.registry_rows() if row['key'] == counted['key'])['product_id'] == ''
     filled = client.post('/production-settings?filter=missing', data={
         'action': 'ids',
         'tab': 'ids',
         'filter': 'missing',
+        'confirmed': 'yes',
+        'acknowledged': 'yes',
         'row_key': counted['key'],
         'product_id': '501',
         'product_name': counted['product_name'],
@@ -182,6 +207,14 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
         'action': 'upload', 'tab': 'ids', 'replace_ids': 'on',
         'product_list': (product_file(), 'products.xlsx'),
     }, content_type='multipart/form-data')
+    assert replaced.status_code == 200
+    assert b'Confirm save' in replaced.data
+    assert next(row for row in production.registry_rows() if row['key'] == counted['key'])['product_id'] == '501'
+    pending = replaced.data.split(b'name="pending" value="', 1)[1].split(b'"', 1)[0].decode()
+    replaced = client.post('/production-settings', data={
+        'action': 'upload_confirm', 'tab': 'ids', 'pending': pending,
+        'confirmed': 'yes', 'acknowledged': 'yes', 'reason': 'Matched the production software',
+    })
     assert replaced.status_code == 302
     changed = next(row for row in production.registry_rows() if row['key'] == counted['key'])
     assert changed['product_id'] == '777'
@@ -189,3 +222,85 @@ def test_registry_page_is_for_ora_staff_and_export_uses_the_current_id(client):
     client.post('/logout')
     assert login(client, 'boss@harbor.example').status_code == 302
     assert client.get(f'/api/orders/{order_id}/production.xlsx').status_code == 403
+
+
+def test_duplicate_product_ids_are_blocked_and_changes_are_audited(client):
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    page = client.get('/production-settings?filter=all')
+    assert b'class="product-name"' in page.data
+    assert b'aria-label="Production product name"' not in page.data
+    rows = production.registry_rows()
+    first, second = rows[0], rows[1]
+    assert first['product_name'] != second['product_name']
+    assert first['product_name'].encode() in page.data
+    blocked = client.post('/production-settings', data={
+        'action': 'ids', 'tab': 'ids', 'confirmed': 'yes', 'acknowledged': 'yes',
+        'row_key': [first['key'], second['key']],
+        'product_id': ['900', '900'],
+        'product_name': [first['product_name'], second['product_name']],
+    })
+    assert blocked.status_code == 200
+    assert b'two different product names' in blocked.data
+    after = {row['key']: row['product_id'] for row in production.registry_rows()}
+    assert after[first['key']] == first['product_id']
+    assert after[second['key']] == second['product_id']
+    saved = client.post('/production-settings', data={
+        'action': 'ids', 'tab': 'ids', 'confirmed': 'yes', 'acknowledged': 'yes',
+        'reason': 'Checked in the production software',
+        'row_key': first['key'],
+        'product_id': '901',
+        'product_name': first['product_name'],
+    })
+    assert saved.status_code == 302
+    audit = production.load_id_audit()
+    assert audit[-1]['user'] == 'admin@oraglass.us'
+    assert audit[-1]['old'] == first['product_id']
+    assert audit[-1]['new'] == '901'
+    assert audit[-1]['product_name'] == first['product_name']
+    assert audit[-1]['reason'] == 'Checked in the production software'
+    assert audit[-1]['at']
+
+
+def test_excel_uses_the_registry_name_and_a_customer_project_po_filename():
+    quoted = (
+        '24 (15/16") - 4mmSolarban60+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    )
+    row = production.excel_identity({'name': quoted, 'spec': {}})
+    assert row['matched'] is True
+    assert row['product_id'] == '84'
+    assert row['product_name'] == (
+        '24 - 4mmSolarban60+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    )
+    example = (
+        '42 (1 5/8") - 4mmSolarban60 VT Tempered+16mmSuperSpacer with Argon(Polysulfide)'
+        '+4mmClear Glass Tempered+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+    )
+    assert production.strip_inch_overall(example) == (
+        '42 - 4mmSolarban60 VT Tempered+16mmSuperSpacer with Argon(Polysulfide)'
+        '+4mmClear Glass Tempered+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+    )
+    assert production.strip_inch_overall('22 (15/16") - 6mmClear Glass') == '22 - 6mmClear Glass'
+    assert production.strip_inch_overall('28 (1 1/4") - 6mmClear Glass') == '28 - 6mmClear Glass'
+    assert production.strip_inch_overall('24 (2") - 4mmClear Glass') == '24 - 4mmClear Glass'
+    unmatched = production.excel_identity({'name': example, 'spec': {}})
+    assert unmatched['matched'] is False
+    assert unmatched['product_id'] == ''
+    assert '(1 5/8' not in unmatched['product_name']
+    filename = production.production_filename({
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'po': '',
+        'id': 1,
+    })
+    assert filename == 'HighQ Developments Inc.Misc.1.xlsx'
+    named = production.production_filename({
+        'company': 'Café Glass',
+        'project': 'Job/12',
+        'po': 'PO:1',
+        'id': 9,
+    })
+    assert named == 'Café Glass.Job-12.PO-1.xlsx'
+    header = production.content_disposition(named)
+    assert 'filename*=UTF-8\'\'' in header
+    assert 'Caf%C3%A9%20Glass.Job-12.PO-1.xlsx' in header

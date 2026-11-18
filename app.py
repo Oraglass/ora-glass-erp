@@ -2725,6 +2725,55 @@ def currency_settings():
     return redirect(url_for('pricing_admin', tab='currency'))
 
 
+def _production_id_confirmed():
+    return request.form.get('confirmed') == 'yes' and request.form.get('acknowledged') == 'yes'
+
+
+def _audit_production_ids(changes):
+    user = current_user() or {}
+    reason = clean_text(request.form.get('reason'), 500)
+    when = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    production.append_id_audit([
+        {
+            'at': when,
+            'user': user.get('email') or '',
+            'key': change.get('key') or '',
+            'product_name': change.get('product_name') or '',
+            'old': change.get('old_id') or '',
+            'new': change.get('new_id') or '',
+            'reason': reason,
+            'order_count': change.get('order_count') or 0,
+        }
+        for change in changes or []
+    ])
+
+
+def _production_id_review(list_filter, plan, mode, pending, replace, unmatched):
+    rows = production.registry_rows()
+    if list_filter == 'missing':
+        rows = [row for row in rows if row['missing']]
+    review = {
+        'changes': plan.get('changes') or [],
+        'duplicates': plan.get('duplicates') or [],
+        'sensitive': any(change.get('replaces_existing') for change in (plan.get('changes') or [])),
+        'mode': mode,
+        'pending': pending,
+        'replace': replace,
+        'unmatched': unmatched or [],
+    }
+    return render_template(
+        'production_settings.html',
+        tabs=production.PRODUCTION_TABS,
+        tab='ids',
+        rows=rows,
+        list_filter=list_filter,
+        seed=production.seed_report(),
+        settings=production.load_export_settings(),
+        headers=production.PRODUCTION_HEADERS,
+        review=review,
+    )
+
+
 @app.route('/production-settings', methods=['GET', 'POST'])
 def production_settings():
     _user, response = _production_staff()
@@ -2761,13 +2810,38 @@ def production_settings():
             if not rows:
                 flash('That file needs Product ID and Product Name columns.', 'error')
                 return redirect(url_for('production_settings', tab='ids', filter=list_filter))
-            result = production.apply_product_upload(rows, replace=request.form.get('replace_ids') == 'on')
-            flash(
-                f"Matched {len(result['matched'])} names. "
-                f"{len(result['unmatched'])} names were not in the registry. "
-                f"{len(result['kept'])} existing IDs were left unchanged.",
-                'success',
+            replace = request.form.get('replace_ids') == 'on'
+            planned = production._upload_plan(rows, replace=replace)
+            if not planned['updates']:
+                flash(
+                    f"Matched {len(planned['matched'])} names. "
+                    f"{len(planned['unmatched'])} names were not in the registry. "
+                    f"{len(planned['kept'])} existing IDs were left unchanged.",
+                    'success',
+                )
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            token = secrets.token_hex(8)
+            production.save_pending_upload(token, rows, replace)
+            return _production_id_review(
+                list_filter, production.id_change_plan(planned['updates']),
+                'upload', token, replace, planned['unmatched'],
             )
+        if action == 'upload_confirm':
+            token = clean_text(request.form.get('pending'), 40)
+            pending = production.load_pending_upload(token)
+            if not pending:
+                flash('That upload review expired. Upload the file again.', 'error')
+                return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+            planned = production._upload_plan(pending.get('rows') or [], replace=bool(pending.get('replace')))
+            plan = production.id_change_plan(planned['updates'])
+            if plan['duplicates'] or not _production_id_confirmed():
+                return _production_id_review(
+                    list_filter, plan, 'upload', token, bool(pending.get('replace')), planned['unmatched'],
+                )
+            production.apply_product_upload(pending.get('rows') or [], replace=bool(pending.get('replace')))
+            _audit_production_ids(plan['changes'])
+            production.drop_pending_upload(token)
+            flash('Production IDs saved.', 'success')
             return redirect(url_for('production_settings', tab='ids', filter=list_filter))
         keys = request.form.getlist('row_key')
         ids = request.form.getlist('product_id')
@@ -2775,7 +2849,14 @@ def production_settings():
         updates = {}
         for key, product_id, product_name in zip(keys, ids, names):
             updates[key] = {'product_id': product_id, 'product_name': product_name}
+        plan = production.id_change_plan(updates)
+        if not plan['changes'] and not plan['duplicates']:
+            flash('No Product IDs changed.', 'success')
+            return redirect(url_for('production_settings', tab='ids', filter=list_filter))
+        if plan['duplicates'] or not _production_id_confirmed():
+            return _production_id_review(list_filter, plan, 'ids', '', False, [])
         production.save_production_overrides(updates)
+        _audit_production_ids(plan['changes'])
         flash('Production IDs saved.', 'success')
         return redirect(url_for('production_settings', tab='ids', filter=list_filter))
     rows = production.registry_rows()
@@ -2790,6 +2871,7 @@ def production_settings():
         seed=production.seed_report(),
         settings=production.load_export_settings(),
         headers=production.PRODUCTION_HEADERS,
+        review=None,
     )
 
 
@@ -3684,7 +3766,8 @@ def _quote_for_viewer(quote, user):
             if isinstance(item.get('remarks'), str):
                 item['remarks'] = strip_copy_history(item.get('remarks'))
         items.append(item)
-    row['items'] = items
+    import documents
+    row['items'] = documents.describe_items(items)
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -5340,6 +5423,12 @@ def _shown_order_line(item):
     return row
 
 
+def _shown_order_items(items):
+    import documents
+    rows = [_shown_order_line(item) if isinstance(item, dict) else item for item in items or []]
+    return documents.describe_items(rows)
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -5418,7 +5507,7 @@ def order_for_viewer(order, user, with_coverage=False):
     base['qst_number'] = order.get('qst_number') or ''
     if not _order_prices_visible(user):
         items = []
-        for item in order.get('items') or []:
+        for item in _shown_order_items(order.get('items') or []):
             spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
             items.append({
                 'name': item.get('name') or '',
@@ -5451,7 +5540,7 @@ def order_for_viewer(order, user, with_coverage=False):
         base.update({'items': items, 'changelog': _scrub_shown_text(changelog), 'prices_visible': False})
         return base
     view = dict(base)
-    view['items'] = [_shown_order_line(item) for item in (order.get('items') or [])]
+    view['items'] = _shown_order_items(order.get('items') or [])
     view['shipping'] = shipments.shipment_progress(order)
     view['shipments'] = _public_shipments(order)
     view['billing_mode'] = _billing_mode(order)
@@ -5719,6 +5808,7 @@ def convert_quote_to_order(quote_id):
         'customer_id': customer_id,
         'company': company,
         'project': quote.get('project') or '',
+        'po': quote.get('po') or quote.get('customer_po') or '',
         'job_address': quote.get('job_address') or '',
         'notes': '',
         'currency': currency,
@@ -5813,16 +5903,19 @@ def download_production_excel(order_id):
     import currency_rules
     rate, _effective = currency_rules.rate_on(order.get('date'))
     payload = production.workbook_bytes(order.get('items') or [], order.get('currency'), rate)
+    filename = production.production_filename(order)
     try:
         production.write_order_workbook(order)
     except Exception:
         logger.exception('Could not refresh the stored production Excel file')
-    return send_file(
+    response = send_file(
         BytesIO(payload),
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
-        download_name=f'production-order-{order_id}.xlsx',
+        download_name=filename,
     )
+    response.headers['Content-Disposition'] = production.content_disposition(filename)
+    return response
 
 
 @app.route('/api/orders/<int:order_id>/confirmation.pdf', methods=['GET'])
