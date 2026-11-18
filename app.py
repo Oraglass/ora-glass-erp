@@ -1224,6 +1224,10 @@ def bootstrap_once():
     except Exception:
         logger.exception('Copy history cleanup failed')
     try:
+        production.migrate_registry_names()
+    except Exception:
+        logger.exception('Production ID name migration failed')
+    try:
         import tax_numbers
         tax_numbers.seed_current_numbers()
         tax_numbers.seed_seller_gst()
