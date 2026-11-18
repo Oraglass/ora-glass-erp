@@ -1,0 +1,179 @@
+<div id="tab-orgadata" class="tab-content">
+<h3 style="color:#333;margin-bottom:8px">ORGADATA GLASS ORDER</h3>
+<p class="import-note">Upload an Open Windows or HighQ Glass/Panel Order PDF. Sizes stay in millimetres and are also shown in inches. The quote is priced with the company tier, add-on, discount, minimum square feet, and tax. A scanned PDF is not read.</p>
+<div class="import-grid">
+{% if not import_customer %}
+<div class="form-group"><label for="orgadata-company">Customer</label>
+<select id="orgadata-company"><option value="">Select...</option></select></div>
+{% endif %}
+<div class="form-group"><label for="orgadata-file">ORGADATA GLASS ORDER PDF</label>
+<input type="file" id="orgadata-file" accept="application/pdf,.pdf"></div>
+<button type="button" class="btn" id="orgadata-upload">Import ORGADATA GLASS ORDER</button>
+</div>
+<div id="orgadata-message"></div>
+<div id="orgadata-preview" style="display:none">
+<h3 style="color:#333;margin:16px 0 8px">ORGADATA GLASS ORDER preview</h3>
+<div class="import-grid">
+<div class="form-group"><label for="orgadata-project">Job name</label><input id="orgadata-project" type="text"></div>
+<div class="form-group"><label for="orgadata-po">PO / reference</label><input id="orgadata-po" type="text"></div>
+<div class="form-group"><label for="orgadata-contact">Person in charge</label><input id="orgadata-contact" type="text"></div>
+<div class="form-group"><label for="orgadata-date">Reference date</label><input id="orgadata-date" type="text"></div>
+</div>
+<p class="import-note" id="orgadata-meta"></p>
+<div id="orgadata-warnings"></div>
+<div id="orgadata-blocks"></div>
+<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:12px 0"><input type="checkbox" id="orgadata-remember" checked> Remember these glass and spacer matches for this company</label>
+<button type="button" class="btn" id="orgadata-refresh" style="margin-top:8px">Update preview</button>
+<button type="button" class="btn" id="orgadata-create" style="margin-top:8px;margin-left:8px">Create draft quote</button>
+<p id="orgadata-created" class="import-note"></p>
+</div>
+</div>
+<script id="orgadata-data" type="application/json">{{ {'customer': import_customer, 'companies': import_companies, 'glass': import_glass, 'spacers': import_spacers}|tojson }}</script>
+<script>
+(function () {
+  const DATA = JSON.parse(document.getElementById('orgadata-data').textContent);
+  let current = null;
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function message(text, bad) {
+    const el = document.getElementById('orgadata-message');
+    el.className = bad ? 'import-error' : 'import-note';
+    el.textContent = text || '';
+  }
+  function options(names, selected) {
+    return '<option value=""></option>' + names.map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+  }
+  function companySelect() {
+    const select = document.getElementById('orgadata-company');
+    if (!select) return;
+    select.innerHTML = '<option value="">Select...</option>' + DATA.companies.map(company => '<option value="' + esc(company.id) + '">' + esc(company.name) + '</option>').join('');
+  }
+  function money(value) {
+    return value == null || value === '' ? '' : Number(value).toFixed(2);
+  }
+  function warningList(items) {
+    if (!items || !items.length) return '';
+    return '<ul class="import-error">' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>';
+  }
+  function collect() {
+    const blocks = [];
+    document.querySelectorAll('[data-orgadata-block]').forEach(section => {
+      const lites = [];
+      section.querySelectorAll('[data-lite]').forEach(row => {
+        lites.push({
+          product: row.querySelector('[data-field="product"]').value,
+          temper: row.querySelector('[data-field="temper"]').value
+        });
+      });
+      const spacers = [];
+      section.querySelectorAll('[data-spacer]').forEach(row => {
+        spacers.push({product: row.querySelector('[data-field="product"]').value});
+      });
+      blocks.push({
+        name: section.querySelector('[data-field="name"]').value,
+        configuration: section.querySelector('[data-field="configuration"]').value,
+        thickness: section.querySelector('[data-field="thickness"]').value,
+        spacer_source: section.querySelector('[data-field="spacer_source"]').value,
+        lites: lites,
+        spacers: spacers
+      });
+    });
+    const lines = [];
+    document.querySelectorAll('[data-orgadata-line]').forEach(row => {
+      lines.push({
+        line_number: Number(row.getAttribute('data-orgadata-line')),
+        floor: row.querySelector('[data-field="floor"]').value,
+        qty: row.querySelector('[data-field="qty"]').value,
+        width_mm: row.querySelector('[data-field="width_mm"]').value,
+        height_mm: row.querySelector('[data-field="height_mm"]').value
+      });
+    });
+    const company = document.getElementById('orgadata-company');
+    return {
+      customer_id: company ? company.value : '',
+      project: document.getElementById('orgadata-project').value,
+      po: document.getElementById('orgadata-po').value,
+      contact: document.getElementById('orgadata-contact').value,
+      reference_date: document.getElementById('orgadata-date').value,
+      remember: document.getElementById('orgadata-remember').checked,
+      blocks: blocks,
+      lines: lines
+    };
+  }
+  function render(data) {
+    current = data;
+    document.getElementById('orgadata-preview').style.display = 'block';
+    document.getElementById('orgadata-project').value = data.project || '';
+    document.getElementById('orgadata-po').value = data.po || '';
+    document.getElementById('orgadata-contact').value = data.contact || '';
+    document.getElementById('orgadata-date').value = data.reference_date || '';
+    const company = document.getElementById('orgadata-company');
+    if (company && data.customer_id) company.value = data.customer_id;
+    const currency = String(data.currency || '').toUpperCase();
+    document.getElementById('orgadata-meta').textContent = 'Source: ' + (data.source || 'ORGADATA GLASS ORDER') + (data.sender ? ' · From ' + data.sender : '') + (currency ? ' · Currency ' + currency : '');
+    document.getElementById('orgadata-warnings').innerHTML = warningList(data.warnings);
+    const root = document.getElementById('orgadata-blocks');
+    root.innerHTML = (data.blocks || []).map((block, index) => {
+      const lites = (block.lites || []).map((lite, liteIndex) => '<div class="map-row" data-lite="' + liteIndex + '"><label>ERP glass ' + (liteIndex + 1) + ' <span class="import-note">' + esc(lite.source) + ' · ' + esc(lite.thickness_mm) + ' mm</span></label><select data-field="product">' + options(DATA.glass, lite.product || '') + '</select><label>Tempered</label><select data-field="temper"><option value="n/a"' + (lite.temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (lite.temper === 'yes' ? ' selected' : '') + '>Tempered</option></select></div>').join('');
+      const spacers = (block.spacers || []).map((spacer, spacerIndex) => '<div class="map-row" data-spacer="' + spacerIndex + '"><label>ERP spacer ' + (spacerIndex + 1) + ' <span class="import-note">' + esc(spacer.source) + ' · ' + esc(spacer.gap_mm) + ' mm</span></label><select data-field="product">' + options(DATA.spacers, spacer.product || '') + '</select></div>').join('');
+      const idText = block.product_id ? esc(block.product_id) : (block.product_id_missing ? 'No production ID yet' : '');
+      const idNote = block.product_id_missing ? '<p class="import-error">No production ID yet for this IGU. ' + (data.can_set_production_id ? '<a href="/production-settings?tab=ids&amp;filter=missing">Add it in Production settings</a>. ' : 'Ora Glass adds it in Production settings. ') + 'The import does not invent an ID.</p>' : '';
+      const rows = (block.lines || []).map(line => '<tr data-orgadata-line="' + esc(line.line_number) + '"><td>' + esc(line.line_number) + '</td><td><input data-field="floor" value="' + esc(line.floor) + '" aria-label="Floor"></td><td>' + (line.product_id ? esc(line.product_id) : (line.product_id_missing ? 'No production ID yet' : '')) + '</td><td><input data-field="qty" value="' + esc(line.qty) + '" aria-label="Quantity"></td><td><input data-field="width_mm" value="' + esc(line.width_mm) + '" aria-label="Width millimetres"></td><td><input data-field="height_mm" value="' + esc(line.height_mm) + '" aria-label="Height millimetres"></td><td>' + esc(line.width_in == null ? '' : line.width_in) + '</td><td>' + esc(line.height_in == null ? '' : line.height_in) + '</td><td>' + esc(money(line.total)) + '</td><td>' + esc((line.warnings || []).join(' ')) + '</td></tr>').join('');
+      return '<section data-orgadata-block="' + index + '" style="margin-top:16px"><h4 style="margin:0 0 8px">Glass block ' + (index + 1) + '</h4>'
+        + '<div class="import-grid"><div class="form-group" style="flex:1 1 100%"><label>Name</label><input data-field="name" style="width:100%;max-width:none" value="' + esc(block.name) + '"></div>'
+        + '<div class="form-group"><label>Configuration</label><input data-field="configuration" value="' + esc(block.configuration) + '"></div>'
+        + '<div class="form-group"><label>Thickness</label><input data-field="thickness" value="' + esc(block.thickness) + '"></div>'
+        + '<div class="form-group"><label>Spacer</label><input data-field="spacer_source" value="' + esc(block.spacer_source) + '"></div></div>'
+        + '<p class="import-note">Argon: ' + (block.argon ? 'yes' : 'no') + ' · Tempered on the order: ' + (block.tempered ? 'yes' : 'no') + '</p>'
+        + '<p class="import-note"><b>ID</b> ' + idText + '</p>' + idNote
+        + warningList(block.warnings) + lites + spacers
+        + '<table class="import-table"><thead><tr><th>#</th><th>Floor</th><th>ID</th><th>Quantity</th><th>Width (mm)</th><th>Height (mm)</th><th>Width (in)</th><th>Height (in)</th><th>Price</th><th>Warnings</th></tr></thead><tbody>'
+        + rows + '</tbody></table></section>';
+    }).join('');
+  }
+  async function post(url, body) {
+    const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(payload.error || 'Request failed');
+      throw error;
+    }
+    return payload;
+  }
+  companySelect();
+  document.getElementById('orgadata-upload').addEventListener('click', async () => {
+    const file = document.getElementById('orgadata-file').files[0];
+    if (!file) { message('Choose a PDF.', true); return; }
+    const form = new FormData();
+    form.append('file', file);
+    const company = document.getElementById('orgadata-company');
+    if (company && company.value) form.append('customer_id', company.value);
+    message('Reading the PDF…');
+    const res = await fetch('/api/orgadata-imports', {method: 'POST', body: form});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { message(payload.error || 'The PDF could not be read.', true); return; }
+    message('');
+    render(payload);
+  });
+  document.getElementById('orgadata-refresh').addEventListener('click', async () => {
+    if (!current) return;
+    try {
+      render(await post('/api/orgadata-imports/' + current.id + '/preview', collect()));
+      message('Preview updated.');
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+  document.getElementById('orgadata-create').addEventListener('click', async () => {
+    if (!current) return;
+    try {
+      const created = await post('/api/orgadata-imports/' + current.id + '/quote', collect());
+      document.getElementById('orgadata-created').textContent = 'Draft quote ' + created.id + ' was saved from ORGADATA GLASS ORDER.';
+      message('');
+    } catch (error) {
+      message(error.message, true);
+    }
+  });
+})();
+</script>

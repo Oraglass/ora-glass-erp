@@ -466,6 +466,10 @@ function showQuoteDetail(quote) {
   {% endif %}
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
     + tax
+    + (quote.source ? '<p class="note">Source: ' + esc(quote.source) + '</p>' : '')
+    + (quote.po ? '<p class="note">PO / reference: ' + esc(quote.po) + '</p>' : '')
+    + (quote.reference_date ? '<p class="note">Reference date: ' + esc(quote.reference_date) + '</p>' : '')
+    + (quote.has_source_pdf ? '<p class="note"><a href="/api/quotes/' + encodeURIComponent(quote.id) + '/source-pdf">Original ORGADATA GLASS ORDER PDF</a></p>' : '')
     + (quote.notes ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + (quote.job_address ? '<p class="note">Job address<br>' + esc(quote.job_address).replace(/\n/g, '<br>') + '</p>' : '')
     + rateNote

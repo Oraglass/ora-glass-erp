@@ -65,6 +65,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <button class="tab active" data-tab="sqf" onclick="showTab('sqf')">IGU Quote Calculator per sqf</button>
 <button class="tab" data-tab="size" onclick="showTab('size')">IGU Quote Calculator per size</button>
 <button class="tab" data-tab="import" onclick="showTab('import')">Import order</button>
+<button class="tab" data-tab="orgadata" onclick="showTab('orgadata')">ORGADATA GLASS ORDER</button>
 </div>
 <div class="currency-select">
 <div class="currency-btn" id="btn-usd" onclick="selectCurrency('usd')" {% if currency_locked and locked_currency != 'usd' %}aria-disabled="true" style="pointer-events:none;opacity:.45"{% endif %}>USD</div>
@@ -172,6 +173,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div>
 <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px"><input type="checkbox" id="s-irregular"> Irregular shape (+$<span id="irregular-rate">{{ '%.2f'|format(irregular_rate) }}</span> per piece)</label>
 <button class="btn" style="background:#333;margin-top:15px" onclick="addSizeToQuote()">Add to Quote</button>
+<button type="button" class="btn" style="background:#333;margin-top:15px;margin-left:8px" onclick="showTab('orgadata')">Import ORGADATA GLASS ORDER</button>
 <div id="size-quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
@@ -184,6 +186,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 </div>
 </div>
 {% include 'partials/import_order.html' %}
+{% include 'partials/orgadata_import.html' %}
 </div></div>
 <script id="sealant-match-data" type="application/json">{{ sealant_matches|tojson }}</script>
 <script>
