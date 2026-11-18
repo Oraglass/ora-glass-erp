@@ -195,12 +195,14 @@ def test_sales_force_cannot_open_orders_or_see_company_tier_prices(client):
     users['sales@harbor.example']['modules'] = ['quotes', 'quote-history', 'orders', 'invoices', 'financial']
     save_users(users)
     assert login(client, 'sales@harbor.example').status_code == 302
-    assert client.get('/orders').status_code in (302, 403)
-    assert client.get(f'/orders/{order_id}').status_code in (302, 403)
-    assert client.get('/api/orders').status_code == 403
-    assert client.get(f'/api/orders/{order_id}').status_code == 403
+    assert client.get('/orders').status_code == 200
+    assert client.get(f'/orders/{order_id}').status_code == 200
+    listed = client.get('/api/orders')
+    assert listed.status_code == 200
+    assert listed.get_json()[0]['prices_visible'] is False
+    assert client.get(f'/api/orders/{order_id}').status_code == 200
     dashboard = client.get('/dashboard')
-    assert b'href="/orders"' not in dashboard.data
+    assert b'href="/orders"' in dashboard.data
     history = client.get('/api/quotes').get_json()
     quote = next(row for row in history if row['id'] == quote_id)
     assert quote['tier'] == 'T5'

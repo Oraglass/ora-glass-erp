@@ -407,12 +407,10 @@ def effective_module_ids(user):
             chosen = [module_id for module_id in stored if module_id in CUSTOMER_CEILING]
         if 'dashboard' not in chosen:
             chosen.insert(0, 'dashboard')
-        # Orders follows "Can place production orders", not the module checkbox.
-        if can_place_production_orders(user):
-            if 'orders' not in chosen:
-                chosen.append('orders')
-        else:
-            chosen = [module_id for module_id in chosen if module_id != 'orders']
+        # Every customer can open Production orders to print a confirmation.
+        # Sending a quote to production stays the separate place-orders privilege.
+        if 'orders' not in chosen:
+            chosen.append('orders')
         return chosen
     if stored is None:
         return list(LEGACY_ROLE_MODULES.get(role, ('dashboard',)))
@@ -5272,19 +5270,27 @@ def _order_prices_visible(user):
 
 
 def orders_visible_to(user, orders):
+    """Customers see every order for their company. Staff see every order."""
     if user.get('role') == 'customer':
-        if not can_place_production_orders(user):
-            return []
         customer_id = user.get('customer_id')
-        own_company = [order for order in orders if order.get('customer_id') == customer_id]
-        if customer_subrole(user) == 'management':
-            return own_company
-        email = user.get('email')
-        return [
-            order for order in own_company
-            if (order.get('converted_by') or order.get('approved_by')) == email
-        ]
+        return [order for order in orders if order.get('customer_id') == customer_id]
     return list(orders)
+
+
+def format_pacific(value):
+    """Show an approval timestamp in Pacific time, for example 2026-11-18 7:37 AM PT."""
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone(ZoneInfo('America/Los_Angeles'))
+    hour = local.strftime('%I').lstrip('0') or '12'
+    return f"{local:%Y-%m-%d} {hour}:{local:%M} {local:%p} PT"
 
 
 SPEC_KEYS = (
@@ -5357,6 +5363,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'approved_by': order.get('approved_by'),
         'converted_by': order.get('converted_by') or order.get('approved_by') or '',
         'approved_at': order.get('approved_at'),
+        'approved_at_display': format_pacific(order.get('approved_at')),
         'date': order.get('date'),
         'currency': order.get('currency') or 'usd',
         'tier': order.get('tier'),
@@ -5828,7 +5835,7 @@ def download_order_confirmation(order_id):
     document = _pdf_document(order, 'order', user)
     buffer = BytesIO(_pdf_bytes(document))
     return send_file(
-        buffer, mimetype='application/pdf', as_attachment=True,
+        buffer, mimetype='application/pdf', as_attachment=False,
         download_name=f'order-{order_id}.pdf',
     )
 

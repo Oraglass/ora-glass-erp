@@ -154,7 +154,7 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert b'Add-on' not in order_text
     page = client.get(f'/orders/{order_id}')
     assert b'confirmation.pdf' in page.data
-    assert b'Download order confirmation' in page.data
+    assert b'Print / Download PDF' in page.data
     assert load_orders()
     formula = client.get('/pricing?tab=formula')
     assert b'glass_lb_per_sqf_mm' in formula.data

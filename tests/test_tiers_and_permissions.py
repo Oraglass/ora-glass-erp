@@ -631,8 +631,10 @@ def test_customer_with_only_t5_never_sees_the_company_tier(client):
         for needle in forbidden:
             assert needle not in page.data, (path, needle)
     orders = client.get('/orders')
-    assert orders.status_code in (302, 403)
-    assert client.get('/api/orders').status_code == 403
+    assert orders.status_code == 200
+    for needle in forbidden:
+        assert needle not in orders.data
+    assert client.get('/api/orders').status_code == 200
     quotes = client.get('/quotes')
     assert b'Tier 5' in quotes.data
     assert b'<input type="hidden" id="tier" value="T5">' in quotes.data
