@@ -5719,6 +5719,7 @@ def convert_quote_to_order(quote_id):
         'customer_id': customer_id,
         'company': company,
         'project': quote.get('project') or '',
+        'po': quote.get('po') or quote.get('customer_po') or '',
         'job_address': quote.get('job_address') or '',
         'notes': '',
         'currency': currency,
@@ -5813,16 +5814,19 @@ def download_production_excel(order_id):
     import currency_rules
     rate, _effective = currency_rules.rate_on(order.get('date'))
     payload = production.workbook_bytes(order.get('items') or [], order.get('currency'), rate)
+    filename = production.production_filename(order)
     try:
         production.write_order_workbook(order)
     except Exception:
         logger.exception('Could not refresh the stored production Excel file')
-    return send_file(
+    response = send_file(
         BytesIO(payload),
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
-        download_name=f'production-order-{order_id}.xlsx',
+        download_name=filename,
     )
+    response.headers['Content-Disposition'] = production.content_disposition(filename)
+    return response
 
 
 @app.route('/api/orders/<int:order_id>/confirmation.pdf', methods=['GET'])

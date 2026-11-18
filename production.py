@@ -137,12 +137,63 @@ def makeup_from_spec(spec):
     return '+'.join(parts)
 
 
+# Leading overall size from the quote calculator: 42 (1 5/8"), 22 (15/16"), 24 (2").
+_INCH_PREFIX = re.compile(
+    r'''^\s*(\d+)\s*\(\s*
+        (?:
+            \d+\s+\d+\s*/\s*\d+
+            |
+            \d+\s*/\s*\d+
+            |
+            \d+
+        )
+        \s*(?:"|″|”)\s*\)\s*-\s*''',
+    re.VERBOSE,
+)
+_ILLEGAL_FILENAME = re.compile(r'[\\/:*?"<>|]+')
+
+
+def strip_inch_overall(name):
+    """Drop the inch overall thickness. 42 (1 5/8") - makeup becomes 42 - makeup."""
+    text = _collapse(str(name or '').replace('\r', '\n').replace('\n', ' '))
+    return _INCH_PREFIX.sub(r'\1 - ', text, count=1)
+
+
 def makeup_from_product_name(product_name):
     """Drop the overall thickness prefix from a MAC_IGU product name."""
-    text = _collapse(product_name)
+    text = strip_inch_overall(product_name)
+    text = text.replace(' / ', '+')
+    text = re.sub(r'\s*\+\s*', '+', text)
     text = re.sub(r'^\d+\s*-\s*', '', text)
-    text = text.replace(' +', '+')
     return _collapse(text)
+
+
+def _filename_part(value):
+    text = _ILLEGAL_FILENAME.sub('-', str(value or ''))
+    text = _collapse(text).strip(' .-')
+    return text[:80]
+
+
+def production_filename(order):
+    """Customer.Project.PO.xlsx. An empty PO uses the ERP order number."""
+    order = order or {}
+    company = _filename_part(order.get('company') or 'Customer')
+    project = _filename_part(order.get('project') or 'Order')
+    po = _filename_part(order.get('po') or order.get('customer_po') or '')
+    if not po:
+        po = _filename_part(order.get('id'))
+    parts = [part for part in (company, project, po) if part]
+    stem = '.'.join(parts) or f"order-{order.get('id') or 'export'}"
+    return stem + '.xlsx'
+
+
+def content_disposition(filename):
+    """Attachment header with an ASCII filename and an RFC 5987 filename*."""
+    from urllib.parse import quote
+    ascii_name = filename.encode('ascii', 'ignore').decode('ascii')
+    ascii_name = _ILLEGAL_FILENAME.sub('-', ascii_name).replace('"', '').strip() or 'production.xlsx'
+    encoded = quote(filename, safe='')
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
 
 
 def _pricing_names(path=None):
@@ -442,6 +493,30 @@ def apply_product_upload(rows, replace=False):
     return {'matched': matched, 'unmatched': unmatched, 'kept': kept}
 
 
+def _registry_hit(record):
+    """A registry row counts only when it has a production Product ID."""
+    if not record:
+        return None
+    product_id = str(record.get('product_id') or '').strip()
+    product_name = str(record.get('product_name') or '').strip()
+    if not product_id or not product_name:
+        return None
+    return {'product_id': product_id, 'product_name': product_name}
+
+
+def registry_for_makeup(makeup):
+    """Exact registry row for one IGU makeup. The name is the sheet text, unchanged."""
+    key = _collapse(makeup).casefold()
+    if not key:
+        return None
+    return _registry_hit(production_catalog().get(key))
+
+
+def registry_for_name(name):
+    """Match a quote or PDF description to the registry after the inch prefix is removed."""
+    return registry_for_makeup(makeup_from_product_name(name))
+
+
 def lookup_product(spec, fallback_name=''):
     """ID and name for one line at export time. A missing ID stays blank."""
     catalog = production_catalog()
@@ -457,6 +532,29 @@ def lookup_product(spec, fallback_name=''):
     return {'product_id': product_id, 'product_name': name, 'known': record is not None}
 
 
+def excel_identity(item):
+    """Production Excel name and ID. A match uses the registry text exactly."""
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+    found = lookup_product(spec, '')
+    hit = None
+    if found.get('product_id') and found.get('product_name'):
+        hit = {'product_id': found['product_id'], 'product_name': found['product_name']}
+    if hit is None:
+        hit = registry_for_name(item.get('name') or '')
+    if hit:
+        return {
+            'product_id': hit['product_id'],
+            'product_name': hit['product_name'],
+            'matched': True,
+        }
+    fallback = strip_inch_overall(item.get('name') or found.get('product_name') or '')
+    if '+' in fallback or 'mm' in fallback.casefold():
+        fallback = fallback.replace(' / ', '+')
+        fallback = re.sub(r'\s*\+\s*', '+', fallback)
+        fallback = _collapse(fallback)
+    return {'product_id': '', 'product_name': fallback, 'matched': False}
+
+
 def floor_code(item):
     """The floor where the piece is installed. Older lines called this a mark or location."""
     for key in ('floor', 'mark', 'location', 'floor_code'):
@@ -469,7 +567,7 @@ def floor_code(item):
 def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
     """One production-Excel row. Unit Price is always USD per square foot."""
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
-    found = lookup_product(spec, item.get('name') or '')
+    identity = excel_identity(item)
     width_mm, height_mm, width_in, height_in = dimensions_mm_in(
         spec.get('width'), spec.get('height'), spec.get('unit'),
     )
@@ -487,8 +585,8 @@ def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
     return {
         'Serial Number': serial,
         'Floor Code': floor_code(item),
-        'Product ID': found['product_id'],
-        'Product Name': found['product_name'],
+        'Product ID': identity['product_id'],
+        'Product Name': identity['product_name'],
         'Unit Price': unit_price,
         'Width(mm)': width_mm,
         'Height(mm)': height_mm,
@@ -557,7 +655,7 @@ def write_order_workbook(order):
     rate, _effective = currency_rules.rate_on((order or {}).get('date'))
     folder = os.path.join(data_dir(), 'production_exports')
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f"{order.get('id')}.xlsx")
+    path = os.path.join(folder, production_filename(order))
     payload = workbook_bytes(order.get('items') or [], (order or {}).get('currency'), rate)
     with open(path, 'wb') as handle:
         handle.write(payload)
