@@ -3684,7 +3684,8 @@ def _quote_for_viewer(quote, user):
             if isinstance(item.get('remarks'), str):
                 item['remarks'] = strip_copy_history(item.get('remarks'))
         items.append(item)
-    row['items'] = items
+    import documents
+    row['items'] = documents.describe_items(items)
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -5340,6 +5341,12 @@ def _shown_order_line(item):
     return row
 
 
+def _shown_order_items(items):
+    import documents
+    rows = [_shown_order_line(item) if isinstance(item, dict) else item for item in items or []]
+    return documents.describe_items(rows)
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -5418,7 +5425,7 @@ def order_for_viewer(order, user, with_coverage=False):
     base['qst_number'] = order.get('qst_number') or ''
     if not _order_prices_visible(user):
         items = []
-        for item in order.get('items') or []:
+        for item in _shown_order_items(order.get('items') or []):
             spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
             items.append({
                 'name': item.get('name') or '',
@@ -5451,7 +5458,7 @@ def order_for_viewer(order, user, with_coverage=False):
         base.update({'items': items, 'changelog': _scrub_shown_text(changelog), 'prices_visible': False})
         return base
     view = dict(base)
-    view['items'] = [_shown_order_line(item) for item in (order.get('items') or [])]
+    view['items'] = _shown_order_items(order.get('items') or [])
     view['shipping'] = shipments.shipment_progress(order)
     view['shipments'] = _public_shipments(order)
     view['billing_mode'] = _billing_mode(order)

@@ -90,6 +90,31 @@ def dimension_lines(width, height, unit):
     return wide, high
 
 
+def overall_thickness_mm(spec):
+    """Glass plus spacer millimetres, the overall unit size in the build name."""
+    makeup = makeup_from_spec(spec)
+    if not makeup:
+        return 0.0
+    total = 0.0
+    for part in makeup.split('+'):
+        match = re.match(r'\s*(\d+(?:\.\d+)?)mm', part, re.IGNORECASE)
+        if match:
+            total += float(match.group(1))
+    return total
+
+
+def build_label(spec):
+    """Full IGU name: 32 (1 1/4") - 4mmSolarban60 VT Tempered+24mm..."""
+    makeup = makeup_from_spec(spec)
+    if not makeup:
+        return ''
+    total = overall_thickness_mm(spec)
+    if total <= 0:
+        return makeup
+    mm = int(total) if float(total).is_integer() else total
+    return f'{mm} ({inch_fraction(total / 25.4)}") - {makeup}'
+
+
 def glass_thickness_mm(spec):
     """Sum of the lite thicknesses. Spacers are not glass."""
     total = 0.0
@@ -131,8 +156,32 @@ def charged_sqf(item):
     return _number(item.get('sqf')) * pieces
 
 
+def describe_items(items):
+    """Show the full build name on screen. Surcharge lines use that same name."""
+    shown = []
+    last = ''
+    for item in items or []:
+        if not isinstance(item, dict):
+            shown.append(item)
+            continue
+        row = dict(item)
+        kind = row.get('kind')
+        if kind == 'irregular_surcharge' and last:
+            row['name'] = f'Irregular shape surcharge – {last}'
+        elif kind not in {'irregular_surcharge', 'dwg_creation'}:
+            spec = row.get('spec') if isinstance(row.get('spec'), dict) else None
+            label = build_label(spec) if spec else ''
+            if label:
+                row['name'] = label
+                last = label
+            else:
+                last = ''
+        shown.append(row)
+    return shown
+
+
 def line_description(item):
-    """One component per line. The production ID leads the first line when it is known."""
+    """One component per line. The overall thickness leads the first line."""
     if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
         return escape(str(item.get('name') or ''))
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
@@ -144,13 +193,15 @@ def line_description(item):
         product_id = ''
         if spec:
             product_id = str(lookup_product(spec, '').get('product_id') or '').strip()
+        prefix = ''
+        label = build_label(spec)
+        if label.endswith(makeup):
+            prefix = label[: -len(makeup)]
         lines = []
         last = len(parts) - 1
         for index, part in enumerate(parts):
-            if index == 0 and product_id:
-                shown = f'{product_id} - {part}'
-            elif index == 0:
-                shown = part
+            if index == 0:
+                shown = prefix + (f'{product_id} - ' if product_id else '') + part
             else:
                 shown = f'+{part}'
             lines.append(escape(shown) + (' /' if index < last else ''))

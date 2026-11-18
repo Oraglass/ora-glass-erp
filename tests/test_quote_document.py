@@ -7,6 +7,27 @@ from tests.conftest import login, write_user
 from tests.test_quote_export import pdf_text
 
 
+def test_build_label_puts_overall_millimetres_and_inches_first():
+    spec = {
+        'glass1': 'Solarban60 VT 4mm', 'temper1': 'yes',
+        'spacer1': 'Superspacer 24mm / sqf', 'sealant1': 'Polysulfide',
+        'glass2': 'Clear Glass 4mm', 'temper2': 'yes',
+    }
+    assert documents.build_label(spec) == (
+        '32 (1 1/4") - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)'
+        '+4mmClear Glass Tempered'
+    )
+    text = documents.line_description({'spec': spec})
+    assert text.startswith('32 (1 1/4") - 4mmSolarban60 VT Tempered /')
+    assert '<br/>+' in text
+    surcharge = documents.describe_items([
+        {'name': 'Short', 'spec': spec},
+        {'kind': 'irregular_surcharge', 'name': 'Irregular shape surcharge – Short'},
+    ])
+    assert surcharge[0]['name'] == documents.build_label(spec)
+    assert surcharge[1]['name'] == f"Irregular shape surcharge – {documents.build_label(spec)}"
+
+
 def test_inch_fractions_and_real_area_weight():
     assert documents.inch_fraction(49.25) == '49 1/4'
     assert documents.inch_fraction(77 + 23 / 32) == '77 23/32'
@@ -36,7 +57,7 @@ def test_description_puts_the_production_id_on_its_own_components(monkeypatch):
         'glass2': 'SolarCoat 4mm', 'temper2': 'yes',
     }
     text = documents.line_description({'spec': spec})
-    assert text.startswith('48 - ')
+    assert text.startswith('26 (1 1/32") - 48 - ')
     assert '<br/>+' in text
     assert ' /' in text
     assert makeup_from_spec(spec)
