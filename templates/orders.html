@@ -144,19 +144,27 @@ function badge(order) {
   const status = order.status || 'approved';
   return '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
 }
+function orderPdfLink(order) {
+  return '<a class="btn small secondary" id="list-pdf-' + esc(order.id) + '" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
+}
+function orderExcelLink(order) {
+  if (!STAFF) return '';
+  return ' <a class="btn small secondary" id="list-excel-' + esc(order.id) + '" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+}
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '');
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
   const body = document.getElementById('order-list');
   if (!orders.length) {
-    body.innerHTML = '<tr><td colspan="8" style="color:#666">No production orders</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" style="color:#666">No production orders</td></tr>';
     return;
   }
   body.innerHTML = orders.map(order => {
     const priceCells = PRICES
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(order.approved_at || '') + '</td>' + priceCells + '</tr>';
+    const when = order.approved_at_display || order.approved_at || '';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td>' + orderPdfLink(order) + orderExcelLink(order) + '</td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -231,7 +239,7 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
-  buttons += '<a class="btn secondary" id="order-confirmation" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Download order confirmation</a>';
+  buttons += '<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
   if (STAFF) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
@@ -271,11 +279,11 @@ function renderDetail(order) {
     + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
     + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
+    + '<div class="actions">' + buttons + '</div>'
     + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.</p>'
     + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
     + notes + jobText + jobForm + tax + (documents ? documentNote : invoice)
     + shipForm
-    + '<div class="actions">' + buttons + '</div>'
     + drawingBlock
     + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Total sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + totalsTable(order) + coverageBlock(order) + changelogBlock(order);

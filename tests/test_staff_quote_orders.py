@@ -274,7 +274,8 @@ def test_staff_see_every_quote_and_order_and_can_filter_and_sort(client):
     client.post('/logout')
 
     assert login(client, 'two@summit.example').status_code == 302
-    assert client.get('/api/orders').status_code == 403
+    own_orders = client.get('/api/orders').get_json()
+    assert [row['id'] for row in own_orders] == [second_id]
     assert client.get('/api/order-customers').status_code == 403
 
 

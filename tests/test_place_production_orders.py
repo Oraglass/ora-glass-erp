@@ -66,7 +66,7 @@ def test_place_production_orders_is_a_privilege(client):
     other_id = _quote(client, 'Lee job')
     assert b'const CAN_ORDER = false' in client.get('/quote-history').data
     assert client.post(f'/api/quotes/{other_id}/order', json={}).status_code == 403
-    assert client.get('/orders').status_code in {302, 403}
+    assert client.get('/orders').status_code == 200
     client.post('/logout')
 
     assert login(client, 'ada@harbor.example').status_code == 302
@@ -96,8 +96,8 @@ def test_place_production_orders_is_a_privilege(client):
     assert login(client, 'boss@harbor.example').status_code == 302
     assert b'const CAN_ORDER = false' in client.get('/quote-history').data
     assert client.post(f'/api/quotes/{other_id}/order', json={}).status_code == 403
-    assert client.get('/orders').status_code in {302, 403}
-    assert client.get('/api/orders').status_code == 403
+    assert client.get('/orders').status_code == 200
+    assert client.get('/api/orders').status_code == 200
     client.post('/logout')
 
     assert login(client, 'pat@oraglass.us').status_code == 302
