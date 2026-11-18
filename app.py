@@ -1953,11 +1953,15 @@ def calculate():
         customer = customers.get(requested) if requested else None
     price = _sell_price(data, tier, tiers, _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000)))
     minimum_sqf = _effective_minimum(customer)
-    try:
-        supplied = float(data.get('fx_rate'))
-    except (TypeError, ValueError):
-        supplied = 0
-    fx_rate = supplied if supplied > 0 else _current_fx()[0]
+    # A customer page hides the exchange rate and sends 1. Their CAD price still uses the ERP rate.
+    if user.get('role') == 'customer':
+        fx_rate = _current_fx()[0]
+    else:
+        try:
+            supplied = float(data.get('fx_rate'))
+        except (TypeError, ValueError):
+            supplied = 0
+        fx_rate = supplied if supplied > 0 else _current_fx()[0]
     body = {'price_sqf': price, 'tier': tier, 'minimum_sqf': minimum_sqf}
     if user.get('role') == 'customer':
         if _required_currency(customer) == 'cad':
