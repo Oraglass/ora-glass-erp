@@ -242,6 +242,12 @@ def _header(document, styles):
     kind = document.get('kind') or 'quote'
     if kind == 'order':
         title = 'Order Confirmation'
+        try:
+            revision = int(document.get('revision') or 0)
+        except (TypeError, ValueError):
+            revision = 0
+        if revision > 0:
+            title = f'Order Confirmation Revision {revision}'
         number_label = 'Order'
     else:
         title = 'Quotation'

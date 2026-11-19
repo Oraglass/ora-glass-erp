@@ -127,7 +127,7 @@ def test_management_converts_a_per_size_quote_once_at_company_tier(client):
     assert quote['tier'] == 'T5'
     assert quote['items'][0]['total'] == '99.99'
     assert quote['order_id'] == order_id
-    assert quote['order_status'] == 'Approved for order'
+    assert quote['order_status'] == 'Submitted - awaiting Ora Glass review'
 
     expected = reprice_size_line(SPEC, 1, 'T2', 'usd', PRICING, load_tiers())
     other = reprice_size_line(SPEC, 1, 'T5', 'usd', PRICING, load_tiers())
@@ -148,11 +148,11 @@ def test_management_converts_a_per_size_quote_once_at_company_tier(client):
     visible = next(row for row in history if row['id'] == quote_id)
     assert visible['tier'] == 'T5'
     assert visible['items'][0]['total'] == '99.99'
-    assert visible['order_status'] == 'Approved for order'
+    assert visible['order_status'] == 'Submitted - awaiting Ora Glass review'
 
     page = client.get('/quote-history')
     assert b'Order for production' in page.data
-    assert b'Approved for order' in page.data or b'order_id' in page.data
+    assert b'Submitted - awaiting Ora Glass review' in page.data or b'order_id' in page.data
     orders_page = client.get('/orders')
     assert orders_page.status_code == 200
     assert b'Production orders' in orders_page.data

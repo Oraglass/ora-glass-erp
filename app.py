@@ -27,6 +27,8 @@ from billing import (
     CURRENCIES,
     NEXT_STATUS,
     PAYMENT_METHODS,
+    RELEASED_STATUSES,
+    REVIEW_STATUSES,
     STATUS_LABELS,
     apply_credit_limit,
     apply_payment_terms,
@@ -152,6 +154,7 @@ from storage import (
     load_users,
     save_customers,
     save_invoices,
+    save_orders,
     save_payments,
     update_order,
     ordered_tiers,
@@ -1233,6 +1236,10 @@ def bootstrap_once():
         tax_numbers.seed_seller_gst()
     except Exception:
         logger.exception('Tax number history seed failed')
+    try:
+        _migrate_order_one_review()
+    except Exception:
+        logger.exception('Order 1 review migration failed')
     _state['bootstrapped'] = True
 
 
@@ -1277,10 +1284,17 @@ def inject_user():
             nav.extend(extras)
     if user and user.get('role') == 'customer':
         nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
+    review_count = _orders_awaiting_staff(user)
+    if review_count:
+        nav = [
+            dict(item, label=f"{item['label']} ({review_count})") if item.get('id') == 'orders' else item
+            for item in nav
+        ]
     return {
         'current_user': user,
         'nav_modules': nav,
         'has_dashboard': 'dashboard' in allowed,
+        'review_count': review_count,
     }
 
 
@@ -1498,6 +1512,7 @@ def dashboard():
         resale_warnings=_resale_warnings(user),
         show_resale=_customer_uses_resale(user),
         canada_tax_label=_canada_tax_label(user),
+        review_count=_orders_awaiting_staff(user),
     )
 
 
@@ -2025,8 +2040,13 @@ def _pdf_document(source, kind, user=None):
         log = source.get('changelog') or []
         if log and isinstance(log[-1], dict) and log[-1].get('user'):
             updated_by = log[-1].get('user')
+    remarks = strip_copy_history(source.get('notes') or source.get('remarks') or '')
+    customer_note = strip_copy_history(source.get('customer_note') or '')
+    if customer_note and customer_note not in remarks:
+        remarks = (remarks + '\n' + customer_note).strip()
     return {
         'kind': kind,
+        'revision': source.get('revision') or 0,
         'id': '' if source.get('id') in (None, '') else source.get('id'),
         'date': source.get('date') or source.get('approved_at') or '',
         'project': source.get('project') or '',
@@ -2038,7 +2058,7 @@ def _pdf_document(source, kind, user=None):
         'updated_by': updated_by,
         'po': source.get('po') or source.get('customer_po') or '',
         'payment_terms': (customer or {}).get('payment_terms') or '',
-        'remarks': strip_copy_history(source.get('notes') or source.get('remarks') or ''),
+        'remarks': remarks,
         'items': source.get('items') or [],
         'extra_charges': source.get('extra_charges') or [],
         'additional_discount_percent': source.get('additional_discount_percent') or 0,
@@ -2189,6 +2209,7 @@ def export_open_shipments_pdf():
 @module_required('orders')
 def orders():
     user = current_user()
+    glass, spacers, _sealants = _live_materials()
     return render_template(
         'orders.html',
         note=scope_note(),
@@ -2196,10 +2217,12 @@ def orders():
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
         can_job_address=can_edit_job_address(user),
+        can_decide=can_place_production_orders(user),
         show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
-        glass_names=[item.get('name') for item in _live_materials()[0]],
+        glass_names=[item.get('name') for item in glass],
+        spacer_names=[item.get('name') for item in spacers],
         irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
     )
 
@@ -2212,6 +2235,7 @@ def order_detail(order_id):
     if not order:
         flash('Order not found.', 'error')
         return redirect(url_for('orders'))
+    glass, spacers, _sealants = _live_materials()
     return render_template(
         'orders.html',
         note=scope_note(),
@@ -2219,10 +2243,12 @@ def order_detail(order_id):
         staff_view=staff_can_order(user),
         can_edit=can_edit_orders(user),
         can_job_address=can_edit_job_address(user, order),
+        can_decide=can_place_production_orders(user),
         show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
         is_admin=user.get('role') == 'admin',
-        glass_names=[item.get('name') for item in _live_materials()[0]],
+        glass_names=[item.get('name') for item in glass],
+        spacer_names=[item.get('name') for item in spacers],
         irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
         focus_id=order_id,
     )
@@ -5463,6 +5489,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'tier_label': tier_label(order.get('tier')) or order.get('tier_label'),
         'status': status,
         'status_label': STATUS_LABELS[status],
+        **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
         'drawings': [
@@ -5544,7 +5571,14 @@ def order_for_viewer(order, user, with_coverage=False):
         base.update({'items': items, 'changelog': _scrub_shown_text(changelog), 'prices_visible': False})
         return base
     view = dict(base)
-    view['items'] = _shown_order_items(order.get('items') or [])
+    shown_items = _shown_order_items(order.get('items') or [])
+    if user.get('role') == 'customer':
+        shown_items = [
+            {key: value for key, value in item.items() if not str(key).startswith('internal_')}
+            if isinstance(item, dict) else item
+            for item in shown_items
+        ]
+    view['items'] = shown_items
     view['shipping'] = shipments.shipment_progress(order)
     view['shipments'] = _public_shipments(order)
     view['billing_mode'] = _billing_mode(order)
@@ -5842,8 +5876,11 @@ def convert_quote_to_order(quote_id):
         'seller_gst_number': tax_numbers.seller_gst_number() if tax else '',
         'show_seller_gst': bool(tax),
         'drawings': [],
-        'status': 'approved',
+        'status': 'submitted' if user.get('role') == 'customer' else 'approved',
         'changelog': [],
+        'revisions': [],
+        'revision': 0,
+        'customer_note': '',
         'approved_by': user.get('email'),
         'converted_by': user.get('email'),
         'approved_at': approved_at,
@@ -5865,10 +5902,14 @@ def convert_quote_to_order(quote_id):
         update_order(order['id'], remember)
         order['drawings'] = saved_drawings
     _remember_igus(order.get('items'), order.get('date'), order.get('id'))
-    _write_production_file(order)
+    if order.get('status') in RELEASED_STATUSES:
+        _write_production_file(order)
     updated = dict(quote)
     updated['order_id'] = order['id']
-    updated['order_status'] = 'Approved for order'
+    updated['order_status'] = (
+        'Submitted - awaiting Ora Glass review'
+        if order.get('status') == 'submitted' else 'Approved for order'
+    )
     replace_quote(quote_id, updated)
     payload = {
         'success': True,
@@ -5904,6 +5945,11 @@ def download_production_excel(order_id):
     order = _owned_order(user, order_id)
     if not order:
         return json_error('Not found', 404)
+    if order_status(order) not in RELEASED_STATUSES:
+        return json_error(
+            'This order is not approved for production yet. The Excel file is available after Ora Glass approves it for production.',
+            409,
+        )
     import currency_rules
     rate, _effective = currency_rules.rate_on(order.get('date'))
     payload = production.workbook_bytes(order.get('items') or [], order.get('currency'), rate)
@@ -6132,6 +6178,216 @@ def _parse_charges(raw):
     return charges, None
 
 
+def _orders_awaiting_staff(user):
+    """Orders a customer submitted, or re-approved, that Ora Glass has not released."""
+    if not user or not staff_can_order(user):
+        return 0
+    return sum(1 for order in load_orders() if order_status(order) in {'submitted', 'reapproved'})
+
+
+def _migrate_order_one_review():
+    """Order 1 stays Approved when a production file already exists. Otherwise it waits for review."""
+    orders = load_orders()
+    order = next((row for row in orders if row.get('id') == 1), None)
+    if not order or order_status(order) != 'approved':
+        return {'order': 1, 'action': 'unchanged'}
+    folder = os.path.join(data_dir(), 'production_exports')
+    exported = os.path.isfile(os.path.join(folder, production.production_filename(order)))
+    if exported:
+        logger.info('Order 1 already has a production Excel file, so it stays Approved.')
+        return {'order': 1, 'action': 'kept', 'reason': 'exported'}
+    order['status'] = 'submitted'
+    save_orders(orders)
+    logger.info('Order 1 was Approved and had not been exported. It now awaits Ora Glass review.')
+    return {'order': 1, 'action': 'submitted'}
+
+
+def _line_brief(item):
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+    parts = [str(item.get('name') or spec.get('glass1') or 'Line')]
+    glass = spec.get('glass1') or ''
+    if glass and glass not in parts[0]:
+        parts.append(str(glass))
+    if spec.get('width') not in (None, ''):
+        parts.append(f"{spec.get('width')} x {spec.get('height')} {spec.get('unit') or ''}".strip())
+    if item.get('pcs') not in (None, ''):
+        parts.append(f"qty {item.get('pcs')}")
+    floor = item.get('floor') or item.get('mark') or ''
+    if floor:
+        parts.append(f"floor {floor}")
+    if item.get('remarks'):
+        parts.append(str(item.get('remarks')))
+    return ' · '.join(parts)
+
+
+def _revision_lines(before_items, after_items):
+    rows = []
+    old_items = [item for item in before_items or [] if isinstance(item, dict)]
+    new_items = [item for item in after_items or [] if isinstance(item, dict)]
+    shared = min(len(old_items), len(new_items))
+    for index in range(shared):
+        old, new = old_items[index], new_items[index]
+        if _line_brief(old) == _line_brief(new) and money(old.get('total')) == money(new.get('total')):
+            continue
+        rows.append({
+            'name': new.get('name') or old.get('name') or 'Line',
+            'before': _line_brief(old),
+            'after': _line_brief(new),
+            'old_total': money(old.get('total')),
+            'new_total': money(new.get('total')),
+        })
+    for item in old_items[shared:]:
+        rows.append({'name': item.get('name') or 'Line', 'before': _line_brief(item), 'after': 'Removed', 'old_total': money(item.get('total')), 'new_total': 0})
+    for item in new_items[shared:]:
+        rows.append({'name': item.get('name') or 'Line', 'before': '', 'after': _line_brief(item), 'old_total': 0, 'new_total': money(item.get('total'))})
+    return rows
+
+
+def _retax_snapshot(order):
+    """Recalculate Canada tax from the numbers stored on the order. USD orders are unchanged."""
+    import tax_numbers
+    pretax = order.get('pretax_total')
+    if pretax in (None, ''):
+        pretax = order.get('total')
+    if not order.get('show_seller_gst') and not order.get('tax_lines'):
+        order['pretax_total'] = round(float(pretax or 0), 2)
+        order['total'] = order['pretax_total']
+        return order
+    lines = tax_numbers.tax_breakdown(
+        order.get('ship_province'), pretax, order.get('pst_number'), order.get('qst_number'),
+    )
+    order['tax_lines'] = lines
+    order['tax_total'] = tax_numbers.tax_total(lines)
+    order['pretax_total'] = round(float(pretax or 0), 2)
+    order['total'] = round(order['pretax_total'] + order['tax_total'], 2)
+    return order
+
+
+def _technical_prices(original, updated):
+    """Keep the customer's line prices. The recalculated price is stored for staff only."""
+    priced = list(updated.get('items') or [])
+    old_items = [
+        item for item in (original.get('items') or [])
+        if isinstance(item, dict) and item.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+    ]
+    internal = 0.0
+    kept = []
+    money_keys = ('sqf', 'real_sqf', 'minimum_sqf', 'price_sqf', 'price_pc', 'total')
+    glass_index = 0
+    for item in priced:
+        row = dict(item)
+        if row.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            kept.append(row)
+            continue
+        internal += money(row.get('total'))
+        row['internal_total'] = money(row.get('total'))
+        row['internal_price_sqf'] = row.get('price_sqf')
+        if glass_index < len(old_items):
+            source = old_items[glass_index]
+            for key in money_keys:
+                if key in source:
+                    row[key] = source[key]
+        else:
+            row['price_sqf'] = 0
+            row['price_pc'] = 0
+            row['total'] = 0
+        glass_index += 1
+        kept.append(row)
+    updated['items'] = kept
+    for key in (
+        'igu_subtotal', 'igu_total', 'discount_amount', 'additional_discount_amount',
+        'extras_total', 'pretax_total', 'tax_lines', 'tax_total', 'total', 'discount', 'extra_charges',
+    ):
+        if key in original:
+            updated[key] = original[key]
+    customer_base = money(original.get('pretax_total') if original.get('pretax_total') not in (None, '') else original.get('total'))
+    updated['internal_total'] = round(internal, 2)
+    updated['internal_price_difference'] = round(internal - customer_base, 2)
+    return updated
+
+
+def _append_revision(order, user, kind, lines, price_choice='', note='', comment='', old_total=None, new_total=None):
+    revisions = list(order.get('revisions') or [])
+    number = int(order.get('revision') or 0)
+    if kind == 'staff_edit':
+        number += 1
+    entry = {
+        'number': number,
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'user': user.get('email') or '',
+        'kind': kind,
+        'price_choice': price_choice,
+        'note': note,
+        'comment': comment,
+        'old_total': None if old_total is None else money(old_total),
+        'new_total': None if new_total is None else money(new_total),
+        'internal_total': order.get('internal_total'),
+        'internal_price_difference': order.get('internal_price_difference'),
+        'lines': lines,
+    }
+    revisions.append(entry)
+    order['revisions'] = revisions
+    order['revision'] = number
+    return entry
+
+
+def _review_payload(order, user):
+    staff = user.get('role') != 'customer'
+    prices = _order_prices_visible(user)
+    revisions = []
+    for rev in order.get('revisions') or []:
+        if not isinstance(rev, dict):
+            continue
+        lines = []
+        for line in rev.get('lines') or []:
+            shown = {
+                'name': line.get('name') or '',
+                'before': line.get('before') or '',
+                'after': line.get('after') or '',
+            }
+            if prices or staff:
+                if rev.get('price_choice') != 'technical':
+                    shown['old_total'] = line.get('old_total')
+                    shown['new_total'] = line.get('new_total')
+            lines.append(shown)
+        shown_rev = {
+            'number': rev.get('number') or 0,
+            'at': rev.get('at') or '',
+            'user': rev.get('user') or '',
+            'kind': rev.get('kind') or '',
+            'note': rev.get('note') or '',
+            'comment': rev.get('comment') or '',
+            'price_choice': rev.get('price_choice') or '',
+            'lines': lines,
+        }
+        if prices and rev.get('price_choice') == 'apply':
+            shown_rev['old_total'] = rev.get('old_total')
+            shown_rev['new_total'] = rev.get('new_total')
+        if staff:
+            shown_rev['old_total'] = rev.get('old_total')
+            shown_rev['new_total'] = rev.get('new_total')
+            shown_rev['internal_total'] = rev.get('internal_total')
+            shown_rev['internal_price_difference'] = rev.get('internal_price_difference')
+        revisions.append(shown_rev)
+    latest = next((rev for rev in reversed(revisions) if rev.get('kind') == 'staff_edit'), None)
+    status = order_status(order)
+    payload = {
+        'customer_note': order.get('customer_note') or '',
+        'customer_comment': order.get('customer_comment') or '',
+        'price_choice': order.get('price_choice') or '',
+        'revision': order.get('revision') or 0,
+        'revisions': revisions,
+        'change_summary': latest if status == 'customer_review' else None,
+        'excel_ready': status in RELEASED_STATUSES,
+        'can_release': staff and status in {'submitted', 'reapproved'},
+        'can_respond': bool(can_place_production_orders(user) and status == 'customer_review'),
+    }
+    if staff:
+        payload['internal_price_difference'] = order.get('internal_price_difference')
+        payload['internal_total'] = order.get('internal_total')
+    return payload
+
+
 def _edited_order(order, data, tiers):
     currency = order.get('currency') or 'usd'
     tier = order.get('tier')
@@ -6204,6 +6460,35 @@ def edit_order(order_id):
         if address_only:
             _stamp_log(updated, user, diff_changes(order, updated))
             return updated, None
+        if order_status(order) in REVIEW_STATUSES:
+            choice = clean_text(data.get('price_choice'), 20)
+            note = strip_copy_history(clean_text(data.get('customer_note'), 2000))
+            if choice not in {'apply', 'technical'}:
+                return None, 'Choose whether the new price applies to the customer.'
+            if not note:
+                return None, 'Write a note to the customer explaining the change.'
+            old_total = money(order.get('total'))
+            if choice == 'technical':
+                _technical_prices(order, updated)
+            else:
+                updated.pop('internal_price_difference', None)
+                updated.pop('internal_total', None)
+                priced_pretax = updated.get('total')
+                updated['pretax_total'] = priced_pretax
+                _retax_snapshot(updated)
+            updated['status'] = 'customer_review'
+            updated['customer_note'] = note
+            updated['price_choice'] = choice
+            lines = _revision_lines(order.get('items'), updated.get('items'))
+            _append_revision(
+                updated, user, 'staff_edit', lines, choice, note,
+                old_total=old_total, new_total=updated.get('total'),
+            )
+            changes = diff_changes(order, updated)
+            changes.append({'field': 'customer_note', 'new': note})
+            changes.append({'field': 'price_choice', 'new': choice})
+            _stamp_log(updated, user, changes)
+            return updated, None
         if order_status(order) in {'sent', 'made'}:
             customer = dict(load_customers().get(order.get('customer_id') or '') or {})
             customer.setdefault('id', order.get('customer_id'))
@@ -6223,6 +6508,91 @@ def edit_order(order_id):
     if error:
         return json_error(error, 400)
     _remember_igus(saved.get('items'), saved.get('date'), saved.get('id'))
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/approve-production', methods=['POST'])
+@module_required('orders')
+def approve_order_for_production(order_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to approve an order for production.', 403)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+
+    def mutator(order):
+        current = order_status(order)
+        if current not in {'submitted', 'reapproved'}:
+            return None, f'An order that is {STATUS_LABELS[current]} cannot be approved for production.'
+        updated = dict(order)
+        updated['status'] = 'approved'
+        updated['production_approved_by'] = user.get('email') or ''
+        updated['production_approved_at'] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        _append_revision(updated, user, 'staff_approve', [], note='Approved for production')
+        _stamp_log(updated, user, [{
+            'field': 'status',
+            'old': STATUS_LABELS[current],
+            'new': 'Approved for production',
+        }])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    _write_production_file(saved)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/customer-decision', methods=['POST'])
+@module_required('orders')
+def customer_order_decision(order_id):
+    user = current_user()
+    if not can_place_production_orders(user):
+        return json_error('You are not allowed to approve production changes.', 403)
+    data = json_body() or {}
+    action = clean_text(data.get('action'), 20)
+    if action not in {'approve', 'reject'}:
+        return json_error('Choose approve or reject.', 400)
+    comment = strip_copy_history(clean_text(data.get('comment'), 2000))
+    if action == 'reject' and not comment:
+        return json_error('Write a comment for Ora Glass.', 400)
+    visible = _owned_order(user, order_id)
+    if not visible:
+        return json_error('Not found', 404)
+
+    def mutator(order):
+        if user.get('customer_id') != order.get('customer_id'):
+            return None, 'Not found'
+        if order_status(order) != 'customer_review':
+            return None, 'This order is not waiting for customer approval.'
+        updated = dict(order)
+        if action == 'approve':
+            updated['status'] = 'reapproved'
+            updated['customer_comment'] = ''
+            _append_revision(updated, user, 'customer_approve', [], note='Approved the changes')
+            _stamp_log(updated, user, [{
+                'field': 'status',
+                'old': STATUS_LABELS['customer_review'],
+                'new': STATUS_LABELS['reapproved'],
+            }])
+        else:
+            updated['status'] = 'submitted'
+            updated['customer_comment'] = comment
+            _append_revision(updated, user, 'customer_reject', [], comment=comment)
+            _stamp_log(updated, user, [
+                {'field': 'status', 'old': STATUS_LABELS['customer_review'], 'new': STATUS_LABELS['submitted']},
+                {'field': 'comment', 'new': comment},
+            ])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 

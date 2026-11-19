@@ -176,6 +176,7 @@ def test_status_flow_credit_gate_invoice_and_prepayment(client):
     customers = load_customers()
     customers['harbor-glass']['credit_limit'] = 0
     save_customers(customers)
+    assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
     refused = client.post(f'/api/orders/{order_id}/status', json={'status': 'sent'})
     assert refused.status_code == 400
     assert b'Shortfall' in refused.data
@@ -284,6 +285,7 @@ def test_partial_payment_invoice_status_and_void(client):
     assert login(client, 'clerk@oraglass.us').status_code == 302
     order = client.get(f'/api/orders/{order_id}').get_json()
     total = order['total']
+    assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
     assert client.post(f'/api/orders/{order_id}/status', json={'status': 'sent'}).status_code == 200
     assert client.post(f'/api/orders/{order_id}/status', json={'status': 'made'}).status_code == 200
     delivered = client.post(f'/api/orders/{order_id}/status', json={'status': 'delivered'})
