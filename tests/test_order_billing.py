@@ -79,6 +79,8 @@ def test_admin_edits_lines_discount_and_charges_and_the_log_is_append_only(clien
         'discount': {'type': 'percent', 'value': 10},
         'extra_charges': [{'label': 'Delivery', 'amount': 25}, {'label': 'Crane', 'amount': 10}],
         'items': [{'name': 'Unit - 24 x 36 in', 'pcs': 2, 'spec': SPEC}],
+        'price_choice': 'apply',
+        'customer_note': 'Quantity is now 2.',
         'changelog': [{'user': 'nobody', 'changes': []}],
     })
     assert edited.status_code == 200, edited.data
@@ -116,6 +118,8 @@ def test_admin_edits_lines_discount_and_charges_and_the_log_is_append_only(clien
         'discount': {'type': 'amount', 'value': 5},
         'extra_charges': [{'label': 'Delivery', 'amount': 25}],
         'items': [{'name': 'Unit - 24 x 36 in', 'pcs': 2, 'spec': SPEC}],
+        'price_choice': 'apply',
+        'customer_note': 'Discount is now a fixed amount.',
     })
     assert fixed.status_code == 200
     fixed_body = fixed.get_json()
@@ -139,7 +143,9 @@ def test_admin_edits_lines_discount_and_charges_and_the_log_is_append_only(clien
     assert b'const CAN_EDIT = false' in page.data
     client.post('/logout')
     assert login(client, 'editor@oraglass.us').status_code == 302
-    assert client.put(f'/api/orders/{order_id}', json={'notes': 'Editor note'}).status_code == 200
+    assert client.put(f'/api/orders/{order_id}', json={
+        'notes': 'Editor note', 'price_choice': 'technical', 'customer_note': 'Note only.',
+    }).status_code == 200
     assert original['total'] != priced['total']
 
 

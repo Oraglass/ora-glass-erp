@@ -227,10 +227,13 @@ def shipment_progress(order):
                 items[index], quantity=left, serial=row['serial'],
                 currency=(order or {}).get('currency'), fx_rate=rate,
             )
+            from documents import piece_size_text
+            line_spec = items[index].get('spec') if isinstance(items[index].get('spec'), dict) else {}
             lines.append({
                 'index': index,
                 'serial': exported['Serial Number'],
                 'floor_code': exported['Floor Code'],
+                'size': piece_size_text(line_spec.get('width'), line_spec.get('height'), line_spec.get('unit')),
                 'product_id': exported['Product ID'],
                 'name': exported['Product Name'],
                 'width_mm': exported['Width(mm)'],

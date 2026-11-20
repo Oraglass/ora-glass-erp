@@ -34,8 +34,8 @@ def test_inch_fractions_and_real_area_weight():
     assert documents.inch_fraction(24) == '24'
     wide, high = documents.dimension_lines(49.25, 12, 'in')
     assert '49 1/4' in wide
-    assert '1251 mm' in wide
-    assert '305 mm' in high
+    assert '1250.95 mm' in wide
+    assert '304.8 mm' in high
     triple = {
         'pcs': 1, 'real_sqf': 151.33, 'sqf': 200,
         'spec': {'glass1': '4mm Clear', 'glass2': '4mm Clear', 'glass3': '4mm Clear'},
@@ -113,9 +113,9 @@ def test_size_pdf_matches_the_production_layout_and_orders_use_it(client):
     assert b'US$/SQF' in text
     assert b'US$/PC' in text
     assert b'24' in text
-    assert b'610 mm' in text
+    assert b'609.6 mm' in text
     assert b'12' in text
-    assert b'305 mm' in text
+    assert b'304.8 mm' in text
     assert b'18.00' in text
     assert b'Total Pcs: 3' in text
     assert b'Total SQ/FT' in text

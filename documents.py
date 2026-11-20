@@ -77,6 +77,27 @@ def inch_fraction(inches):
     return f'{sign}{numer}/{denom}'
 
 
+def _display_mm(value):
+    """At most two decimal places. A whole millimetre stays a whole number."""
+    number = round(_number(value), 2)
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return f'{number:.2f}'.rstrip('0').rstrip('.')
+
+
+def piece_size_text(width, height, unit=None):
+    """Piece size in inches and millimetres. 25.4 mm is one inch."""
+    if width in (None, '') or height in (None, ''):
+        return ''
+    try:
+        width_mm, height_mm, width_in, height_in = dimensions_mm_in(width, height, unit)
+    except (TypeError, ValueError):
+        return ''
+    inches = f'{inch_fraction(width_in)} x {inch_fraction(height_in)} in'
+    millimetres = f'{_display_mm(width_mm)} x {_display_mm(height_mm)} mm'
+    return f'{inches} ({millimetres})'
+
+
 def dimension_lines(width, height, unit):
     """Inch fraction on the first line and whole millimetres on the second."""
     if width in (None, '') or height in (None, ''):
@@ -85,8 +106,8 @@ def dimension_lines(width, height, unit):
         width_mm, height_mm, width_in, height_in = dimensions_mm_in(width, height, unit)
     except (TypeError, ValueError):
         return '', ''
-    wide = f'{inch_fraction(width_in)}<br/>{int(round(width_mm))} mm'
-    high = f'{inch_fraction(height_in)}<br/>{int(round(height_mm))} mm'
+    wide = f'{inch_fraction(width_in)}<br/>{_display_mm(width_mm)} mm'
+    high = f'{inch_fraction(height_in)}<br/>{_display_mm(height_mm)} mm'
     return wide, high
 
 
@@ -178,6 +199,9 @@ def describe_items(items):
                 last = label
             else:
                 last = ''
+        spec = row.get('spec') if isinstance(row.get('spec'), dict) else None
+        if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
+            row['size_label'] = piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit'))
         shown.append(row)
     return shown
 

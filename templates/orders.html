@@ -31,7 +31,10 @@ a{color:#C41E3A}
 .badge.sent{background:#e7f1ff;color:#1d4ed8}
 .badge.made{background:#efe7ff;color:#6d28d9}
 .badge.delivered{background:#d4edda;color:#155724}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.actions,.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.row-actions{margin:0}
+#ship-lines{margin-top:8px}
+#ship-lines input{width:5rem}
 .editor{border:1px solid #eee;border-radius:8px;padding:16px;margin-top:12px;background:#fafafa}
 .edit-grid{display:grid;grid-template-columns:1.4fr repeat(4, .7fr) auto;gap:8px;align-items:end;margin-bottom:8px}
 .totals{max-width:420px;margin-left:auto}
@@ -166,7 +169,13 @@ function orderPdfLink(order) {
 }
 function orderExcelLink(order) {
   if (!STAFF || !order.excel_ready) return '';
-  return ' <a class="btn small secondary" id="list-excel-' + esc(order.id) + '" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+  return '<a class="btn small secondary" id="list-excel-' + esc(order.id) + '" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+}
+function orderOpenLink(order) {
+  const review = !!(order.can_release || order.can_respond);
+  const label = review ? 'Review' : 'Open';
+  const cls = review ? 'btn small' : 'btn small secondary';
+  return '<a class="' + cls + '" id="open-order-' + esc(order.id) + '" href="/orders/' + encodeURIComponent(order.id) + '">' + label + '</a>';
 }
 function render(orders) {
   const head = document.getElementById('order-head');
@@ -181,7 +190,7 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td>' + orderPdfLink(order) + orderExcelLink(order) + '</td></tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -238,7 +247,7 @@ function renderDetail(order) {
   if (!order) { box.innerHTML = ''; return; }
   const rows = (order.items || []).map(item => {
     const spec = item.spec || {};
-    const size = spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '';
+    const size = item.size_label ? esc(item.size_label) : (spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '');
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
     const remark = item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '';
     const idNote = STAFF && item.production_note ? '<br><span class="note">' + esc(item.production_note) + '</span>' : '';
@@ -258,6 +267,7 @@ function renderDetail(order) {
   if (CAN_STATUS && order.status === 'approved') buttons += '<button type="button" class="btn" id="mark-sent">Mark sent to production</button>';
   if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
   if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
+  if (order.can_unapprove) buttons += '<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>';
   if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
   buttons += '<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
   if (STAFF && order.excel_ready) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
@@ -287,18 +297,17 @@ function renderDetail(order) {
   const shipping = order.shipping || {};
   const shipHead = '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>';
   const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
-  const glass = (order.items || []).map((item, index) => {
-    if (!item.spec || !item.spec.width || item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation') return '';
-    const line = (shipping.lines || []).find(row => row.index === index) || {};
-    const max = line.remaining != null ? line.remaining : item.pcs;
-    if (!max) return '';
-    return '<div style="display:flex;gap:8px;align-items:center;margin:6px 0"><input data-ship-index="' + index + '" type="number" min="0" max="' + esc(max) + '" value="0" aria-label="Ship quantity for ' + esc(item.name) + '" style="width:80px"><span class="note">' + esc(item.name) + ' · ' + esc(max) + ' left</span></div>';
+  const glass = (shipping.lines || []).filter(line => line.remaining).map(line => {
+    return '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.name) + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.remaining) + '</td><td><input data-ship-index="' + esc(line.index) + '" type="number" min="0" max="' + esc(line.remaining) + '" value="0" aria-label="Ship quantity for serial ' + esc(line.serial) + '"></td></tr>';
   }).join('');
+  const glassTable = glass
+    ? '<table id="ship-lines"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Left</th><th>Ship qty</th></tr></thead><tbody>' + glass + '</tbody></table>'
+    : '<p class="note">Nothing left to ship.</p>';
   const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
     ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
   const shipForm = STAFF ? '<div id="shipment-entry"><h3 style="color:#333;font-size:16px">Shipments</h3>' + shipHead + shipRows + partial
     + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
-    + glass + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
+    + glassTable + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
   const summary = changeSummary(order);
   box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
     + summary
@@ -330,6 +339,8 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const unapprove = document.getElementById('unapprove-order');
+  if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to Ora Glass review and the production Excel stays locked until it is approved again.'));
   const release = document.getElementById('approve-production');
   if (release) release.addEventListener('click', () => postDecision('/approve-production', {}, 'Approve this order for production? The production Excel can be downloaded after this.'));
   const accept = document.getElementById('approve-changes');
@@ -368,16 +379,16 @@ function renderDetail(order) {
       if (input) input.value = line.qty;
     });
     const warnings = (payload.warnings || []).map(text => '<p class="note" style="color:#9a3412">' + esc(text) + '</p>').join('');
-    const matched = (payload.matched || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.product_id || '') + '</td><td>' + esc(line.name) + '</td><td class="num">' + esc(line.qty) + '</td><td class="num">' + esc(line.bo_after) + '</td><td>' + (line.over ? 'More than the order has left' : 'Matched') + '</td></tr>').join('');
-    const unmatched = (payload.unmatched || []).map(line => '<tr style="color:#9f1239"><td>' + esc(line.qty) + '</td><td>' + esc(line.floor) + '</td><td>' + esc(line.width_mm) + ' x ' + esc(line.height_mm) + '</td><td>' + esc(line.description) + '</td><td>Not on this order</td></tr>').join('');
+    const matched = (payload.matched || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.product_id || '') + '</td><td>' + esc(line.name) + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td><td class="num">' + esc(line.bo_after) + '</td><td>' + (line.over ? 'More than the order has left' : 'Matched') + '</td></tr>').join('');
+    const unmatched = (payload.unmatched || []).map(line => '<tr style="color:#9f1239"><td>' + esc(line.qty) + '</td><td>' + esc(line.floor) + '</td><td>' + esc(line.size || ((line.width_mm || '') + ' x ' + (line.height_mm || '') + ' mm')) + '</td><td>' + esc(line.description) + '</td><td>Not on this order</td></tr>').join('');
     document.getElementById('packing-review').innerHTML = '<div id="packing-review-body" style="margin-top:12px">'
       + '<h3 style="color:#333;font-size:16px">Review packing list</h3>'
       + '<p class="note">Check the match, then record the shipment. Nothing is saved until you do.</p>'
       + warnings
-      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product ID</th><th>Product</th><th class="num">Shipped</th><th class="num">BO after</th><th></th></tr></thead><tbody>'
-      + (matched || '<tr><td colspan="7">No packing-list rows matched this order.</td></tr>')
+      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product ID</th><th>Product</th><th>Size</th><th class="num">Shipped</th><th class="num">BO after</th><th></th></tr></thead><tbody>'
+      + (matched || '<tr><td colspan="8">No packing-list rows matched this order.</td></tr>')
       + '</tbody></table>'
-      + (unmatched ? '<table><thead><tr><th>Qty</th><th>Floor</th><th>mm</th><th>Description</th><th></th></tr></thead><tbody>' + unmatched + '</tbody></table>' : '')
+      + (unmatched ? '<table><thead><tr><th>Qty</th><th>Floor</th><th>Size</th><th>Description</th><th></th></tr></thead><tbody>' + unmatched + '</tbody></table>' : '')
       + '</div>';
   });
   const shipmentForm = document.getElementById('shipment-form');
@@ -486,7 +497,7 @@ function openEditor(order) {
   if (ship) ship.value = draft.ship_province || '';
   document.getElementById('order-discount-type').value = draft.discount.type || 'percent';
   document.getElementById('order-discount-value').value = draft.discount.value || 0;
-  const review = order.status === 'submitted' || order.status === 'customer_review' || order.status === 'reapproved';
+  const review = order.can_unapprove || order.status === 'submitted' || order.status === 'customer_review' || order.status === 'reapproved';
   const choiceBox = document.getElementById('price-choice-box');
   if (choiceBox) {
     choiceBox.hidden = !review;

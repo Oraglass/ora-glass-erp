@@ -6380,6 +6380,7 @@ def _review_payload(order, user):
         'change_summary': latest if status == 'customer_review' else None,
         'excel_ready': status in RELEASED_STATUSES,
         'can_release': staff and status in {'submitted', 'reapproved'},
+        'can_unapprove': bool(staff and _can_unapprove(order)),
         'can_respond': bool(can_place_production_orders(user) and status == 'customer_review'),
     }
     if staff:
@@ -6432,6 +6433,17 @@ def _order_is_invoiced(order):
     return bool(order.get('invoice_id')) or order_status(order) == 'delivered'
 
 
+def _can_unapprove(order):
+    """Approved or sent orders can return to review until something has shipped or been invoiced."""
+    if _order_is_invoiced(order) or (order.get('shipments') or []):
+        return False
+    return order_status(order) in {'approved', 'sent'}
+
+
+def _needs_customer_reapproval(order):
+    return order_status(order) in REVIEW_STATUSES or _can_unapprove(order)
+
+
 @app.route('/api/orders/<int:order_id>', methods=['PUT'])
 @module_required('orders')
 def edit_order(order_id):
@@ -6460,7 +6472,7 @@ def edit_order(order_id):
         if address_only:
             _stamp_log(updated, user, diff_changes(order, updated))
             return updated, None
-        if order_status(order) in REVIEW_STATUSES:
+        if _needs_customer_reapproval(order):
             choice = clean_text(data.get('price_choice'), 20)
             note = strip_copy_history(clean_text(data.get('customer_note'), 2000))
             if choice not in {'apply', 'technical'}:
@@ -6543,6 +6555,38 @@ def approve_order_for_production(order_id):
     if error:
         return json_error(error, 400)
     _write_production_file(saved)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/unapprove', methods=['POST'])
+@module_required('orders')
+def unapprove_order(order_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to unapprove an order.', 403)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+
+    def mutator(order):
+        current = order_status(order)
+        if not _can_unapprove(order):
+            return None, f'An order that is {STATUS_LABELS.get(current, current)} cannot be unapproved.'
+        updated = dict(order)
+        updated['status'] = 'submitted'
+        _append_revision(updated, user, 'staff_unapprove', [], note='Unapproved. Back to Ora Glass review.')
+        _stamp_log(updated, user, [{
+            'field': 'status',
+            'old': STATUS_LABELS[current],
+            'new': STATUS_LABELS['submitted'],
+        }])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
