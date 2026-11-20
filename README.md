@@ -66,7 +66,7 @@ The password is read from `ADMIN_PASSWORD` or from a prompt. It is not accepted 
 On startup (`AUTO_SEED` defaults to `1`) the app creates, if missing:
 
 - Customer **Open Windows** (`open-windows.ca`), company default tier **T2**
-- `alex@open-windows.ca`, `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca`, each with a per-user override to **Tier 5**. Until an admin edits Allowed tiers, each of them can quote at the company tier (T2) or that T5 override. The calculator opens on T5. Tier 5 prices are twice Tier 2.
+- `alex@open-windows.ca`, `kiu@open-windows.ca`, `vlad@open-windows.ca`, and `support@open-windows.ca`, each with a per-user override to **Tier 5**. Until an admin edits Allowed tiers, each of them can quote at the company tier (T2) or that T5 override. The calculator opens on T5. Tier 5 prices are twice Tier 2, including the temper add-on. The extra per square foot, the irregular-shape surcharge, and the DWG fee stay flat.
 
 No password is stored for them. To activate someone:
 

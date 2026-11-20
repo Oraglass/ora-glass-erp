@@ -202,3 +202,65 @@ def test_markup_edit_is_logged(client):
     assert b'glass_markup' in response.data
     assert b'admin@oraglass.us' in response.data
     assert b'Irregular shape surcharge' in response.data
+    assert b'including the temper add-on' in response.data
+    assert b'Temper add-ons stay the same at every tier' not in response.data
+    formula = client.get('/pricing?tab=formula')
+    assert b'Temper add-ons are not multiplied' not in formula.data
+    assert b'temper add-on' in formula.data
+
+
+def test_tier5_doubles_tier2_including_temper(data_dir):
+    """Annealed, tempered double, and tempered triple. The extra per sq ft stays flat."""
+    import pricing_catalog
+    from app import _reprice
+    options = pricing_catalog.calc_options()
+    tiers = load_tiers()
+    kwargs = {
+        'temper_prices': options['temper_prices'],
+        'tier5_scale': options['tier5_scale'],
+        'unknown_temper': options['unknown_temper'],
+        'extra_per_sqf': options['extra_per_sqf'],
+        'triple_factor': options['triple_factor'],
+    }
+    builds = {
+        'annealed double': {
+            'glass1': 'Clear Glass 6mm', 'temper1': 'n/a',
+            'spacer1': 'Superspacer 14mm / sqf', 'sealant1': 'Sealant -  14mm Polyurethane',
+            'glass2': 'Clear Glass 6mm', 'temper2': 'n/a',
+        },
+        'tempered double': {
+            'glass1': 'SolarCoat 6mm', 'temper1': 'yes',
+            'spacer1': 'Superspacer 14mm / sqf', 'sealant1': 'Sealant -  14mm Polyurethane',
+            'glass2': 'Clear Glass 6mm', 'temper2': 'yes',
+        },
+        'tempered triple': {
+            'glass1': 'SolarCoat 6mm', 'temper1': 'yes',
+            'spacer1': 'Superspacer 14mm / sqf', 'sealant1': 'Sealant -  14mm Polyurethane',
+            'glass2': 'Clear Glass 6mm', 'temper2': 'yes',
+            'spacer2': 'Superspacer 14mm / sqf', 'sealant2': 'Sealant -  14mm Polyurethane',
+            'glass3': 'SolarCoat 6mm', 'temper3': 'yes',
+        },
+    }
+    for spec in builds.values():
+        tier2 = calculate_price_sqf(spec, 'T2', options['pricing'], tiers, **kwargs)
+        tier5 = calculate_price_sqf(spec, 'T5', options['pricing'], tiers, **kwargs)
+        assert tier5 == round(tier2 * 2, 2)
+        other = calculate_price_sqf(spec, 'T4', options['pricing'], tiers, **kwargs)
+        tempered_bits = sum(1 for key in ('temper1', 'temper2', 'temper3') if spec.get(key) == 'yes')
+        if tempered_bits:
+            assert other != round(tier2 * 2, 2)
+
+    extra = dict(kwargs, extra_per_sqf=0.25)
+    base = calculate_price_sqf(builds['tempered double'], 'T5', options['pricing'], tiers, **kwargs)
+    with_extra = calculate_price_sqf(builds['tempered double'], 'T5', options['pricing'], tiers, **extra)
+    assert with_extra == round(base + 0.25, 2)
+
+    example = dict(builds['tempered triple'], width=50, height=80, unit='in')
+    tier2 = _reprice(example, 1, 'T2', 'cad', tiers, 1.4)
+    tier5 = _reprice(example, 1, 'T5', 'cad', tiers, 1.4)
+    assert tier2['price_sqf'] == 23.07
+    assert tier2['price_pc'] == 640.89
+    assert tier5['price_sqf'] == 46.14
+    assert tier5['price_sqf'] == round(tier2['price_sqf'] * 2, 2)
+    assert tier5['price_pc'] == 1281.78
+    assert tier5['price_pc'] == round(tier2['price_pc'] * 2, 2)

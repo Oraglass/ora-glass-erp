@@ -37,7 +37,7 @@ label{display:block;font-size:12px;color:#666;font-weight:600;margin-bottom:4px}
 </nav>
 
 {% if tab == 'markups' %}
-<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is the Tier 2 price times the formula multiplier (2 unless that setting is changed). Editing Tier 2 updates that Tier 2 price. Temper add-ons stay the same at every tier. The irregular shape surcharge is a flat amount per piece in the quote currency. The DWG drawing creation fee is a flat amount per file that is not a .dwg. Neither amount is marked up by tier. Quotes and orders already saved keep the prices they were given.</p>
+<p class="note">Sell price = base &times; (1 + markup). Enter the markup as a percent: 40 means the customer pays 1.40&times; the base price. Glass and spacer (including sealant) markups are separate. These values apply to new calculations immediately. Tier 5 is the Tier 2 price times the formula multiplier (2 unless that setting is changed), including the temper add-on, so Tier 5 is exactly twice Tier 2. Editing Tier 2 updates that Tier 2 price. On every other tier the temper add-on stays the flat tempering amount. The extra per sq ft, the irregular shape surcharge, and the DWG drawing creation fee stay flat and are not marked up by tier. Quotes and orders already saved keep the prices they were given.</p>
 <form method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="action" value="markups">

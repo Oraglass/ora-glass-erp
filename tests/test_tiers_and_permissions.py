@@ -82,9 +82,7 @@ def test_tier5_prices_are_exactly_twice_tier2_and_follow_edits(data_dir):
     bronze = {'glass1': 'Bronze 6mm', 'temper1': 'n/a'}
     assert calculate_price_sqf(bronze, 'T5', PRICING, tiers) == round(calculate_price_sqf(bronze, 'T2', PRICING, tiers) * 2, 2)
     tempered = {'glass1': 'Clear Glass 6mm', 'temper1': 'yes'}
-    plain = calculate_price_sqf({'glass1': 'Clear Glass 6mm', 'temper1': 'n/a'}, 'T2', PRICING, tiers)
-    temper_addon = round(calculate_price_sqf(tempered, 'T2', PRICING, tiers) - plain, 2)
-    assert calculate_price_sqf(tempered, 'T5', PRICING, tiers) == round(plain * 2 + temper_addon, 2)
+    assert calculate_price_sqf(tempered, 'T5', PRICING, tiers) == round(calculate_price_sqf(tempered, 'T2', PRICING, tiers) * 2, 2)
     save_quotes([{'id': 1, 'tier': 'T5', 'items': [{'total': 12.34}], 'project': 'Already saved'}])
     save_tiers({
         'T1': {'label': 'Tier 1', 'glass_markup': 0.30, 'spacer_markup': 0.20},
