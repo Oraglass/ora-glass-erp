@@ -430,8 +430,10 @@ def calculate_price_sqf(
 ):
     """Per-square-foot sell price. Sealants use the spacer markup, matching the existing engine.
 
-    Tier 5 multiplies each glass, spacer, and sealant line. The default multiple is 2,
-    so Tier 5 stays twice Tier 2. Temper add-ons stay a flat amount at every tier.
+    Tier 5 multiplies each glass, spacer, sealant, and temper add-on by the same scale.
+    The default scale is 2, so Tier 5 is exactly twice Tier 2, including temper. Other
+    tiers use scale 1, so their temper add-on stays the flat tempering amount.
+    extra_per_sqf is added once and is not scaled.
     """
     temper_prices = TEMPER_PRICES if temper_prices is None else temper_prices
     try:
@@ -473,7 +475,7 @@ def calculate_price_sqf(
             if not thick.endswith('mm'):
                 last = name.split()[-1] if name else ''
                 thick = last if str(last).endswith('mm') else thick
-            total += temper_prices.get(thick, temper_fallback)
+            total += temper_prices.get(thick, temper_fallback) * scale
     for key in ('spacer1', 'spacer2', 'sealant1', 'sealant2'):
         name = data.get(key) or ''
         if not name or name == 'n/a':

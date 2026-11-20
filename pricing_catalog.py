@@ -29,7 +29,7 @@ FORMULA_DEFAULTS = (
     {
         'key': 'tier5_multiplier',
         'value': 2,
-        'description': 'Tier 5 multiplies the Tier 2 sell price of each glass, spacer, and sealant. Temper add-ons are not multiplied. 2 keeps Tier 5 at twice Tier 2.',
+        'description': 'Tier 5 multiplies the Tier 2 sell price of each glass, spacer, sealant, and temper add-on. 2 keeps Tier 5 at exactly twice Tier 2. Other tiers are not scaled, so their temper add-on stays the flat tempering amount. The extra per sq ft, irregular-shape surcharge, and DWG fee are not multiplied.',
     },
     {
         'key': 'unknown_temper_addon',
