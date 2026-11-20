@@ -88,10 +88,10 @@ def test_three_small_pieces_are_charged_as_eighteen_square_feet(client):
     headers = [cell.value for cell in next(book.iter_rows(min_row=1, max_row=1))]
     values = [cell.value for cell in next(book.iter_rows(min_row=2, max_row=2))]
     row = dict(zip(headers, values))
-    assert abs(row['Width(In)'] - 24) < 0.001
-    assert abs(row['Height(In)'] - 12) < 0.001
+    assert row['Width(In)'] == '24'
+    assert row['Height(In)'] == '12'
     assert row['Quantity'] == 3
-    assert row['Unit Price'] == ordered['price_sqf']
+    assert row['Unit Price'] == round(float(ordered['price_sqf']), 2)
 
 
 def test_company_minimum_overrides_the_global_one_and_blank_falls_back(client):

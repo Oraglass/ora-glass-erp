@@ -218,6 +218,8 @@ def test_drawings_are_required_and_non_dwg_files_add_a_flat_charge(client):
             'irregular_shape': True,
             'surcharge_rate': 50,
         }],
+        'price_choice': 'technical',
+        'customer_note': 'The drawing charge stays at the rate from when the order was placed.',
     })
     assert edited.status_code == 200, edited.get_json()
     kept = [row for row in load_orders() if row['id'] == order['id']][0]
@@ -240,6 +242,15 @@ def test_drawings_are_required_and_non_dwg_files_add_a_flat_charge(client):
     assert brought_back.status_code == 200
     restored = next(row for row in load_orders() if row['id'] == order['id'])
     assert next(row['unit_price'] for row in restored['items'] if row.get('kind') == 'dwg_creation') == 50
+
+    client.post('/logout')
+    assert login(client, 'boss@harbor.example').status_code == 302
+    decided = client.post(f"/api/orders/{order['id']}/customer-decision", json={'action': 'approve'})
+    assert decided.status_code == 200, decided.get_json()
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    released = client.post(f"/api/orders/{order['id']}/approve-production", json={})
+    assert released.status_code == 200, released.get_json()
 
     for status in ('sent', 'made', 'delivered'):
         moved = client.post(f"/api/orders/{order['id']}/status", json={'status': status})

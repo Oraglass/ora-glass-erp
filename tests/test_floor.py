@@ -84,10 +84,24 @@ def test_floor_is_saved_copied_shown_and_exported(client):
             'floor': 'W52 / 2',
             'spec': order['items'][0]['spec'],
         }],
+        'price_choice': 'apply',
+        'customer_note': 'Floor is now W52 / 2.',
     })
     assert edited.status_code == 200, edited.get_json()
+    assert edited.get_json()['status'] == 'customer_review'
+    assert client.get(f'/api/orders/{order_id}/production.xlsx').status_code == 409
     order = next(row for row in load_orders() if row['id'] == order_id)
     assert order['items'][0]['floor'] == 'W52 / 2'
+    write_user(
+        'boss@harbor.example', 'customer', customer_id='harbor-glass',
+        customer_name='Harbor Glass', customer_tier='T2', customer_subrole='management',
+    )
+    client.post('/logout')
+    assert login(client, 'boss@harbor.example').status_code == 302
+    assert client.post(f'/api/orders/{order_id}/customer-decision', json={'action': 'approve'}).status_code == 200
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
     sheet = load_workbook(io.BytesIO(client.get(f'/api/orders/{order_id}/production.xlsx').data)).active
     values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
     assert values[1] == 'W52 / 2'

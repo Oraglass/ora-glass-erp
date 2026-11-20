@@ -142,7 +142,9 @@ def test_production_excel_unit_price_is_usd(client):
     values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
     order = next(row for row in load_orders() if row['id'] == order_id)
     cad_price = order['items'][0]['price_sqf']
-    assert values[4] == round(cad_price / 1.25, 4)
+    price = sheet.cell(row=2, column=5)
+    assert price.value == round(cad_price / 1.25, 2)
+    assert price.number_format == '0.00'
 
 
 def test_canada_push_is_cad_and_an_existing_usd_link_is_not_modified(client, monkeypatch):

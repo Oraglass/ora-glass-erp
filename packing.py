@@ -203,6 +203,7 @@ def parse_packing_pdf(payload):
 
 def match_packing(order, parsed):
     """Compare packing rows with the order's production lines."""
+    from documents import piece_size_text
     items = (order or {}).get('items') or []
     candidates = []
     for index, item in enumerate(items):
@@ -259,6 +260,7 @@ def match_packing(order, parsed):
             'qty': packing_row['qty'],
             'width_mm': packing_row['width_mm'],
             'height_mm': packing_row['height_mm'],
+            'size': piece_size_text(packing_row['width_mm'], packing_row['height_mm'], 'mm'),
         })
     lines = []
     review = []
@@ -279,6 +281,7 @@ def match_packing(order, parsed):
             'floor_code': candidate['floor_code'],
             'product_id': candidate['product_id'],
             'name': candidate['name'],
+            'size': piece_size_text(candidate['width_mm'], candidate['height_mm'], 'mm'),
             'qty': qty,
             'ordered': candidate['ordered'],
             'already_shipped': candidate['ordered'] - candidate['remaining'],
@@ -294,7 +297,11 @@ def match_packing(order, parsed):
         'warnings': warnings,
         'matched': review,
         'matched_rows': matched_rows,
-        'unmatched': unmatched,
+        'unmatched': [
+            dict(row, size=piece_size_text(row.get('width_mm'), row.get('height_mm'), 'mm'))
+            if isinstance(row, dict) else row
+            for row in unmatched
+        ],
         'lines': lines,
         'header_pcs': parsed.get('total_pcs'),
         'header_sqft': parsed.get('total_sqft'),

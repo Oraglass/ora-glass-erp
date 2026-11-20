@@ -791,20 +791,41 @@ def export_lines(items, currency=None, fx_rate=None):
     return rows
 
 
+def _excel_mm(value):
+    """Millimetres for the production file: at most two decimals, whole when exact."""
+    number = round(float(value), 2)
+    if abs(number - round(number)) < 1e-9:
+        return int(round(number))
+    return number
+
+
+def _excel_inches(value):
+    """Fractional inches, the same reduced 1/32 used on quotes and order PDFs."""
+    from documents import inch_fraction
+    return inch_fraction(value)
+
+
 def workbook_bytes(items, currency=None, fx_rate=None):
     book = Workbook()
     sheet = book.active
     sheet.title = 'Production'
     sheet.append(list(PRODUCTION_HEADERS))
-    for row in export_lines(items, currency=currency, fx_rate=fx_rate):
-        values = []
-        for header in PRODUCTION_HEADERS:
+    for row_index, row in enumerate(export_lines(items, currency=currency, fx_rate=fx_rate), start=2):
+        for column, header in enumerate(PRODUCTION_HEADERS, start=1):
+            cell = sheet.cell(row_index, column)
             value = row.get(header)
-            if header == 'Product ID' and value:
-                values.append(int(value) if str(value).isdigit() else value)
+            if header == 'Unit Price' and value not in (None, ''):
+                cell.value = round(float(value), 2)
+                cell.number_format = '0.00'
+            elif header in {'Width(mm)', 'Height(mm)'} and value not in (None, ''):
+                cell.value = _excel_mm(value)
+                cell.number_format = '0' if isinstance(cell.value, int) else '0.##'
+            elif header in {'Width(In)', 'Height(In)'} and value not in (None, ''):
+                cell.value = _excel_inches(value)
+            elif header == 'Product ID' and value:
+                cell.value = int(value) if str(value).isdigit() else value
             else:
-                values.append(value if value is not None else '')
-        sheet.append(values)
+                cell.value = '' if value is None else value
     from io import BytesIO
     buffer = BytesIO()
     book.save(buffer)
