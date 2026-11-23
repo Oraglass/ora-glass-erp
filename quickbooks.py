@@ -1206,6 +1206,7 @@ def _ingest_invoice(row):
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
         'project': row.get('DocNumber') or '',
+        'qbo_doc_number': str(row.get('DocNumber') or ''),
         'currency': currency if currency in {'usd', 'cad'} else 'usd',
         'lines': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],
         'items': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],

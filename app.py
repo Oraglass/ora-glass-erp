@@ -40,7 +40,9 @@ from billing import (
     document_type,
     diff_changes,
     invoice_balance,
+    open_receivables,
     allocated_to_target,
+    spread_payment,
     invoice_status,
     invoice_status_label,
     money,
@@ -7325,6 +7327,10 @@ def _present_invoice(invoice, payments):
     view['balance'] = invoice_balance(invoice, payments)
     view['status'] = 'void' if invoice.get('voided') else invoice_status(invoice, payments)
     view['status_label'] = invoice_status_label(view['status'])
+    doc_number = str(invoice.get('qbo_doc_number') or '')
+    if not doc_number and invoice.get('source') == 'quickbooks':
+        doc_number = str(invoice.get('project') or '')
+    view['qbo_doc_number'] = doc_number
     return view
 
 
@@ -7354,6 +7360,9 @@ def get_invoices():
     customer_id = clean_text(request.args.get('customer_id'), 80)
     status = clean_text(request.args.get('status'), 20).lower()
     doc_type = clean_text(request.args.get('type'), 20).lower()
+    currency = clean_text(request.args.get('currency'), 8).lower()
+    issuer = clean_text(request.args.get('issuer'), 8).lower()
+    open_only = clean_text(request.args.get('balance'), 20).lower() == 'open'
     date_from = _query_date('from')
     date_to = _query_date('to')
     filtered = []
@@ -7361,6 +7370,12 @@ def get_invoices():
         if user.get('role') != 'customer' and customer_id and row.get('customer_id') != customer_id:
             continue
         if doc_type in {'invoice', 'credit_note'} and row.get('doc_type') != doc_type:
+            continue
+        if currency in CURRENCIES and str(row.get('currency') or 'usd').lower() != currency:
+            continue
+        if issuer in {'us', 'ca'} and (row.get('issuer') or 'us') != issuer:
+            continue
+        if open_only and (row.get('doc_type') != 'invoice' or row.get('voided') or money(row.get('balance')) <= 0.009):
             continue
         if status in {'unpaid', 'partial', 'paid', 'void', 'open', 'applied'} and row.get('status') != status:
             continue
@@ -7370,7 +7385,10 @@ def get_invoices():
         if date_to and day > date_to:
             continue
         filtered.append(row)
-    filtered.sort(key=lambda row: row.get('id') or 0, reverse=True)
+    if open_only:
+        filtered.sort(key=lambda row: (str(row.get('invoice_date') or ''), str(row.get('qbo_doc_number') or row.get('number') or ''), row.get('id') or 0))
+    else:
+        filtered.sort(key=lambda row: row.get('id') or 0, reverse=True)
     return jsonify(filtered)
 
 
@@ -7874,6 +7892,48 @@ def _present_payment(payment):
     return view
 
 
+def _payment_issuer(currency):
+    return 'ca' if currency == 'cad' else 'us'
+
+
+def _allocations_for_invoices(customer_id, currency, invoice_ids, amount, payments, invoices):
+    """Turn a tick order into payment lines. Each invoice receives at most its open balance."""
+    if not isinstance(invoice_ids, list) or not invoice_ids:
+        return None, 'Choose at least one invoice.'
+    seen = []
+    rows = []
+    issuer = _payment_issuer(currency)
+    for raw in invoice_ids:
+        try:
+            invoice_id = int(raw)
+        except (TypeError, ValueError):
+            return None, 'Choose invoices from the list.'
+        if invoice_id in seen:
+            return None, 'Each invoice can only be selected once.'
+        seen.append(invoice_id)
+        invoice = next((row for row in invoices if row.get('id') == invoice_id), None)
+        if not invoice or invoice.get('customer_id') != customer_id or document_type(invoice) != 'invoice':
+            return None, 'Unknown invoice for this customer.'
+        if invoice.get('voided'):
+            return None, 'A voided invoice cannot take a payment.'
+        if str(invoice.get('currency') or 'usd').lower() != currency:
+            return None, 'The invoice currency does not match the payment.'
+        if (invoice.get('issuer') or 'us') != issuer:
+            return None, 'That invoice belongs to the other Ora Glass company.'
+        balance = invoice_balance(invoice, payments)
+        if balance <= 0.009:
+            return None, 'That invoice is already paid.'
+        rows.append({'id': invoice_id, 'balance': balance})
+    plan = spread_payment(amount, rows)
+    additions = [
+        {'target_type': 'invoice', 'target_id': row['id'], 'amount': row['applied']}
+        for row in plan['applications'] if row['applied'] > 0.009
+    ]
+    if not additions:
+        return None, 'None of the selected invoices can take this payment.'
+    return additions, None
+
+
 @app.route('/api/payments', methods=['GET'])
 @login_required
 def get_payments():
@@ -7924,6 +7984,34 @@ def record_payment():
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', paid_on):
         return json_error('Payment date is required.', 400)
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    invoice_ids = data.get('invoice_ids')
+    additions = []
+    if invoice_ids not in (None, []):
+        additions, error = _allocations_for_invoices(
+            customer_id, currency, invoice_ids, amount, load_payments(), load_invoices(),
+        )
+        if error:
+            return json_error(error, 400)
+        for item in additions:
+            item['at'] = now
+            item['user'] = user.get('email') or ''
+    log = [{
+        'at': now,
+        'user': user.get('email') or '',
+        'action': 'recorded',
+        'amount': amount,
+        'currency': currency,
+    }]
+    if additions:
+        log.append({
+            'at': now,
+            'user': user.get('email') or '',
+            'action': 'allocated',
+            'allocations': [
+                {'target_type': 'invoice', 'target_id': item['target_id'], 'amount': item['amount']}
+                for item in additions
+            ],
+        })
     stored = append_payment({
         'customer_id': customer_id,
         'company': customer.get('name') or '',
@@ -7934,17 +8022,13 @@ def record_payment():
         'reference': clean_text(data.get('reference'), 80),
         'notes': clean_text(data.get('notes'), 500),
         'voided': False,
-        'allocations': [],
+        'allocations': additions,
         'recorded_by': user.get('email') or '',
         'recorded_at': now,
-        'log': [{
-            'at': now,
-            'user': user.get('email') or '',
-            'action': 'recorded',
-            'amount': amount,
-            'currency': currency,
-        }],
+        'log': log,
     })
+    if additions:
+        _refresh_invoice_statuses(load_payments())
     _qbo('push_payment', stored)
     return jsonify(_present_payment(stored))
 
@@ -7957,8 +8041,11 @@ def allocate_payment(payment_id):
         return json_error('You do not have permission to record payments.', 403)
     data = json_body() or {}
     requested = data.get('allocations')
-    if not isinstance(requested, list) or not requested:
-        return json_error('Choose at least one allocation.', 400)
+    invoice_ids = data.get('invoice_ids')
+    if invoice_ids not in (None, []) and requested:
+        return json_error('Choose invoices or enter allocations, not both.', 400)
+    if invoice_ids in (None, []) and (not isinstance(requested, list) or not requested):
+        return json_error('Choose at least one invoice.', 400)
     payments = load_payments()
     payment = next((row for row in payments if row.get('id') == payment_id), None)
     if not payment:
@@ -7966,6 +8053,35 @@ def allocate_payment(payment_id):
     if payment.get('voided'):
         return json_error('A voided payment cannot be allocated.', 400)
     room = unallocated_amount(payment)
+    if invoice_ids not in (None, []):
+        additions, error = _allocations_for_invoices(
+            payment.get('customer_id'), payment.get('currency'), invoice_ids, room, payments, load_invoices(),
+        )
+        if error:
+            return json_error(error, 400)
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        for item in additions:
+            item['at'] = now
+            item['user'] = user.get('email') or ''
+        payment['allocations'] = list(payment.get('allocations') or []) + additions
+        log = list(payment.get('log') or [])
+        log.append({
+            'at': now,
+            'user': user.get('email') or '',
+            'action': 'allocated',
+            'allocations': [
+                {'target_type': 'invoice', 'target_id': item['target_id'], 'amount': item['amount']}
+                for item in additions
+            ],
+        })
+        payment['log'] = log
+        for index, row in enumerate(payments):
+            if row.get('id') == payment_id:
+                payments[index] = payment
+        save_payments(payments)
+        _refresh_invoice_statuses(payments)
+        _qbo('push_payment', payment)
+        return jsonify(_present_payment(payment))
     additions = []
     for row in requested:
         if not isinstance(row, dict):
@@ -8095,12 +8211,26 @@ def get_credit():
         return json_error('Unknown customer.', 404)
     if user.get('role') == 'customer' and customer_id != user.get('customer_id'):
         return json_error('Access denied', 403)
-    currency = clean_text(request.args.get('currency'), 8).lower() or str(customer.get('credit_currency') or 'usd').lower()
-    if currency not in CURRENCIES:
+    requested_currency = clean_text(request.args.get('currency'), 8).lower()
+    if requested_currency and requested_currency not in CURRENCIES:
         return json_error('Currency must be USD or CAD.', 400)
     orders = load_orders()
     invoices = load_invoices()
     payments = load_payments()
+    preferred = str(customer.get('credit_currency') or 'usd').lower()
+    if preferred not in CURRENCIES:
+        preferred = 'usd'
+    if requested_currency:
+        currency = requested_currency
+    else:
+        other = 'cad' if preferred == 'usd' else 'usd'
+
+        def _books_active(code):
+            receivables = open_receivables(customer_id, code, orders, invoices, payments)
+            unallocated = unallocated_credit(payments, customer_id, code)
+            return receivables > 0.009 or unallocated > 0.009
+
+        currency = other if not _books_active(preferred) and _books_active(other) else preferred
     available, limit, receivables = available_credit(customer, currency, orders, invoices, payments)
     return jsonify({
         'customer_id': customer_id,
