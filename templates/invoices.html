@@ -25,6 +25,10 @@ a{color:#C41E3A}
 .badge.paid{background:#d4edda;color:#155724}
 .badge.void{background:#f8d7da;color:#721c24}
 h2,h3{color:#333}
+.pick-table td,.pick-table th{vertical-align:middle}
+.pick-table .order{width:42px;text-align:center;font-weight:600}
+.pick-table input[type=checkbox]{width:16px;height:16px}
+#allocation-preview,#alloc-preview{margin:8px 0}
 </style>
 </head>
 <body>
@@ -114,6 +118,9 @@ h2,h3{color:#333}
 <input id="pay-reference" placeholder="Reference" aria-label="Reference">
 </div>
 <textarea id="pay-notes" rows="2" placeholder="Notes" style="width:100%"></textarea>
+<p class="note">Tick the open invoices this payment covers. The amount is applied in the order you tick them. An invoice that is only partly covered stays on the list with its remaining balance.</p>
+<div id="open-invoice-list"></div>
+<p class="note" id="allocation-preview"></p>
 <button class="btn" type="submit">Record payment</button>
 </form>
 {% else %}
@@ -124,12 +131,20 @@ h2,h3{color:#333}
 <tbody id="payment-list"><tr><td colspan="7" style="color:#666">No payments</td></tr></tbody>
 </table>
 {% if can_record %}
-<div id="allocation-form" class="row">
+<div id="allocation-form">
+<div class="row">
 <select id="alloc-payment" aria-label="Payment"></select>
-<select id="alloc-type" aria-label="Apply to"><option value="order">Order prepayment</option><option value="invoice">Invoice</option></select>
-<input id="alloc-target" type="number" min="1" placeholder="Order or invoice id" aria-label="Target">
+</div>
+<p class="note">Tick invoices in the order this unallocated amount should be applied. Anything left over stays on the payment.</p>
+<div id="alloc-invoice-list"></div>
+<p class="note" id="alloc-preview"></p>
+<button type="button" class="btn" id="alloc-save">Allocate to selected invoices</button>
+<div class="row" style="margin-top:12px">
+<select id="alloc-type" aria-label="Apply to"><option value="order">Order prepayment</option></select>
+<input id="alloc-target" type="number" min="1" placeholder="Order id" aria-label="Order id">
 <input id="alloc-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Allocation amount">
-<button type="button" class="btn" id="alloc-save">Allocate</button>
+<button type="button" class="btn secondary" id="alloc-order">Apply to order</button>
+</div>
 </div>
 {% endif %}
 </div>
@@ -231,12 +246,85 @@ async function loadInvoices() {
   if (!res.ok) return;
   renderInvoices(await res.json());
 }
+let paymentRows = [];
+let pickedIds = [];
+let allocIds = [];
+let openInvoices = [];
+let allocInvoices = [];
+function moneyRound(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.round((number + Number.EPSILON) * 100) / 100;
+}
+function spread(amount, rows) {
+  let left = moneyRound(amount);
+  const plan = rows.map(row => {
+    const open = moneyRound(row.balance);
+    const applied = left > 0 ? Math.min(open, left) : 0;
+    left = moneyRound(left - applied);
+    return {row: row, applied: moneyRound(applied), stays: moneyRound(open - applied)};
+  });
+  return {plan: plan, unallocated: left};
+}
+function invoiceLabel(row) {
+  const doc = row.qbo_doc_number ? 'QuickBooks ' + row.qbo_doc_number : '';
+  return row.number + (doc ? ' (' + doc + ')' : '');
+}
+function previewText(amount, invoices, ids, currency) {
+  const chosen = ids.map(id => invoices.find(row => String(row.id) === String(id))).filter(Boolean);
+  if (!chosen.length) return 'No invoices selected. The whole payment stays unallocated.';
+  const result = spread(amount, chosen);
+  const lines = result.plan.map((item, index) => (index + 1) + '. ' + invoiceLabel(item.row) + ' gets ' + money(currency, item.applied) + ', stays open ' + money(currency, item.stays));
+  lines.push('Unallocated ' + money(currency, result.unallocated));
+  return lines.join(' · ');
+}
+function pickerTable(invoices, ids, group) {
+  if (!invoices.length) return '<p class="note">No open invoices in this currency.</p>';
+  const body = invoices.map(row => {
+    const index = ids.findIndex(id => String(id) === String(row.id));
+    const checked = index >= 0 ? ' checked' : '';
+    const order = index >= 0 ? String(index + 1) : '';
+    const label = 'Select ' + invoiceLabel(row);
+    return '<tr><td><input type="checkbox" data-pick="' + esc(group) + '" data-id="' + esc(row.id) + '"' + checked + ' aria-label="' + esc(label) + '"></td><td class="order">' + esc(order) + '</td><td>' + esc(row.number) + '</td><td>' + esc(row.qbo_doc_number || '') + '</td><td>' + esc(row.invoice_date || '') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td></tr>';
+  }).join('');
+  return '<table class="pick-table"><thead><tr><th></th><th class="order">Order</th><th>Invoice</th><th>QuickBooks</th><th>Date</th><th class="num">Total</th><th class="num">Open balance</th><th>Status</th></tr></thead><tbody>' + body + '</tbody></table>';
+}
+function renderPickers() {
+  const openBox = document.getElementById('open-invoice-list');
+  const preview = document.getElementById('allocation-preview');
+  const currency = document.getElementById('pay-currency');
+  const amount = document.getElementById('pay-amount');
+  if (openBox) openBox.innerHTML = pickerTable(openInvoices, pickedIds, 'record');
+  if (preview && currency && amount) preview.textContent = previewText(amount.value, openInvoices, pickedIds, currency.value);
+  const allocBox = document.getElementById('alloc-invoice-list');
+  const allocPreview = document.getElementById('alloc-preview');
+  const payment = selectedPayment();
+  if (allocBox) allocBox.innerHTML = payment ? pickerTable(allocInvoices, allocIds, 'alloc') : '';
+  if (allocPreview) allocPreview.textContent = payment ? previewText(payment.unallocated, allocInvoices, allocIds, payment.currency) : '';
+}
+function selectedPayment() {
+  const select = document.getElementById('alloc-payment');
+  if (!select || !select.value) return null;
+  return paymentRows.find(row => String(row.id) === String(select.value)) || null;
+}
+function togglePick(group, id, checked) {
+  const list = group === 'alloc' ? allocIds : pickedIds;
+  const next = list.filter(item => String(item) !== String(id));
+  if (checked) next.push(id);
+  if (group === 'alloc') allocIds = next;
+  else pickedIds = next;
+  renderPickers();
+}
 function renderPayments(rows) {
+  paymentRows = rows;
   const body = document.getElementById('payment-list');
   const select = document.getElementById('alloc-payment');
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="7" style="color:#666">No payments</td></tr>';
     if (select) select.innerHTML = '';
+    allocInvoices = [];
+    allocIds = [];
+    renderPickers();
     return;
   }
   body.innerHTML = rows.map(row => {
@@ -244,9 +332,48 @@ function renderPayments(rows) {
     const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
     return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + voidButton + '</td></tr>';
   }).join('');
+  const previous = select ? select.value : '';
   if (select) {
     select.innerHTML = rows.filter(row => !row.voided && Number(row.unallocated) > 0).map(row => '<option value="' + esc(row.id) + '">#' + esc(row.id) + ' ' + esc(row.company) + ' ' + money(row.currency, row.unallocated) + ' left</option>').join('');
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
   }
+  loadAllocInvoices();
+}
+async function loadOpenInvoices() {
+  const box = document.getElementById('open-invoice-list');
+  if (!box) return;
+  const customer = document.getElementById('pay-customer');
+  const currency = document.getElementById('pay-currency');
+  if (!customer || !customer.value || !currency) {
+    openInvoices = [];
+    pickedIds = [];
+    renderPickers();
+    return;
+  }
+  const params = new URLSearchParams({customer_id: customer.value, currency: currency.value, issuer: currency.value === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'});
+  const res = await fetch('/api/invoices?' + params.toString());
+  openInvoices = res.ok ? await res.json() : [];
+  const visible = new Set(openInvoices.map(row => String(row.id)));
+  pickedIds = pickedIds.filter(id => visible.has(String(id)));
+  renderPickers();
+}
+async function loadAllocInvoices() {
+  const payment = selectedPayment();
+  if (!payment) {
+    allocInvoices = [];
+    allocIds = [];
+    renderPickers();
+    return;
+  }
+  const params = new URLSearchParams({
+    customer_id: payment.customer_id, currency: payment.currency,
+    issuer: payment.currency === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'
+  });
+  const res = await fetch('/api/invoices?' + params.toString());
+  allocInvoices = res.ok ? await res.json() : [];
+  const visible = new Set(allocInvoices.map(row => String(row.id)));
+  allocIds = allocIds.filter(id => visible.has(String(id)));
+  renderPickers();
 }
 async function loadPayments() {
   const params = new URLSearchParams();
@@ -269,13 +396,26 @@ async function loadCredit() {
   const params = new URLSearchParams();
   if (STAFF) {
     const customer = creditCustomerId();
-    if (!customer) { document.getElementById('credit-summary').textContent = ''; return; }
+    if (!customer) {
+      document.getElementById('credit-summary').textContent = '';
+      openInvoices = [];
+      pickedIds = [];
+      if (typeof renderPickers === 'function') renderPickers();
+      return;
+    }
     params.set('customer_id', customer);
   }
+  const payCurrency = document.getElementById('pay-currency');
+  if (payCurrency && payCurrency.dataset.locked === '1') params.set('currency', payCurrency.value);
   const res = await fetch('/api/credit?' + params.toString());
   if (!res.ok) return;
   const credit = await res.json();
-  document.getElementById('credit-summary').textContent = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit) + '. Available ' + money(credit.currency, credit.available_credit) + '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '. Unapplied credits ' + money(credit.currency, credit.unapplied_credits) + '. Balance ' + money(credit.currency, credit.balance) + '.';
+  if (payCurrency && payCurrency.dataset.locked !== '1' && credit.currency) payCurrency.value = credit.currency;
+  let summary = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit);
+  if (credit.credit_currency === credit.currency) summary += '. Available ' + money(credit.currency, credit.available_credit);
+  summary += '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '. Unapplied credits ' + money(credit.currency, credit.unapplied_credits) + '. Balance ' + money(credit.currency, credit.balance) + '.';
+  document.getElementById('credit-summary').textContent = summary;
+  loadOpenInvoices();
 }
 function lineRow() {
   return '<div class="row line"><input placeholder="Description" aria-label="Description" class="desc"><input type="number" min="0.01" step="0.01" value="1" aria-label="Quantity" class="qty"><input type="number" min="0" step="0.01" placeholder="Unit price" aria-label="Unit price" class="price"></div>';
@@ -363,12 +503,32 @@ const filterCustomer = document.getElementById('filter-invoice-customer');
 if (filterCustomer) filterCustomer.addEventListener('change', () => {
   const pay = document.getElementById('pay-customer');
   if (pay) pay.value = filterCustomer.value;
+  const currency = document.getElementById('pay-currency');
+  if (currency) delete currency.dataset.locked;
+  pickedIds = [];
   loadCredit();
 });
 const payCustomer = document.getElementById('pay-customer');
 if (payCustomer) payCustomer.addEventListener('change', () => {
+  const currency = document.getElementById('pay-currency');
+  if (currency) delete currency.dataset.locked;
+  pickedIds = [];
   const filter = document.getElementById('filter-invoice-customer');
   if (!filter || !filter.value) loadCredit();
+  else loadOpenInvoices();
+});
+const payCurrency = document.getElementById('pay-currency');
+if (payCurrency) payCurrency.addEventListener('change', () => {
+  payCurrency.dataset.locked = '1';
+  pickedIds = [];
+  loadCredit();
+});
+const payAmount = document.getElementById('pay-amount');
+if (payAmount) payAmount.addEventListener('input', renderPickers);
+document.getElementById('payment-screen').addEventListener('change', event => {
+  const box = event.target.closest('[data-pick]');
+  if (!box) return;
+  togglePick(box.getAttribute('data-pick'), box.getAttribute('data-id'), box.checked);
 });
 document.getElementById('payment-list').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-void]');
@@ -397,25 +557,57 @@ if (form) {
         currency: document.getElementById('pay-currency').value,
         method: document.getElementById('pay-method').value,
         reference: document.getElementById('pay-reference').value,
-        notes: document.getElementById('pay-notes').value
+        notes: document.getElementById('pay-notes').value,
+        invoice_ids: pickedIds.map(id => Number(id))
       })
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not record the payment'); return; }
+    const customer = document.getElementById('pay-customer').value;
+    const currency = document.getElementById('pay-currency');
+    const locked = currency ? currency.dataset.locked : '';
+    const currencyValue = currency ? currency.value : 'usd';
     form.reset();
+    document.getElementById('pay-customer').value = customer;
+    if (currency) {
+      currency.value = currencyValue;
+      if (locked) currency.dataset.locked = locked;
+    }
+    pickedIds = [];
     loadPayments();
+    loadInvoices();
     loadCredit();
   });
 }
+const allocPayment = document.getElementById('alloc-payment');
+if (allocPayment) allocPayment.addEventListener('change', () => { allocIds = []; loadAllocInvoices(); });
 const alloc = document.getElementById('alloc-save');
 if (alloc) {
   alloc.addEventListener('click', async () => {
+    const paymentId = document.getElementById('alloc-payment').value;
+    if (!paymentId || !allocIds.length) { alert('Tick the invoices this payment covers.'); return; }
+    const res = await fetch('/api/payments/' + paymentId + '/allocations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({invoice_ids: allocIds.map(id => Number(id))})
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not allocate the payment'); return; }
+    allocIds = [];
+    loadPayments();
+    loadInvoices();
+    loadCredit();
+    if (FOCUS) loadDetail();
+  });
+}
+const allocOrder = document.getElementById('alloc-order');
+if (allocOrder) {
+  allocOrder.addEventListener('click', async () => {
     const paymentId = document.getElementById('alloc-payment').value;
     if (!paymentId) return;
     const res = await fetch('/api/payments/' + paymentId + '/allocations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({allocations: [{
-        target_type: document.getElementById('alloc-type').value,
+        target_type: 'order',
         target_id: Number(document.getElementById('alloc-target').value),
         amount: Number(document.getElementById('alloc-amount').value)
       }]})
@@ -423,9 +615,7 @@ if (alloc) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not allocate the payment'); return; }
     loadPayments();
-    loadInvoices();
     loadCredit();
-    if (FOCUS) loadDetail();
   });
 }
 async function loadDetail() {

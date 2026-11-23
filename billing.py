@@ -188,6 +188,23 @@ def unallocated_amount(payment):
     return round(money(payment.get('amount')) - allocation_amount(payment), 2)
 
 
+def spread_payment(amount, invoices):
+    """Apply a payment to invoices in the order given. Each one takes at most its open balance."""
+    left = money(amount)
+    applications = []
+    for row in invoices or []:
+        balance = money((row or {}).get('balance'))
+        applied = money(min(balance, left)) if left > 0 else 0.0
+        left = money(left - applied)
+        applications.append({
+            'id': (row or {}).get('id'),
+            'balance': balance,
+            'applied': applied,
+            'remaining': money(balance - applied),
+        })
+    return {'applications': applications, 'unallocated': left}
+
+
 def customer_payments(payments, customer_id, currency=None):
     rows = []
     for payment in payments or []:
