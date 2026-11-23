@@ -31,6 +31,8 @@ a{color:#C41E3A}
 .badge.sent{background:#e7f1ff;color:#1d4ed8}
 .badge.made{background:#efe7ff;color:#6d28d9}
 .badge.delivered{background:#d4edda;color:#155724}
+.badge.packed{background:#d4edda;color:#155724}
+.badge.partial{background:#fff4e5;color:#9a3412}
 .actions,.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .row-actions{margin:0}
 #ship-lines{margin-top:8px}
@@ -72,9 +74,21 @@ a{color:#C41E3A}
 <option value="sent">Sent to production</option>
 <option value="made">Made</option>
 <option value="delivered">Delivered</option>
+<option value="partial">Partially packed</option>
+<option value="packed">Packed</option>
 </select>
 <button type="button" class="btn" id="order-filter">Filter</button>
 </div>
+{% if staff_view %}
+<form id="packing-upload" style="margin:8px 0 16px">
+<h3 style="color:#333;font-size:16px">Packing lists</h3>
+<p class="note">Upload production packing lists (PDF, Excel, or CSV). Pieces are matched by production serial number and quantity. A different IGU spec does not block the upload. Uploading the same packing list or rack again replaces that rack.</p>
+<input id="packing-files" type="file" multiple accept=".pdf,.csv,.xlsx,.xlsm,application/pdf,text/csv" aria-label="Packing list files">
+<button class="btn" type="submit">Upload packing lists</button>
+<div id="packing-review"></div>
+<div id="packing-projects"></div>
+</form>
+{% endif %}
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
@@ -162,7 +176,9 @@ function moneyText(currency, amount) {
 }
 function badge(order) {
   const status = order.status || 'approved';
-  return '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
+  let html = '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
+  if (order.pack_status_label) html += ' <span class="badge ' + esc(order.pack_status || 'partial') + '" id="pack-badge-' + esc(order.id) + '">' + esc(order.pack_status_label) + '</span>';
+  return html;
 }
 function orderPdfLink(order) {
   return '<a class="btn small secondary" id="list-pdf-' + esc(order.id) + '" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
@@ -230,6 +246,30 @@ function describeChange(change) {
   if (action === 'removed') return 'Removed ' + change.field + ': ' + JSON.stringify(change.old);
   if (change.old !== undefined) return change.field + ': ' + JSON.stringify(change.old) + ' → ' + JSON.stringify(change.new);
   return change.field + ' ' + (action || 'updated');
+}
+function packingBlock(order) {
+  const serials = order.packing_serials || [];
+  const lists = order.packing_lists || [];
+  if (!serials.length && !lists.length) return '';
+  const totals = order.packing_totals || {};
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td>' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td><td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const listBlocks = lists.map(list => {
+    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
+    const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
+    const unmatched = STAFF && (list.unmatched || []).length
+      ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
+      : '';
+    return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.rack || list.id) + '</h4>'
+      + '<p class="note">' + esc(list.date || '') + (list.rack ? ' · ' + esc(list.rack) : '') + file + '</p>'
+      + unmatched
+      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Pcs packed</th></tr></thead><tbody>' + (lines || '<tr><td colspan="5">No matched pieces</td></tr>') + '</tbody></table>';
+  }).join('');
+  const history = STAFF ? (order.packing_history || []).map(list => '<li>Replaced ' + esc(list.number || list.rack || list.filename) + ' · ' + esc(list.uploaded_at || '') + ' · ' + esc(list.uploaded_by || '') + '</li>').join('') : '';
+  const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
+  return '<div id="order-packing"><h3 style="color:#333;font-size:16px;margin-top:16px">Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + '</h3>'
+    + '<p class="note" id="packing-totals">Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + ' · BO ' + esc(totals.bo || 0) + '</p>'
+    + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
+    + listBlocks + historyBlock + '</div>';
 }
 function changelogBlock(order) {
   const entries = order.changelog || [];
@@ -318,7 +358,7 @@ function renderDetail(order) {
     + shipForm
     + drawingBlock
     + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Total sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
-    + totalsTable(order) + coverageBlock(order) + changelogBlock(order);
+    + totalsTable(order) + coverageBlock(order) + packingBlock(order) + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
   const delivered = document.getElementById('mark-delivered');
@@ -648,18 +688,76 @@ async function loadCustomers() {
   }).join('');
   if (rows.some(row => row.id === current)) select.value = current;
 }
+function renderPackingReview(payload) {
+  const box = document.getElementById('packing-review');
+  if (!box) return;
+  const saved = (payload.saved || []).map(row => '<p class="note">Saved on ' + esc(row.company) + ' / ' + esc(row.project) + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · BO ' + esc((row.totals || {}).bo) + ((row.unmatched || []).length ? ' · Unmatched serials: ' + (row.unmatched || []).map(item => esc(item.serial == null ? 'none' : item.serial)).join(', ') : '') + '</p>').join('');
+  const review = (payload.review || []).map(row => {
+    const choices = (row.candidates || []).map(order => '<option value="' + esc(order.id) + '">' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
+    return '<div class="note" style="margin-top:8px"><strong>' + esc(row.filename || 'Packing list') + '</strong> · ' + esc(row.message || '')
+      + '<div class="filters"><select data-inbox="' + esc(row.id) + '" aria-label="Order for ' + esc(row.filename || 'packing list') + '">' + (choices || '<option value="">Choose an order</option>') + '</select>'
+      + '<input data-inbox-order="' + esc(row.id) + '" type="number" min="1" placeholder="Order id" aria-label="Order id for ' + esc(row.filename || 'packing list') + '">'
+      + '<button type="button" class="btn small" data-assign="' + esc(row.id) + '">Save on this order</button></div></div>';
+  }).join('');
+  box.innerHTML = saved + review;
+}
+async function loadPacking() {
+  if (!STAFF) return;
+  const res = await fetch('/api/packing-lists');
+  if (!res.ok) return;
+  const body = await res.json();
+  const box = document.getElementById('packing-projects');
+  if (!box) return;
+  const groups = body.projects || [];
+  if (!groups.length) { box.innerHTML = ''; return; }
+  box.innerHTML = groups.map(group => '<p class="note"><a href="/orders/' + esc(group.order_id) + '">' + esc(group.company) + ' / ' + esc(group.project) + '</a> · ' + esc(group.pack_status_label || 'Not packed') + ' · Ordered ' + esc((group.totals || {}).ordered || 0) + ' · Packed ' + esc((group.totals || {}).packed || 0) + ' · BO ' + esc((group.totals || {}).bo || 0) + '</p>').join('');
+  if ((body.inbox || []).length) renderPackingReview({saved: [], review: body.inbox});
+}
 async function load() {
   const res = await fetch('/api/orders?' + orderQuery().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   const orders = await res.json();
   document.getElementById('price-note').textContent = PRICES ? '' : 'Prices are not shown on this account.';
   render(orders);
+  await loadPacking();
   if (FOCUS && !currentOrder) {
     const detail = await fetch('/api/orders/' + FOCUS);
     if (detail.ok) renderDetail(await detail.json());
   }
 }
 document.getElementById('order-filter').addEventListener('click', load);
+const packingForm = document.getElementById('packing-upload');
+if (packingForm) {
+  packingForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = document.getElementById('packing-files');
+    if (!input.files.length) { alert('Choose at least one packing list.'); return; }
+    const body = new FormData();
+    Array.from(input.files).forEach(file => body.append('files', file));
+    const res = await fetch('/api/packing-lists', {method: 'POST', body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'The packing lists were not saved'); return; }
+    input.value = '';
+    await load();
+    renderPackingReview(payload);
+  });
+  document.getElementById('packing-review').addEventListener('click', async event => {
+    const button = event.target.closest('[data-assign]');
+    if (!button) return;
+    const inboxId = button.getAttribute('data-assign');
+    const select = document.querySelector('[data-inbox="' + inboxId + '"]');
+    const typed = document.querySelector('[data-inbox-order="' + inboxId + '"]');
+    const orderId = (typed && typed.value) || (select && select.value);
+    if (!orderId) { alert('Choose the order this packing list belongs to.'); return; }
+    const res = await fetch('/api/packing-inbox/' + inboxId + '/assign', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({order_id: Number(orderId)})
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not save the packing list'); return; }
+    load();
+  });
+}
 const orderSort = document.getElementById('order-sort');
 if (orderSort) orderSort.addEventListener('change', load);
 document.getElementById('order-status').addEventListener('change', load);
