@@ -113,6 +113,23 @@
     });
     return {lites: lites, spacers: spacers};
   }
+  function componentThickness(name) {
+    const text = String(name || '');
+    if (!text || text === 'n/a') return 0;
+    const mmParts = [];
+    const mmRe = /(\d+(?:\.\d+)?)\s*mm/ig;
+    let match;
+    while ((match = mmRe.exec(text))) mmParts.push(Number(match[1]));
+    const laminated = /lam|\bpvb\b|\bsgp\b|interlayer/i.test(text) || mmParts.length > 1;
+    let inches = 0;
+    if (laminated) {
+      const inchRe = /(\d+(?:\.\d+)?)\s*(?:inches|inch|in|"|″|”)/ig;
+      while ((match = inchRe.exec(text))) inches += Number(match[1]) * 25.4;
+    }
+    const round = value => Math.round(value * 100) / 100;
+    if (laminated && (mmParts.length || inches)) return round(mmParts.reduce((sum, value) => sum + value, 0) + inches);
+    return mmParts.length ? round(mmParts[0]) : 0;
+  }
   function generatedName(lites, spacers) {
     const used = lites.slice();
     const gaps = spacers.slice();
@@ -130,16 +147,18 @@
       const glass = cleanGlass(lite.product, lite.temper);
       if (!glass) return;
       parts.push(glass);
-      total += parseInt(lite.product.match(/(\d+)mm/)[1], 10);
+      total += componentThickness(lite.product);
       if (index < needed) {
         const spacer = gaps[index];
         const token = cleanSpacer(spacer.product, spacer.sealant);
         if (!token) return;
         parts.push(token);
-        total += parseInt(spacer.product.match(/(\d+)mm/)[1], 10);
+        total += componentThickness(spacer.product);
       }
     });
     if (parts.length !== used.length + needed) return '';
+    total = Math.round(total * 100) / 100;
+    if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
     return total + ' (' + quoteFraction(total) + '") - ' + parts.join('+');
   }
   function refreshBlock(section) {

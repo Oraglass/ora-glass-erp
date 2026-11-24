@@ -3,7 +3,7 @@
 import io
 
 from quoting import reprice_size_line
-from storage import load_orders, load_quotes, load_tiers, save_quotes, save_tiers
+from storage import load_orders, load_quotes, load_tiers, save_orders, save_quotes, save_tiers
 from tests.conftest import login, write_user
 from tests.test_irregular_shape import SPEC, _line
 
@@ -478,3 +478,98 @@ def test_line_numbers_follow_position_after_duplicate_remove_and_add(client):
     assert 'renumberLines(quoteItems)' in page
     assert 'nextLineNumber' not in page
     assert 'const number = charge ? \'\' : ++glassNumber' in history
+
+
+def test_a_thicker_exterior_lite_rebuilds_the_overall_thickness(client):
+    """4mm + 20mm + 4mm is 28. A 6mm exterior lite makes 30, on screen and in storage."""
+    import documents
+    from pathlib import Path
+    spec = {
+        'glass1': 'Clear Glass 4mm', 'temper1': 'n/a',
+        'spacer1': 'Superspacer 20mm / sqf', 'sealant1': '',
+        'glass2': 'Clear Glass 4mm', 'temper2': 'n/a',
+        'spacer2': '', 'sealant2': '',
+        'glass3': '', 'temper3': 'n/a',
+        'width': 30, 'height': 40, 'unit': 'in',
+    }
+    assert documents.overall_thickness_mm(spec) == 28
+    assert documents.build_label(spec).startswith('28 (1 1/8") - 4mmClear Glass+20mm')
+    thicker = dict(spec, glass1='Clear Glass 6mm')
+    assert documents.overall_thickness_mm(thicker) == 30
+    label = documents.build_label(thicker)
+    assert label.startswith('30 (1 3/16") - 6mmClear Glass+20mm')
+    assert documents.component_thickness_mm('Laminated 4mm + 0.76mm PVB + 4mm') == 8.76
+    laminated = dict(spec, glass1='Laminated 4mm + 0.76mm PVB + 4mm')
+    assert documents.overall_thickness_mm(laminated) == 32.76
+
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    quote_id = _draft(client, [_line(pcs=1, irregular=False)])['id']
+    saved = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [{
+            'name': '28 (1 1/8") - 4mmClear Glass+20mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass',
+            'pcs': 1,
+            'spec': thicker,
+            'floor': 'W28/1',
+        }],
+        'currency': 'usd', 'project': 'Thickness', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    quotes = load_quotes()
+    stored = next(row for row in quotes if row['id'] == quote_id)
+    glass = next(item for item in stored['items'] if item.get('spec'))
+    assert glass['name'] == label
+    glass['name'] = '28 (1 1/8") - 4mmClear Glass+20mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    save_quotes(quotes)
+    viewed = client.get(f'/api/quotes/{quote_id}').get_json()
+    shown = next(item for item in viewed['items'] if item.get('spec'))
+    assert shown['name'].startswith('30 (1 3/16")')
+    reloaded = next(row for row in load_quotes() if row['id'] == quote_id)
+    assert next(item for item in reloaded['items'] if item.get('spec'))['name'] == label
+
+    from tests.test_production_orders import _company_users
+    _company_users(client)
+    assert login(client, 'boss@harbor.example').status_code == 302
+    # The admin draft is not this customer's quote. Build the order from a company quote.
+    company_quote = client.post('/api/quotes', json={
+        'items': [{
+            'name': '28 (1 1/8") - 4mmClear Glass+20mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass',
+            'pcs': 1, 'spec': thicker, 'floor': 'W29/1', 'total': '10.00', 'price_sqf': '10.00',
+        }],
+        'currency': 'usd', 'project': 'Order thickness', 'type': 'size', 'tier': 'T2',
+    })
+    assert company_quote.status_code == 200, company_quote.get_json()
+    created = client.post(f"/api/quotes/{company_quote.get_json()['id']}/order", json={})
+    assert created.status_code == 200, created.get_json()
+    order_id = created.get_json()['order_id']
+    orders = load_orders()
+    order = next(row for row in orders if row['id'] == order_id)
+    order['items'][0]['name'] = '28 - 4mmClear Glass+20mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass'
+    order['items'][0]['spec'] = dict(thicker)
+    save_orders(orders)
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    opened = client.get(f'/api/orders/{order_id}').get_json()
+    assert opened['items'][0]['name'].startswith('30 (1 3/16")')
+    assert next(row for row in load_orders() if row['id'] == order_id)['items'][0]['name'] == label
+    edited = client.put(f'/api/orders/{order_id}', json={
+        'items': [{
+            'name': '28 (1 1/8") - 4mmClear Glass+20mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass',
+            'pcs': 2,
+            'spec': thicker,
+            'floor': 'W29/1',
+        }],
+        'price_choice': 'apply',
+        'customer_note': 'Exterior lite is now 6mm. The overall thickness is 30mm.',
+    })
+    assert edited.status_code == 200, edited.get_json()
+    assert edited.get_json()['items'][0]['name'] == label
+    assert next(row for row in load_orders() if row['id'] == order_id)['items'][0]['name'] == label
+    page = Path('templates/quotes.html').read_text()
+    orders_page = Path('templates/orders.html').read_text()
+    orgadata = Path('templates/partials/orgadata_import.html').read_text()
+    assert 'function componentThickness' in page
+    assert 'total += componentThickness(glass)' in page
+    assert 'function orderIguName' in orders_page
+    assert 'componentThickness(lite.product)' in orgadata

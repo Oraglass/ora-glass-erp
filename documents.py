@@ -166,54 +166,173 @@ def dimension_lines(width, height, unit):
     return wide, high
 
 
+_MM_THICKNESS = re.compile(r'(\d+(?:\.\d+)?)\s*mm', re.IGNORECASE)
+_INCH_LAYER = re.compile(r'(\d+(?:\.\d+)?)\s*(?:inch(?:es)?|in|"|″|”)', re.IGNORECASE)
+_LAMINATED = re.compile(r'lam|\bpvb\b|\bsgp\b|interlayer', re.IGNORECASE)
+_LEADING_THICKNESS = re.compile(r'^\s*(\d+(?:\.\d+)?)')
+_PIECE_SIZE_SUFFIX = re.compile(
+    r'\s+-\s+\d+(?:\.\d+)?\s+x\s+\d+(?:\.\d+)?\s*(?:mm|in)\b\s*$',
+    re.IGNORECASE,
+)
+
+
+def _round_mm(value):
+    number = round(float(value), 2)
+    if abs(number - round(number)) < 1e-9:
+        return float(int(round(number)))
+    return number
+
+
+def component_thickness_mm(name):
+    """Millimetres in one lite or spacer.
+
+    A monolithic name uses its one millimetre number. A laminated lite is the
+    sum of every ply and the interlayer, whether those are written in
+    millimetres or as an inch layer such as 0.030".
+    """
+    text = str(name or '').strip()
+    if not text or text.lower() == 'n/a':
+        return 0.0
+    millimetres = [float(value) for value in _MM_THICKNESS.findall(text)]
+    laminated = bool(_LAMINATED.search(text)) or len(millimetres) > 1
+    inches = 0.0
+    if laminated:
+        inches = sum(float(value) * 25.4 for value in _INCH_LAYER.findall(text))
+    if laminated and (millimetres or inches):
+        return _round_mm(sum(millimetres) + inches)
+    if millimetres:
+        return _round_mm(millimetres[0])
+    return 0.0
+
+
 def overall_thickness_mm(spec):
-    """Glass plus spacer millimetres, the overall unit size in the build name."""
+    """Glass plus spacer millimetres, the overall unit size in the build name.
+
+    Each lite contributes its full thickness. Laminated glass counts every ply
+    and the interlayer, not only the first number in the product name.
+    """
+    from production import normalize_igu_spec
+    spec = normalize_igu_spec(spec)
+    total = 0.0
+    found = False
+    for index in (1, 2, 3):
+        glass = spec.get(f'glass{index}') or ''
+        if not glass or str(glass).strip().lower() == 'n/a':
+            continue
+        glass_mm = component_thickness_mm(glass)
+        if glass_mm <= 0:
+            continue
+        found = True
+        total += glass_mm
+        if index < 3:
+            spacer = spec.get(f'spacer{index}') or ''
+            if spacer and str(spacer).strip().lower() != 'n/a':
+                total += component_thickness_mm(spacer)
+    if found:
+        return _round_mm(total)
     makeup = makeup_from_spec(spec)
     if not makeup:
         return 0.0
-    total = 0.0
+    parsed = 0.0
     for part in makeup.split('+'):
         match = re.match(r'\s*(\d+(?:\.\d+)?)mm', part, re.IGNORECASE)
         if match:
-            total += float(match.group(1))
-    return total
+            parsed += float(match.group(1))
+    return _round_mm(parsed)
 
 
 def build_label(spec):
     """Full IGU name: 32 (1 1/4") - 4mmSolarban60 VT Tempered+24mm..."""
-    makeup = makeup_from_spec(spec)
-    if not makeup:
-        return ''
-    total = overall_thickness_mm(spec)
-    if total <= 0:
-        return makeup
-    mm = int(total) if float(total).is_integer() else total
-    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
+    return _igu_label(spec)
 
 
 def igu_name_from_spec(spec):
     """IGU name the quote calculator builds: overall millimetres, inch fraction, then the lites."""
+    return _igu_label(spec)
+
+
+def name_thickness_mismatch(item):
+    """True when a stored name leads with a thickness that is not the spec sum."""
+    if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return False
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    label = igu_name_from_spec(spec) if spec else ''
+    if not label:
+        return False
+    current = _PIECE_SIZE_SUFFIX.sub('', str(item.get('name') or '')).strip()
+    match = _LEADING_THICKNESS.match(current)
+    if not match:
+        return False
+    return abs(float(match.group(1)) - overall_thickness_mm(spec)) > 0.01
+
+
+def sync_line_name(item):
+    """Replace a line name with the name its spec builds. A piece size is not part of that name."""
+    if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return False
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    label = igu_name_from_spec(spec) if spec else ''
+    if not label or item.get('name') == label:
+        return False
+    item['name'] = label
+    return True
+
+
+def sync_item_names(items, only_mismatch=False):
+    """Rebuild IGU names from their specs. A following surcharge note uses the new name."""
+    changed = False
+    previous = None
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') == 'irregular_surcharge':
+            if previous:
+                expected = f"Irregular shape surcharge – {previous.get('name') or 'Glass'}"
+                if item.get('name') != expected:
+                    item['name'] = expected
+                    if item.get('description'):
+                        item['description'] = expected
+                    changed = True
+            continue
+        if item.get('kind') == 'dwg_creation':
+            continue
+        if only_mismatch and not name_thickness_mismatch(item):
+            previous = item
+            continue
+        if sync_line_name(item):
+            changed = True
+        previous = item
+    return changed
+
+
+def glass_thickness_mm(spec):
+    """Sum of the lite thicknesses. Spacers are not glass. Laminated lites include every ply."""
+    from production import normalize_igu_spec
+    spec = normalize_igu_spec(spec)
+    total = 0.0
+    for index in (1, 2, 3):
+        name = str((spec or {}).get(f'glass{index}') or '')
+        if not name or name.strip().lower() == 'n/a':
+            continue
+        total += component_thickness_mm(name)
+    return _round_mm(total)
+
+
+def _format_overall_mm(total):
+    number = _round_mm(total)
+    if float(number).is_integer():
+        return str(int(number))
+    return f'{number:.2f}'.rstrip('0').rstrip('.')
+
+
+def _igu_label(spec):
     makeup = makeup_from_spec(spec)
     if not makeup:
         return ''
     total = overall_thickness_mm(spec)
     if total <= 0:
         return makeup
-    mm = int(total) if float(total).is_integer() else total
-    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
-
-
-def glass_thickness_mm(spec):
-    """Sum of the lite thicknesses. Spacers are not glass."""
-    total = 0.0
-    for index in (1, 2, 3):
-        name = str((spec or {}).get(f'glass{index}') or '')
-        if not name or name == 'n/a':
-            continue
-        match = re.search(r'(\d+(?:\.\d+)?)\s*mm', name, re.IGNORECASE)
-        if match:
-            total += float(match.group(1))
-    return total
+    return f'{_format_overall_mm(total)} ({quote_form_fraction(total)}") - {makeup}'
 
 
 def real_area(item):

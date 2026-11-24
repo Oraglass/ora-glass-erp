@@ -1271,6 +1271,10 @@ def bootstrap_once():
         _migrate_order_one_review()
     except Exception:
         logger.exception('Order 1 review migration failed')
+    try:
+        _migrate_igu_names()
+    except Exception:
+        logger.exception('IGU name normalization failed')
     _state['bootstrapped'] = True
 
 
@@ -4152,6 +4156,9 @@ def get_quote(quote_id):
     quote = _visible_quote(user, quote_id)
     if not quote:
         return json_error('Not found', 404)
+    import documents
+    if documents.sync_item_names(quote.get('items'), only_mismatch=True):
+        replace_quote(quote_id, quote)
     return jsonify(_with_quote_tax(_quote_for_viewer(quote, user)))
 
 
@@ -7389,9 +7396,13 @@ def get_orders():
 @module_required('orders')
 def get_order(order_id):
     user = current_user()
-    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    orders = load_orders()
+    order = next((row for row in orders_visible_to(user, orders) if row.get('id') == order_id), None)
     if not order:
         return json_error('Not found', 404)
+    import documents
+    if documents.sync_item_names(order.get('items'), only_mismatch=True):
+        save_orders(orders)
     return jsonify(order_for_viewer(order, user, with_coverage=True))
 
 
@@ -7444,6 +7455,7 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
                 spec[key] = clean_text(spec_in.get(key), 120)
         if not _usable_size_spec(spec):
             return None, 'Each line needs a glass type and a positive size.'
+        spec = _fill_open_sealants(production.normalize_igu_spec(spec))
         for key in ('glass1', 'glass2', 'glass3', 'spacer1', 'spacer2', 'sealant1', 'sealant2'):
             if spec.get(key) and not _known_priced_name(spec.get(key)):
                 return None, 'Unknown material on a line.'
@@ -7455,7 +7467,8 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
             return None, 'Quantity must be at least 1.'
         line_minimum = raw_item.get('minimum_sqf') if 'minimum_sqf' in raw_item else minimum_sqf
         priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor, line_minimum)
-        name = clean_text(raw_item.get('name'), 200)
+        import documents
+        name = documents.igu_name_from_spec(spec) or clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
         line = {
@@ -7510,6 +7523,27 @@ def _orders_awaiting_staff(user):
         1 for order in load_orders()
         if order_status(order) in {'submitted', 'reapproved'} and order.get('review_for') != 'customer'
     )
+
+
+def _migrate_igu_names():
+    """Stored lines whose thickness prefix does not match the spec are rebuilt once."""
+    import documents
+    quotes = load_quotes()
+    changed = False
+    for quote in quotes:
+        if documents.sync_item_names(quote.get('items'), only_mismatch=True):
+            changed = True
+    if changed:
+        save_quotes(quotes)
+        logger.info('Rebuilt IGU names on saved quotes so the thickness matches the spec.')
+    orders = load_orders()
+    changed = False
+    for order in orders:
+        if documents.sync_item_names(order.get('items'), only_mismatch=True):
+            changed = True
+    if changed:
+        save_orders(orders)
+        logger.info('Rebuilt IGU names on saved orders so the thickness matches the spec.')
 
 
 def _migrate_order_one_review():

@@ -752,23 +752,30 @@ def lookup_product(spec, fallback_name=''):
 def excel_identity(item):
     """Production Excel name and ID. A match uses the registry text exactly."""
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
-    found = lookup_product(spec, item.get('name') or '')
+    source_name = item.get('name') or ''
+    try:
+        import documents
+        if documents.name_thickness_mismatch(item):
+            source_name = documents.build_label(spec) or source_name
+    except Exception:
+        source_name = item.get('name') or ''
+    found = lookup_product(spec, source_name)
     if makeup_from_spec(spec) and found.get('product_name'):
         return {
             'product_id': found['product_id'],
             'product_name': found['product_name'],
             'matched': bool(found['product_id']),
         }
-    hit = registry_for_name(item.get('name') or '')
+    hit = registry_for_name(source_name)
     if hit:
         return {
             'product_id': hit['product_id'],
             'product_name': hit['product_name'],
             'matched': True,
         }
-    _key, fallback = canonical_build(item.get('name') or found.get('product_name') or '')
+    _key, fallback = canonical_build(source_name or found.get('product_name') or '')
     if not fallback:
-        fallback = strip_size_suffix(strip_inch_overall(item.get('name') or ''))
+        fallback = strip_size_suffix(strip_inch_overall(source_name or ''))
     return {'product_id': '', 'product_name': fallback, 'matched': False}
 
 

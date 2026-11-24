@@ -924,6 +924,106 @@ async function postDecision(path, body, message) {
   renderDetail(payload);
   load();
 }
+function componentThickness(name) {
+  const text = String(name || '');
+  if (!text || text === 'n/a') return 0;
+  const mmParts = [];
+  const mmRe = /(\d+(?:\.\d+)?)\s*mm/ig;
+  let match;
+  while ((match = mmRe.exec(text))) mmParts.push(Number(match[1]));
+  const laminated = /lam|\bpvb\b|\bsgp\b|interlayer/i.test(text) || mmParts.length > 1;
+  let inches = 0;
+  if (laminated) {
+    const inchRe = /(\d+(?:\.\d+)?)\s*(?:inches|inch|in|"|″|”)/ig;
+    while ((match = inchRe.exec(text))) inches += Number(match[1]) * 25.4;
+  }
+  const round = value => Math.round(value * 100) / 100;
+  if (laminated && (mmParts.length || inches)) return round(mmParts.reduce((sum, value) => sum + value, 0) + inches);
+  return mmParts.length ? round(mmParts[0]) : 0;
+}
+function orderLiteBlank(value) {
+  return !value || value === 'n/a';
+}
+function orderNormalizeSpec(spec) {
+  const next = Object.assign({}, spec || {});
+  if ('glass2' in next && orderLiteBlank(next.glass2)) {
+    next.glass2 = '';
+    next.temper2 = 'n/a';
+    next.spacer1 = '';
+    next.sealant1 = '';
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+    return next;
+  }
+  if ('glass3' in next && orderLiteBlank(next.glass3)) {
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  if ('spacer1' in next && orderLiteBlank(next.spacer1)) {
+    next.spacer1 = '';
+    next.sealant1 = '';
+  }
+  if ('spacer2' in next && orderLiteBlank(next.spacer2)) {
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  return next;
+}
+function orderIguName(spec) {
+  spec = orderNormalizeSpec(spec);
+  function cleanGlass(name, temper) {
+    if (!name || name === 'n/a') return '';
+    let text = String(name).replace(' Jumbo', '').replace(' Large', '').replace(' / sqf', '');
+    const found = text.match(/(\d+(?:\.\d+)?)mm/);
+    if (!found) return '';
+    text = text.replace(/(\d+(?:\.\d+)?)mm/, '').trim();
+    return found[1] + 'mm' + text + (temper === 'yes' ? ' Tempered' : '');
+  }
+  function cleanSpacer(name, sealant) {
+    if (!name || name === 'n/a') return '';
+    const found = String(name).match(/(\d+(?:\.\d+)?)mm/);
+    if (!found) return '';
+    const type = String(name).toLowerCase().indexOf('techno') >= 0 ? 'Technoform' : 'SuperSpacer';
+    const seal = sealant && String(sealant).toLowerCase().indexOf('silicone') >= 0 ? 'Silicone' : 'Polysulfide';
+    return found[1] + 'mm' + type + ' with Argon(' + seal + ')';
+  }
+  function fraction(total) {
+    const inches = total / 25.4;
+    let whole = Math.floor(inches);
+    let numer = Math.round((inches - whole) * 16);
+    if (numer >= 16) { whole += Math.floor(numer / 16); numer = numer % 16; }
+    if (numer <= 0) return String(whole);
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const divisor = gcd(numer, 16);
+    const bit = (numer / divisor) + '/' + (16 / divisor);
+    return whole ? (whole + ' ' + bit) : bit;
+  }
+  const parts = [];
+  let total = 0;
+  [1, 2, 3].forEach(index => {
+    const glass = spec['glass' + index];
+    const token = cleanGlass(glass, spec['temper' + index]);
+    if (!token) return;
+    parts.push(token);
+    total += componentThickness(glass);
+    const spacer = spec['spacer' + index];
+    if (spacer && spacer !== 'n/a' && index < 3) {
+      const gap = cleanSpacer(spacer, spec['sealant' + index]);
+      if (gap) {
+        parts.push(gap);
+        total += componentThickness(spacer);
+      }
+    }
+  });
+  if (!parts.length) return '';
+  total = Math.round(total * 100) / 100;
+  if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
+  return total + ' (' + fraction(total) + '") - ' + parts.join('+');
+}
 function blankSpec(glass, width, height, unit) {
   return {glass1: glass, temper1: 'n/a', spacer1: 'n/a', sealant1: 'n/a', glass2: 'n/a', temper2: 'n/a', spacer2: 'n/a', sealant2: 'n/a', glass3: 'n/a', temper3: 'n/a', width: Number(width), height: Number(height), unit: unit || 'in'};
 }
@@ -1236,6 +1336,56 @@ const orderInvoice = document.getElementById('order-invoice');
 if (orderInvoice) orderInvoice.addEventListener('change', load);
 const editor = document.getElementById('order-editor');
 if (editor) {
+  document.getElementById('order-lines').addEventListener('change', async (event) => {
+    const input = event.target.closest('[data-line]');
+    if (!input) return;
+    const field = input.getAttribute('data-field');
+    if (['glass1', 'glass2', 'spacer1', 'temper1'].indexOf(field) < 0) return;
+    const index = Number(input.getAttribute('data-line'));
+    const item = (draft.items || [])[index];
+    if (!item) return;
+    const spec = Object.assign({}, item.spec || {});
+    document.querySelectorAll('[data-line="' + index + '"]').forEach(control => {
+      const key = control.getAttribute('data-field');
+      if (['glass1', 'temper1', 'spacer1', 'glass2', 'width', 'height', 'unit'].indexOf(key) >= 0) spec[key] = control.value;
+    });
+    item.spec = orderNormalizeSpec(spec);
+    const rebuilt = orderIguName(item.spec);
+    if (rebuilt) {
+      item.name = rebuilt;
+      const nameInput = document.querySelector('[data-line="' + index + '"][data-field="name"]');
+      if (nameInput) nameInput.value = rebuilt;
+    }
+    const spacerInput = document.querySelector('[data-line="' + index + '"][data-field="spacer1"]');
+    if (spacerInput && !item.spec.spacer1) spacerInput.value = '';
+    const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      glass1: item.spec.glass1 || '', glass2: item.spec.glass2 || '', glass3: item.spec.glass3 || '',
+      temper1: item.spec.temper1 || 'n/a', temper2: item.spec.temper2 || 'n/a', temper3: item.spec.temper3 || 'n/a',
+      spacer1: item.spec.spacer1 || '', spacer2: item.spec.spacer2 || '',
+      sealant1: item.spec.sealant1 || '', sealant2: item.spec.sealant2 || '',
+      tier: (currentOrder && currentOrder.tier) || '',
+      fx_rate: (currentOrder && currentOrder.fx_rate) || '',
+      customer_id: (currentOrder && currentOrder.customer_id) || ''
+    })});
+    const result = await res.json().catch(() => ({}));
+    if (res.ok && result.price_sqf != null) {
+      const currency = String((currentOrder && currentOrder.currency) || 'usd').toLowerCase();
+      const fx = Number(result.fx_rate || (currentOrder && currentOrder.fx_rate) || 1);
+      const priceSqf = currency === 'cad' ? Number(result.price_sqf) * fx : Number(result.price_sqf);
+      const width = Number(item.spec.width) || 0;
+      const height = Number(item.spec.height) || 0;
+      const real = item.spec.unit === 'mm' ? (width * height) / 92903.04 : (width * height) / 144;
+      const charged = Math.max(real, Number(item.minimum_sqf || result.minimum_sqf || 0));
+      const pcsInput = document.querySelector('[data-line="' + index + '"][data-field="pcs"]');
+      const pcs = pcsInput ? Number(pcsInput.value || item.pcs || 1) : Number(item.pcs || 1);
+      item.sqf = Number(charged.toFixed(2));
+      item.price_sqf = Number(priceSqf.toFixed(2));
+      item.price_pc = Number((priceSqf * charged).toFixed(2));
+      item.total = Number((item.price_pc * pcs).toFixed(2));
+      item.pcs = pcs;
+    }
+    refreshPreview();
+  });
   document.getElementById('order-lines').addEventListener('click', (event) => {
     const button = event.target.closest('[data-remove]');
     if (!button) return;

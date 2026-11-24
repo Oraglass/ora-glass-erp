@@ -640,6 +640,8 @@ def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
         elif item.get('surcharge_rate') not in (None, ''):
             stored = item.get('surcharge_rate')
         item['irregular_shape'] = irregular
+        import documents
+        documents.sync_line_name(item)
         if irregular:
             if not item.get('line_id'):
                 item['line_id'] = secrets.token_hex(4)
