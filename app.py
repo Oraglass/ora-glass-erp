@@ -963,6 +963,15 @@ def staff_can_order(user):
     return user_has_module(user, 'orders')
 
 
+def can_scan_racks(user):
+    """Drivers and order staff scan the QR code already stuck on a rack."""
+    if not user or user.get('role') == 'customer':
+        return False
+    if user.get('role') == 'shop':
+        return True
+    return staff_can_order(user)
+
+
 def _is_ora_staff(user):
     role = (user or {}).get('role') or ''
     return role == 'admin' or role in LEGACY_STAFF_ROLES
@@ -1275,6 +1284,8 @@ def inject_user():
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
     if user and staff_can_order(user):
         extras.append({'id': 'shipments', 'label': 'Shipments', 'endpoint': 'shipments_page'})
+    if user and can_scan_racks(user):
+        extras.append({'id': 'racks', 'label': 'Racks', 'endpoint': 'rack_scan'})
     if extras:
         placed = False
         for index, item in enumerate(nav):
@@ -2147,6 +2158,26 @@ def shipments_page():
     if not staff_can_order(user):
         return forbidden()
     return render_template('shipments.html')
+
+
+@app.route('/racks/scan')
+@login_required
+def rack_scan():
+    user = current_user()
+    if not can_scan_racks(user):
+        return forbidden()
+    return render_template('rack_scan.html')
+
+
+@app.route('/api/racks/lookup', methods=['POST'])
+@login_required
+def rack_lookup():
+    user = current_user()
+    if not can_scan_racks(user):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    import racks
+    return jsonify(racks.lookup_rack(load_orders(), data.get('text')))
 
 
 def _open_shipment_rows(user):
@@ -9102,7 +9133,7 @@ def _shop_gate():
     if request.endpoint in {
         'punch', 'punch_login', 'my_punches', 'create_punch', 'logout',
         'web_manifest', 'service_worker', 'static', 'kiosk', 'kiosk_workers',
-        'kiosk_identify', 'kiosk_punch',
+        'kiosk_identify', 'kiosk_punch', 'rack_scan', 'rack_lookup',
     }:
         return None
     if wants_json():
