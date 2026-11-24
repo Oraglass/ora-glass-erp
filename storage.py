@@ -231,6 +231,25 @@ def replace_quote(quote_id, quote):
     return None
 
 
+def racks_path():
+    return os.path.join(data_dir(), 'racks.json')
+
+
+def load_racks():
+    path = racks_path()
+    with lock_for(path):
+        data = read_json(path, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_racks(racks):
+    if not isinstance(racks, dict):
+        raise TypeError('racks must be a dict')
+    path = racks_path()
+    with lock_for(path):
+        atomic_write_json(path, racks)
+
+
 def load_orders():
     path = orders_path()
     with lock_for(path):

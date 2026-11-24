@@ -30,6 +30,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="wrap">
 <div class="card">
 <h1>{{ company }}</h1>
+<p class="note" id="rack-count">Racks at this customer: {{ rack_count }}</p>
 <p class="note">Resale certificate for invoices from Ora Glass Inc. A customer upload stays pending until Ora Glass verifies it. A verified certificate that has not expired means those invoices are not taxed.</p>
 {% if warning %}<p class="error" id="resale-warning">{{ warning }}</p>{% endif %}
 </div>

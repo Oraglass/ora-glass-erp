@@ -49,7 +49,7 @@ td.actions{width:11rem}
 </div>
 <p class="help" style="margin-top:8px">The tier on this page is the company default. On the Users page, set a different tier for an individual person when they should not use that default.</p>
 <table>
-<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>State / Province</th><th>QBO tax code</th><th>Resale / tax no.</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
+<thead><tr><th>Company</th><th>Domain</th><th>City</th><th>State / Province</th><th>QBO tax code</th><th>Resale / tax no.</th><th>Phone</th><th>Default tier</th><th>Users</th><th>Racks</th><th>Status</th>{% if can_manage %}<th>Actions</th>{% endif %}</tr></thead>
 <tbody id="customer-list"><tr><td colspan="8" style="text-align:center;color:#666">Loading...</td></tr></tbody>
 </table>
 </div></div>
@@ -213,7 +213,7 @@ async function api(url, options) {
 }
 function render() {
   const tbody = document.getElementById('customer-list');
-  const cols = CAN_MANAGE ? 11 : 10;
+  const cols = CAN_MANAGE ? 12 : 11;
   if (!customers.length) {
     tbody.innerHTML = '<tr><td colspan="' + cols + '" style="text-align:center;color:#666">No customers</td></tr>';
     return;
@@ -222,7 +222,7 @@ function render() {
     const actions = CAN_MANAGE
       ? '<td class="actions"><div class="row-actions"><div class="row-actions-main"><button class="act act-primary" type="button" data-action="edit" data-id="' + esc(c.id) + '">Edit</button></div><button class="act act-danger" type="button" data-action="delete" data-id="' + esc(c.id) + '">Delete</button></div></td>'
       : '';
-    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.country === 'Canada' ? (c.province || '—') : (c.us_state || '—')) + '</td><td>' + esc(c.export_no_tax ? 'Export' : taxLabel(c)) + '</td><td>' + esc(taxIdLabel(c)) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
+    return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.domain || '-') + '</td><td>' + esc(c.city) + '</td><td>' + esc(c.country === 'Canada' ? (c.province || '—') : (c.us_state || '—')) + '</td><td>' + esc(c.export_no_tax ? 'Export' : taxLabel(c)) + '</td><td>' + esc(taxIdLabel(c)) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tier_label || c.tier) + '</td><td>' + esc(c.user_count || 0) + '</td><td class="num">' + esc(c.rack_count || 0) + '</td><td><span class="status ' + esc(c.status) + '">' + esc(c.status) + '</span></td>' + actions + '</tr>';
   }).join('');
 }
 async function loadCustomers() {

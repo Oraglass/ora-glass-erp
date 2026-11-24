@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ORA Glass ERP - Pick up racks</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;font-size:18px}
+.container{max-width:560px;margin:12px auto;padding:0 16px 40px}
+h2{color:#333;font-size:28px;margin:8px 0}
+.note{color:#555;font-size:16px;line-height:1.4;margin:8px 0}
+.card{background:#fff;border-radius:12px;padding:16px;margin-top:12px}
+label{display:block;font-size:16px;color:#333;margin-top:12px}
+input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px;border:1px solid #ccc;border-radius:12px}
+#scan-input{font-size:32px;padding:18px}
+.btn{display:block;width:100%;background:#C41E3A;color:#fff;border:0;border-radius:12px;font-size:22px;font-weight:700;padding:18px 16px;margin-top:12px;cursor:pointer}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+.row{display:flex;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid #eee;font-size:20px}
+.ok{color:#166534}
+.warn{color:#9f1239}
+#reader{margin-top:12px}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container">
+<h2>Pick up racks</h2>
+<p class="note">Scan each rack. The scanner types the number and presses Enter. The camera button is there when you are using a phone.</p>
+<div class="card">
+<label>Customer
+<select id="customer" aria-label="Customer"></select>
+</label>
+<label>Truck plate
+<input id="plate" aria-label="Truck plate" placeholder="Optional" autocomplete="off">
+</label>
+<label>Rack number
+<input id="scan-input" autofocus autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
+</label>
+<button type="button" class="btn secondary" id="camera">Scan with camera</button>
+<div id="reader" hidden></div>
+</div>
+<div class="card" id="list"><p class="note">No racks scanned yet.</p></div>
+<button type="button" class="btn" id="confirm">Confirm pickup</button>
+<p class="note" id="message"></p>
+</div>
+<script src="{{ url_for('static', filename='html5-qrcode.min.js') }}"></script>
+<script>
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+const scans = [];
+const input = document.getElementById('scan-input');
+const list = document.getElementById('list');
+let camera = null;
+
+function beep(ok) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const tone = ctx.createOscillator();
+    const gain = ctx.createGain();
+    tone.frequency.value = ok ? 880 : 220;
+    tone.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.value = 0.08;
+    tone.start();
+    setTimeout(() => { tone.stop(); ctx.close(); }, ok ? 120 : 280);
+  } catch (error) {}
+}
+function render() {
+  if (!scans.length) { list.innerHTML = '<p class="note">No racks scanned yet.</p>'; return; }
+  list.innerHTML = scans.map(row => '<div class="row ' + (row.result === 'ok' ? 'ok' : 'warn') + '"><strong>' + esc(row.rack || row.raw) + '</strong><span>' + esc(row.message) + '</span></div>').join('');
+}
+async function addScan(raw) {
+  const text = String(raw || '');
+  if (!text.trim()) return;
+  const res = await fetch('/api/racks/check', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      text: text,
+      customer_id: document.getElementById('customer').value,
+      already: scans.filter(row => row.result === 'ok').map(row => row.rack)
+    })
+  });
+  const body = await res.json().catch(() => ({result: 'unknown', message: 'Could not check that rack', raw: text, rack: text.trim()}));
+  scans.push(body);
+  beep(body.result === 'ok');
+  render();
+  input.value = '';
+  input.focus();
+}
+input.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addScan(input.value);
+  }
+});
+document.getElementById('camera').addEventListener('click', async () => {
+  const box = document.getElementById('reader');
+  if (camera) {
+    await camera.stop();
+    camera = null;
+    box.hidden = true;
+    document.getElementById('camera').textContent = 'Scan with camera';
+    input.focus();
+    return;
+  }
+  if (!window.Html5Qrcode) { document.getElementById('message').textContent = 'The camera scanner did not load.'; return; }
+  box.hidden = false;
+  camera = new Html5Qrcode('reader');
+  let last = '';
+  let lastAt = 0;
+  await camera.start({facingMode: 'environment'}, {fps: 8, qrbox: 220}, text => {
+    const now = Date.now();
+    if (text === last && now - lastAt < 1500) return;
+    last = text;
+    lastAt = now;
+    addScan(text);
+  });
+  document.getElementById('camera').textContent = 'Stop camera';
+});
+document.getElementById('confirm').addEventListener('click', async () => {
+  const racks = scans.filter(row => row.result === 'ok').map(row => row.rack);
+  const res = await fetch('/api/racks/pickup', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      customer_id: document.getElementById('customer').value,
+      truck_plate: document.getElementById('plate').value,
+      racks: racks
+    })
+  });
+  const body = await res.json().catch(() => ({}));
+  const message = document.getElementById('message');
+  if (!res.ok) { message.textContent = body.error || 'The pickup was not saved'; return; }
+  message.textContent = 'Picked up ' + (body.moved || []).join(', ');
+  scans.length = 0;
+  render();
+  input.focus();
+});
+fetch('/api/racks/sites').then(res => res.json()).then(rows => {
+  document.getElementById('customer').innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+});
+window.addEventListener('load', () => input.focus());
+</script>
+</body>
+</html>
