@@ -378,3 +378,79 @@ def test_quickbooks_uses_the_configured_surcharge_item(client, monkeypatch):
                    for _method, url, _body in fake.calls if 'query' in url)
     finally:
         quickbooks.TRANSPORT = None
+
+
+def test_drawing_uploads_name_the_quote_line_they_belong_to(client):
+    """Same IGU, different size: each drawing is labeled and stored on that line."""
+    from documents import build_label
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'boss@harbor.example', 'customer', customer_id='harbor-glass', customer_name='Harbor Glass',
+        customer_tier='T2', customer_subrole='management',
+    )
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    wide = dict(SPEC)
+    wide['width'] = 35
+    wide['height'] = 48
+    other = dict(SPEC)
+    other['width'] = 40
+    other['height'] = 60
+
+    def item(spec, pcs, floor, irregular):
+        priced = reprice_size_line(spec, pcs, 'T2', 'usd', __import__('app').PRICING, load_tiers())
+        return {
+            'name': 'Clear Glass 4mm', 'pcs': pcs, 'spec': spec, 'floor': floor,
+            'irregular_shape': irregular, 'sqf': priced['sqf'], 'price_sqf': priced['price_sqf'],
+            'price_pc': priced['price_pc'], 'total': priced['total'],
+        }
+
+    saved = client.post('/api/quotes', json={
+        'items': [
+            item(SPEC, 1, 'W0', False),
+            item(wide, 2, '1', True),
+            item(other, 1, '2', True),
+        ],
+        'currency': 'usd', 'project': 'Drawings', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    quote_id = saved.get_json()['id']
+    viewed = client.get(f'/api/quotes/{quote_id}')
+    assert viewed.status_code == 200, viewed.get_json()
+    glass = [row for row in viewed.get_json()['items'] if row.get('kind') not in {'irregular_surcharge', 'dwg_creation'}]
+    assert [row['line_number'] for row in glass] == [1, 2, 3]
+    label = build_label(wide)
+    thickness, makeup = label.split(' - ', 1)
+    assert glass[0].get('drawing_title') in (None, '')
+    assert glass[1]['drawing_title'] == f'Line 2 · {thickness} · 35 x 48 · Qty 2 · Floor 1 · Irregular'
+    assert glass[1]['drawing_spec'] == makeup
+    assert glass[2]['drawing_title'] == f'Line 3 · {thickness} · 40 x 60 · Qty 1 · Floor 2 · Irregular'
+    assert glass[2]['drawing_spec'] == makeup
+    history = client.get('/quote-history')
+    assert b'line.drawing_title' in history.data
+    assert b'line.drawing_spec' in history.data
+    assert b"Drawing for ' +" not in history.data
+    second, third = glass[1]['line_id'], glass[2]['line_id']
+    created = client.post(
+        f'/api/quotes/{quote_id}/order',
+        data={
+            'customer_id': 'harbor-glass',
+            f'drawing_{second}': (io.BytesIO(b'AC1015 wide'), 'wide.dwg'),
+            f'drawing_{third}': (io.BytesIO(b'AC1015 other'), 'other.dwg'),
+        },
+        content_type='multipart/form-data',
+    )
+    assert created.status_code == 200, created.get_json()
+    order = next(row for row in load_orders() if row['id'] == created.get_json()['order_id'])
+    stored = {row['line_id']: row for row in order['drawings']}
+    assert stored[second]['filename'] == 'wide.dwg'
+    assert stored[second]['line_number'] == 2
+    assert stored[third]['filename'] == 'other.dwg'
+    assert stored[third]['line_number'] == 3
+    assert os.path.isfile(os.path.join(data_dir(), 'order_drawings', str(order['id']), str(second), stored[second]['stored']))
+    assert os.path.isfile(os.path.join(data_dir(), 'order_drawings', str(order['id']), str(third), stored[third]['stored']))
+    shown = client.get(f"/api/orders/{order['id']}")
+    assert shown.status_code == 200, shown.get_json()
+    public = {row['line_id']: row for row in shown.get_json()['drawings']}
+    assert public[second]['line_number'] == 2
+    assert public[third]['line_number'] == 3
+    assert b'drawing.line_number' in client.get('/orders').data

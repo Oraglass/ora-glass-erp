@@ -103,6 +103,43 @@ def _display_mm(value):
     return f'{number:.2f}'.rstrip('0').rstrip('.')
 
 
+def _plain_measure(value):
+    number = float(value)
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return f'{number:.4f}'.rstrip('0').rstrip('.')
+
+
+def drawing_caption(item):
+    """First line identifies the quote row. The IGU makeup is the second line."""
+    name = str((item or {}).get('name') or '')
+    thickness, spec = '', name
+    if ' - ' in name:
+        thickness, spec = name.split(' - ', 1)
+    bits = [f"Line {(item or {}).get('line_number') or ''}"]
+    if thickness:
+        bits.append(thickness.strip())
+    spec_row = (item or {}).get('spec') if isinstance((item or {}).get('spec'), dict) else {}
+    width, height = spec_row.get('width'), spec_row.get('height')
+    if width not in (None, '') and height not in (None, ''):
+        try:
+            bits.append(f'{_plain_measure(width)} x {_plain_measure(height)}')
+        except (TypeError, ValueError):
+            bits.append(f'{width} x {height}')
+    pcs = (item or {}).get('pcs')
+    if pcs not in (None, '', '-'):
+        try:
+            bits.append(f'Qty {_plain_measure(pcs)}')
+        except (TypeError, ValueError):
+            bits.append(f'Qty {pcs}')
+    floor = (item or {}).get('floor') or (item or {}).get('mark') or ''
+    if floor:
+        bits.append(f'Floor {floor}')
+    if (item or {}).get('irregular_shape'):
+        bits.append('Irregular')
+    return ' · '.join(bits), spec.strip()
+
+
 def piece_size_text(width, height, unit=None):
     """Piece size in inches and millimetres. 25.4 mm is one inch."""
     if width in (None, '') or height in (None, ''):

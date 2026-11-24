@@ -164,7 +164,9 @@ function drawingMarkup(quote) {
   const lines = irregularLines(quote);
   if (!lines.length) return '';
   return '<p class="help drawing-note">' + esc(DRAWING_NOTE) + '</p>' + lines.map(line => {
-    return '<div class="form-group"><label>Drawing for ' + esc(line.name || 'irregular shape') + '</label><input type="file" required data-line="' + esc(line.line_id) + '"></div>';
+    const title = line.drawing_title || ('Line ' + (line.line_number || ''));
+    const spec = line.drawing_spec || '';
+    return '<div class="form-group"><label>' + esc(title) + (spec ? '<br><span class="note">' + esc(spec) + '</span>' : '') + '</label><input type="file" required data-line="' + esc(line.line_id) + '" aria-label="' + esc(title) + '"></div>';
   }).join('') + '<p class="help" data-dwg-preview></p>';
 }
 function bindDrawingPanel(root) {

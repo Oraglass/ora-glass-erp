@@ -3974,6 +3974,14 @@ def _quote_for_viewer(quote, user, orders=None):
         items.append(item)
     import documents
     row['items'] = _assign_line_numbers(documents.describe_items(items))
+    for item in row['items']:
+        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        if not item.get('irregular_shape'):
+            continue
+        title, spec = documents.drawing_caption(item)
+        item['drawing_title'] = title
+        item['drawing_spec'] = spec
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -6719,6 +6727,28 @@ def _remake_line(source, qty, serial, reason):
     return item
 
 
+def _public_drawings(order):
+    numbers = {}
+    for item in (order or {}).get('items') or []:
+        if isinstance(item, dict) and item.get('line_id') and item.get('line_number') not in (None, ''):
+            numbers[str(item.get('line_id'))] = item.get('line_number')
+    rows = []
+    for drawing in (order or {}).get('drawings') or []:
+        if not isinstance(drawing, dict):
+            continue
+        number = drawing.get('line_number')
+        if number in (None, ''):
+            number = numbers.get(str(drawing.get('line_id') or ''))
+        rows.append({
+            'line_id': drawing.get('line_id'),
+            'line_number': number if number not in (None, '') else '',
+            'filename': drawing.get('filename') or '',
+            'is_dwg': bool(drawing.get('is_dwg')),
+            'uploaded_at': drawing.get('uploaded_at') or '',
+        })
+    return rows
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -6760,16 +6790,7 @@ def order_for_viewer(order, user, with_coverage=False):
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
-        'drawings': [
-            {
-                'line_id': drawing.get('line_id'),
-                'filename': drawing.get('filename') or '',
-                'is_dwg': bool(drawing.get('is_dwg')),
-                'uploaded_at': drawing.get('uploaded_at') or '',
-            }
-            for drawing in order.get('drawings') or []
-            if isinstance(drawing, dict)
-        ],
+        'drawings': _public_drawings(order),
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
         'tax_lines': order.get('tax_lines') or [],
@@ -7183,6 +7204,7 @@ def convert_quote_to_order(quote_id):
                 record = drawing_store.store_drawing(order['id'], line.get('line_id'), filename, payload)
             except drawing_store.DrawingError as exc:
                 return json_error(str(exc), 400)
+            record['line_number'] = line.get('line_number')
             record['uploaded_by'] = user.get('email') or ''
             saved_drawings.append(record)
         def remember(row):
@@ -7309,6 +7331,19 @@ def replace_order_drawing(order_id, line_id):
     except drawing_store.DrawingError as exc:
         return json_error(str(exc), 400)
     record['uploaded_by'] = user.get('email') or ''
+    previous = next(
+        (item for item in order.get('drawings') or [] if str(item.get('line_id')) == str(line_id)),
+        None,
+    )
+    if previous and previous.get('line_number') not in (None, ''):
+        record['line_number'] = previous.get('line_number')
+    else:
+        match = next(
+            (item for item in order.get('items') or [] if str(item.get('line_id')) == str(line_id)),
+            None,
+        )
+        if match and match.get('line_number') not in (None, ''):
+            record['line_number'] = match.get('line_number')
 
     def mutator(row):
         row['drawings'] = [

@@ -587,9 +587,10 @@ function renderDetail(order) {
   const drawings = (order.drawings || []).map(drawing => {
     const href = '/api/orders/' + encodeURIComponent(order.id) + '/drawings/' + encodeURIComponent(drawing.line_id);
     const charge = drawing.is_dwg ? '' : ' <span class="note">DWG drawing creation applies until this file is replaced with a .dwg.</span>';
-    return '<div style="margin:8px 0"><a href="' + href + '">Download ' + esc(drawing.filename || 'drawing') + '</a>' + charge
+    const lineLabel = drawing.line_number ? ('Line ' + drawing.line_number + ' · ') : '';
+    return '<div style="margin:8px 0">' + esc(lineLabel) + '<a href="' + href + '">Download ' + esc(drawing.filename || 'drawing') + '</a>' + charge
       + '<form class="replace-drawing" data-line="' + esc(drawing.line_id) + '" style="margin-top:6px;display:flex;gap:8px;align-items:center">'
-      + '<input type="file" required aria-label="Replace drawing for ' + esc(drawing.filename || 'line') + '">'
+      + '<input type="file" required aria-label="Replace drawing for ' + esc(lineLabel || drawing.filename || 'line') + '">'
       + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
   }).join('');
   const drawingBlock = drawings ? sectionBlock('Drawings', '', 'Shop drawings attached to this order.', drawings) : '';
