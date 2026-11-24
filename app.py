@@ -3925,7 +3925,7 @@ def save_quote():
     return jsonify({'success': True, 'id': stored['id']})
 
 
-def _quote_for_viewer(quote, user):
+def _quote_for_viewer(quote, user, orders=None):
     row = dict(quote)
     row.pop('copy_note', None)
     row.pop('copied_from', None)
@@ -3946,6 +3946,9 @@ def _quote_for_viewer(quote, user):
         row.pop('fx_rate', None)
     row['has_source_pdf'] = bool(row.get('source_file'))
     row.pop('source_file', None)
+    row['source_filenames'] = _source_filenames(row)
+    row.pop('source_files', None)
+    row.update(_append_state(quote, orders))
     return row
 
 
@@ -4778,6 +4781,12 @@ def quote_from_import(import_id):
         'import_id': record.get('id'),
     }
     quote['items'] = expand_irregular_lines(quote['items'], load_pricing_settings()['irregular_shape_surcharge'])
+    filename = record.get('filename') or ''
+    _stamp_import_lines(quote['items'], filename)
+    quote['import_kind'] = 'order'
+    quote['import_template_id'] = record.get('template_id')
+    quote['source_filename'] = filename
+    quote['source_files'] = [{'filename': filename, 'stored': record.get('stored') or ''}]
     stored = append_quote(quote)
     _remember_igus(stored.get('items'), stored.get('date'))
     record['status'] = 'quoted'
@@ -5023,7 +5032,7 @@ def _orgadata_aliases_from(mapped):
     return glass, spacer
 
 
-def _orgadata_preview(record, user, edits=None):
+def _orgadata_preview(record, user, edits=None, locked=None):
     path = upload_abspath(record.get('stored'))
     if not path:
         return {'id': record.get('id'), 'source': orgadata_import.SOURCE_LABEL, 'error': 'The uploaded file is missing.', 'blocks': [], 'lines': []}
@@ -5058,6 +5067,17 @@ def _orgadata_preview(record, user, edits=None):
     fx_rate = _current_fx()[0]
     addon = _price_factor(_percent((customer or {}).get('price_addon_percent'), 1000))
     minimum = _effective_minimum(customer)
+    if isinstance(locked, dict):
+        if locked.get('currency') in {'usd', 'cad'}:
+            currency = locked['currency']
+        if locked.get('tier'):
+            tier = locked['tier']
+        if locked.get('fx_rate') not in (None, ''):
+            fx_rate = locked['fx_rate']
+        if 'addon_percent' in locked:
+            addon = _price_factor(locked.get('addon_percent'))
+        if locked.get('minimum') is not None:
+            minimum = locked['minimum']
     lines = []
     blocks_out = []
     for index, block in enumerate(mapped.get('blocks') or []):
@@ -5260,6 +5280,8 @@ def quote_from_orgadata(import_id):
     items, error = _orgadata_quote_items(preview)
     if error:
         return json_error(error, 400)
+    filename = record.get('filename') or ''
+    _stamp_import_lines(items, filename)
     customer = load_customers().get(preview['customer_id'])
     tier = preview.get('tier')
     if not tier:
@@ -5285,7 +5307,9 @@ def quote_from_orgadata(import_id):
         'status': 'draft',
         'source': orgadata_import.SOURCE_LABEL,
         'source_file': record.get('stored') or '',
-        'source_filename': record.get('filename') or '',
+        'source_filename': filename,
+        'source_files': [{'filename': filename, 'stored': record.get('stored') or ''}],
+        'import_kind': 'orgadata',
         'orgadata_import_id': record.get('id'),
     }
     _stamp_terms(quote, items, discount, addon)
@@ -5298,6 +5322,532 @@ def quote_from_orgadata(import_id):
     orgadata_import.replace_import(record['id'], record)
     shown = _quote_for_viewer(_with_quote_tax(stored), user)
     return jsonify({'success': True, 'id': stored['id'], 'source': orgadata_import.SOURCE_LABEL, 'quote': shown})
+
+
+_CHARGE_KINDS = {'irregular_surcharge', 'dwg_creation'}
+
+
+def _import_kind_of(quote):
+    if not isinstance(quote, dict):
+        return ''
+    kind = quote.get('import_kind')
+    if kind in {'orgadata', 'order'}:
+        return kind
+    if quote.get('source') == orgadata_import.SOURCE_LABEL:
+        return 'orgadata'
+    if quote.get('import_id'):
+        return 'order'
+    return ''
+
+
+def _customer_invoiced_reason(order):
+    if not order:
+        return ''
+    state, _label = _customer_invoice_state(order)
+    if state == 'invoiced' or order.get('invoice_id') or order.get('customer_invoice_id'):
+        return 'This order has been invoiced.'
+    return ''
+
+
+def _append_state(quote, orders=None):
+    kind = _import_kind_of(quote)
+    if not kind:
+        return {'import_kind': '', 'can_append_file': False, 'append_blocked': ''}
+    order = None
+    order_id = (quote or {}).get('order_id')
+    if order_id:
+        rows = orders if orders is not None else load_orders()
+        order = next((row for row in rows if row.get('id') == order_id), None)
+        if order is None and orders is not None and len(orders) == 1 and orders[0].get('id') == order_id:
+            order = orders[0]
+    elif orders is not None and len(orders) == 1 and not quote:
+        order = orders[0]
+    reason = _customer_invoiced_reason(order)
+    return {'import_kind': kind, 'can_append_file': not reason, 'append_blocked': reason}
+
+
+def _source_filenames(quote):
+    names = []
+    for entry in (quote or {}).get('source_files') or []:
+        if isinstance(entry, dict) and entry.get('filename') and entry['filename'] not in names:
+            names.append(entry['filename'])
+    filename = (quote or {}).get('source_filename') or ''
+    if filename and filename not in names:
+        names.insert(0, filename)
+    return names
+
+
+def _stamp_import_lines(items, filename):
+    number = 1
+    for item in items or []:
+        if not isinstance(item, dict) or item.get('kind') in _CHARGE_KINDS:
+            continue
+        item['line_number'] = number
+        item['source_filename'] = filename
+        number += 1
+    return items
+
+
+def _next_import_line_number(items, default_filename=''):
+    glass = [
+        item for item in items or []
+        if isinstance(item, dict) and item.get('kind') not in _CHARGE_KINDS
+    ]
+    if any(not item.get('line_number') for item in glass):
+        number = 1
+        for item in glass:
+            item['line_number'] = number
+            if default_filename and not item.get('source_filename'):
+                item['source_filename'] = default_filename
+            number += 1
+        return number
+    highest = 0
+    for item in glass:
+        try:
+            highest = max(highest, int(item.get('line_number') or 0))
+        except (TypeError, ValueError):
+            pass
+    return highest + 1
+
+
+def _number_new_lines(items, filename, start):
+    number = start
+    for item in items or []:
+        if not isinstance(item, dict) or item.get('kind') in _CHARGE_KINDS:
+            continue
+        item['line_number'] = number
+        item['source_filename'] = filename
+        number += 1
+    return items
+
+
+def _remember_source_file(quote, filename, stored):
+    files = [dict(entry) for entry in (quote.get('source_files') or []) if isinstance(entry, dict)]
+    if not files and (quote.get('source_filename') or quote.get('source_file')):
+        files.append({
+            'filename': quote.get('source_filename') or '',
+            'stored': quote.get('source_file') or '',
+        })
+    files.append({'filename': filename or '', 'stored': stored or ''})
+    quote['source_files'] = files
+
+
+def _quote_pricing_lock(quote, customer):
+    addon = quote.get('price_addon_percent') if isinstance(quote, dict) and 'price_addon_percent' in quote else (customer or {}).get('price_addon_percent')
+    return {
+        'tier': (quote or {}).get('tier') or '',
+        'currency': str((quote or {}).get('currency') or 'usd').lower(),
+        'fx_rate': _stored_fx(quote),
+        'addon_percent': addon,
+        'minimum': _effective_minimum(customer),
+    }
+
+
+def _items_from_order_import_lines(lines, tier, currency, fx_rate):
+    built = []
+    for line in lines or []:
+        fresh = dict(line)
+        fresh['errors'] = [error for error in (fresh.get('errors') or []) if error]
+        _price_import_line(fresh, tier, currency, fx_rate)
+        if fresh.get('total') in (None, ''):
+            return None, 'Match every name before adding these lines.'
+        spec = _import_spec(fresh)
+        size = f"{_trim_num(fresh['width'])} x {_trim_num(fresh['height'])} in"
+        parts = [fresh.get('mark') or '', fresh.get('glass_product') or '']
+        if fresh.get('spacer_product'):
+            parts.append(fresh['spacer_product'])
+        parts.append(size)
+        built.append({
+            'name': ' - '.join(part for part in parts if part),
+            'sqf': fresh.get('sqf'),
+            'real_sqf': fresh.get('real_sqf', fresh.get('sqf')),
+            'minimum_sqf': fresh.get('minimum_sqf') or 0,
+            'price_sqf': fresh.get('price_sqf'),
+            'price_pc': fresh.get('price_pc'),
+            'total': fresh.get('total'),
+            'pcs': fresh.get('qty'),
+            'spec': spec,
+            'floor': fresh.get('mark') or '',
+            'source_glass': fresh.get('glass_name') or '',
+            'irregular_shape': bool(fresh.get('irregular_shape') or fresh.get('irregular')),
+        })
+    return expand_irregular_lines(built, load_pricing_settings()['irregular_shape_surcharge']), None
+
+
+def _order_lines_for_appended(quote_items, order):
+    customer = load_customers().get(order.get('customer_id') or '') or {}
+    tiers = load_tiers()
+    currency = str(order.get('currency') or 'usd').lower()
+    tier = order.get('tier')
+    factor = _price_factor(order.get('price_addon_percent'))
+    minimum = _effective_minimum(customer)
+    rows = []
+    for item in quote_items or []:
+        if not isinstance(item, dict) or item.get('kind') in _CHARGE_KINDS:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if not _usable_size_spec(spec):
+            return None, 'A line in this file cannot be priced on the order.'
+        priced = _reprice(
+            spec, item.get('pcs'), tier, currency, tiers, _stored_fx(order), factor, minimum,
+        )
+        line = {
+            'name': item.get('name') or '',
+            'spec': spec,
+            'irregular_shape': bool(item.get('irregular_shape')),
+            'floor': item.get('floor') or '',
+            'source_filename': item.get('source_filename') or '',
+            'line_number': item.get('line_number'),
+        }
+        if item.get('line_id'):
+            line['line_id'] = item.get('line_id')
+        if item.get('surcharge_rate') not in (None, ''):
+            line['surcharge_rate'] = item.get('surcharge_rate')
+        line.update(_size_price_fields(priced))
+        rows.append(line)
+    return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge']), None
+
+
+def _retotal_order(order):
+    summary, error = price_summary(
+        order.get('items') or [],
+        order.get('discount') or {'type': 'percent', 'value': 0},
+        order.get('extra_charges') or [],
+    )
+    if error:
+        return error
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
+    import tax_numbers
+    tax_lines = tax_numbers.tax_breakdown(
+        order.get('ship_province') or '', summary['total'],
+        order.get('pst_number') or '', order.get('qst_number') or '',
+    )
+    tax_due = tax_numbers.tax_total(tax_lines)
+    order['igu_subtotal'] = summary['igu_subtotal']
+    order['discount_amount'] = summary['discount_amount']
+    order['igu_total'] = summary['igu_total']
+    order['extras_total'] = summary['extras_total']
+    order['additional_discount_percent'] = summary['additional_discount_percent']
+    order['additional_discount_amount'] = summary['additional_discount_amount']
+    order['pretax_total'] = summary['total']
+    order['tax_lines'] = tax_lines
+    order['tax_total'] = tax_due
+    order['total'] = round(summary['total'] + tax_due, 2)
+    return None
+
+
+def _save_appended_lines(quote, new_items, filename, stored, user):
+    customer = load_customers().get(quote.get('customer_id') or '') or {}
+    start = _next_import_line_number(quote.get('items') or [], quote.get('source_filename') or '')
+    numbered = _number_new_lines(new_items, filename, start)
+    added = sum(1 for item in numbered if isinstance(item, dict) and item.get('kind') not in _CHARGE_KINDS)
+    updated = dict(quote)
+    updated['items'] = list(quote.get('items') or []) + numbered
+    updated['import_kind'] = _import_kind_of(quote)
+    discount, addon = _saved_or_company_terms(updated, customer)
+    _stamp_terms(updated, updated['items'], discount, addon)
+    _remember_source_file(updated, filename, stored)
+    saved_order = None
+    order_id = quote.get('order_id')
+    if order_id:
+        current = next((row for row in load_orders() if row.get('id') == order_id), None)
+        if current:
+            reason = _customer_invoiced_reason(current)
+            if reason:
+                return None, None, reason
+            extra, error = _order_lines_for_appended(numbered, current)
+            if error:
+                return None, None, error
+            preview = dict(current)
+            preview['items'] = list(current.get('items') or []) + extra
+            if _retotal_order(preview):
+                return None, None, 'The new lines could not be priced.'
+            if user.get('role') == 'customer':
+                check = conversion_allowed(
+                    preview.get('total'), customer, str(preview.get('currency') or 'usd').lower(),
+                    load_orders(), load_invoices(), load_payments(),
+                )
+                if not check['allowed']:
+                    return None, None, credit_message(check)
+
+            def mutator(row):
+                blocked = _customer_invoiced_reason(row)
+                if blocked:
+                    return None, blocked
+                row['items'] = list(row.get('items') or []) + extra
+                failed = _retotal_order(row)
+                if failed:
+                    return None, failed
+                _stamp_log(row, user, [{
+                    'field': 'lines',
+                    'action': 'added',
+                    'new': f'{added} from {filename}',
+                }])
+                return row, None
+
+            saved_order, error = update_order(order_id, mutator)
+            if error:
+                return None, None, error
+            if order_status(saved_order) in RELEASED_STATUSES:
+                _write_production_file(saved_order)
+    saved_quote = replace_quote(quote['id'], updated)
+    if not saved_quote:
+        return None, None, 'Not found'
+    _remember_igus(saved_quote.get('items'), saved_quote.get('date'), (saved_order or {}).get('id'))
+    return saved_quote, saved_order, None
+
+
+def _append_response(quote, order, user, added):
+    body = {
+        'success': True,
+        'id': quote.get('id'),
+        'added': added,
+        'quote': _with_quote_tax(_quote_for_viewer(quote, user)),
+    }
+    if order:
+        body['order'] = order_for_viewer(order, user)
+    return jsonify(body)
+
+
+def _glass_added(items):
+    return sum(1 for item in items or [] if isinstance(item, dict) and item.get('kind') not in _CHARGE_KINDS)
+
+
+def _orgadata_review(record, preview):
+    glass, spacers = _catalog_names()
+    return {
+        'needs_review': True,
+        'import_id': record.get('id'),
+        'import_kind': 'orgadata',
+        'filename': record.get('filename') or '',
+        'error': preview.get('error') or '',
+        'warnings': preview.get('warnings') or [],
+        'blocks': preview.get('blocks') or [],
+        'glass': glass,
+        'spacers': spacers,
+    }
+
+
+def _order_import_review(presented):
+    glass, spacers = _catalog_names()
+    return {
+        'needs_review': True,
+        'import_id': presented.get('id'),
+        'import_kind': 'order',
+        'filename': presented.get('filename') or '',
+        'status': presented.get('status') or '',
+        'error': presented.get('error') or '',
+        'lines': presented.get('lines') or [],
+        'unmatched_glass': presented.get('unmatched_glass') or [],
+        'unmatched_spacer': presented.get('unmatched_spacer') or [],
+        'templates': presented.get('templates') or [],
+        'glass': glass,
+        'spacers': spacers,
+    }
+
+
+def _order_template_for(quote, record=None):
+    customer_id = quote.get('customer_id')
+    for raw in (quote.get('import_template_id'), (record or {}).get('template_id')):
+        try:
+            template_id = int(raw or 0)
+        except (TypeError, ValueError):
+            template_id = 0
+        if template_id:
+            found = _find_template(template_id, customer_id)
+            if found:
+                return found
+    original = next((row for row in load_imports() if row.get('id') == quote.get('import_id')), None)
+    if original and original.get('template_id'):
+        return _find_template(int(original['template_id']), customer_id)
+    return None
+
+
+def _finish_orgadata_append(quote, user, record, edits):
+    customer = load_customers().get(quote.get('customer_id') or '') or {}
+    locked = _quote_pricing_lock(quote, customer)
+    preview = _orgadata_preview(record, user, edits, locked)
+    if preview.get('error'):
+        return json_error(preview['error'], 400)
+    items, error = _orgadata_quote_items(preview)
+    if error:
+        return jsonify(_orgadata_review(record, preview))
+    saved, order, error = _save_appended_lines(
+        quote, items, record.get('filename') or '', record.get('stored') or '', user,
+    )
+    if error:
+        return json_error(error, 400)
+    record['status'] = 'quoted'
+    record['quote_id'] = quote.get('id')
+    orgadata_import.replace_import(record.get('id'), record)
+    return _append_response(saved, order, user, _glass_added(items))
+
+
+def _finish_order_append(quote, user, record, presented):
+    if presented.get('status') != 'preview':
+        presented = dict(presented)
+        presented['filename'] = presented.get('filename') or record.get('filename') or ''
+        return jsonify(_order_import_review(presented))
+    customer = load_customers().get(quote.get('customer_id') or '') or {}
+    locked = _quote_pricing_lock(quote, customer)
+    items, error = _items_from_order_import_lines(
+        presented.get('lines') or [], locked['tier'], locked['currency'], locked['fx_rate'],
+    )
+    if error:
+        return json_error(error, 400)
+    saved, order, error = _save_appended_lines(
+        quote, items, record.get('filename') or '', record.get('stored') or '', user,
+    )
+    if error:
+        return json_error(error, 400)
+    record['status'] = 'quoted'
+    record['quote_id'] = quote.get('id')
+    replace_import(record['id'], record)
+    return _append_response(saved, order, user, _glass_added(items))
+
+
+def _owned_append_import(user, quote, import_id):
+    kind = _import_kind_of(quote)
+    if kind == 'orgadata':
+        return _orgadata_owned(user, import_id), 'orgadata'
+    record = _owned_import(user, import_id)
+    return record, 'order'
+
+
+@app.route('/api/quotes/<int:quote_id>/import-file', methods=['POST'])
+@login_required
+def append_imported_file(quote_id):
+    user = current_user()
+    if not (user_has_module(user, 'quotes') or user_has_module(user, 'quote-history')):
+        return json_error('You do not have access to that.', 403)
+    quote = _visible_quote(user, quote_id)
+    if not quote:
+        return json_error('Not found', 404)
+    if not _import_kind_of(quote):
+        return json_error('This quote did not come from an imported file.', 400)
+    if quote.get('type') not in (None, '', 'size'):
+        return json_error('Only per-size quotes can take another file.', 400)
+    linked = None
+    if quote.get('order_id'):
+        linked = next((row for row in load_orders() if row.get('id') == quote.get('order_id')), None)
+    blocked = _customer_invoiced_reason(linked)
+    if blocked:
+        return json_error(blocked, 400)
+    if request.is_json:
+        data = json_body() or {}
+        try:
+            import_id = int(data.get('import_id') or 0)
+        except (TypeError, ValueError):
+            import_id = 0
+        record, kind = _owned_append_import(user, quote, import_id)
+        if not record:
+            return json_error('Not found', 404)
+        if kind == 'orgadata':
+            edits = dict(data)
+            edits['customer_id'] = quote.get('customer_id')
+            edits['remember'] = True if data.get('remember', True) else False
+            return _finish_orgadata_append(quote, user, record, edits)
+        template = _order_template_for(quote, record)
+        requested = data.get('template_id')
+        if requested:
+            template = _find_template(int(requested or 0), quote.get('customer_id')) or template
+        if not template:
+            return json_error('Choose a template for this company.', 400)
+        glass = data.get('glass') if isinstance(data.get('glass'), dict) else {}
+        spacer = data.get('spacer') if isinstance(data.get('spacer'), dict) else {}
+        if glass or spacer:
+            glass_names, spacer_names = _catalog_names()
+            valid_glass = {str(source): _known_product(product, glass_names) for source, product in glass.items()}
+            valid_spacer = {str(source): _known_product(product, spacer_names) for source, product in spacer.items()}
+            if any(source and not product for source, product in list(valid_glass.items()) + list(valid_spacer.items())):
+                return json_error('Each name has to match one of our products.', 400)
+            if data.get('remember', True):
+                remember_mappings(record.get('customer_id'), valid_glass, valid_spacer)
+                extra_glass, extra_spacer = None, None
+            else:
+                extra_glass, extra_spacer = valid_glass, valid_spacer
+        else:
+            extra_glass = extra_spacer = None
+        presented = _present_import(
+            record, template, user, str(quote.get('currency') or 'usd').lower(),
+            extra_glass, extra_spacer, quote.get('tier'),
+        )
+        return _finish_order_append(quote, user, record, presented)
+
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return json_error('Choose a file.', 400)
+    payload = upload.read(9 * 1024 * 1024)
+    try:
+        kind_name, ext = check_upload(upload.filename, payload)
+    except OrderImportError as exc:
+        return json_error(str(exc), 400)
+    kind = _import_kind_of(quote)
+    if kind == 'orgadata':
+        if kind_name != 'pdf' or ext != 'pdf':
+            return json_error('Upload a PDF.', 400)
+        stored_name = store_upload(upload.filename, payload)
+        path = upload_abspath(stored_name)
+        try:
+            parsed = orgadata_import.parse_pdf(path)
+        except orgadata_import.OrgadataImportError as exc:
+            return json_error(str(exc), 400)
+        customer = load_customers().get(quote.get('customer_id') or '') or {}
+        record = orgadata_import.add_import({
+            'customer_id': quote.get('customer_id'),
+            'company': customer.get('name') or quote.get('company') or '',
+            'user': user.get('email'),
+            'filename': safe_filename(upload.filename),
+            'stored': stored_name,
+            'sender': parsed.get('sender') or '',
+            'status': 'preview',
+            'quote_id': quote.get('id'),
+        })
+        return _finish_orgadata_append(quote, user, record, {
+            'customer_id': quote.get('customer_id'),
+            'remember': True,
+        })
+
+    stored_name = store_upload(upload.filename, payload)
+    customer = load_customers().get(quote.get('customer_id') or '') or {}
+    record = add_import({
+        'customer_id': quote.get('customer_id'),
+        'company': customer.get('name') or quote.get('company') or '',
+        'user': user.get('email'),
+        'filename': safe_filename(upload.filename),
+        'stored': stored_name,
+        'status': 'uploaded',
+        'template_id': quote.get('import_template_id'),
+        'project': quote.get('project') or '',
+    })
+    template = _order_template_for(quote, record)
+    if not template:
+        templates = [row for row in load_templates() if row.get('customer_id') == quote.get('customer_id') and row.get('active', True)]
+        path = upload_abspath(stored_name)
+        chosen, options, reason = choose_template(templates, upload.filename, ext, path)
+        if reason == 'needs_template':
+            record['status'] = 'needs_template'
+            replace_import(record['id'], record)
+            return json_error('No template can read this file.', 400)
+        if reason == 'choose':
+            record['status'] = 'choose_template'
+            replace_import(record['id'], record)
+            return jsonify(_order_import_review({
+                'id': record['id'],
+                'status': 'choose_template',
+                'filename': record.get('filename') or '',
+                'templates': [public_template(row) for row in options],
+                'lines': [],
+            }))
+        template = chosen
+    presented = _present_import(
+        record, template, user, str(quote.get('currency') or 'usd').lower(),
+        None, None, quote.get('tier'),
+    )
+    if presented.get('status') == 'failed':
+        return json_error(presented.get('error') or 'The file could not be read.', 400)
+    return _finish_order_append(quote, user, record, presented)
 
 
 @app.route('/api/quotes/<int:quote_id>/source-pdf', methods=['GET'])
@@ -5487,8 +6037,9 @@ def _company_tier(customer, tiers):
 def get_quotes():
     user = current_user()
     visible = []
+    orders = load_orders()
     for quote in quotes_visible_to(user, load_quotes()):
-        row = _quote_for_viewer(quote, user)
+        row = _quote_for_viewer(quote, user, orders)
         # The quote keeps the tier and prices it was created with. Do not reprice it.
         if row.get('order_id') and not row.get('order_status'):
             row['order_status'] = 'Approved for order'
@@ -5790,6 +6341,11 @@ def order_for_viewer(order, user, with_coverage=False):
     invoice_state, invoice_label = _customer_invoice_state(order)
     base['invoice_state'] = invoice_state
     base['invoice_state_label'] = invoice_label
+    linked_quote = None
+    if order.get('quote_id'):
+        linked_quote = next((row for row in load_quotes() if row.get('id') == order.get('quote_id')), None)
+    base.update(_append_state(linked_quote or {}, [order]))
+    base['source_filenames'] = _source_filenames(linked_quote or {})
     if not _order_prices_visible(user):
         items = []
         for item in _shown_order_items(order.get('items') or []):
@@ -5798,6 +6354,8 @@ def order_for_viewer(order, user, with_coverage=False):
                 'name': item.get('name') or '',
                 'sqf': item.get('sqf'),
                 'pcs': item.get('pcs'),
+                'line_number': item.get('line_number') or '',
+                'source_filename': item.get('source_filename') or '',
                 'spec': {
                     'width': spec.get('width'),
                     'height': spec.get('height'),
@@ -6028,6 +6586,10 @@ def convert_quote_to_order(quote_id):
             line['floor'] = clean_text(floor, 80)
         if item.get('line_id'):
             line['line_id'] = item.get('line_id')
+        if item.get('source_filename'):
+            line['source_filename'] = item.get('source_filename')
+        if item.get('line_number'):
+            line['line_number'] = item.get('line_number')
         if item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = item.get('surcharge_rate')
         priced_items.append(line)
