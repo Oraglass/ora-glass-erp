@@ -70,7 +70,10 @@ function beep(ok) {
 }
 function render() {
   if (!scans.length) { list.innerHTML = '<p class="note">No racks scanned yet.</p>'; return; }
-  list.innerHTML = scans.map(row => '<div class="row ' + (row.result === 'ok' ? 'ok' : 'warn') + '"><strong>' + esc(row.rack || row.raw) + '</strong><span>' + esc(row.message) + '</span></div>').join('');
+  list.innerHTML = scans.map(row => {
+    const detail = row.result === 'unknown' && row.raw ? row.message + ' Scanned text: ' + row.raw : row.message;
+    return '<div class="row ' + (row.result === 'ok' ? 'ok' : 'warn') + '"><strong>' + esc(row.rack || row.raw) + '</strong><span>' + esc(detail) + '</span></div>';
+  }).join('');
 }
 async function addScan(raw) {
   const text = String(raw || '');

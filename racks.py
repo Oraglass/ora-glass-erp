@@ -41,16 +41,35 @@ def rack_number_from_scan(text):
     return str(text if text is not None else '').strip()
 
 
+def _rack_numbers(text):
+    """Rack numbers typed on the shipping panel, including a comma-separated list."""
+    import re
+    found = []
+    for part in str(text or '').split(','):
+        match = re.match(r'^(\d{3,})\b', part.strip())
+        if match and match.group(1) not in found:
+            found.append(match.group(1))
+    return found
+
+
 def racks_for_shipment(order, shipment):
-    """Current packing lists whose pieces are on this shipment."""
+    """Racks named on the shipment, plus current packing lists whose pieces shipped."""
     serials = set()
     for line in (shipment or {}).get('lines') or []:
         try:
             serials.add(int(line.get('serial')))
         except (TypeError, ValueError):
             continue
+    names = {}
+    for entry in (order or {}).get('packing_lists') or []:
+        number = str(entry.get('rack') or '').strip()
+        if number and entry.get('rack_name') and number not in names:
+            names[number] = str(entry.get('rack_name') or '').strip()
     found = []
     seen = set()
+    for number in _rack_numbers((shipment or {}).get('rack')):
+        seen.add(number)
+        found.append((number, names.get(number, '')))
     for entry in (order or {}).get('packing_lists') or []:
         if not entry.get('current', True):
             continue

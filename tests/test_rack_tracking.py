@@ -50,7 +50,7 @@ def test_shipment_moves_the_rack_and_a_new_list_brings_it_back(client):
     _order()
     assert login(client, 'admin@oraglass.us').status_code == 302
     shipped = client.post('/api/orders/4/ship-packed', json={
-        'number': 'S1', 'date': '2026-01-01', 'truck_plate': 'TRK-9',
+        'number': 'S1', 'date': '2026-01-01', 'rack': '1054', 'truck_plate': 'TRK-9', 'notes': 'Dock 2',
     })
     assert shipped.status_code == 200, shipped.get_json()
     rack = load_racks()['1054']
@@ -58,6 +58,8 @@ def test_shipment_moves_the_rack_and_a_new_list_brings_it_back(client):
     assert rack['customer_id'] == 'harbor-glass'
     assert rack['name'] == 'A1900*1220*1800(THK:400*2)'
     assert rack['truck_plate'] == 'TRK-9'
+    assert shipped.get_json()['shipments'][0]['rack'] == '1054'
+    assert shipped.get_json()['shipments'][0]['notes'] == 'Dock 2'
     assert rack['shipment_number'] == 'S1'
     assert rack['since'] == '2026-01-01'
     listed = client.get('/api/racks').get_json()
@@ -70,6 +72,15 @@ def test_shipment_moves_the_rack_and_a_new_list_brings_it_back(client):
     customers = client.get('/api/customers').get_json()
     harbor = next(row for row in customers if row['id'] == 'harbor-glass')
     assert harbor['rack_count'] == 1
+    import racks
+    racks.receive_shipment(
+        {'id': 4, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'packing_lists': []},
+        {'id': 8, 'number': 'PANEL', 'date': '2026-11-23', 'rack': '2002', 'truck_plate': 'T', 'lines': []},
+        {'email': 'admin@oraglass.us'},
+    )
+    prefilled = load_racks()['2002']
+    assert prefilled['status'] == 'at_customer'
+    assert prefilled['truck_plate'] == 'T'
     text = (
         'Sold To: Harbor Glass\nJob Name: Lobby\n'
         'Sales Delivery: XF9 Date: 11/24/2026\n'
