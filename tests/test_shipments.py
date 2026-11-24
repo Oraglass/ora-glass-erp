@@ -102,8 +102,8 @@ def test_us_order_invoices_once_when_fully_shipped_and_cannot_overship(client):
     assert page.status_code == 200
     assert b'Open shipments' in page.data
     order_page = client.get(f'/orders/{order_id}')
-    assert b'Record shipment' in order_page.data
     assert b'Shipments' in order_page.data
+    assert b'Ship packed pieces' in order_page.data or b'id="ship-lines"' in order_page.data
 
 
 def test_partial_us_invoices_follow_each_shipment(client):

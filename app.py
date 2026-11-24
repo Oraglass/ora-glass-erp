@@ -5589,6 +5589,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'customer_id': order.get('customer_id'),
         'company': order.get('company') or '',
         'project': order.get('project') or '',
+        'po': order.get('po') or order.get('customer_po') or '',
         'job_address': order.get('job_address') or '',
         'notes': strip_copy_history(order.get('notes') or ''),
         'approved_by': order.get('approved_by'),
@@ -6921,7 +6922,9 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
         'id': shipment_id,
         'number': number,
         'date': shipped_on,
-        'rack': clean_text(data.get('rack'), 200),
+        'rack': clean_text(data.get('rack'), 80),
+        'truck_plate': clean_text(data.get('truck_plate'), 40),
+        'notes': clean_text(data.get('notes'), 300),
         'weight': weight,
         'lines': preview_lines,
         'pcs': pcs,
@@ -7495,15 +7498,46 @@ def ship_packed_pieces(order_id):
     if not visible:
         return json_error('Not found', 404)
     data = json_body() or {}
-    quantities = shipments.packed_quantities_to_ship(visible)
+    shipped_on = clean_text(data.get('date'), 10)
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', shipped_on or ''):
+        return json_error('Enter the shipping date.', 400)
+    available = shipments.packed_quantities_to_ship(visible)
+    if not available:
+        return json_error('Nothing packed is left to ship.', 400)
+    quantities = dict(available)
+    if isinstance(data.get('lines'), list):
+        serial_by_index = {row['index']: row['serial'] for row in shipments.glass_rows(visible)}
+        chosen = {}
+        for line in data.get('lines') or []:
+            if not isinstance(line, dict):
+                return json_error('Enter a quantity for each serial.', 400)
+            try:
+                index = int(line.get('index'))
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                return json_error('Enter a quantity for each serial.', 400)
+            if qty <= 0:
+                continue
+            allowed = available.get(index, 0)
+            if qty > allowed:
+                return json_error(
+                    f'Only {allowed} packed pieces of serial {serial_by_index.get(index)} are left to ship.',
+                    400,
+                )
+            chosen[index] = qty
+        quantities = chosen
     if not quantities:
         return json_error('Nothing packed is left to ship.', 400)
     number = clean_text(data.get('number'), 40) or f"SHIP-{order_id}-{len(visible.get('shipments') or []) + 1}"
-    shipped_on = clean_text(data.get('date'), 10) or datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat()
+    racks = clean_text(data.get('rack'), 80)
+    if not racks:
+        racks = _racks_for_quantities(visible, quantities)
     payload = {
         'number': number,
         'date': shipped_on,
-        'rack': data.get('rack') or '',
+        'rack': racks,
+        'truck_plate': data.get('truck_plate') or '',
+        'notes': data.get('notes') or '',
         'weight': data.get('weight') or '',
         'lines': [{'index': index, 'qty': qty} for index, qty in quantities.items()],
     }
@@ -7791,6 +7825,30 @@ def _billing_mode(order):
     return shipments.billing_mode(order, _order_customer(order), quickbooks.is_canadian(_order_customer(order)))
 
 
+def _racks_for_quantities(order, quantities):
+    """Rack numbers on the current packing lists that cover the pieces being shipped."""
+    import packing
+    catalog = {row['index']: row['serial'] for row in packing.serial_catalog(order)}
+    serials = {catalog[index] for index in quantities if index in catalog}
+    racks = []
+    for entry in order.get('packing_lists') or []:
+        if not entry.get('current', True):
+            continue
+        covers = False
+        for line in entry.get('lines') or []:
+            try:
+                serial = int(line.get('serial'))
+            except (TypeError, ValueError):
+                continue
+            if serial in serials:
+                covers = True
+                break
+        rack = str(entry.get('rack') or '').strip()
+        if covers and rack and rack not in racks:
+            racks.append(rack)
+    return ', '.join(racks)
+
+
 def _public_shipments(order):
     rows = []
     for shipment in order.get('shipments') or []:
@@ -7799,6 +7857,8 @@ def _public_shipments(order):
             'number': shipment.get('number') or '',
             'date': shipment.get('date') or '',
             'rack': shipment.get('rack') or '',
+            'truck_plate': shipment.get('truck_plate') or '',
+            'notes': shipment.get('notes') or '',
             'weight': shipment.get('weight') or '',
             'pcs': shipment.get('pcs') or 0,
             'sqf': shipment.get('sqf') or 0,
@@ -7846,6 +7906,10 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
         'due_date': due.isoformat(),
         'payment_terms': customer.get('payment_terms') or 'Net 30',
         'payment_terms_days': days,
+        'shipment_date': (shipment or {}).get('date') or '',
+        'shipment_rack': (shipment or {}).get('rack') or '',
+        'truck_plate': (shipment or {}).get('truck_plate') or '',
+        'shipment_notes': (shipment or {}).get('notes') or '',
         'status': 'unpaid',
         'balance': summary.get('total', 0),
         'issuer': issuer,
@@ -8521,6 +8585,16 @@ def _render_invoice_pdf(invoice):
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
         label_style,
     ))
+    if invoice.get('shipment_number') or invoice.get('shipment_rack') or invoice.get('truck_plate'):
+        elements.append(Paragraph(
+            f"<b>Shipment:</b> {escape(invoice.get('shipment_number') or '')}"
+            f" &nbsp; <b>Ship date:</b> {escape(invoice.get('shipment_date') or '')}"
+            f" &nbsp; <b>Rack:</b> {escape(invoice.get('shipment_rack') or '')}"
+            f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}",
+            label_style,
+        ))
+        if invoice.get('shipment_notes'):
+            elements.append(Paragraph(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}", label_style))
     province = str(invoice.get('ship_province') or '').upper()
     if documents.canada_bill(invoice) and province == 'QC' and invoice.get('qst_number'):
         elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))

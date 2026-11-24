@@ -312,7 +312,8 @@ def shipment_pdf_bytes(order, shipment):
         Paragraph(
             f"<b>Shipment:</b> {escape(shipment.get('number') or '')}"
             f"&nbsp;&nbsp;<b>Date:</b> {escape(shipment.get('date') or '')}"
-            f"&nbsp;&nbsp;<b>Rack:</b> {escape(shipment.get('rack') or '')}",
+            f"&nbsp;&nbsp;<b>Rack:</b> {escape(shipment.get('rack') or '')}"
+            + (f"&nbsp;&nbsp;<b>Truck:</b> {escape(shipment.get('truck_plate') or '')}" if shipment.get('truck_plate') else ''),
             styles['small'],
         ),
         Paragraph(
@@ -343,6 +344,9 @@ def shipment_pdf_bytes(order, shipment):
         ])
     table = Table(data, colWidths=[0.7 * inch, 0.9 * inch, 2.4 * inch, 2.4 * inch, 0.7 * inch])
     story.append(table)
+    if shipment.get('notes'):
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f"<b>Notes:</b> {escape(shipment.get('notes') or '')}", styles['small']))
     story.append(Spacer(1, 8))
     story.append(Paragraph(f"<b>Total pcs:</b> {escape(str(shipment.get('pcs') or ''))}", styles['small']))
     doc.build(story)
