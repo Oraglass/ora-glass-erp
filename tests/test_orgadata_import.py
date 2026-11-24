@@ -112,6 +112,124 @@ def test_sample_text_parses_floors_quantities_and_clear_glass():
     assert 'id' not in block['lines'][0]
 
 
+def test_wrapped_name_keeps_the_triple_and_each_block_sum():
+    """The first block's name starts on the line after Name:, and it is a 48 mm triple."""
+    from production import makeup_from_spec
+    parsed = parse_text(Path('tests/fixtures/orgadata_triple_name.txt').read_text())
+    assert parsed['sender'] == 'Open Windows'
+    assert parsed['project'] == 'AF17.0359.VLD.vlad.Triple G'
+    assert parsed['po'] == '2026-00341'
+    assert parsed['sum_quantity'] == 12
+    assert parsed['warnings'] == []
+    assert len(parsed['blocks']) == 2
+    triple, double = parsed['blocks']
+    assert '48mm' in triple['name'] and '4mm clear' in triple['name']
+    assert triple['configuration'] == '6+4+6mm'
+    assert triple['gaps'] == [16, 16]
+    assert [lite['thickness_mm'] for lite in triple['lites']] == [6, 4, 6]
+    assert triple['lites'][0]['source'] == 'ULTRACLEAR Optisolar UD80'
+    assert triple['lites'][1]['source'] == 'clear'
+    assert triple['lites'][2]['source'] == 'Optisolar UD80'
+    assert triple['tempered'] is True and triple['argon'] is True
+    assert triple['sum_qty'] == 8
+    assert sum(line['qty'] for line in triple['lines']) == 8
+    assert [line['floor'] for line in triple['lines']] == ['P45 / 1', 'P45 / 3', 'P46 / 1', 'P46 / 3']
+    assert triple['lines'][0]['width_mm'] == 1058
+    assert triple['lines'][0]['height_mm'] == 2830
+    assert double['configuration'] == '2x6mm'
+    assert double['gaps'] == [16]
+    assert len(double['lites']) == 2
+    assert double['lites'][1]['source'] == 'Planibel G'
+    assert double['sum_qty'] == 4
+    assert [line['floor'] for line in double['lines']] == ['W35 / 1', 'W35 / 2', 'W36 / 1', 'W36 / 2']
+    assert sum(line['qty'] for line in double['lines']) == 4
+    assert double['lines'][2]['line_number'] == 7
+    assert sum(line['qty'] for block in parsed['blocks'] for line in block['lines']) == 12
+    name = makeup_from_spec({
+        'glass1': 'Clear Glass 6mm', 'temper1': 'yes', 'spacer1': 'Superspacer 16mm / sqf', 'sealant1': 'Polysulfide',
+        'glass2': 'Clear Glass 4mm', 'temper2': 'yes', 'spacer2': 'Superspacer 16mm / sqf', 'sealant2': 'Polysulfide',
+        'glass3': 'Clear Glass 6mm', 'temper3': 'yes',
+    })
+    assert name.count('+') == 4
+    assert name.startswith('6mmClear Glass Tempered+')
+    assert name.endswith('+6mmClear Glass Tempered')
+    short = parse_text(Path('tests/fixtures/orgadata_triple_name.txt').read_text().replace(
+        'Sum:                                     8', 'Sum:                                     9', 1,
+    ))
+    assert any('Sum: row (9)' in warning for warning in short['blocks'][0]['warnings'])
+    assert short['blocks'][1]['warnings'] == []
+    grand = parse_text(Path('tests/fixtures/orgadata_triple_name.txt').read_text().replace(
+        'Sum Quantity:               12 Pcs.', 'Sum Quantity:               99 Pcs.',
+    ))
+    assert any('99' in warning for warning in grand['warnings'])
+
+
+def test_triple_preview_has_a_selector_for_every_lite_and_gap(client):
+    """8 pieces of the 48 mm triple and 4 of the 28 mm double, 12 in total."""
+    write_user('admin@test.com', 'admin')
+    _open_windows()
+    login(client, 'admin@test.com')
+    text = Path('tests/fixtures/orgadata_triple_name.txt').read_text()
+    uploaded = _upload(client, text)
+    assert uploaded.status_code == 200, uploaded.get_json()
+    body = uploaded.get_json()
+    assert body['project'] == 'AF17.0359.VLD.vlad.Triple G'
+    assert body['po'] == '2026-00341'
+    assert body['sum_quantity'] == 12
+    assert body['warnings'] == []
+    assert len(body['blocks']) == 2
+    triple, double = body['blocks']
+    assert len(triple['lites']) == 3
+    assert len(triple['spacers']) == 2
+    assert [lite['thickness_mm'] for lite in triple['lites']] == [6, 4, 6]
+    assert [spacer['gap_mm'] for spacer in triple['spacers']] == [16, 16]
+    assert triple['lites'][1]['product'] == 'Clear Glass 4mm'
+    assert triple['sum_qty'] == 8
+    assert sum(line['qty'] for line in triple['lines']) == 8
+    assert len(double['lites']) == 2 and len(double['spacers']) == 1
+    assert double['lites'][1]['product'] == CLEAR
+    assert double['sum_qty'] == 4
+    assert sum(line['qty'] for line in double['lines']) == 4
+    assert sum(line['qty'] for line in body['lines']) == 12
+    assert all('Sum: row' not in warning for block in body['blocks'] for warning in block['warnings'])
+    page = client.get('/quotes')
+    assert b'ERP glass ' in page.data
+    assert b'ERP spacer ' in page.data
+    created = client.post(f"/api/orgadata-imports/{body['id']}/quote", json={
+        'customer_id': 'open-windows',
+        'blocks': [
+            {
+                'lites': [
+                    {'product': CLEAR, 'temper': 'yes'},
+                    {'product': 'Clear Glass 4mm', 'temper': 'yes'},
+                    {'product': CLEAR, 'temper': 'yes'},
+                ],
+                'spacers': [{'product': SEEDED_SPACER}, {'product': SEEDED_SPACER}],
+            },
+            {
+                'lites': [{'product': COATED, 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+                'spacers': [{'product': SPACER}],
+            },
+        ],
+    })
+    assert created.status_code == 200, created.get_json()
+    items = created.get_json()['quote']['items']
+    assert len(items) == 8
+    assert sum(item['pcs'] for item in items) == 12
+    from documents import build_label
+    triple_name = items[0]['name']
+    assert triple_name == build_label(items[0]['spec'])
+    assert triple_name.startswith('48 (1 7/8") - 6mmClear Glass Tempered+')
+    assert triple_name.count('+') == 4
+    assert items[0]['spec']['glass1'] == CLEAR
+    assert items[0]['spec']['glass2'] == 'Clear Glass 4mm'
+    assert items[0]['spec']['glass3'] == CLEAR
+    assert items[0]['spec']['spacer1'] == SEEDED_SPACER
+    assert items[0]['spec']['spacer2'] == SEEDED_SPACER
+    assert items[4]['spec']['glass3'] == ''
+    assert items[4]['name'].count('+') == 2
+
+
 def test_multi_block_multi_page_and_a_quantity_mismatch():
     parsed = parse_text(two_block_text())
     assert len(parsed['blocks']) == 2
