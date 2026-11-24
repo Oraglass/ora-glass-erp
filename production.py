@@ -238,7 +238,10 @@ def _filename_part(value):
 
 
 def production_filename(order):
-    """Customer.Project.PO.xlsx. An empty PO uses the ERP order number."""
+    """Customer.Project.PO.xlsx. An empty PO uses the ERP order number.
+
+    A remake keeps that name and adds its child number, for example 24-R1.
+    """
     order = order or {}
     company = _filename_part(order.get('company') or 'Customer')
     project = _filename_part(order.get('project') or 'Order')
@@ -246,6 +249,8 @@ def production_filename(order):
     if not po:
         po = _filename_part(order.get('id'))
     parts = [part for part in (company, project, po) if part]
+    if order.get('remake') and order.get('number'):
+        parts.append(_filename_part(order.get('number')))
     stem = '.'.join(parts) or f"order-{order.get('id') or 'export'}"
     return stem + '.xlsx'
 

@@ -327,6 +327,8 @@ def open_receivables(customer_id, currency, orders, invoices, payments, exclude_
             continue
         if order_status(order) not in OPEN_ORDER_STATUSES:
             continue
+        if order.get('remake') and not order.get('charge_customer'):
+            continue
         covered = allocated_to_target(payments, customer_id, currency, 'order', order.get('id'))
         uncovered = round(money(order.get('total')) - covered, 2)
         if uncovered > 0:

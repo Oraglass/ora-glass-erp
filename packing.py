@@ -169,10 +169,15 @@ def _parse_id_qty_lines(cleaned):
             width_mm = float(millimetres.group(1))
             height_mm = float(millimetres.group(2))
             break
+        floor = ''
+        for look in range(index + 1, following):
+            if _FLOOR.fullmatch(cleaned[look]):
+                floor = re.sub(r'\s+', ' ', cleaned[look]).strip()
+                break
         rows.append({
             'serial': serial,
             'qty': qty,
-            'floor': '',
+            'floor': floor,
             'description': '',
             'width_in': None if width_in is None else round(width_in, 4),
             'height_in': None if height_in is None else round(height_in, 4),
@@ -544,6 +549,100 @@ def candidate_orders(parsed, orders):
     return hits
 
 
+def _serial_fully_packed(order, serial):
+    for row in packing_progress(order)['serials']:
+        if row['serial'] == serial:
+            return row['ordered'] > 0 and row['bo'] <= 0
+    return False
+
+
+def _packing_rows(parsed):
+    rows = []
+    for row in (parsed or {}).get('rows') or []:
+        try:
+            serial = int(row.get('serial'))
+            qty = int(row.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            rows.append({'serial': serial, 'floor': str(row.get('floor') or '').strip()})
+    return rows
+
+
+def _catalog_map(order):
+    return {row['serial']: row for row in serial_catalog(order)}
+
+
+def _covers_serials(order, rows):
+    catalog = _catalog_map(order)
+    return all(row['serial'] in catalog for row in rows)
+
+
+def _floors_fit(order, rows):
+    """True when every packing floor matches that remake serial. None when the list has no floor."""
+    catalog = _catalog_map(order)
+    given = matched = 0
+    for row in rows:
+        if not row['floor']:
+            continue
+        given += 1
+        info = catalog.get(row['serial']) or {}
+        if floors_match(info.get('floor') or '', row['floor']):
+            matched += 1
+    if given == 0:
+        return None
+    return matched == given
+
+
+def choose_packing_order(parsed, hits, orders=None):
+    """Pick one order when the customer and project match more than one.
+
+    A remake starts its own serials at 1, so those numbers also exist on the
+    original order. Match a remake list to the remake, and use the floor note
+    to choose among open remakes. Do not treat the remake's serials as the
+    original order's serials.
+    """
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return hits[0]
+    rows = _packing_rows(parsed)
+    if not rows:
+        return None
+    covered = [order for order in hits if _covers_serials(order, rows)]
+    if len(covered) == 1:
+        return covered[0]
+    if len(covered) < 2:
+        return None
+
+    def remake_open(order):
+        return bool(order.get('remake')) and str(order.get('status') or '').lower() not in {'delivered', 'voided'}
+
+    remakes = [order for order in covered if remake_open(order)]
+    originals = [order for order in covered if not order.get('remake')]
+    floor_remakes = [order for order in remakes if _floors_fit(order, rows) is True]
+    if len(floor_remakes) == 1:
+        return floor_remakes[0]
+    if len(floor_remakes) > 1:
+        return None
+    floor_originals = [order for order in originals if _floors_fit(order, rows) is True]
+    if len(floor_originals) == 1 and not floor_remakes:
+        return floor_originals[0]
+    if any(_floors_fit(order, rows) is not None for order in covered):
+        return None
+    open_remakes = [
+        order for order in remakes
+        if any(not _serial_fully_packed(order, row['serial']) for row in rows)
+    ]
+    originals_open = [
+        order for order in originals
+        if any(not _serial_fully_packed(order, row['serial']) for row in rows)
+    ]
+    if len(open_remakes) == 1 and not originals_open:
+        return open_remakes[0]
+    return None
+
+
 def serial_catalog(order):
     """Production serials for one order. The serial is the Excel serial, not an IGU number."""
     from documents import piece_size_text
@@ -562,14 +661,20 @@ def serial_catalog(order):
             ordered = int(item.get('pcs') or 0)
         except (TypeError, ValueError):
             ordered = 0
-        catalog.append({
+        entry = {
             'serial': exported['Serial Number'],
             'index': index,
             'ordered': ordered,
             'floor': exported['Floor Code'],
             'product': exported['Product Name'],
             'size': piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit')),
-        })
+        }
+        if item.get('source_serial') not in (None, ''):
+            try:
+                entry['source_serial'] = int(item.get('source_serial'))
+            except (TypeError, ValueError):
+                pass
+        catalog.append(entry)
         serial += 1
     return catalog
 
