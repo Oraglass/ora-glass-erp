@@ -364,7 +364,7 @@ function packingBlock(order) {
   const history = STAFF ? (order.packing_history || []).map(list => '<li>Replaced ' + esc(list.number || list.rack || list.filename) + ' · ' + esc(list.uploaded_at || '') + ' · ' + esc(list.uploaded_by || '') + '</li>').join('') : '';
   const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
   const shipPacked = STAFF && (order.packing_serials || []).some(row => Number(row.packed) > Number(row.shipped || 0))
-    ? '<input id="ship-truck" placeholder="Truck plate" aria-label="Truck plate"> <button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
+    ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
   const invoiceCustomer = STAFF && order.invoice_state === 'ready'
     ? '<button type="button" class="btn" id="invoice-customer">Create invoice</button>' : '';
   const prints = '<a class="btn secondary" id="print-packing-list" href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists.pdf">Print Packing List</a>'
