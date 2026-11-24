@@ -33,6 +33,9 @@ a{color:#C41E3A}
 .badge.delivered{background:#d4edda;color:#155724}
 .badge.packed{background:#d4edda;color:#155724}
 .badge.partial{background:#fff4e5;color:#9a3412}
+.badge.not_invoiced{background:#fde8ec;color:#9f1239}
+.badge.ready{background:#e0f2fe;color:#075985}
+.badge.invoiced{background:#d4edda;color:#155724}
 .actions,.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .row-actions{margin:0}
 #ship-lines{margin-top:8px}
@@ -76,6 +79,12 @@ a{color:#C41E3A}
 <option value="delivered">Delivered</option>
 <option value="partial">Partially packed</option>
 <option value="packed">Packed</option>
+</select>
+<select id="order-invoice" aria-label="Invoice status">
+<option value="">All invoice states</option>
+<option value="not_invoiced">Not invoiced to customer</option>
+<option value="ready">Ready to invoice</option>
+<option value="invoiced">Invoiced</option>
 </select>
 <button type="button" class="btn" id="order-filter">Filter</button>
 </div>
@@ -180,6 +189,11 @@ function badge(order) {
   if (order.pack_status_label) html += ' <span class="badge ' + esc(order.pack_status || 'partial') + '" id="pack-badge-' + esc(order.id) + '">' + esc(order.pack_status_label) + '</span>';
   return html;
 }
+function invoiceBadge(order) {
+  const state = order.invoice_state || 'not_invoiced';
+  const label = order.invoice_state_label || 'Not invoiced';
+  return '<span class="badge ' + esc(state) + '" id="invoice-badge-' + esc(order.id) + '">' + esc(label) + '</span>';
+}
 function orderPdfLink(order) {
   return '<a class="btn small secondary" id="list-pdf-' + esc(order.id) + '" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
 }
@@ -195,7 +209,7 @@ function orderOpenLink(order) {
 }
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
   const body = document.getElementById('order-list');
   if (!orders.length) {
     body.innerHTML = '<tr><td colspan="9" style="color:#666">No production orders</td></tr>';
@@ -206,7 +220,7 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -266,7 +280,12 @@ function packingBlock(order) {
   }).join('');
   const history = STAFF ? (order.packing_history || []).map(list => '<li>Replaced ' + esc(list.number || list.rack || list.filename) + ' · ' + esc(list.uploaded_at || '') + ' · ' + esc(list.uploaded_by || '') + '</li>').join('') : '';
   const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
-  return '<div id="order-packing"><h3 style="color:#333;font-size:16px;margin-top:16px">Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + '</h3>'
+  const shipPacked = STAFF && (order.packing_serials || []).some(row => Number(row.packed) > Number(row.shipped || 0))
+    ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
+  const invoiceCustomer = STAFF && order.invoice_state === 'ready'
+    ? '<button type="button" class="btn" id="invoice-customer">Invoice customer</button>' : '';
+  return '<div id="order-packing"><h3 style="color:#333;font-size:16px;margin-top:16px">Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
+    + '<div class="actions">' + shipPacked + invoiceCustomer + '</div>'
     + '<p class="note" id="packing-totals">Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + ' · BO ' + esc(totals.bo || 0) + '</p>'
     + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
     + listBlocks + historyBlock + '</div>';
@@ -336,7 +355,7 @@ function renderDetail(order) {
   const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
   const shipping = order.shipping || {};
   const shipHead = '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>';
-  const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
+  const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/pdf">Shipment PDF</a>' + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
   const glass = (shipping.lines || []).filter(line => line.remaining).map(line => {
     return '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.name) + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.remaining) + '</td><td><input data-ship-index="' + esc(line.index) + '" type="number" min="0" max="' + esc(line.remaining) + '" value="0" aria-label="Ship quantity for serial ' + esc(line.serial) + '"></td></tr>';
   }).join('');
@@ -381,6 +400,26 @@ function renderDetail(order) {
   if (edit) edit.addEventListener('click', () => openEditor(order));
   const unapprove = document.getElementById('unapprove-order');
   if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to Ora Glass review and the production Excel stays locked until it is approved again.'));
+  const shipPacked = document.getElementById('ship-packed');
+  if (shipPacked) shipPacked.addEventListener('click', async () => {
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/ship-packed', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not ship the packed pieces'); return; }
+    renderDetail(payload);
+    load();
+  });
+  const invoiceCustomer = document.getElementById('invoice-customer');
+  if (invoiceCustomer) invoiceCustomer.addEventListener('click', async () => {
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/customer-invoice', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not invoice the customer'); return; }
+    renderDetail(payload);
+    load();
+  });
   const release = document.getElementById('approve-production');
   if (release) release.addEventListener('click', () => postDecision('/approve-production', {}, 'Approve this order for production? The production Excel can be downloaded after this.'));
   const accept = document.getElementById('approve-changes');
@@ -673,6 +712,8 @@ function orderQuery() {
   }
   const status = document.getElementById('order-status').value;
   if (status) params.set('status', status);
+  const invoice = document.getElementById('order-invoice');
+  if (invoice && invoice.value) params.set('invoice', invoice.value);
   return params;
 }
 async function loadCustomers() {
@@ -693,7 +734,7 @@ function renderPackingReview(payload) {
   if (!box) return;
   const saved = (payload.saved || []).map(row => '<p class="note">Saved on ' + esc(row.company) + ' / ' + esc(row.project) + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · BO ' + esc((row.totals || {}).bo) + ((row.unmatched || []).length ? ' · Unmatched serials: ' + (row.unmatched || []).map(item => esc(item.serial == null ? 'none' : item.serial)).join(', ') : '') + '</p>').join('');
   const review = (payload.review || []).map(row => {
-    const choices = (row.candidates || []).map(order => '<option value="' + esc(order.id) + '">' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
+    const choices = (row.choices || row.candidates || []).map(order => '<option value="' + esc(order.id) + '">' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
     return '<div class="note" style="margin-top:8px"><strong>' + esc(row.filename || 'Packing list') + '</strong> · ' + esc(row.message || '')
       + '<div class="filters"><select data-inbox="' + esc(row.id) + '" aria-label="Order for ' + esc(row.filename || 'packing list') + '">' + (choices || '<option value="">Choose an order</option>') + '</select>'
       + '<input data-inbox-order="' + esc(row.id) + '" type="number" min="1" placeholder="Order id" aria-label="Order id for ' + esc(row.filename || 'packing list') + '">'
@@ -761,6 +802,8 @@ if (packingForm) {
 const orderSort = document.getElementById('order-sort');
 if (orderSort) orderSort.addEventListener('change', load);
 document.getElementById('order-status').addEventListener('change', load);
+const orderInvoice = document.getElementById('order-invoice');
+if (orderInvoice) orderInvoice.addEventListener('change', load);
 const editor = document.getElementById('order-editor');
 if (editor) {
   document.getElementById('order-lines').addEventListener('click', (event) => {

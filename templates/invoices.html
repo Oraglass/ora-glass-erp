@@ -446,8 +446,16 @@ async function loadOrders() {
 if (CAN_ISSUE) {
   document.getElementById('inv-lines').innerHTML = lineRow();
   document.getElementById('cn-lines').innerHTML = lineRow();
-  document.getElementById('show-invoice-form').addEventListener('click', () => { document.getElementById('create-invoice').hidden = false; });
-  document.getElementById('show-credit-form').addEventListener('click', () => { document.getElementById('create-credit').hidden = false; });
+  document.getElementById('show-invoice-form').addEventListener('click', () => {
+    const form = document.getElementById('create-invoice');
+    form.hidden = false;
+    form.scrollIntoView({block: 'start'});
+  });
+  document.getElementById('show-credit-form').addEventListener('click', () => {
+    const form = document.getElementById('create-credit');
+    form.hidden = false;
+    form.scrollIntoView({block: 'start'});
+  });
   document.getElementById('inv-add-line').addEventListener('click', () => { document.getElementById('inv-lines').insertAdjacentHTML('beforeend', lineRow()); });
   document.getElementById('cn-add-line').addEventListener('click', () => { document.getElementById('cn-lines').insertAdjacentHTML('beforeend', lineRow()); });
   document.getElementById('inv-order').addEventListener('change', () => {

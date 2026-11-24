@@ -88,9 +88,123 @@ def pdf_lines(payload):
     return lines
 
 
+_ID_QTY = re.compile(r'^\((\d+)\)\s+(\d+)\b')
+_INCH_PREFIX = re.compile(
+    r'^(?P<w>\d+(?:\s+\d+\s*/\s*\d+)?)\s+(?P<h>\d+(?:\s+\d+\s*/\s*\d+)?)(?:\s|$)'
+)
+_MM_FIND = re.compile(r'(\d+(?:\.\d+)?)\s*mm\s+(\d+(?:\.\d+)?)\s*mm', re.I)
+_SOLD_TO = re.compile(r'Sold\s+To:\s*(.+?)(?:\s{2,}|$)', re.I)
+_RACK_VALUE = re.compile(r'^(\d{3,})\s+[A-Za-z]\d')
+_FRACTION = re.compile(r'^(\d+)(?:\s+(\d+)\s*/\s*(\d+))?$')
+
+
+def _fraction_inches(text):
+    match = _FRACTION.fullmatch(str(text or '').strip())
+    if not match:
+        return None
+    return _inches(match.group(1), match.group(2), match.group(3))
+
+
+def _parse_id_qty_lines(cleaned):
+    """Production lists print the serial as (1) and the quantity beside it.
+
+    Width and height sit on the neighbouring lines. The wrapped IGU description
+    is kept for reference and is not used to match an order.
+    """
+    header = {
+        'number': '', 'date': '', 'job': '', 'customer': '', 'project': '', 'po': '',
+        'rack': '', 'total_pcs': None, 'total_sqft': None,
+    }
+    for line in cleaned:
+        delivery = _DELIVERY.search(line)
+        if delivery and not header['number']:
+            month, day, year = int(delivery.group(2)), int(delivery.group(3)), int(delivery.group(4))
+            header['number'] = delivery.group(1)
+            header['date'] = date(year, month, day).isoformat()
+        sold = _SOLD_TO.search(line)
+        if sold and not header['customer']:
+            header['customer'] = sold.group(1).strip()
+        job = _JOB.search(line)
+        if job:
+            header['job'] = job.group(1).strip()
+        project = _PROJECT.search(line)
+        if project:
+            header['project'] = project.group(1).strip()
+        customer = _CUSTOMER.search(line)
+        if customer and not header['customer']:
+            header['customer'] = customer.group(1).strip()
+        pcs = _PCS.search(line)
+        if pcs:
+            header['total_pcs'] = int(pcs.group(1))
+        sqft = _SQFT.search(line)
+        if sqft:
+            header['total_sqft'] = float(sqft.group(1))
+        rack_value = _RACK_VALUE.match(line)
+        if rack_value and not header['rack']:
+            header['rack'] = rack_value.group(1)
+    anchors = [(index, int(match.group(1)), int(match.group(2)))
+               for index, line in enumerate(cleaned)
+               for match in [_ID_QTY.match(line)] if match]
+    rows = []
+    for position, (index, serial, qty) in enumerate(anchors):
+        previous = anchors[position - 1][0] if position else -1
+        following = anchors[position + 1][0] if position + 1 < len(anchors) else len(cleaned)
+        width_in = height_in = None
+        for look in range(index - 1, previous, -1):
+            found = _INCH_PREFIX.match(cleaned[look])
+            if not found:
+                continue
+            width_in = _fraction_inches(found.group('w'))
+            height_in = _fraction_inches(found.group('h'))
+            if width_in and height_in:
+                break
+        width_mm = round(width_in * 25.4, 2) if width_in else None
+        height_mm = round(height_in * 25.4, 2) if height_in else None
+        for look in range(index + 1, following):
+            millimetres = _MM_FIND.search(cleaned[look])
+            if not millimetres:
+                continue
+            width_mm = float(millimetres.group(1))
+            height_mm = float(millimetres.group(2))
+            break
+        rows.append({
+            'serial': serial,
+            'qty': qty,
+            'floor': '',
+            'description': '',
+            'width_in': None if width_in is None else round(width_in, 4),
+            'height_in': None if height_in is None else round(height_in, 4),
+            'width_mm': width_mm,
+            'height_mm': height_mm,
+        })
+    parsed_pcs = sum(row['qty'] for row in rows)
+    warnings = []
+    if header['total_pcs'] is not None and header['total_pcs'] != parsed_pcs:
+        warnings.append(
+            f"The packing list says {header['total_pcs']} pieces but the rows add up to {parsed_pcs}."
+        )
+    return {
+        'number': header['number'],
+        'date': header['date'],
+        'job': header['job'],
+        'customer': header['customer'],
+        'project': header['project'] or header['job'],
+        'po': header['po'],
+        'rack': header['rack'],
+        'total_pcs': header['total_pcs'],
+        'total_sqft': header['total_sqft'],
+        'parsed_pcs': parsed_pcs,
+        'parsed_sqft': None,
+        'rows': rows,
+        'warnings': warnings,
+    }
+
+
 def parse_packing_lines(lines):
     """Turn packing-list text lines into a header and glass rows."""
     cleaned = [str(line or '').strip() for line in lines if str(line or '').strip()]
+    if any(_ID_QTY.match(line) for line in cleaned):
+        return _parse_id_qty_lines(cleaned)
     header = {
         'number': '',
         'date': '',
@@ -359,6 +473,16 @@ def _fold_code(text):
     return re.sub(r'[^a-z0-9]+', '', str(text or '').casefold())
 
 
+def _names_match(left, right):
+    """A short production name such as HighQ matches HighQ Developments Inc."""
+    first, second = _fold_name(left), _fold_name(right)
+    if not first or not second or min(len(first), len(second)) < 3:
+        return False
+    if first == second or first in second or second in first:
+        return True
+    return first.startswith(second) or second.startswith(first)
+
+
 def list_key(parsed):
     """Identity of one rack. A later upload with the same key replaces it."""
     number = str((parsed or {}).get('number') or '').strip()
@@ -377,7 +501,7 @@ def candidate_orders(parsed, orders):
     for order in orders or []:
         if _fold_code(order.get('project')) != project:
             continue
-        if customer and _fold_name(order.get('company')) != customer:
+        if customer and not _names_match((parsed or {}).get('customer'), order.get('company')):
             continue
         order_po = _fold_code(order.get('po') or order.get('customer_po'))
         if po and order_po and po != order_po:
