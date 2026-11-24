@@ -402,3 +402,79 @@ def test_clearing_a_lite_or_spacer_clears_that_gap_and_reprices(client):
     assert line['name'].count('+') == 4
     assert line['name'].count('14mm') == 2
     assert line['total'] == triple_total
+
+
+def test_line_numbers_follow_position_after_duplicate_remove_and_add(client):
+    """A duplicate does not keep line 3. Saved lines, history, and the PDF are 1, 2, 3…"""
+    import pdfplumber
+    from pathlib import Path
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    quote_id = _draft(client, [_line(pcs=1, irregular=False)])['id']
+    spec = dict(SPEC)
+
+    def row(number, floor, remarks, pcs=1, line_id=''):
+        item = {
+            'name': 'Clear Glass 4mm', 'pcs': pcs, 'spec': spec, 'floor': floor,
+            'remarks': remarks, 'line_number': number, 'irregular_shape': False,
+        }
+        if line_id:
+            item['line_id'] = line_id
+        return item
+
+    saved = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [
+            row(1, 'W1', 'First', line_id='line-1'),
+            row(3, 'W3', 'Original third', line_id='line-3'),
+            row(3, 'W3', 'Copied third', pcs=2),
+            row(4, 'W4', 'Fourth'),
+        ],
+        'currency': 'usd', 'project': 'Numbers', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    stored = next(entry for entry in load_quotes() if entry['id'] == quote_id)
+    glass = [item for item in stored['items'] if item.get('spec')]
+    assert [item['line_number'] for item in glass] == [1, 2, 3, 4]
+    assert glass[1]['line_id'] == 'line-3'
+    assert glass[2].get('line_id') != 'line-3'
+    assert [item['remarks'] for item in glass] == ['First', 'Original third', 'Copied third', 'Fourth']
+    assert glass[2]['pcs'] == 2
+    viewed = client.get(f'/api/quotes/{quote_id}')
+    assert viewed.status_code == 200, viewed.get_json()
+    shown = [item for item in viewed.get_json()['items'] if item.get('spec')]
+    assert [item['line_number'] for item in shown] == [1, 2, 3, 4]
+    assert [item['remarks'] for item in shown] == ['First', 'Original third', 'Copied third', 'Fourth']
+    pdf = client.post('/api/export-quote', json={'id': quote_id})
+    assert pdf.status_code == 200, pdf.data[:200]
+    with pdfplumber.open(io.BytesIO(pdf.data)) as document:
+        text = '\n'.join(page.extract_text() or '' for page in document.pages)
+    assert text.index('First') < text.index('Original third') < text.index('Copied third') < text.index('Fourth')
+    assert '3\n3' not in text
+
+    removed = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [row(1, 'W1', 'First', line_id='line-1'), row(4, 'W4', 'Fourth')],
+        'currency': 'usd', 'project': 'Numbers', 'type': 'size', 'tier': 'T2',
+    })
+    assert removed.status_code == 200, removed.get_json()
+    after_remove = next(entry for entry in load_quotes() if entry['id'] == quote_id)
+    assert [item['line_number'] for item in after_remove['items'] if item.get('spec')] == [1, 2]
+    assert [item['remarks'] for item in after_remove['items'] if item.get('spec')] == ['First', 'Fourth']
+
+    added = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [row(None, 'W1', 'First'), row(None, 'W9', 'Added')],
+        'currency': 'usd', 'project': 'Numbers', 'type': 'size', 'tier': 'T2',
+    })
+    assert added.status_code == 200, added.get_json()
+    after_add = next(entry for entry in load_quotes() if entry['id'] == quote_id)
+    assert [item['line_number'] for item in after_add['items'] if item.get('spec')] == [1, 2]
+
+    page = Path('templates/quotes.html').read_text()
+    history = Path('templates/quote_history.html').read_text()
+    assert 'function renumberLines' in page
+    assert 'renumberLines(sizeQuoteItems)' in page
+    assert 'renumberLines(quoteItems)' in page
+    assert 'nextLineNumber' not in page
+    assert 'const number = charge ? \'\' : ++glassNumber' in history

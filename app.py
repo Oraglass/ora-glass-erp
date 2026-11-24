@@ -3906,10 +3906,10 @@ def save_quote():
         existing['customer_id'] = customer_id
         existing['company'] = company
         kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
-        existing['items'] = _repriced_quote_items(
+        existing['items'] = _assign_line_numbers(_repriced_quote_items(
             items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
             _effective_minimum(customer), keep_identity=True,
-        ) if quote_type == 'size' else priced
+        ) if quote_type == 'size' else priced)
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
         existing['fx_rate'] = fx_rate
@@ -3942,7 +3942,7 @@ def save_quote():
         'customer_id': customer_id,
         'project': project,
         'job_address': clean_text(data.get('job_address'), 500),
-        'items': _charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced,
+        'items': _assign_line_numbers(_charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced),
         'currency': currency,
         'fx_rate': fx_rate,
         'type': quote_type,
@@ -3973,7 +3973,7 @@ def _quote_for_viewer(quote, user, orders=None):
                 item['remarks'] = strip_copy_history(item.get('remarks'))
         items.append(item)
     import documents
-    row['items'] = documents.describe_items(items)
+    row['items'] = _assign_line_numbers(documents.describe_items(items))
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -4060,6 +4060,20 @@ def _fill_open_sealants(spec):
     return spec
 
 
+def _assign_line_numbers(items):
+    """Glass lines are numbered 1, 2, 3… by their position. A copied number is not kept."""
+    number = 1
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            item.pop('line_number', None)
+            continue
+        item['line_number'] = number
+        number += 1
+    return items
+
+
 def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0, keep_identity=False):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
@@ -4092,7 +4106,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             if floor:
                 copied_line['floor'] = floor
             if keep_identity:
-                for key in ('line_id', 'source_filename', 'line_number'):
+                for key in ('line_id', 'source_filename'):
                     if item.get(key) not in (None, ''):
                         copied_line[key] = item.get(key)
             rows.append(copied_line)
@@ -4112,7 +4126,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
         if floor:
             plain['floor'] = floor
         rows.append(plain)
-    return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge'])
+    return expand_irregular_lines(_assign_line_numbers(rows), load_pricing_settings()['irregular_shape_surcharge'])
 
 
 def _tier_for_copy(user, source, customers, tiers):
@@ -7048,8 +7062,7 @@ def convert_quote_to_order(quote_id):
             line['line_id'] = item.get('line_id')
         if item.get('source_filename'):
             line['source_filename'] = item.get('source_filename')
-        if item.get('line_number'):
-            line['line_number'] = item.get('line_number')
+        line['line_number'] = len(priced_items) + 1
         if item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = item.get('surcharge_rate')
         priced_items.append(line)

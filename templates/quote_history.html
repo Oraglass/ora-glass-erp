@@ -463,10 +463,13 @@ if (sortSelect) sortSelect.addEventListener('change', applyFilters);
 function showQuoteDetail(quote) {
   const box = document.getElementById('quote-detail');
   if (!box || !quote) return;
+  let glassNumber = 0;
   const lines = (quote.items || []).map(item => {
+    const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
+    const number = charge ? '' : ++glassNumber;
     const file = item.source_filename ? '<br><span class="note">' + esc(item.source_filename) + '</span>' : '';
     const size = item.size_label ? '<br><span class="note">' + esc(item.size_label) + '</span>' : '';
-    return '<tr><td>' + esc(item.line_number || '') + '</td><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + size + file + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>';
+    return '<tr><td>' + esc(number) + '</td><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + size + file + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>';
   }).join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const tax = (quote.tax_lines || []).length
