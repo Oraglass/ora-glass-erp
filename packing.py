@@ -17,6 +17,10 @@ _DELIVERY = re.compile(
     re.I,
 )
 _JOB = re.compile(r'Job Name:\s*(.+)', re.I)
+_CUSTOMER = re.compile(r'Customer\s*:\s*(.+)', re.I)
+_PROJECT = re.compile(r'Project\s*:\s*(.+)', re.I)
+_PO = re.compile(r'(?:P\.?\s*O\.?|Purchase Order)\s*#?\s*:\s*(.+)', re.I)
+_SERIAL_LINE = re.compile(r'(?:serial|s/?n|sn)\s*[:#]?\s*(\d+)\s*$', re.I)
 _PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
 _SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
 _INCHES = re.compile(
@@ -91,15 +95,21 @@ def parse_packing_lines(lines):
         'number': '',
         'date': '',
         'job': '',
+        'customer': '',
+        'project': '',
+        'po': '',
         'rack': '',
         'total_pcs': None,
         'total_sqft': None,
     }
     rows = []
     index = 0
+    serial_mode = False
+    pending_serial = None
     while index < len(cleaned):
         line = cleaned[index]
         if _HEADER.search(line):
+            serial_mode = 'serial' in line.casefold()
             index += 1
             continue
         delivery = _DELIVERY.search(line)
@@ -112,6 +122,26 @@ def parse_packing_lines(lines):
         job = _JOB.search(line)
         if job:
             header['job'] = job.group(1).strip()
+            index += 1
+            continue
+        customer = _CUSTOMER.search(line)
+        if customer:
+            header['customer'] = customer.group(1).strip()
+            index += 1
+            continue
+        project = _PROJECT.search(line)
+        if project:
+            header['project'] = project.group(1).strip()
+            index += 1
+            continue
+        po = _PO.search(line)
+        if po:
+            header['po'] = po.group(1).strip()
+            index += 1
+            continue
+        serial_label = _SERIAL_LINE.fullmatch(line)
+        if serial_label:
+            pending_serial = int(serial_label.group(1))
             index += 1
             continue
         pcs = _PCS.search(line)
@@ -131,8 +161,14 @@ def parse_packing_lines(lines):
         if not _QTY.fullmatch(line):
             index += 1
             continue
+        serial = pending_serial
+        pending_serial = None
         qty = int(line)
         index += 1
+        if serial_mode and serial is None and index < len(cleaned) and _QTY.fullmatch(cleaned[index]):
+            serial = qty
+            qty = int(cleaned[index])
+            index += 1
         if index >= len(cleaned):
             break
         inch = _INCHES.fullmatch(cleaned[index])
@@ -161,6 +197,7 @@ def parse_packing_lines(lines):
             description.append(current)
             index += 1
         rows.append({
+            'serial': serial,
             'qty': qty,
             'floor': floor,
             'description': ' '.join(description).strip(),
@@ -187,6 +224,9 @@ def parse_packing_lines(lines):
         'number': header['number'],
         'date': header['date'],
         'job': header['job'],
+        'customer': header['customer'],
+        'project': header['project'] or header['job'],
+        'po': header['po'],
         'rack': header['rack'],
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
@@ -308,3 +348,276 @@ def match_packing(order, parsed):
         'parsed_pcs': parsed.get('parsed_pcs'),
         'parsed_sqft': parsed.get('parsed_sqft'),
     }
+
+
+def _fold_name(text):
+    cleaned = re.sub(r'\b(inc|ltd|llc|corp|corporation|company|co)\b', ' ', str(text or '').casefold())
+    return re.sub(r'[^a-z0-9]+', '', cleaned)
+
+
+def _fold_code(text):
+    return re.sub(r'[^a-z0-9]+', '', str(text or '').casefold())
+
+
+def list_key(parsed):
+    """Identity of one rack. A later upload with the same key replaces it."""
+    number = str((parsed or {}).get('number') or '').strip()
+    rack = str((parsed or {}).get('rack') or '').strip()
+    return number.casefold() or rack.casefold()
+
+
+def candidate_orders(parsed, orders):
+    """Orders whose customer and project agree. PO is checked only when both sides have one."""
+    project = _fold_code((parsed or {}).get('project') or (parsed or {}).get('job'))
+    customer = _fold_name((parsed or {}).get('customer'))
+    po = _fold_code((parsed or {}).get('po'))
+    if not project:
+        return []
+    hits = []
+    for order in orders or []:
+        if _fold_code(order.get('project')) != project:
+            continue
+        if customer and _fold_name(order.get('company')) != customer:
+            continue
+        order_po = _fold_code(order.get('po') or order.get('customer_po'))
+        if po and order_po and po != order_po:
+            continue
+        hits.append(order)
+    return hits
+
+
+def serial_catalog(order):
+    """Production serials for one order. The serial is the Excel serial, not an IGU number."""
+    from documents import piece_size_text
+    catalog = []
+    serial = 1
+    for index, item in enumerate((order or {}).get('items') or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
+            continue
+        exported = production.line_export(item, serial=serial)
+        try:
+            ordered = int(item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            ordered = 0
+        catalog.append({
+            'serial': exported['Serial Number'],
+            'index': index,
+            'ordered': ordered,
+            'floor': exported['Floor Code'],
+            'product': exported['Product Name'],
+            'size': piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit')),
+        })
+        serial += 1
+    return catalog
+
+
+def classify_rows(order, parsed):
+    """Keep rows whose production serial is on the order. The description is never checked."""
+    catalog = {row['serial']: row for row in serial_catalog(order)}
+    matched = []
+    unmatched = []
+    for row in (parsed or {}).get('rows') or []:
+        try:
+            serial = int(row.get('serial'))
+        except (TypeError, ValueError):
+            unmatched.append({
+                'serial': None,
+                'qty': row.get('qty') or 0,
+                'description': row.get('description') or '',
+                'reason': 'This row has no production serial number.',
+            })
+            continue
+        if serial not in catalog:
+            unmatched.append({
+                'serial': serial,
+                'qty': row.get('qty') or 0,
+                'description': row.get('description') or '',
+                'reason': f'Serial {serial} is not on this order.',
+            })
+            continue
+        try:
+            qty = int(row.get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        matched.append({'serial': serial, 'qty': qty})
+    combined = {}
+    for row in matched:
+        combined[row['serial']] = combined.get(row['serial'], 0) + row['qty']
+    return [{'serial': serial, 'qty': qty} for serial, qty in combined.items()], unmatched
+
+
+def packing_progress(order):
+    """Packed quantity is the sum of the latest list for each rack. BO is ordered minus packed."""
+    catalog = serial_catalog(order)
+    packed = {row['serial']: 0 for row in catalog}
+    for entry in (order or {}).get('packing_lists') or []:
+        if not entry.get('current', True):
+            continue
+        for line in entry.get('lines') or []:
+            try:
+                serial = int(line.get('serial'))
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                continue
+            if serial in packed and qty > 0:
+                packed[serial] += qty
+    rows = []
+    ordered_total = packed_total = bo_total = 0
+    for item in catalog:
+        got = packed[item['serial']]
+        bo = max(0, item['ordered'] - got)
+        rows.append(dict(item, packed=got, bo=bo))
+        ordered_total += item['ordered']
+        packed_total += got
+        bo_total += bo
+    if packed_total <= 0:
+        status = ''
+    elif ordered_total > 0 and bo_total <= 0:
+        status = 'packed'
+    else:
+        status = 'partial'
+    label = {'packed': 'Packed', 'partial': 'Partially packed'}.get(status, '')
+    return {
+        'status': status,
+        'status_label': label,
+        'serials': rows,
+        'totals': {'ordered': ordered_total, 'packed': packed_total, 'bo': bo_total},
+    }
+
+
+_COLUMN_ALIASES = {
+    'serial': ('serial number', 'serial', 'sn', 's/n'),
+    'qty': ('quantity', 'qty', 'pcs', 'pieces', 'packed', 'packed qty'),
+    'customer': ('customer', 'company'),
+    'project': ('project', 'job', 'job name'),
+    'po': ('po', 'p.o.', 'po#', 'purchase order'),
+    'floor': ('floor', 'floor code'),
+    'rack': ('rack', 'rack code', 'rackcode'),
+    'date': ('date', 'packing date'),
+    'number': ('packing list', 'packing list number', 'sales delivery', 'delivery', 'number'),
+    'description': ('description', 'item description', 'product', 'igu'),
+}
+
+
+def _header_map(headers):
+    found = {}
+    for index, header in enumerate(headers):
+        label = re.sub(r'\s+', ' ', str(header or '').strip().casefold())
+        for key, names in _COLUMN_ALIASES.items():
+            if key in found:
+                continue
+            if label in names:
+                found[key] = index
+    return found
+
+
+def _table_matrix(filename, payload):
+    name = str(filename or '').lower()
+    if name.endswith('.csv'):
+        import csv
+        text = payload.decode('utf-8-sig', errors='replace')
+        return [row for row in csv.reader(io.StringIO(text)) if any(str(cell or '').strip() for cell in row)]
+    import openpyxl
+    book = openpyxl.load_workbook(io.BytesIO(payload), read_only=True, data_only=True)
+    sheet = book.active
+    matrix = []
+    for row in sheet.iter_rows(values_only=True):
+        values = ['' if cell is None else cell for cell in row]
+        if any(str(cell or '').strip() for cell in values):
+            matrix.append(values)
+    book.close()
+    return matrix
+
+
+def _cell(row, index):
+    if index is None or index >= len(row):
+        return ''
+    value = row[index]
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()[:10]
+    return str(value or '').strip()
+
+
+def parse_packing_table(filename, payload):
+    """Read a spreadsheet packing list. Rows are grouped into one list per rack."""
+    matrix = _table_matrix(filename, payload)
+    empty = {
+        'number': '', 'date': '', 'job': '', 'customer': '', 'project': '', 'po': '',
+        'rack': '', 'rows': [], 'warnings': ['No glass rows were found in that packing list.'],
+        'total_pcs': None, 'total_sqft': None, 'parsed_pcs': 0, 'parsed_sqft': None,
+    }
+    if len(matrix) < 2:
+        return [empty]
+    headers = _header_map(matrix[0])
+    if 'serial' not in headers or 'qty' not in headers:
+        empty['warnings'] = ['The spreadsheet needs a Serial Number column and a Quantity column.']
+        return [empty]
+    groups = {}
+    order = []
+    for raw in matrix[1:]:
+        try:
+            serial = int(float(_cell(raw, headers['serial'])))
+            qty = int(float(_cell(raw, headers['qty'])))
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        customer = _cell(raw, headers.get('customer'))
+        project = _cell(raw, headers.get('project'))
+        po = _cell(raw, headers.get('po'))
+        number = _cell(raw, headers.get('number'))
+        rack = _cell(raw, headers.get('rack'))
+        packed_on = _cell(raw, headers.get('date'))
+        if len(packed_on) > 10:
+            packed_on = packed_on[:10]
+        key = (customer, project, po, number, rack, packed_on)
+        if key not in groups:
+            groups[key] = {
+                'number': number,
+                'date': packed_on,
+                'job': project,
+                'customer': customer,
+                'project': project,
+                'po': po,
+                'rack': rack,
+                'rows': [],
+                'warnings': [],
+                'total_pcs': None,
+                'total_sqft': None,
+                'parsed_sqft': None,
+            }
+            order.append(key)
+        groups[key]['rows'].append({
+            'serial': serial,
+            'qty': qty,
+            'floor': _cell(raw, headers.get('floor')),
+            'description': _cell(raw, headers.get('description')),
+            'width_in': None,
+            'height_in': None,
+            'width_mm': None,
+            'height_mm': None,
+        })
+    documents = []
+    for key in order:
+        document = groups[key]
+        document['parsed_pcs'] = sum(row['qty'] for row in document['rows'])
+        documents.append(document)
+    return documents or [empty]
+
+
+def parse_packing_upload(filename, payload):
+    """PDF uses the production packing-list layout. CSV and Excel use a serial column."""
+    name = str(filename or '').lower()
+    if name.endswith('.csv') or name.endswith('.xlsx') or name.endswith('.xlsm'):
+        return parse_packing_table(filename, payload)
+    if name.endswith('.pdf') or (payload or b'')[:4] == b'%PDF':
+        return [parse_packing_pdf(payload)]
+    parsed = parse_packing_lines(str(payload or b'', 'utf-8', errors='replace').splitlines())
+    return [parsed]

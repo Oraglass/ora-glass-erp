@@ -5283,6 +5283,8 @@ def filter_order_rows(orders):
         if date_to and day > date_to:
             continue
         status = clean_text(request.args.get('status'), 20).lower()
+        if status in {'packed', 'partial'} and order.get('pack_status') != status:
+            continue
         if status in STATUS_LABELS and order_status(order) != status:
             continue
         rows.append(order)
@@ -5461,6 +5463,62 @@ def _shown_order_items(items):
     return documents.describe_items(rows)
 
 
+def _packing_lines_for(order, entry):
+    import packing
+    catalog = {row['serial']: row for row in packing.serial_catalog(order)}
+    lines = []
+    for line in (entry or {}).get('lines') or []:
+        try:
+            serial = int(line.get('serial'))
+        except (TypeError, ValueError):
+            continue
+        info = catalog.get(serial)
+        if not info:
+            continue
+        lines.append({
+            'serial': serial,
+            'floor': info['floor'],
+            'product': info['product'],
+            'size': info['size'],
+            'qty': line.get('qty') or 0,
+        })
+    return lines
+
+
+def _packing_payload(order, staff):
+    import packing
+    progress = packing.packing_progress(order)
+    current = []
+    history = []
+    for entry in order.get('packing_lists') or []:
+        shown = {
+            'id': entry.get('id'),
+            'number': entry.get('number') or '',
+            'rack': entry.get('rack') or '',
+            'date': entry.get('date') or '',
+            'filename': entry.get('filename') or '',
+            'uploaded_at': entry.get('uploaded_at') or '',
+            'lines': _packing_lines_for(order, entry),
+        }
+        if staff:
+            shown['uploaded_by'] = entry.get('uploaded_by') or ''
+            shown['unmatched'] = entry.get('unmatched') or []
+        if entry.get('current', True):
+            current.append(shown)
+        elif staff:
+            history.append(shown)
+    payload = {
+        'pack_status': progress['status'],
+        'pack_status_label': progress['status_label'],
+        'packing_totals': progress['totals'],
+        'packing_serials': progress['serials'],
+        'packing_lists': current,
+    }
+    if staff:
+        payload['packing_history'] = history
+    return payload
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -5538,6 +5596,7 @@ def order_for_viewer(order, user, with_coverage=False):
     base['documents'] = documents
     base['pst_number'] = order.get('pst_number') or ''
     base['qst_number'] = order.get('qst_number') or ''
+    base.update(_packing_payload(order, user.get('role') != 'customer'))
     if not _order_prices_visible(user):
         items = []
         for item in _shown_order_items(order.get('items') or []):
@@ -6815,6 +6874,321 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
     if error:
         return None, error
     return order, None
+
+
+def _packing_inbox_path():
+    return os.path.join(data_dir(), 'packing_inbox.json')
+
+
+def _load_packing_inbox():
+    from storage import lock_for, read_json
+    path = _packing_inbox_path()
+    with lock_for(path):
+        rows = read_json(path, [])
+    return rows if isinstance(rows, list) else []
+
+
+def _save_packing_inbox(rows):
+    from storage import atomic_write_json, lock_for
+    path = _packing_inbox_path()
+    with lock_for(path):
+        atomic_write_json(path, rows)
+
+
+_PACKING_FILE_SEQ = 0
+
+
+def _write_packing_file(scope, filename, payload):
+    global _PACKING_FILE_SEQ
+    _PACKING_FILE_SEQ += 1
+    folder = os.path.join(data_dir(), 'packing_files', str(scope))
+    os.makedirs(folder, exist_ok=True)
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '_', os.path.basename(filename or '') or 'packing-list')[:80]
+    stored = f'{_PACKING_FILE_SEQ}-{safe}'
+    with open(os.path.join(folder, stored), 'wb') as handle:
+        handle.write(payload)
+    return stored
+
+
+def _packing_status_label(status):
+    return {'packed': 'Packed', 'partial': 'Partially packed'}.get(status or '', 'Not packed')
+
+
+def _attach_packing_list(order, parsed, user, filename, stored):
+    """Save one list on an order. The same rack number replaces the previous version."""
+    import packing
+    matched, unmatched = packing.classify_rows(order, parsed)
+    lists = list(order.get('packing_lists') or [])
+    key = packing.list_key(parsed)
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    next_id = max([int(row.get('id') or 0) for row in lists] or [0]) + 1
+    replaced = None
+    if key:
+        for entry in lists:
+            if entry.get('current', True) and entry.get('key') == key:
+                entry['current'] = False
+                entry['superseded_at'] = now
+                replaced = entry
+    lists.append({
+        'id': next_id,
+        'key': key,
+        'current': True,
+        'number': parsed.get('number') or '',
+        'rack': parsed.get('rack') or '',
+        'date': parsed.get('date') or '',
+        'customer': parsed.get('customer') or '',
+        'project': parsed.get('project') or '',
+        'po': parsed.get('po') or '',
+        'filename': filename,
+        'stored': stored,
+        'uploaded_at': now,
+        'uploaded_by': user.get('email') or '',
+        'lines': matched,
+        'unmatched': unmatched,
+        'replaces': replaced.get('id') if replaced else None,
+    })
+    order['packing_lists'] = lists
+    before = order.get('pack_status') or ''
+    progress = packing.packing_progress(order)
+    order['pack_status'] = progress['status']
+    label = parsed.get('number') or parsed.get('rack') or filename or 'Packing list'
+    changes = []
+    if replaced:
+        changes.append({
+            'field': 'packing list',
+            'action': 'replaced',
+            'old': label,
+            'new': f'{label} was uploaded again. The latest file replaces the previous one.',
+        })
+    else:
+        changes.append({'field': 'packing list', 'action': 'added', 'new': label})
+    if unmatched:
+        detail = ', '.join(
+            str(row.get('serial')) if row.get('serial') not in (None, '') else 'no serial'
+            for row in unmatched
+        )
+        changes.append({
+            'field': 'packing list',
+            'action': 'added',
+            'new': f'Unmatched on {label}: {detail}.',
+        })
+    if before != (progress['status'] or ''):
+        changes.append({
+            'field': 'pack status',
+            'old': _packing_status_label(before),
+            'new': progress['status_label'] or 'Not packed',
+        })
+    _stamp_log(order, user, changes)
+    return order, progress, unmatched
+
+
+def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
+    rows = _load_packing_inbox()
+    next_id = max([int(row.get('id') or 0) for row in rows] or [0]) + 1
+    record = {
+        'id': next_id,
+        'filename': filename,
+        'stored': stored,
+        'parsed': parsed,
+        'uploaded_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'uploaded_by': user.get('email') or '',
+        'reason': reason,
+        'message': message,
+        'customer': parsed.get('customer') or '',
+        'project': parsed.get('project') or parsed.get('job') or '',
+        'po': parsed.get('po') or '',
+        'number': parsed.get('number') or '',
+        'rack': parsed.get('rack') or '',
+        'candidates': [
+            {
+                'id': order.get('id'),
+                'company': order.get('company') or '',
+                'project': order.get('project') or '',
+                'po': order.get('po') or '',
+            }
+            for order in candidates
+        ],
+    }
+    rows.append(record)
+    _save_packing_inbox(rows)
+    return record
+
+
+def _place_parsed_packing(parsed, filename, stored, user):
+    import packing
+    rows = parsed.get('rows') or []
+    warnings = list(parsed.get('warnings') or [])
+    if not rows:
+        message = warnings[0] if warnings else 'No glass rows were found in that packing list.'
+        queued = _queue_packing(parsed, filename, stored, user, 'no_match', message, [])
+        return {'saved': None, 'review': queued}
+    hits = packing.candidate_orders(parsed, load_orders())
+    if len(hits) != 1:
+        if len(hits) > 1:
+            message = 'More than one order matches this customer and project. Choose the order.'
+            reason = 'ambiguous'
+        else:
+            message = 'No order matches this customer and project.'
+            reason = 'no_match'
+        if warnings:
+            message = message + ' ' + ' '.join(warnings)
+        queued = _queue_packing(parsed, filename, stored, user, reason, message, hits)
+        return {'saved': None, 'review': queued}
+    order = hits[0]
+    order_stored = _write_packing_file(order.get('id'), filename, _read_packing_file('inbox', stored))
+
+    def mutator(current):
+        updated, progress, unmatched = _attach_packing_list(current, parsed, user, filename, order_stored)
+        return updated, None
+
+    saved, error = update_order(order.get('id'), mutator)
+    if error:
+        queued = _queue_packing(parsed, filename, stored, user, 'no_match', error, [])
+        return {'saved': None, 'review': queued}
+    return {
+        'saved': {
+            'order_id': saved.get('id'),
+            'company': saved.get('company') or '',
+            'project': saved.get('project') or '',
+            'number': parsed.get('number') or '',
+            'rack': parsed.get('rack') or '',
+            'pack_status': saved.get('pack_status') or '',
+            'pack_status_label': _packing_status_label(saved.get('pack_status')),
+            'totals': packing.packing_progress(saved)['totals'],
+            'unmatched': (saved.get('packing_lists') or [])[-1].get('unmatched') or [],
+        },
+        'review': None,
+    }
+
+
+def _read_packing_file(scope, stored):
+    path = os.path.join(data_dir(), 'packing_files', str(scope), os.path.basename(stored or ''))
+    if not stored or not os.path.isfile(path):
+        return b''
+    with open(path, 'rb') as handle:
+        return handle.read()
+
+
+def _accept_packing_upload(filename, payload, user):
+    import packing
+    if not payload:
+        parsed = {'rows': [], 'warnings': ['The file is empty.'], 'customer': '', 'project': '', 'po': '', 'number': '', 'rack': '', 'job': ''}
+        stored = ''
+        return [_place_parsed_packing(parsed, filename, stored, user)]
+    if len(payload) > 25 * 1024 * 1024:
+        parsed = {'rows': [], 'warnings': ['The packing list is larger than 25 MB.'], 'customer': '', 'project': '', 'po': '', 'number': '', 'rack': '', 'job': ''}
+        return [_place_parsed_packing(parsed, filename, '', user)]
+    try:
+        documents = packing.parse_packing_upload(filename, payload)
+    except Exception:
+        documents = [{
+            'rows': [], 'warnings': ['The packing list could not be read.'],
+            'customer': '', 'project': '', 'po': '', 'number': '', 'rack': '', 'job': '',
+        }]
+    stored = _write_packing_file('inbox', filename, payload)
+    return [_place_parsed_packing(parsed, filename, stored, user) for parsed in documents]
+
+
+@app.route('/api/packing-lists', methods=['GET'])
+@module_required('orders')
+def list_packing_lists():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import packing
+    groups = []
+    for order in orders_visible_to(user, load_orders()):
+        current = [row for row in order.get('packing_lists') or [] if row.get('current', True)]
+        if not current and not order.get('pack_status'):
+            continue
+        progress = packing.packing_progress(order)
+        groups.append({
+            'order_id': order.get('id'),
+            'company': order.get('company') or '',
+            'project': order.get('project') or '',
+            'po': order.get('po') or '',
+            'pack_status': progress['status'],
+            'pack_status_label': progress['status_label'],
+            'totals': progress['totals'],
+            'lists': _packing_payload(order, True)['packing_lists'],
+        })
+    return jsonify({'projects': groups, 'inbox': _load_packing_inbox()})
+
+
+@app.route('/api/packing-lists', methods=['POST'])
+@module_required('orders')
+def upload_packing_lists():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to upload packing lists.', 403)
+    uploads = request.files.getlist('files') or request.files.getlist('file')
+    uploads = [item for item in uploads if item and item.filename]
+    if not uploads:
+        return json_error('Choose at least one packing list.', 400)
+    saved = []
+    review = []
+    for upload in uploads:
+        payload = upload.read(25 * 1024 * 1024 + 1)
+        for result in _accept_packing_upload(upload.filename, payload, user):
+            if result.get('saved'):
+                saved.append(result['saved'])
+            if result.get('review'):
+                review.append(result['review'])
+    return jsonify({'saved': saved, 'review': review})
+
+
+@app.route('/api/packing-inbox/<int:inbox_id>/assign', methods=['POST'])
+@module_required('orders')
+def assign_packing_list(inbox_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to upload packing lists.', 403)
+    data = json_body() or {}
+    try:
+        order_id = int(data.get('order_id'))
+    except (TypeError, ValueError):
+        return json_error('Choose the order this packing list belongs to.', 400)
+    inbox = _load_packing_inbox()
+    record = next((row for row in inbox if row.get('id') == inbox_id), None)
+    if not record:
+        return json_error('Not found', 404)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    payload = _read_packing_file('inbox', record.get('stored'))
+    stored = _write_packing_file(order_id, record.get('filename'), payload) if payload else ''
+
+    def mutator(current):
+        updated, _progress, _unmatched = _attach_packing_list(
+            current, record.get('parsed') or {}, user, record.get('filename') or '', stored,
+        )
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error:
+        return json_error(error, 400)
+    _save_packing_inbox([row for row in inbox if row.get('id') != inbox_id])
+    import packing
+    progress = packing.packing_progress(saved)
+    return jsonify({
+        'order_id': saved.get('id'),
+        'pack_status': progress['status'],
+        'pack_status_label': progress['status_label'],
+        'totals': progress['totals'],
+        'unmatched': (saved.get('packing_lists') or [])[-1].get('unmatched') or [],
+    })
+
+
+@app.route('/api/orders/<int:order_id>/packing-lists/<int:list_id>/file', methods=['GET'])
+@module_required('orders')
+def download_order_packing_list(order_id, list_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    entry = next((row for row in (order or {}).get('packing_lists') or [] if row.get('id') == list_id), None)
+    path = os.path.join(data_dir(), 'packing_files', str(order_id), os.path.basename((entry or {}).get('stored') or ''))
+    if not order or not entry or not entry.get('stored') or not os.path.isfile(path):
+        return json_error('Not found', 404)
+    return send_file(path, as_attachment=True, download_name=entry.get('filename') or 'packing-list')
 
 
 @app.route('/api/orders/<int:order_id>/shipments/preview', methods=['POST'])
