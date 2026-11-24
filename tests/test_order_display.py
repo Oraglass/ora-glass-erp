@@ -145,14 +145,14 @@ def test_staff_can_unapprove_and_an_approved_edit_waits_for_the_customer(client)
     assert undone.status_code == 200, undone.get_json()
     body = undone.get_json()
     assert body['status'] == 'submitted'
-    assert body['status_label'] == 'Submitted - awaiting Ora Glass review'
+    assert body['status_label'] == 'Harbor Glass review'
     assert body['excel_ready'] is False
     assert body['can_unapprove'] is False
     assert body['can_release'] is True
     assert client.get(f'/api/orders/{order_id}/production.xlsx').status_code == 409
     assert any(rev.get('kind') == 'staff_unapprove' for rev in body['revisions'])
     assert any(
-        change.get('field') == 'status' and change.get('new') == 'Submitted - awaiting Ora Glass review'
+        change.get('field') == 'status' and change.get('new') == 'Harbor Glass review'
         for change in body['changelog'][-1]['changes']
     )
     assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
@@ -162,6 +162,14 @@ def test_staff_can_unapprove_and_an_approved_edit_waits_for_the_customer(client)
     sent_back = client.post(f'/api/orders/{order_id}/unapprove', json={})
     assert sent_back.status_code == 200, sent_back.get_json()
     assert sent_back.get_json()['status'] == 'submitted'
+    assert sent_back.get_json()['status_label'] == 'Harbor Glass review'
+    client.post('/logout')
+    assert login(client, 'boss@harbor.example').status_code == 302
+    quote_row = next(row for row in client.get('/api/quotes').get_json() if row.get('order_id') == order_id)
+    assert quote_row['order_status'] == 'Harbor Glass review'
+    assert client.get(f'/api/orders/{order_id}').get_json()['status_label'] == 'Harbor Glass review'
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
     assert client.post(f'/api/orders/{order_id}/approve-production', json={}).status_code == 200
     shipped = client.post(f'/api/orders/{order_id}/shipments', json={
         'number': 'XF1', 'date': '2026-07-29', 'rack': 'A1', 'lines': [{'index': 0, 'qty': 1}],

@@ -6086,6 +6086,8 @@ def filter_order_rows(orders):
         if date_to and day > date_to:
             continue
         status = clean_text(request.args.get('status'), 20).lower()
+        if not status and order_status(order) == 'voided':
+            continue
         if status in {'packed', 'partial'} and order.get('pack_status') != status:
             continue
         if status in STATUS_LABELS and order_status(order) != status:
@@ -6155,6 +6157,9 @@ def get_quotes():
         # The quote keeps the tier and prices it was created with. Do not reprice it.
         if row.get('order_id') and not row.get('order_status'):
             row['order_status'] = 'Approved for order'
+        linked = next((item for item in orders if item.get('id') == row.get('order_id')), None)
+        if linked:
+            row['order_status'] = _order_review_label(linked)
         visible.append(_with_quote_tax(row))
     return jsonify(filter_quote_rows(visible))
 
@@ -6401,7 +6406,12 @@ def order_for_viewer(order, user, with_coverage=False):
         'tier': order.get('tier'),
         'tier_label': tier_label(order.get('tier')) or order.get('tier_label'),
         'status': status,
-        'status_label': STATUS_LABELS[status],
+        'status_label': _order_review_label(order),
+        'voided_by': order.get('voided_by') or '',
+        'voided_at': order.get('voided_at') or '',
+        'voided_at_display': format_pacific(order.get('voided_at')),
+        'void_reason': order.get('void_reason') or '',
+        'can_void': _can_void(user, order),
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
@@ -7110,7 +7120,10 @@ def _orders_awaiting_staff(user):
     """Orders a customer submitted, or re-approved, that Ora Glass has not released."""
     if not user or not staff_can_order(user):
         return 0
-    return sum(1 for order in load_orders() if order_status(order) in {'submitted', 'reapproved'})
+    return sum(
+        1 for order in load_orders()
+        if order_status(order) in {'submitted', 'reapproved'} and order.get('review_for') != 'customer'
+    )
 
 
 def _migrate_order_one_review():
@@ -7361,6 +7374,47 @@ def _order_is_invoiced(order):
     return bool(order.get('invoice_id')) or order_status(order) == 'delivered'
 
 
+def _order_review_label(order):
+    """Name the company when the order is back with that customer. Ora Glass only when it is waiting here."""
+    status = order_status(order)
+    if status == 'voided':
+        return 'Voided'
+    if status == 'submitted' and (order or {}).get('review_for') == 'customer':
+        company = str((order or {}).get('company') or '').strip() or 'Customer'
+        return f'{company} review'
+    return STATUS_LABELS.get(status, status)
+
+
+def _void_block_reason(order):
+    status = order_status(order)
+    if status == 'voided':
+        return 'This order is already voided.'
+    if status in {'sent', 'made', 'delivered'}:
+        return 'This order cannot be voided because it has been sent to production.'
+    if order.get('shipments'):
+        return 'This order cannot be voided because it has a shipment.'
+    state, _label = _customer_invoice_state(order)
+    if state == 'invoiced' or order.get('invoice_id') or order.get('customer_invoice_id'):
+        return 'This order cannot be voided because it has been invoiced.'
+    if order.get('packing_lists'):
+        return 'This order cannot be voided because a packing list is attached.'
+    import packing
+    if packing.packing_progress(order)['totals'].get('packed'):
+        return 'This order cannot be voided because pieces have been packed.'
+    return ''
+
+
+def _can_void(user, order):
+    if not user or not order or order_status(order) == 'voided':
+        return False
+    if user.get('role') == 'customer':
+        if user.get('customer_id') != order.get('customer_id'):
+            return False
+    elif user.get('role') not in {'admin', 'sales'}:
+        return False
+    return _void_block_reason(order) == ''
+
+
 def _can_unapprove(order):
     """Approved or sent orders can return to review until something has shipped or been invoiced."""
     if _order_is_invoiced(order) or (order.get('shipments') or []):
@@ -7382,6 +7436,8 @@ def edit_order(order_id):
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
+    if order_status(visible) == 'voided':
+        return json_error('This order is voided and cannot be changed.', 400)
     address_only = not can_edit_orders(user)
     if address_only:
         if not can_edit_job_address(user, visible):
@@ -7463,10 +7519,13 @@ def approve_order_for_production(order_id):
 
     def mutator(order):
         current = order_status(order)
+        if current == 'voided':
+            return None, 'This order is voided and cannot be changed.'
         if current not in {'submitted', 'reapproved'}:
             return None, f'An order that is {STATUS_LABELS[current]} cannot be approved for production.'
         updated = dict(order)
         updated['status'] = 'approved'
+        updated.pop('review_for', None)
         updated['production_approved_by'] = user.get('email') or ''
         updated['production_approved_at'] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         _append_revision(updated, user, 'staff_approve', [], note='Approved for production')
@@ -7502,11 +7561,54 @@ def unapprove_order(order_id):
             return None, f'An order that is {STATUS_LABELS.get(current, current)} cannot be unapproved.'
         updated = dict(order)
         updated['status'] = 'submitted'
-        _append_revision(updated, user, 'staff_unapprove', [], note='Unapproved. Back to Ora Glass review.')
+        updated['review_for'] = 'customer'
+        company = (order.get('company') or 'the customer').strip() or 'the customer'
+        _append_revision(updated, user, 'staff_unapprove', [], note=f'Unapproved. Back to {company} review.')
         _stamp_log(updated, user, [{
             'field': 'status',
             'old': STATUS_LABELS[current],
-            'new': STATUS_LABELS['submitted'],
+            'new': _order_review_label(updated),
+        }])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/void', methods=['POST'])
+@module_required('orders')
+def void_order(order_id):
+    user = current_user()
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    if user.get('role') == 'customer':
+        if user.get('customer_id') != visible.get('customer_id'):
+            return json_error('Not found', 404)
+    elif user.get('role') not in {'admin', 'sales'}:
+        return json_error('You do not have permission to void this order.', 403)
+    data = json_body() or {}
+    reason = strip_copy_history(clean_text(data.get('reason'), 500))
+
+    def mutator(order):
+        blocked = _void_block_reason(order)
+        if blocked:
+            return None, blocked
+        updated = dict(order)
+        updated['status'] = 'voided'
+        updated['voided_by'] = user.get('email') or ''
+        updated['voided_at'] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        updated['void_reason'] = reason
+        note = 'Voided.' if not reason else f'Voided. {reason}'
+        _append_revision(updated, user, 'void', [], note=note)
+        _stamp_log(updated, user, [{
+            'field': 'status',
+            'old': _order_review_label(order),
+            'new': 'Voided',
         }])
         return updated, None
 
@@ -7552,6 +7654,7 @@ def customer_order_decision(order_id):
             }])
         else:
             updated['status'] = 'submitted'
+            updated['review_for'] = 'staff'
             updated['customer_comment'] = comment
             _append_revision(updated, user, 'customer_reject', [], comment=comment)
             _stamp_log(updated, user, [
@@ -7622,9 +7725,13 @@ def set_order_status(order_id):
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
+    if order_status(visible) == 'voided':
+        return json_error('This order is voided and cannot be changed.', 400)
 
     def mutator(order):
         current = order_status(order)
+        if current == 'voided':
+            return None, 'This order is voided and cannot be changed.'
         if NEXT_STATUS.get(current) != target:
             return None, f'An order that is {STATUS_LABELS[current]} cannot be marked {STATUS_LABELS[target]}.'
         if target == 'sent':
@@ -7881,16 +7988,66 @@ def _packing_order_choice(order):
     }
 
 
-def _drop_stale_packing_inbox(filename):
+def _stale_packing_message(message):
+    text = message or ''
+    return (
+        'No glass rows were found' in text
+        or text == 'The packing list could not be read.'
+        or text == 'The file is empty.'
+    )
+
+
+def _packing_name_key(filename):
+    base = os.path.basename(str(filename or '')).strip().casefold()
+    return re.sub(r'(\.(pdf|txt|csv|xlsx|xls))+$', '', base)
+
+
+def _drop_stale_packing_inbox(filename, number=''):
     """A later successful read of the same file replaces the old 'no glass rows' note."""
-    inbox = [
-        row for row in _load_packing_inbox()
-        if not (
-            row.get('filename') == filename
-            and 'No glass rows were found' in (row.get('message') or '')
-        )
-    ]
+    key = _packing_name_key(filename)
+    number_key = str(number or '').strip().casefold()
+    inbox = []
+    for row in _load_packing_inbox():
+        message = row.get('message') or ''
+        stale = _stale_packing_message(message)
+        same_file = bool(key) and _packing_name_key(row.get('filename')) == key
+        same_number = bool(number_key) and str(row.get('number') or '').strip().casefold() == number_key
+        if stale and (same_file or same_number):
+            continue
+        inbox.append(row)
     _save_packing_inbox(inbox)
+
+
+def _prune_resolved_packing_inbox():
+    """Drop a no-glass note once that file or packing number is already on an order."""
+    names = set()
+    numbers = set()
+    for order in load_orders():
+        if order_status(order) == 'voided':
+            continue
+        for entry in order.get('packing_lists') or []:
+            key = _packing_name_key(entry.get('filename'))
+            if key:
+                names.add(key)
+            number = str(entry.get('number') or '').strip().casefold()
+            if number:
+                numbers.add(number)
+    kept = []
+    changed = False
+    for row in _load_packing_inbox():
+        message = row.get('message') or ''
+        if not _stale_packing_message(message):
+            kept.append(row)
+            continue
+        key = _packing_name_key(row.get('filename'))
+        number = str(row.get('number') or '').strip().casefold()
+        if key in names or (number and number in numbers) or any(saved and saved in key for saved in numbers):
+            changed = True
+            continue
+        kept.append(row)
+    if changed:
+        _save_packing_inbox(kept)
+    return kept
 
 
 def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
@@ -7965,7 +8122,7 @@ def _place_parsed_packing(parsed, filename, stored, user):
     rows = parsed.get('rows') or []
     warnings = list(parsed.get('warnings') or [])
     if rows:
-        _drop_stale_packing_inbox(filename)
+        _drop_stale_packing_inbox(filename, parsed.get('number') or '')
     if not rows:
         message = warnings[0] if warnings else 'No glass rows were found in that packing list.'
         queued = _queue_packing(parsed, filename, stored, user, 'no_match', message, [])
@@ -8060,7 +8217,7 @@ def list_packing_lists():
             'totals': progress['totals'],
             'lists': _packing_payload(order, True)['packing_lists'],
         })
-    return jsonify({'projects': groups, 'inbox': _load_packing_inbox()})
+    return jsonify({'projects': groups, 'inbox': _prune_resolved_packing_inbox()})
 
 
 @app.route('/api/packing-lists', methods=['POST'])
@@ -8132,6 +8289,7 @@ def assign_packing_list(inbox_id):
     if error:
         return json_error(error, 400)
     _save_packing_inbox([row for row in inbox if row.get('id') != inbox_id])
+    _drop_stale_packing_inbox(record.get('filename') or '', (record.get('parsed') or {}).get('number') or record.get('number') or '')
     import packing
     progress = packing.packing_progress(saved)
     return jsonify({
@@ -8315,6 +8473,8 @@ def ship_packed_pieces(order_id):
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
+    if order_status(visible) == 'voided':
+        return json_error('This order is voided and cannot be changed.', 400)
     data = json_body() or {}
     shipped_on = clean_text(data.get('date'), 10)
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', shipped_on or ''):
@@ -8391,8 +8551,12 @@ def invoice_completed_order(order_id):
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
+    if order_status(visible) == 'voided':
+        return json_error('This order is voided and cannot be invoiced.', 400)
 
     def mutator(order):
+        if order_status(order) == 'voided':
+            return None, 'This order is voided and cannot be invoiced.'
         state, _label = _customer_invoice_state(order)
         if state == 'invoiced':
             return None, 'This order already has a customer invoice.'
@@ -9067,6 +9231,8 @@ def create_document():
         order = next((row for row in orders if row.get('id') == order_id), None)
         if not order:
             return json_error('Unknown order.', 400)
+        if order_status(order) == 'voided' and doc_type == 'invoice':
+            return json_error('This order is voided and cannot be invoiced.', 400)
         customer_id = order.get('customer_id')
         currency = str(order.get('currency') or 'usd').lower()
     else:

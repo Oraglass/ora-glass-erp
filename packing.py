@@ -516,7 +516,7 @@ def orders_for_customer(customer_id, orders):
     for order in orders or []:
         if order.get('customer_id') != customer_id:
             continue
-        if str(order.get('status') or '').lower() == 'delivered':
+        if str(order.get('status') or '').lower() in {'delivered', 'voided'}:
             continue
         rows.append(order)
     return rows
@@ -531,6 +531,8 @@ def candidate_orders(parsed, orders):
         return []
     hits = []
     for order in orders or []:
+        if str(order.get('status') or '').lower() == 'voided':
+            continue
         if _fold_code(order.get('project')) != project:
             continue
         if customer and not _names_match((parsed or {}).get('customer'), order.get('company')):
