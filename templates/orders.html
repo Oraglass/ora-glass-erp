@@ -686,9 +686,9 @@ function renderDetail(order) {
   const coverage = coverageBlock(order);
   const coverageSection = coverage ? sectionBlock('Credit coverage', '', 'How this order sits against the customer credit limit and prepayments.', coverage) : '';
   box.innerHTML = sectionBlock('Order ' + esc(orderNumber(order)) + ' ' + badge(order) + ' ' + invoiceBadge(order), buttons, headerSummary, headerExtra)
+    + remakeForm(order)
     + changeSummary(order)
     + sectionBlock('Order lines', '', lineSummary, linesTable)
-    + remakeForm(order)
     + remakesBlock(order)
     + packingBlock(order)
     + shipmentSection

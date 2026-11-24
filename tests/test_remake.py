@@ -63,6 +63,8 @@ def test_remake_restarts_serials_and_keeps_the_floor(client):
     page = client.get(f'/orders/{order_id}')
     assert b'Remake / service order' in page.data
     assert b'<details id="remake-panel">' in page.data
+    placed = page.data.split(b"box.innerHTML = sectionBlock('Order ", 1)[1]
+    assert placed.index(b'remakeForm(order)') < placed.index(b"sectionBlock('Order lines'")
     assert b'<details id="remake-panel" open' not in page.data
     assert b'#remake-lines td.floor{white-space:nowrap' in page.data
     assert b'panel.open = true' in page.data
