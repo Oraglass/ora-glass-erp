@@ -194,21 +194,78 @@ def _read_quote_list(path):
     return []
 
 
+def quote_display_number(quote):
+    """The number printed on the quote PDF. A stored number wins, then the id."""
+    if not isinstance(quote, dict):
+        return ''
+    number = quote.get('number')
+    if number not in (None, ''):
+        return number
+    ident = quote.get('id')
+    if ident in (None, ''):
+        return ''
+    return ident
+
+
+def _ensure_quote_numbers(quotes):
+    """Backfill a stable quote number. An existing id is that number, so old PDFs stay the same."""
+    changed = False
+    used = set()
+    highest = 0
+    pending = []
+    for quote in quotes or []:
+        if not isinstance(quote, dict):
+            continue
+        raw = quote.get('number')
+        if raw not in (None, ''):
+            if isinstance(raw, str) and raw.strip() != raw:
+                quote['number'] = raw.strip()
+                raw = quote['number']
+                changed = True
+            text = str(raw).strip()
+            if text.isdigit():
+                value = int(text)
+                used.add(value)
+                highest = max(highest, value)
+            continue
+        ident = quote.get('id')
+        if ident not in (None, '') and str(ident).strip().isdigit():
+            value = int(str(ident).strip())
+            quote['number'] = value
+            used.add(value)
+            highest = max(highest, value)
+            changed = True
+            continue
+        pending.append(quote)
+    for quote in pending:
+        highest += 1
+        while highest in used:
+            highest += 1
+        used.add(highest)
+        quote['number'] = highest
+        if quote.get('id') in (None, ''):
+            quote['id'] = highest
+        changed = True
+    return changed
+
+
 def load_quotes(legacy_dir=None):
     path = quotes_path()
     with lock_for(path):
         if os.path.exists(path):
-            return _read_quote_list(path)
-        legacy_root = BASE_DIR if legacy_dir is None else legacy_dir
-        legacy = os.path.join(legacy_root, 'quotes.json')
-        if os.path.abspath(legacy) == os.path.abspath(path) or not os.path.exists(legacy):
-            return []
-        data = read_json(legacy, [])
-        if not isinstance(data, list):
-            return []
-        atomic_write_json(path, data)
-        logger.info('Migrated %s quotes from %s to %s', len(data), legacy, path)
-        return data
+            quotes = _read_quote_list(path)
+        else:
+            legacy_root = BASE_DIR if legacy_dir is None else legacy_dir
+            legacy = os.path.join(legacy_root, 'quotes.json')
+            if os.path.abspath(legacy) == os.path.abspath(path) or not os.path.exists(legacy):
+                return []
+            data = read_json(legacy, [])
+            quotes = data if isinstance(data, list) else []
+            atomic_write_json(path, quotes)
+            logger.info('Migrated %s quotes from %s to %s', len(quotes), legacy, path)
+        if _ensure_quote_numbers(quotes):
+            atomic_write_json(path, quotes)
+        return quotes
 
 
 def save_quotes(quotes):
@@ -502,6 +559,8 @@ def append_quote(quote):
         quotes = load_quotes()
         stored = dict(quote)
         stored['id'] = max([item.get('id') or 0 for item in quotes] or [0]) + 1
+        if stored.get('number') in (None, ''):
+            stored['number'] = stored['id']
         quotes.append(stored)
         atomic_write_json(path, quotes)
         return stored

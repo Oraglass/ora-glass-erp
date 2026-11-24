@@ -152,6 +152,7 @@ from storage import (
     load_payments,
     load_punches,
     load_quotes,
+    quote_display_number,
     load_tiers,
     load_users,
     save_customers,
@@ -2069,7 +2070,7 @@ def _pdf_document(source, kind, user=None):
     return {
         'kind': kind,
         'revision': source.get('revision') or 0,
-        'id': '' if source.get('id') in (None, '') else source.get('id'),
+        'id': '' if quote_display_number(source) in (None, '') else quote_display_number(source),
         'date': source.get('date') or source.get('approved_at') or '',
         'project': source.get('project') or '',
         'company': company,
@@ -6133,8 +6134,11 @@ def filter_quote_rows(quotes):
             continue
         if user_email and (quote.get('user') or '') != user_email:
             continue
-        if project and project not in str(quote.get('project') or '').lower():
-            continue
+        if project:
+            name = str(quote.get('project') or '').lower()
+            number = str(quote_display_number(quote)).lower()
+            if project not in name and project not in number:
+                continue
         quote_date = str(quote.get('date') or '')
         if date_from and quote_date < date_from:
             continue
