@@ -16,6 +16,8 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 #scan-input{font-size:32px;padding:18px}
 .btn{display:block;width:100%;background:#C41E3A;color:#fff;border:0;border-radius:12px;font-size:22px;font-weight:700;padding:18px 16px;margin-top:12px;cursor:pointer}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+.wedge{margin-top:16px;color:#777;font-size:14px}
+.wedge input{font-size:16px;padding:10px}
 .row{display:flex;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid #eee;font-size:20px}
 .ok{color:#166534}
 .warn{color:#9f1239}
@@ -27,7 +29,7 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 {% include 'partials/header.html' %}
 <div class="container">
 <h2>Pick up racks</h2>
-<p class="note">Scan each rack. The scanner types the number and presses Enter. The camera button is there when you are using a phone.</p>
+<p class="note">Point the phone camera at the QR code. The code is the rack number. Type it if the camera is not available.</p>
 <div class="card">
 <label>Customer
 <select id="customer" aria-label="Customer"></select>
@@ -35,23 +37,27 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 <label>Truck plate
 <input id="plate" aria-label="Truck plate" placeholder="Optional" autocomplete="off">
 </label>
-<label>Rack number
-<input id="scan-input" autofocus autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
-</label>
-<button type="button" class="btn secondary" id="camera">Scan with camera</button>
+<button type="button" class="btn" id="camera">Scan rack</button>
 <div id="reader" hidden></div>
+<label>Rack number
+<input id="scan-input" autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
+</label>
+<label class="wedge">Keyboard scanner
+<input id="wedge-rack" autofocus autocomplete="off" aria-label="Keyboard scanner">
+</label>
 </div>
 <div class="card" id="list"><p class="note">No racks scanned yet.</p></div>
 <button type="button" class="btn" id="confirm">Confirm pickup</button>
 <p class="note" id="message"></p>
 </div>
-<script src="{{ url_for('static', filename='html5-qrcode.min.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 const scans = [];
 const input = document.getElementById('scan-input');
+const wedge = document.getElementById('wedge-rack');
 const list = document.getElementById('list');
 let camera = null;
 
@@ -91,12 +97,19 @@ async function addScan(raw) {
   beep(body.result === 'ok');
   render();
   input.value = '';
-  input.focus();
+  wedge.value = '';
+  wedge.focus();
 }
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter') {
     event.preventDefault();
     addScan(input.value);
+  }
+});
+wedge.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addScan(wedge.value);
   }
 });
 document.getElementById('camera').addEventListener('click', async () => {
@@ -105,8 +118,8 @@ document.getElementById('camera').addEventListener('click', async () => {
     await camera.stop();
     camera = null;
     box.hidden = true;
-    document.getElementById('camera').textContent = 'Scan with camera';
-    input.focus();
+    document.getElementById('camera').textContent = 'Scan rack';
+    wedge.focus();
     return;
   }
   if (!window.Html5Qrcode) { document.getElementById('message').textContent = 'The camera scanner did not load.'; return; }
@@ -139,12 +152,12 @@ document.getElementById('confirm').addEventListener('click', async () => {
   message.textContent = 'Picked up ' + (body.moved || []).join(', ');
   scans.length = 0;
   render();
-  input.focus();
+  wedge.focus();
 });
 fetch('/api/racks/sites').then(res => res.json()).then(rows => {
   document.getElementById('customer').innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
 });
-window.addEventListener('load', () => input.focus());
+window.addEventListener('load', () => wedge.focus());
 </script>
 </body>
 </html>
