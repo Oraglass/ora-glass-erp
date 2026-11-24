@@ -59,12 +59,12 @@ FORMULA_DEFAULTS = (
     {
         'key': 'sealant_igu_length_mm',
         'value': 1800,
-        'description': 'Sample IGU length on the sealant sheet, in millimetres.',
+        'description': 'Sample IGU length on the sealant sheet, in millimeters.',
     },
     {
         'key': 'sealant_depth_mm',
         'value': 6,
-        'description': 'Seal depth on the sealant sheet, in millimetres. The sheet calls this the 6mm sealing depth.',
+        'description': 'Seal depth on the sealant sheet, in millimeters. The sheet calls this the 6mm sealing depth.',
     },
     {
         'key': 'sealant_liters_per_set',
@@ -104,7 +104,7 @@ FORMULA_DEFAULTS = (
     {
         'key': 'glass_lb_per_sqf_mm',
         'value': 0.512,
-        'description': 'Approximate glass weight, in pounds, for one square foot of glass that is one millimetre thick. Quote and order PDFs multiply the real square feet by the lite thicknesses and this factor. 0.512 is about 2.5 kg per square metre per millimetre. Charged square feet are not used.',
+        'description': 'Approximate glass weight, in pounds, for one square foot of glass that is one millimeter thick. Quote and order PDFs multiply the real square feet by the lite thicknesses and this factor. 0.512 is about 2.5 kg per square metre per millimeter. Charged square feet are not used.',
     },
 )
 

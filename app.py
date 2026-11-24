@@ -1594,6 +1594,7 @@ def quote_template_context(user):
         ] if user.get('role') != 'customer' else [],
         'import_glass': [item.get('name') for item in glass],
         'import_spacers': [item.get('name') for item in spacers],
+        'import_sealants': [item.get('name') for item in sealants],
     }
 
 
@@ -4994,6 +4995,7 @@ def _orgadata_choose_customer(user, requested, sender):
 
 
 def _orgadata_apply_edits(mapped, edits, glass_names, spacer_names):
+    sealant_names = [item.get('name') for item in _live_materials()[2]]
     if not isinstance(edits, dict):
         return mapped
     for key, limit in (('project', 200), ('po', 80), ('contact', 200), ('reference_date', 10)):
@@ -5025,6 +5027,8 @@ def _orgadata_apply_edits(mapped, edits, glass_names, spacer_names):
             if 'product' in spacer_in:
                 spacer['product'] = _known_product(spacer_in.get('product'), spacer_names)
                 spacer['matched'] = bool(spacer['product'])
+            if 'sealant' in spacer_in:
+                spacer['sealant'] = _known_product(spacer_in.get('sealant'), sealant_names)
     incoming_lines = edits.get('lines') if isinstance(edits.get('lines'), list) else []
     by_number = {}
     for block in mapped.get('blocks') or []:
@@ -5099,6 +5103,8 @@ def _orgadata_ready(block):
     spacers = (block.get('spacers') or [])[:needed]
     if len(spacers) < needed or any(not spacer.get('product') for spacer in spacers):
         return False
+    if any(not spacer.get('sealant') for spacer in spacers):
+        return False
     return True
 
 
@@ -5116,15 +5122,70 @@ def _orgadata_spec(block, width_mm, height_mm):
         spec[f'glass{index}'] = lite.get('product') or ''
         spec[f'temper{index}'] = lite.get('temper') if lite.get('temper') in {'yes', 'n/a'} else 'n/a'
         if index <= len(spacers) and index < 3:
-            spacer = spacers[index - 1].get('product') or ''
+            chosen = spacers[index - 1]
+            spacer = chosen.get('product') or ''
             spec[f'spacer{index}'] = spacer
-            spec[f'sealant{index}'] = suggest_sealant(spacer, sealants).get('selected') or '' if spacer else ''
+            sealant = chosen.get('sealant') or ''
+            if not sealant and spacer:
+                sealant = suggest_sealant(spacer, sealants).get('selected') or ''
+            spec[f'sealant{index}'] = sealant
     for index in range(len(lites) + 1, 4):
         spec.setdefault(f'glass{index}', '')
         spec.setdefault(f'temper{index}', 'n/a')
         spec.setdefault(f'spacer{index}', '')
         spec.setdefault(f'sealant{index}', '')
     return spec
+
+
+def _orgadata_fill_sealants(mapped):
+    """Keep a chosen sealant when it fits the spacer. Otherwise use the quote-form rule."""
+    sealants = _live_materials()[2]
+    for block in mapped.get('blocks') or []:
+        for spacer in block.get('spacers') or []:
+            suggestion = suggest_sealant(spacer.get('product') or '', sealants)
+            options = list(suggestion.get('options') or [])
+            posted = spacer.get('sealant') or ''
+            if posted and posted in options:
+                spacer['sealant'] = posted
+            else:
+                spacer['sealant'] = suggestion.get('selected') or ''
+            spacer['sealant_options'] = options
+            spacer['sealant_message'] = suggestion.get('message') or ''
+            if spacer.get('product') and not spacer.get('sealant'):
+                block.setdefault('warnings', [])
+                block['warnings'].append(f'Choose a sealant for {spacer.get("product")}.')
+    return mapped
+
+
+def _pdf_overall_mm(thickness):
+    match = re.search(r'=\s*(\d+(?:\.\d+)?)', str(thickness or ''))
+    if not match:
+        return None
+    value = float(match.group(1))
+    return int(value) if value.is_integer() else value
+
+
+def _orgadata_build(block):
+    """IGU name and overall thickness from the selected glass, spacers, and sealants."""
+    import documents
+    sample = next((line for line in (block.get('lines') or []) if line.get('width_mm') and line.get('height_mm')), None)
+    spec = _orgadata_spec(
+        block,
+        (sample or {}).get('width_mm') or 0,
+        (sample or {}).get('height_mm') or 0,
+    )
+    if not _orgadata_ready(block):
+        return {'igu_name': '', 'computed_thickness_mm': None, 'pdf_thickness_mm': _pdf_overall_mm(block.get('thickness')), 'thickness_mismatch': False}
+    total = documents.overall_thickness_mm(spec)
+    pdf_mm = _pdf_overall_mm(block.get('thickness'))
+    computed = int(total) if float(total).is_integer() else total
+    mismatch = pdf_mm is not None and abs(float(computed) - float(pdf_mm)) > 0.01
+    return {
+        'igu_name': documents.build_label(spec),
+        'computed_thickness_mm': computed,
+        'pdf_thickness_mm': pdf_mm,
+        'thickness_mismatch': mismatch,
+    }
 
 
 def _orgadata_aliases_from(mapped):
@@ -5163,6 +5224,7 @@ def _orgadata_preview(record, user, edits=None, locked=None):
     mapped = orgadata_import.map_document(parsed, glass_names, spacer_names, aliases)
     mapped = _orgadata_apply_edits(mapped, edits or {}, glass_names, spacer_names)
     mapped = _orgadata_refresh_warnings(mapped)
+    mapped = _orgadata_fill_sealants(mapped)
     if isinstance(edits, dict) and edits.get('remember') and customer_id:
         glass, spacer = _orgadata_aliases_from(mapped)
         orgadata_import.remember_aliases(customer_id, glass, spacer)
@@ -5217,7 +5279,7 @@ def _orgadata_preview(record, user, edits=None, locked=None):
                 width = height = 0
                 qty = 0
             if width <= 0 or height <= 0:
-                warnings.append('Width and height must be millimetres greater than zero.')
+                warnings.append('Width and height must be millimeters greater than zero.')
             if qty < 1:
                 warnings.append('Quantity must be a whole number.')
             priced = {}
@@ -5248,10 +5310,20 @@ def _orgadata_preview(record, user, edits=None, locked=None):
             }
             block_lines.append(row)
             lines.append(row)
+        build = _orgadata_build(block)
+        if build['thickness_mismatch']:
+            block.setdefault('warnings', [])
+            block['warnings'].append(
+                f'Computed thickness {build["computed_thickness_mm"]} mm does not match the PDF thickness ({build["pdf_thickness_mm"]} mm).'
+            )
         blocks_out.append({
             'name': block.get('name') or '',
+            'igu_name': build['igu_name'],
             'configuration': block.get('configuration') or '',
             'thickness': block.get('thickness') or '',
+            'computed_thickness_mm': build['computed_thickness_mm'],
+            'pdf_thickness_mm': build['pdf_thickness_mm'],
+            'thickness_mismatch': build['thickness_mismatch'],
             'spacer_source': block.get('spacer_source') or '',
             'tempered': bool(block.get('tempered')),
             'argon': bool(block.get('argon')),
@@ -5301,8 +5373,9 @@ def _orgadata_quote_items(preview):
                 blocked = True
             width_in, height_in = production.dimensions_mm_in(line.get('width_mm'), line.get('height_mm'), 'mm')[2:]
             spec = _orgadata_spec(block, line.get('width_mm'), line.get('height_mm'))
+            import documents
             items.append({
-                'name': production.makeup_from_spec(spec) or block.get('name') or 'Glass',
+                'name': documents.build_label(spec) or block.get('name') or 'Glass',
                 'floor': line.get('floor') or '',
                 'pcs': line.get('qty'),
                 'sqf': line.get('sqf'),
@@ -5316,7 +5389,7 @@ def _orgadata_quote_items(preview):
                 'height_in': height_in,
             })
     if blocked:
-        return None, 'Choose an ERP glass and spacer for every lite before creating the quote.'
+        return None, 'Choose an ERP glass, spacer, and sealant for every lite before creating the quote.'
     if not items:
         return None, 'The file has no size rows.'
     return items, None
@@ -5347,6 +5420,8 @@ def create_orgadata_import():
     )
     if error:
         return json_error(error, 400)
+    if user.get('role') != 'customer' and not customer_id:
+        return json_error('Choose a customer company.', 400)
     record = orgadata_import.add_import({
         'customer_id': customer_id,
         'company': (customer or {}).get('name') or '',
