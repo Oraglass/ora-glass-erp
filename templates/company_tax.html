@@ -27,6 +27,7 @@ th,td{border-bottom:1px solid #eee;text-align:left;padding:6px 4px;vertical-alig
 <div class="wrap">
 <div class="card">
 <h1>{{ company }}</h1>
+<p class="note" id="rack-count">Racks at this customer: {{ rack_count }}</p>
 {% if province %}<p class="note">Province: {{ province }}</p>{% endif %}
 {% if staff_view %}
 <p class="note">A saved number makes new documents to this province GST only. Removing it, with a reason, charges GST + PST or GST + QST on documents created after the change. Orders and invoices keep the number from when they were created.</p>

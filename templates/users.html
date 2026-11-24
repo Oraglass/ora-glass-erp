@@ -296,16 +296,17 @@ function onRoleChanged() {
 function syncRoleExtras() {
   const role = document.getElementById('u-role').value;
   const shop = role === 'shop';
+  const driver = role === 'driver';
   const employee = role === 'employee';
   document.getElementById('shop-fields').style.display = shop ? 'block' : 'none';
   document.getElementById('uses-time-group').style.display = employee ? 'block' : 'none';
   document.getElementById('manage-time-group').style.display = employee ? 'block' : 'none';
   document.getElementById('manage-payroll-group').style.display = employee ? 'block' : 'none';
-  document.getElementById('password-group').style.display = shop ? 'none' : document.getElementById('password-group').style.display;
-  document.getElementById('u-company').closest('.form-group').style.display = shop ? 'none' : 'block';
-  document.getElementById('u-tier').closest('.form-group').style.display = shop ? 'none' : 'block';
-  document.getElementById('allowed-tiers').closest('.form-group').style.display = shop ? 'none' : 'block';
-  if (shop) document.getElementById('module-group').style.display = 'none';
+  document.getElementById('password-group').style.display = shop ? 'none' : 'block';
+  document.getElementById('u-company').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
+  document.getElementById('u-tier').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
+  document.getElementById('allowed-tiers').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
+  if (shop || driver) document.getElementById('module-group').style.display = 'none';
   if (!employee) {
     document.getElementById('u-manage-time').checked = false;
     document.getElementById('u-manage-payroll').checked = false;

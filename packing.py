@@ -113,7 +113,7 @@ def _parse_id_qty_lines(cleaned):
     """
     header = {
         'number': '', 'date': '', 'job': '', 'customer': '', 'project': '', 'po': '',
-        'rack': '', 'total_pcs': None, 'total_sqft': None,
+        'rack': '', 'rack_name': '', 'total_pcs': None, 'total_sqft': None,
     }
     for line in cleaned:
         delivery = _DELIVERY.search(line)
@@ -142,6 +142,8 @@ def _parse_id_qty_lines(cleaned):
         rack_value = _RACK_VALUE.match(line)
         if rack_value and not header['rack']:
             header['rack'] = rack_value.group(1)
+            parts = line.split(None, 1)
+            header['rack_name'] = parts[1].strip() if len(parts) > 1 else ''
     anchors = [(index, int(match.group(1)), int(match.group(2)))
                for index, line in enumerate(cleaned)
                for match in [_ID_QTY.match(line)] if match]
@@ -191,6 +193,7 @@ def _parse_id_qty_lines(cleaned):
         'project': header['project'] or header['job'],
         'po': header['po'],
         'rack': header['rack'],
+        'rack_name': header.get('rack_name') or '',
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,
@@ -213,6 +216,7 @@ def parse_packing_lines(lines):
         'project': '',
         'po': '',
         'rack': '',
+        'rack_name': '',
         'total_pcs': None,
         'total_sqft': None,
     }
@@ -342,6 +346,7 @@ def parse_packing_lines(lines):
         'project': header['project'] or header['job'],
         'po': header['po'],
         'rack': header['rack'],
+        'rack_name': header.get('rack_name') or '',
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,

@@ -52,6 +52,7 @@ def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description
     assert parsed['job'] == 'PO1'
     assert parsed['project'] == 'PO1'
     assert parsed['rack'] == '1054'
+    assert parsed['rack_name'] == 'A1900*1220*1800(THK:400*2)'
     assert parsed['total_pcs'] == 11
     assert [(row['serial'], row['qty']) for row in parsed['rows']] == [(1, 4), (2, 4), (6, 3)]
     assert parsed['parsed_pcs'] == 11

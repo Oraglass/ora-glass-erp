@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Racks</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.container{max-width:1200px;margin:20px auto;padding:0 20px}
+.card{background:#fff;border-radius:8px;padding:16px 20px}
+.filters{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}
+select,input{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:14px}
+.btn{background:#C41E3A;color:#fff;border:0;padding:8px 14px;border-radius:4px;text-decoration:none;display:inline-block}
+.btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+th{background:#f5f5f5;text-align:left;padding:8px;border-bottom:2px solid #ddd}
+td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
+.num{text-align:right}
+.overdue{background:#fff4e5}
+.note{color:#555;font-size:14px;margin-top:8px}
+a{color:#C41E3A}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container"><div class="card">
+<h2 style="color:#333">Racks</h2>
+<p class="note">{% if staff %}Every rack, and how long it has been at a customer. More than 14 days is highlighted.{% else %}Racks your company is holding.{% endif %}</p>
+<div class="filters">
+{% if staff %}
+<select id="rack-status" aria-label="Status">
+<option value="">All statuses</option>
+<option value="at_ora">At Ora Glass</option>
+<option value="at_customer">At customer</option>
+</select>
+<select id="rack-customer" aria-label="Customer"><option value="">All customers</option></select>
+<button type="button" class="btn" id="rack-filter">Filter</button>
+<a class="btn secondary" id="rack-labels" href="/api/racks/labels.pdf">Print labels</a>
+{% endif %}
+</div>
+<table>
+<thead><tr><th>Rack</th><th>Name</th><th>Status</th><th>Customer</th><th class="num">Days</th><th>Shipment</th><th>Truck</th><th>History</th></tr></thead>
+<tbody id="rack-list"><tr><td colspan="8" class="note">Loading...</td></tr></tbody>
+</table>
+</div></div>
+<script>
+const STAFF = {{ staff|tojson }};
+function esc(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function render(rows) {
+  const body = document.getElementById('rack-list');
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="note">No racks.</td></tr>'; return; }
+  body.innerHTML = rows.map(row => {
+    const history = (row.history || []).map(item => '<li>' + esc(item.note || item.action) + ' · ' + esc(item.user || '') + ' · ' + esc(item.at || '') + '</li>').join('');
+    return '<tr class="' + (row.overdue ? 'overdue' : '') + '"><td>' + esc(row.number) + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + '</td><td>' + esc(row.customer_name || '') + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td><td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td><td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td></tr>';
+  }).join('');
+}
+async function load() {
+  const params = new URLSearchParams();
+  if (STAFF) {
+    const status = document.getElementById('rack-status').value;
+    const customer = document.getElementById('rack-customer').value;
+    if (status) params.set('status', status);
+    if (customer) params.set('customer_id', customer);
+    const labels = document.getElementById('rack-labels');
+    labels.href = '/api/racks/labels.pdf' + (params.toString() ? '?' + params.toString() : '');
+  }
+  const res = await fetch('/api/racks?' + params.toString());
+  if (!res.ok) { document.getElementById('rack-list').innerHTML = '<tr><td colspan="8" class="note">Could not load racks.</td></tr>'; return; }
+  render(await res.json());
+}
+if (STAFF) {
+  fetch('/api/racks/sites').then(res => res.json()).then(rows => {
+    const select = document.getElementById('rack-customer');
+    select.innerHTML = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  });
+  document.getElementById('rack-filter').addEventListener('click', load);
+}
+load();
+</script>
+</body>
+</html>

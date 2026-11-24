@@ -213,6 +213,7 @@ ROLES = {
     'admin': {'name': 'Admin'},
     'employee': {'name': 'Ora Glass employee'},
     'shop': {'name': 'Shop worker'},
+    'driver': {'name': 'Driver'},
     'customer': {'name': 'Customer'},
 }
 
@@ -402,7 +403,7 @@ def effective_module_ids(user):
     role = user.get('role') or ''
     if role == 'admin':
         return list(MODULE_IDS)
-    if role == 'shop':
+    if role == 'shop' or role == 'driver':
         return []
     stored = user.get('modules', None)
     if role == 'customer':
@@ -551,6 +552,9 @@ def apply_modules(record, data, preset_role=None):
     if role == 'shop':
         if isinstance(data.get('modules'), list) and any(str(item or '').strip() for item in data.get('modules')):
             return 'Shop workers cannot be given modules.'
+        record['modules'] = []
+        return None
+    if role == 'driver':
         record['modules'] = []
         return None
     if 'modules' not in data:
@@ -1275,6 +1279,11 @@ def inject_user():
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
     if user and staff_can_order(user):
         extras.append({'id': 'shipments', 'label': 'Shipments', 'endpoint': 'shipments_page'})
+        extras.append({'id': 'racks', 'label': 'Racks', 'endpoint': 'racks_page'})
+    if user and user.get('role') == 'customer':
+        nav.append({'id': 'racks', 'label': 'Racks', 'endpoint': 'racks_page'})
+    if user and user.get('role') == 'driver':
+        nav = [{'id': 'racks', 'label': 'Racks', 'endpoint': 'rack_scan'}]
     if extras:
         placed = False
         for index, item in enumerate(nav):
@@ -1314,7 +1323,11 @@ def handle_csrf(_error):
 def index():
     user = current_user()
     if user:
-        return redirect(url_for('punch') if user.get('role') == 'shop' else url_for('dashboard'))
+        if user.get('role') == 'shop':
+            return redirect(url_for('punch'))
+        if user.get('role') == 'driver':
+            return redirect(url_for('rack_scan'))
+        return redirect(url_for('dashboard'))
     return redirect(url_for('login'))
 
 
@@ -1322,7 +1335,11 @@ def index():
 def login():
     if current_user() and request.method == 'GET':
         user = current_user()
-        return redirect(url_for('punch') if user.get('role') == 'shop' else url_for('dashboard'))
+        if user.get('role') == 'shop':
+            return redirect(url_for('punch'))
+        if user.get('role') == 'driver':
+            return redirect(url_for('rack_scan'))
+        return redirect(url_for('dashboard'))
     if request.method == 'POST':
         email = normalize_email(request.form.get('email'))
         password = request.form.get('password') or ''
@@ -1357,6 +1374,8 @@ def login():
         if user.get('role') == 'shop':
             session['long_session'] = True
             return redirect(url_for('punch'))
+        if user.get('role') == 'driver':
+            return redirect(next_url or url_for('rack_scan'))
         return redirect(next_url or url_for('dashboard'))
     return render_template('login.html', next_url=safe_next(request.args.get('next')) or '')
 
@@ -2149,6 +2168,115 @@ def shipments_page():
     return render_template('shipments.html')
 
 
+def _rack_user_ok(user, scan=False):
+    if not user or user.get('role') == 'shop':
+        return False
+    if scan:
+        return user.get('role') == 'driver' or staff_can_order(user)
+    if user.get('role') == 'customer':
+        return True
+    return staff_can_order(user)
+
+
+@app.route('/racks')
+@login_required
+def racks_page():
+    user = current_user()
+    if not _rack_user_ok(user):
+        return forbidden()
+    return render_template('racks.html', staff=staff_can_order(user))
+
+
+@app.route('/racks/scan')
+@login_required
+def rack_scan():
+    user = current_user()
+    if not _rack_user_ok(user, scan=True):
+        return forbidden()
+    return render_template('rack_scan.html')
+
+
+@app.route('/api/racks', methods=['GET'])
+@login_required
+def rack_list():
+    user = current_user()
+    if not _rack_user_ok(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    rows = rack_book.visible_rows(
+        rack_book.load_rows(), user,
+        status=clean_text(request.args.get('status'), 40),
+        customer_id=clean_text(request.args.get('customer_id'), 80),
+    )
+    return jsonify(rows)
+
+
+@app.route('/api/racks/sites', methods=['GET'])
+@login_required
+def rack_sites():
+    user = current_user()
+    if not _rack_user_ok(user, scan=True):
+        return json_error('Access denied', 403)
+    rows = [
+        {'id': customer_id, 'name': customer.get('name') or customer_id}
+        for customer_id, customer in load_customers().items()
+        if not customer.get('books_entity') and customer.get('status') != 'inactive'
+    ]
+    rows.sort(key=lambda row: row['name'].lower())
+    return jsonify(rows)
+
+
+@app.route('/api/racks/check', methods=['POST'])
+@login_required
+def rack_check():
+    user = current_user()
+    if not _rack_user_ok(user, scan=True):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    import racks as rack_book
+    return jsonify(rack_book.check_scan(
+        rack_book.load_rows(), data.get('text'),
+        clean_text(data.get('customer_id'), 80), data.get('already') or [],
+    ))
+
+
+@app.route('/api/racks/pickup', methods=['POST'])
+@login_required
+def rack_pickup():
+    user = current_user()
+    if not _rack_user_ok(user, scan=True):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    customer_id = clean_text(data.get('customer_id'), 80)
+    customer = load_customers().get(customer_id) if customer_id else None
+    if not customer:
+        return json_error('Choose the customer.', 400)
+    import racks as rack_book
+    result = rack_book.confirm_pickup(
+        data.get('racks') or [], customer_id, customer.get('name') or '',
+        clean_text(data.get('truck_plate'), 40), user,
+    )
+    if not result['moved']:
+        return json_error('None of those racks are at this customer.', 400)
+    return jsonify(result)
+
+
+@app.route('/api/racks/labels.pdf', methods=['GET'])
+@login_required
+def rack_labels():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    rows = rack_book.visible_rows(
+        rack_book.load_rows(), user,
+        status=clean_text(request.args.get('status'), 40),
+        customer_id=clean_text(request.args.get('customer_id'), 80),
+    )
+    payload = rack_book.labels_pdf(rows)
+    return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name='rack-labels.pdf')
+
+
 def _open_shipment_rows(user):
     rows = []
     for order in orders_visible_to(user, load_orders()):
@@ -2323,6 +2451,7 @@ def _canada_tax_page(customer_id, user):
         else:
             flash('Tax number saved.', 'success')
         customer = load_customers().get(customer_id) or customer
+    import racks as rack_book
     return render_template(
         'company_tax.html',
         customer_id=customer_id,
@@ -2336,6 +2465,7 @@ def _canada_tax_page(customer_id, user):
         history=tax_numbers.history_for(customer_id) if staff_view else [],
         changelog=(customer.get('changelog') or []) if staff_view else [],
         canadian=quickbooks.is_canadian(customer),
+        rack_count=rack_book.held_count(customer_id),
     )
 
 
@@ -2351,6 +2481,7 @@ def _resale_page(customer_id):
     if quickbooks.is_canadian(customer):
         return _canada_tax_page(customer_id, user)
     from storage import US_STATES
+    import racks as rack_book
     return render_template(
         'resale.html',
         customer_id=customer_id,
@@ -2359,6 +2490,7 @@ def _resale_page(customer_id):
         can_review=_can_review_resale(user),
         states=US_STATES,
         warning=(resale.warnings_for({customer_id: customer}) or [{}])[0].get('text', ''),
+        rack_count=rack_book.held_count(customer_id),
     )
 
 
@@ -3000,12 +3132,17 @@ def get_customers():
         if not customer:
             return jsonify([])
         row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        import racks as rack_book
+        row['rack_count'] = rack_book.held_count(customer_id)
         return jsonify([row])
+    import racks as rack_book
+    rack_rows = rack_book.load_rows()
     rows = []
     for customer_id, customer in customers.items():
         if customer.get('books_entity'):
             continue
         row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        row['rack_count'] = rack_book.held_count(customer_id, rack_rows)
         row['price_addon_percent'] = _percent(customer.get('price_addon_percent'), 1000)
         rows.append(row)
     rows.sort(key=lambda row: row['name'].lower())
@@ -6944,6 +7081,8 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
     error = _close_shipment_billing(order, user)
     if error:
         return None, error
+    import racks as rack_book
+    rack_book.receive_shipment(order, shipment, user)
     return order, None
 
 
@@ -7006,6 +7145,7 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         'current': True,
         'number': parsed.get('number') or '',
         'rack': parsed.get('rack') or '',
+        'rack_name': parsed.get('rack_name') or '',
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -7050,6 +7190,10 @@ def _attach_packing_list(order, parsed, user, filename, stored):
             'new': progress['status_label'] or 'Not packed',
         })
     _stamp_log(order, user, changes)
+    import racks as rack_book
+    rack_book.note_packing_return(
+        parsed.get('rack') or '', parsed.get('number') or '', parsed.get('rack_name') or '', user,
+    )
     return order, progress, unmatched
 
 
@@ -9184,7 +9328,22 @@ def _shop_gate():
     return redirect(url_for('punch'))
 
 
+def _driver_gate():
+    user = current_user()
+    if not user or user.get('role') != 'driver':
+        return None
+    if request.endpoint in {
+        'rack_scan', 'rack_check', 'rack_pickup', 'rack_sites', 'logout',
+        'web_manifest', 'service_worker', 'static', 'change_password',
+    }:
+        return None
+    if wants_json():
+        return json_error('Access denied', 403)
+    return redirect(url_for('rack_scan'))
+
+
 app.before_request(_shop_gate)
+app.before_request(_driver_gate)
 
 
 @app.route('/manifest.webmanifest')
