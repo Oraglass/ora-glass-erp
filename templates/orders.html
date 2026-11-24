@@ -273,7 +273,8 @@ function packingBlock(order) {
     const unmatched = STAFF && (list.unmatched || []).length
       ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
       : '';
-    return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.rack || list.id) + '</h4>'
+    const remove = STAFF ? ' <button type="button" class="btn small secondary" data-remove-packing="' + esc(list.id) + '">Remove / reassign</button>' : '';
+    return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.rack || list.id) + remove + '</h4>'
       + '<p class="note">' + esc(list.date || '') + (list.rack ? ' · ' + esc(list.rack) : '') + file + '</p>'
       + unmatched
       + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Pcs packed</th></tr></thead><tbody>' + (lines || '<tr><td colspan="5">No matched pieces</td></tr>') + '</tbody></table>';
@@ -284,8 +285,10 @@ function packingBlock(order) {
     ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
   const invoiceCustomer = STAFF && order.invoice_state === 'ready'
     ? '<button type="button" class="btn" id="invoice-customer">Invoice customer</button>' : '';
+  const prints = '<a class="btn secondary" id="print-packing-list" href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists.pdf">Print Packing List</a>'
+    + '<a class="btn secondary" id="print-backorder" href="/api/orders/' + encodeURIComponent(order.id) + '/backorder.pdf">Print Back Ordered List</a>';
   return '<div id="order-packing"><h3 style="color:#333;font-size:16px;margin-top:16px">Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
-    + '<div class="actions">' + shipPacked + invoiceCustomer + '</div>'
+    + '<div class="actions">' + prints + shipPacked + invoiceCustomer + '</div>'
     + '<p class="note" id="packing-totals">Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + ' · BO ' + esc(totals.bo || 0) + '</p>'
     + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
     + listBlocks + historyBlock + '</div>';
@@ -400,6 +403,16 @@ function renderDetail(order) {
   if (edit) edit.addEventListener('click', () => openEditor(order));
   const unapprove = document.getElementById('unapprove-order');
   if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to Ora Glass review and the production Excel stays locked until it is approved again.'));
+  document.querySelectorAll('[data-remove-packing]').forEach(button => {
+    button.addEventListener('click', async () => {
+      if (!window.confirm('Remove this packing list from the order and recalculate what is packed?')) return;
+      const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + button.getAttribute('data-remove-packing'), {method: 'DELETE'});
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(payload.error || 'Could not remove the packing list'); return; }
+      renderDetail(payload);
+      load();
+    });
+  });
   const shipPacked = document.getElementById('ship-packed');
   if (shipPacked) shipPacked.addEventListener('click', async () => {
     const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/ship-packed', {
@@ -734,10 +747,13 @@ function renderPackingReview(payload) {
   if (!box) return;
   const saved = (payload.saved || []).map(row => '<p class="note">Saved on ' + esc(row.company) + ' / ' + esc(row.project) + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · BO ' + esc((row.totals || {}).bo) + ((row.unmatched || []).length ? ' · Unmatched serials: ' + (row.unmatched || []).map(item => esc(item.serial == null ? 'none' : item.serial)).join(', ') : '') + '</p>').join('');
   const review = (payload.review || []).map(row => {
-    const choices = (row.choices || row.candidates || []).map(order => '<option value="' + esc(order.id) + '">' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
+    const orders = row.customer_locked ? (row.choices || []) : (row.orders || []);
+    const choices = orders.map(order => '<option value="' + esc(order.id) + '" data-customer="' + esc(order.customer_id) + '"' + (row.customer_locked ? '' : ' hidden') + '>' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
+    const customers = (row.customers || []).map(customer => '<option value="' + esc(customer.id) + '">' + esc(customer.name) + '</option>').join('');
+    const customerPick = row.customer_locked ? '' : '<select data-customer="' + esc(row.id) + '" aria-label="Customer for ' + esc(row.filename || 'packing list') + '"><option value="">Choose a customer</option>' + customers + '</select>';
     return '<div class="note" style="margin-top:8px"><strong>' + esc(row.filename || 'Packing list') + '</strong> · ' + esc(row.message || '')
-      + '<div class="filters"><select data-inbox="' + esc(row.id) + '" aria-label="Order for ' + esc(row.filename || 'packing list') + '">' + (choices || '<option value="">Choose an order</option>') + '</select>'
-      + '<input data-inbox-order="' + esc(row.id) + '" type="number" min="1" placeholder="Order id" aria-label="Order id for ' + esc(row.filename || 'packing list') + '">'
+      + '<div class="filters">' + customerPick
+      + '<select data-inbox="' + esc(row.id) + '" aria-label="Order for ' + esc(row.filename || 'packing list') + '">' + (choices || '<option value="">Choose an order</option>') + '</select>'
       + '<button type="button" class="btn small" data-assign="' + esc(row.id) + '">Save on this order</button></div></div>';
   }).join('');
   box.innerHTML = saved + review;
@@ -782,17 +798,28 @@ if (packingForm) {
     await load();
     renderPackingReview(payload);
   });
+  document.getElementById('packing-review').addEventListener('change', event => {
+    const customer = event.target.closest('[data-customer]');
+    if (!customer) return;
+    const select = document.querySelector('[data-inbox="' + customer.getAttribute('data-customer') + '"]');
+    if (!select) return;
+    Array.from(select.options).forEach(option => {
+      if (!option.value) return;
+      option.hidden = option.getAttribute('data-customer') !== customer.value;
+    });
+    select.value = '';
+  });
   document.getElementById('packing-review').addEventListener('click', async event => {
     const button = event.target.closest('[data-assign]');
     if (!button) return;
     const inboxId = button.getAttribute('data-assign');
     const select = document.querySelector('[data-inbox="' + inboxId + '"]');
-    const typed = document.querySelector('[data-inbox-order="' + inboxId + '"]');
-    const orderId = (typed && typed.value) || (select && select.value);
+    const customer = document.querySelector('[data-customer="' + inboxId + '"]');
+    const orderId = select && select.value;
     if (!orderId) { alert('Choose the order this packing list belongs to.'); return; }
     const res = await fetch('/api/packing-inbox/' + inboxId + '/assign', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({order_id: Number(orderId)})
+      body: JSON.stringify({order_id: Number(orderId), customer_id: customer ? customer.value : ''})
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) { alert(payload.error || 'Could not save the packing list'); return; }

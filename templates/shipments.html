@@ -25,7 +25,7 @@ summary a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container">
 <h2 style="color:#333;margin-bottom:8px">Open shipments / backorders</h2>
-<p class="note">Back-ordered items, one row each, grouped by order. The columns match the production Excel. BO quantity is the number of pieces not yet shipped.</p>
+<p class="note">Packed pieces that are ready to ship, and pieces that are ordered but not packed yet. BO is what is still not packed. Ready to ship is packed minus what has already shipped.</p>
 <div class="actions">
 <a class="btn" href="/api/shipments/open.xlsx">Export Excel</a>
 <a class="btn secondary" href="/api/shipments/open.pdf">Export PDF</a>
@@ -40,26 +40,38 @@ function render(rows) {
   const box = document.getElementById('backorders');
   if (!rows.length) { box.innerHTML = '<div class="card"><p class="note">Nothing is waiting to ship.</p></div>'; return; }
   box.innerHTML = rows.map(order => {
-    const lines = (order.lines || []).filter(line => line.bo_qty || line.remaining).map(line => '<tr>'
+    const lines = (order.lines || []).map(line => '<tr>'
       + '<td>' + esc(line.serial) + '</td>'
       + '<td>' + esc(line.floor_code || '') + '</td>'
-      + '<td>' + esc(line.product_id || '') + '</td>'
       + '<td>' + esc(line.name) + '</td>'
-      + '<td class="num">' + Number(line.unit_price || 0).toFixed(2) + '</td>'
-      + '<td class="num">' + esc(line.width_mm) + '</td>'
-      + '<td class="num">' + esc(line.height_mm) + '</td>'
-      + '<td class="num">' + esc(line.width_in) + '</td>'
-      + '<td class="num">' + esc(line.height_in) + '</td>'
-      + '<td class="num">' + esc(line.bo_qty != null ? line.bo_qty : line.remaining) + '</td>'
-      + '<td>' + esc(line.remarks || '') + '</td></tr>').join('');
+      + '<td>' + esc(line.size || '') + '</td>'
+      + '<td class="num">' + esc(line.packed || 0) + '</td>'
+      + '<td class="num">' + esc(line.shipped || 0) + '</td>'
+      + '<td class="num">' + esc(line.not_packed != null ? line.not_packed : line.bo_qty) + '</td>'
+      + '<td class="num">' + esc(line.ready_to_ship || 0) + '</td></tr>').join('');
+    const ship = Number(order.ready_to_ship) > 0 ? '<button type="button" class="btn" data-ship="' + esc(order.id) + '">Ship packed pieces</button>' : '';
     return '<details class="card" open><summary><a href="/orders/' + esc(order.id) + '">Order ' + esc(order.id) + '</a> · ' + esc(order.company) + ' · ' + esc(order.project || '') + '</summary>'
-      + '<table><thead><tr><th>Serial Number</th><th>Floor Code</th><th>Product ID</th><th>Product Name</th><th class="num">Unit Price</th><th class="num">Width(mm)</th><th class="num">Height(mm)</th><th class="num">Width(In)</th><th class="num">Height(In)</th><th class="num">BO quantity</th><th>Remarks</th></tr></thead><tbody>'
+      + ship
+      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Packed</th><th class="num">Shipped</th><th class="num">BO</th><th class="num">Ready to ship</th></tr></thead><tbody>'
       + lines + '</tbody></table></details>';
   }).join('');
+  box.querySelectorAll('[data-ship]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const res = await fetch('/api/orders/' + encodeURIComponent(button.getAttribute('data-ship')) + '/ship-packed', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(payload.error || 'Could not ship the packed pieces'); return; }
+      load();
+    });
+  });
 }
-fetch('/api/shipments/open').then(res => res.json()).then(render).catch(() => {
-  document.getElementById('backorders').innerHTML = '<p class="note">Could not load shipments.</p>';
-});
+async function load() {
+  const res = await fetch('/api/shipments/open');
+  if (!res.ok) { document.getElementById('backorders').innerHTML = '<p class="note">Could not load shipments.</p>'; return; }
+  render(await res.json());
+}
+load();
 </script>
 </body>
 </html>
