@@ -154,14 +154,28 @@
     body.innerHTML = lines.map((line, index) => {
       const bad = (line.errors || []).length ? ' class="line-bad"' : '';
       const price = line.total == null ? '' : (currency().toUpperCase() + ' $' + Number(line.total).toFixed(2));
-      return '<tr' + bad + ' data-index="' + index + '" data-glass="' + esc(line.glass_name || '') + '" data-spacer="' + esc(line.spacer_name || '') + '">'
+      const igu = !!line.igu;
+      const panes = Number(line.panes || (line.lites || []).length || 2);
+      const glassCell = igu
+        ? '<div class="import-note">Outer</div><select data-field="glass" aria-label="Outer glass" style="width:170px">' + optionList(IMPORT.glass, line.glass_product || '') + '</select>'
+          + (panes >= 3 ? '<div class="import-note">Middle</div><select data-field="glass3" aria-label="Middle glass" style="width:170px">' + optionList(IMPORT.glass, line.glass3_product || '') + '</select>' : '')
+          + '<div class="import-note">Inner</div><select data-field="glass2" aria-label="Inner glass" style="width:170px">' + optionList(IMPORT.glass, line.glass2_product || '') + '</select>'
+        : '<select data-field="glass" aria-label="Our glass" style="width:150px">' + optionList(IMPORT.glass, line.glass_product || '') + '</select>';
+      const gas = line.argon ? 'yes' : 'no';
+      const spacerCell = igu
+        ? '<div class="import-note">Spacer</div><select data-field="spacer" aria-label="Spacer" style="width:170px">' + optionList(IMPORT.spacers, line.spacer_product || '') + '</select>'
+          + (panes >= 3 ? '<div class="import-note">Spacer 2</div><select data-field="spacer2" aria-label="Second spacer" style="width:170px">' + optionList(IMPORT.spacers, line.spacer2_product || '') + '</select>' : '')
+          + '<div class="import-note">Gas</div><select data-field="argon" aria-label="Gas"><option value="yes"' + (gas === 'yes' ? ' selected' : '') + '>Argon</option><option value="no"' + (gas === 'no' ? ' selected' : '') + '>None</option></select>'
+          + (line.sealant ? '<div class="import-note">Sealant: ' + esc(line.sealant) + '</div>' : '')
+        : '<select data-field="spacer" aria-label="Spacer" style="width:150px">' + optionList(IMPORT.spacers, line.spacer_product || '') + '</select>';
+      return '<tr' + bad + ' data-index="' + index + '" data-igu="' + (igu ? '1' : '0') + '" data-panes="' + esc(panes) + '" data-glass="' + esc(line.glass_name || '') + '" data-spacer="' + esc(line.spacer_name || '') + '">'
         + '<td><input data-field="mark" aria-label="Floor" value="' + esc(line.mark || '') + '" style="width:5rem"></td>'
         + '<td><input data-field="width" value="' + esc(line.width == null ? '' : line.width) + '" style="width:5rem"></td>'
         + '<td><input data-field="height" value="' + esc(line.height == null ? '' : line.height) + '" style="width:5rem"></td>'
         + '<td><input data-field="qty" value="' + esc(line.qty || '') + '" style="width:4rem"></td>'
         + '<td>' + esc(line.glass_name || '') + (line.spacer_name ? '<div class="import-note">' + esc(line.spacer_name) + '</div>' : '') + '</td>'
-        + '<td><select data-field="glass" style="width:150px">' + optionList(IMPORT.glass, line.glass_product || '') + '</select></td>'
-        + '<td><select data-field="spacer" style="width:150px">' + optionList(IMPORT.spacers, line.spacer_product || '') + '</select></td>'
+        + '<td>' + glassCell + '</td>'
+        + '<td>' + spacerCell + '</td>'
         + '<td><label><input type="checkbox" data-field="irregular"' + (line.irregular_shape ? ' checked' : '') + '> Irregular</label></td>'
         + '<td class="import-price">' + esc(price) + '</td>'
         + '<td><button type="button" class="mini" data-remove="' + index + '">Remove</button><div class="import-note">' + esc((line.errors || []).join(' ')) + '</div></td></tr>';
@@ -284,7 +298,13 @@
       height: row.querySelector('[data-field=height]').value,
       qty: row.querySelector('[data-field=qty]').value,
       glass_product: row.querySelector('[data-field=glass]').value,
+      glass2_product: (row.querySelector('[data-field=glass2]') || {}).value || '',
+      glass3_product: (row.querySelector('[data-field=glass3]') || {}).value || '',
       spacer_product: row.querySelector('[data-field=spacer]').value,
+      spacer2_product: (row.querySelector('[data-field=spacer2]') || {}).value || '',
+      argon: (row.querySelector('[data-field=argon]') || {}).value || '',
+      igu: row.getAttribute('data-igu') === '1',
+      panes: Number(row.getAttribute('data-panes') || 1),
       irregular_shape: row.querySelector('[data-field=irregular]').checked,
       glass_name: row.getAttribute('data-glass') || '',
       spacer_name: row.getAttribute('data-spacer') || ''

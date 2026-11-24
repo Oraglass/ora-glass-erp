@@ -432,6 +432,10 @@ def _token_product(source, thickness, names):
             hits.append(name)
     if len(hits) == 1:
         return hits[0]
+    wanted = ' '.join(tokens)
+    exact = [name for name in hits if _phrase(name) == wanted]
+    if len(exact) == 1:
+        return exact[0]
     return ''
 
 
@@ -472,6 +476,106 @@ def match_glass(source, thickness, names, aliases):
     if text in _CLEAR:
         return _clear_product(thickness, names)
     return _token_product(source, thickness, names)
+
+
+def parse_igu_description(text):
+    """Split a plus-joined IGU name. A plain glass name returns None.
+
+    '28 - 4mmSolarban60+20mmSuperSpacer with Argon(Polysulfide)+4mmSolarCoat'
+    is two 4 mm lites, a 20 mm SuperSpacer, and argon. A triple pane is
+    glass, spacer, glass, spacer, glass. The leading overall millimetres
+    are not a lite.
+    """
+    raw = _collapse(text)
+    if not raw or '+' not in raw:
+        return None
+    from production import makeup_from_product_name
+    makeup = makeup_from_product_name(raw)
+    if not makeup or makeup.count('+') < 2:
+        return None
+    parts = [part for part in makeup.split('+') if part]
+    if len(parts) < 3 or len(parts) % 2 == 0:
+        return None
+    parsed = []
+    for part in parts:
+        match = re.match(r'(\d+(?:\.\d+)?)\s*mm\s*(.+)$', part, re.IGNORECASE)
+        if not match:
+            return None
+        body = _collapse(match.group(2))
+        if not body:
+            return None
+        parsed.append((int(float(match.group(1))), body))
+    lites = []
+    spacers = []
+    argon = False
+    tempered = False
+    for index, (mm, body) in enumerate(parsed):
+        if index % 2 == 0:
+            if re.search(r'\btempered\b', body, re.IGNORECASE):
+                tempered = True
+            source = _lite_source(re.sub(r'\btempered\b', ' ', body, flags=re.IGNORECASE))
+            if not source:
+                return None
+            lites.append({'thickness_mm': mm, 'source': source})
+            continue
+        if re.search(r'\bargon\b', body, re.IGNORECASE):
+            argon = True
+        note = ''
+        found = re.search(r'\(([^)]+)\)', body)
+        if found:
+            note = _collapse(found.group(1))
+        source = re.split(r'\bwith\b', body, maxsplit=1, flags=re.IGNORECASE)[0]
+        source = _collapse(re.sub(r'\([^)]*\)', ' ', source))
+        if not source:
+            return None
+        spacers.append({'gap_mm': mm, 'source': source, 'sealant_note': note})
+    if len(lites) < 2 or len(spacers) != len(lites) - 1:
+        return None
+    return {'lites': lites, 'spacers': spacers, 'argon': argon, 'tempered': tempered}
+
+
+def match_igu_description(text, glass_names, spacer_names, aliases=None):
+    """Map an IGU description with the same glass and spacer matchers as a Glass/Panel Order."""
+    parsed = parse_igu_description(text)
+    if not parsed:
+        return None
+    aliases = aliases or {}
+    glass_aliases = aliases.get('glass') or {}
+    spacer_aliases = aliases.get('spacer') or {}
+    lites = []
+    spacers = []
+    warnings = []
+    for lite in parsed['lites']:
+        product = match_glass(lite['source'], lite['thickness_mm'], glass_names, glass_aliases)
+        lites.append({
+            'source': lite['source'],
+            'thickness_mm': lite['thickness_mm'],
+            'product': product,
+            'temper': 'yes' if parsed['tempered'] else 'n/a',
+            'matched': bool(product),
+        })
+        if not product:
+            warnings.append(f'Choose an ERP glass for {lite["source"]}.')
+    for spacer in parsed['spacers']:
+        product = match_spacer(spacer['source'], spacer['gap_mm'], spacer_names, spacer_aliases)
+        spacers.append({
+            'source': spacer['source'],
+            'gap_mm': spacer['gap_mm'],
+            'product': product,
+            'matched': bool(product),
+            'sealant_note': spacer.get('sealant_note') or '',
+        })
+        if not product:
+            warnings.append(f'Choose an ERP spacer for {spacer["source"]} {spacer["gap_mm"]} mm.')
+    return {
+        'igu': True,
+        'argon': parsed['argon'],
+        'tempered': parsed['tempered'],
+        'lites': lites,
+        'spacers': spacers,
+        'warnings': warnings,
+        'matched': not warnings,
+    }
 
 
 def match_spacer(source, gap, names, aliases):
