@@ -5287,6 +5287,11 @@ def filter_order_rows(orders):
             continue
         if status in STATUS_LABELS and order_status(order) != status:
             continue
+        invoice_state = clean_text(request.args.get('invoice'), 20).lower()
+        if invoice_state == 'not_invoiced' and order.get('invoice_state') == 'invoiced':
+            continue
+        if invoice_state in {'ready', 'invoiced'} and order.get('invoice_state') != invoice_state:
+            continue
         rows.append(order)
     if sort in {'total_asc', 'total_desc'}:
         rows.sort(key=lambda row: (order_total_value(row), row.get('id') or 0), reverse=sort == 'total_desc')
@@ -5485,9 +5490,52 @@ def _packing_lines_for(order, entry):
     return lines
 
 
+def _intercompany_invoiced_by_serial(order):
+    linked = {
+        row.get('id') for row in load_invoices()
+        if row.get('order_id') == order.get('id') and row.get('kind') == 'intercompany' and not row.get('voided')
+    }
+    totals = {}
+    for shipment in order.get('shipments') or []:
+        if shipment.get('invoice_id') not in linked:
+            continue
+        for line in shipment.get('lines') or []:
+            try:
+                serial = int(line.get('serial'))
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                continue
+            totals[serial] = totals.get(serial, 0) + qty
+    return totals
+
+
+def _customer_invoice_state(order):
+    """Separate from packing status. Ready means the whole order can be billed to the customer."""
+    import packing
+    import shipments as shipment_rules
+    has_customer_invoice = any(
+        row.get('order_id') == order.get('id') and not row.get('voided')
+        and row.get('kind') != 'intercompany' and document_type(row) == 'invoice'
+        for row in load_invoices()
+    ) or bool(order.get('customer_invoice_id'))
+    if has_customer_invoice:
+        return 'invoiced', 'Invoiced'
+    if order.get('packing_lists'):
+        complete = packing.packing_progress(order)['status'] == 'packed'
+    else:
+        complete = shipment_rules.shipment_progress(order)['fully_shipped']
+    if complete:
+        return 'ready', 'Ready to invoice'
+    return 'not_invoiced', 'Not invoiced'
+
+
 def _packing_payload(order, staff):
     import packing
     progress = packing.packing_progress(order)
+    billed = _intercompany_invoiced_by_serial(order)
+    for row in progress['serials']:
+        row['intercompany_invoiced'] = billed.get(row['serial'], 0)
+        row['shipped'] = shipments.shipped_qty(order, row['index'])
     current = []
     history = []
     for entry in order.get('packing_lists') or []:
@@ -5597,6 +5645,9 @@ def order_for_viewer(order, user, with_coverage=False):
     base['pst_number'] = order.get('pst_number') or ''
     base['qst_number'] = order.get('qst_number') or ''
     base.update(_packing_payload(order, user.get('role') != 'customer'))
+    invoice_state, invoice_label = _customer_invoice_state(order)
+    base['invoice_state'] = invoice_state
+    base['invoice_state_label'] = invoice_label
     if not _order_prices_visible(user):
         items = []
         for item in _shown_order_items(order.get('items') or []):
@@ -6828,8 +6879,21 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
     quantities, error = shipments.parse_quantities(data.get('lines'), order)
     if error:
         return None, error
+    serial_by_index = {row['index']: row['serial'] for row in shipments.glass_rows(order)}
+    if order.get('packing_lists'):
+        packed_left = shipments.packed_quantities_to_ship(order)
+        for index, qty in quantities.items():
+            allowed = packed_left.get(index, 0)
+            if qty > allowed:
+                return None, (
+                    f'Only {allowed} packed pieces of serial {serial_by_index.get(index)} '
+                    'are left to ship. The customer invoice is not required.'
+                )
     weight = clean_text(data.get('weight'), 40)
-    preview_lines = [{'index': index, 'qty': qty} for index, qty in quantities.items()]
+    preview_lines = [
+        {'index': index, 'qty': qty, 'serial': serial_by_index.get(index)}
+        for index, qty in quantities.items()
+    ]
     preview = {'lines': preview_lines, 'invoiced': False}
     probe = dict(order)
     probe['shipments'] = list(order.get('shipments') or []) + [preview]
@@ -7007,6 +7071,15 @@ def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
                 'po': order.get('po') or '',
             }
             for order in candidates
+        ],
+        'choices': [
+            {
+                'id': order.get('id'),
+                'company': order.get('company') or '',
+                'project': order.get('project') or '',
+                'po': order.get('po') or '',
+            }
+            for order in (candidates or load_orders())
         ],
     }
     rows.append(record)
@@ -7264,6 +7337,106 @@ def create_shipment(order_id):
     if error:
         return json_error(error, 400)
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/ship-packed', methods=['POST'])
+@module_required('orders')
+def ship_packed_pieces(order_id):
+    """Ship every packed piece that has not gone out yet. The customer invoice is not created."""
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to record a shipment.', 403)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    quantities = shipments.packed_quantities_to_ship(visible)
+    if not quantities:
+        return json_error('Nothing packed is left to ship.', 400)
+    number = clean_text(data.get('number'), 40) or f"SHIP-{order_id}-{len(visible.get('shipments') or []) + 1}"
+    shipped_on = clean_text(data.get('date'), 10) or datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat()
+    payload = {
+        'number': number,
+        'date': shipped_on,
+        'rack': data.get('rack') or '',
+        'weight': data.get('weight') or '',
+        'lines': [{'index': index, 'qty': qty} for index, qty in quantities.items()],
+    }
+
+    def mutator(order):
+        updated = dict(order)
+        updated['shipments'] = list(order.get('shipments') or [])
+        recorded, error = _record_shipment(updated, user, payload)
+        if error:
+            return None, error
+        _stamp_log(recorded, user, [{
+            'field': 'shipment',
+            'action': 'added',
+            'new': f'{number} · packed pieces only',
+        }])
+        return recorded, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/customer-invoice', methods=['POST'])
+@module_required('orders')
+def invoice_completed_order(order_id):
+    """Bill the customer for the whole order once every serial is packed."""
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+
+    def mutator(order):
+        state, _label = _customer_invoice_state(order)
+        if state == 'invoiced':
+            return None, 'This order already has a customer invoice.'
+        if state != 'ready':
+            return None, 'The customer invoice waits until every serial is packed.'
+        updated = dict(order)
+        number, error = _issue_final_customer_invoice(updated, user)
+        if error:
+            return None, error
+        _stamp_log(updated, user, [{
+            'field': 'customer invoice',
+            'action': 'added',
+            'new': number or updated.get('customer_invoice_number') or updated.get('invoice_number') or '',
+        }])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    if saved.get('customer_invoice_id'):
+        _qbo('push_document_id', saved.get('customer_invoice_id'))
+    elif saved.get('invoice_id'):
+        _qbo('push_document_id', saved.get('invoice_id'))
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/shipments/<int:shipment_id>/pdf', methods=['GET'])
+@module_required('orders')
+def download_shipment_pdf(order_id, shipment_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    shipment = next((row for row in (order or {}).get('shipments') or [] if row.get('id') == shipment_id), None)
+    if not order or not shipment:
+        return json_error('Not found', 404)
+    payload = shipments.shipment_pdf_bytes(order, shipment)
+    return send_file(
+        BytesIO(payload), mimetype='application/pdf', as_attachment=True,
+        download_name=f"{shipment.get('number') or 'shipment'}.pdf",
+    )
 
 
 @app.route('/api/orders/<int:order_id>/shipments/<int:shipment_id>/packing-list', methods=['GET'])
@@ -7560,25 +7733,52 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
     from billing import apply_additional_discount
     summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     if mode == 'canada':
+        glass = [row for row in items if row.get('kind') not in {'irregular_surcharge', 'dwg_creation'}]
+        glass_value = round(sum(money(row.get('total')) for row in glass), 2)
+        glass_summary, error = price_summary(
+            glass, _scaled_discount(order, glass_value, full_value), [],
+        )
+        if error:
+            return None, error
+        glass_summary = apply_additional_discount(glass_summary, order.get('additional_discount_percent'))
         invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
         currency = str(order.get('currency') or 'usd').lower()
         if currency == 'cad':
             rate, fx_date = _erp_fx(invoice_day)
-            usd_total = quickbooks.cad_to_usd(summary.get('total'), rate)
+            usd_total = quickbooks.cad_to_usd(glass_summary.get('total'), rate)
         else:
             rate, fx_date = 1.0, invoice_day.isoformat()
-            usd_total = money(summary.get('total'))
+            usd_total = money(glass_summary.get('total'))
         books = load_customers().get(_canada_books_customer()) or {}
         books['id'] = _canada_books_customer()
-        intercompany_items = [{
-            'name': 'Intercompany glass',
-            'description': f"Shipment {shipment.get('number') or ''}".strip(),
-            'pcs': shipment.get('pcs') or 1,
-            'qty': shipment.get('pcs') or 1,
-            'unit_price': usd_total,
-            'price_pc': usd_total,
-            'total': usd_total,
-        }]
+        intercompany_items = []
+        remaining = usd_total
+        for index, item in enumerate(glass):
+            try:
+                pcs = int(item.get('pcs') or 0)
+            except (TypeError, ValueError):
+                pcs = 0
+            if index == len(glass) - 1:
+                share = remaining
+            elif currency == 'cad':
+                share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
+            else:
+                share = min(money(item.get('total')), remaining)
+            remaining = round(remaining - share, 2)
+            each = round(share / pcs, 2) if pcs else share
+            intercompany_items.append({
+                'name': item.get('name') or 'Glass',
+                'description': item.get('description') or item.get('name') or 'Glass',
+                'serial': item.get('serial'),
+                'spec': item.get('spec'),
+                'pcs': pcs,
+                'qty': pcs,
+                'sqf': item.get('sqf') or 0,
+                'unit_price': each,
+                'price_pc': each,
+                'total': share,
+            })
+        summary = glass_summary
         document = _invoice_for_items(
             order, user, books, intercompany_items,
             {'discount': {'type': 'percent', 'value': 0}, 'discount_amount': 0, 'extra_charges': [],
@@ -7655,6 +7855,10 @@ def _close_shipment_billing(order, user):
             shipment['invoiced'] = True
         return None
     if mode == 'canada':
+        if order.get('packing_lists'):
+            import packing
+            if packing.packing_progress(order)['status'] != 'packed':
+                return None
         _number, error = _issue_final_customer_invoice(order, user)
         return error
     return None

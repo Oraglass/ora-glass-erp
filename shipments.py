@@ -156,6 +156,7 @@ def shipment_lines(order, quantities):
     built = []
     pcs = 0
     sqf = 0.0
+    serials = {row['index']: row['serial'] for row in glass_rows(order)}
     for index, qty in sorted(quantities.items()):
         source = items[index]
         each = money(source.get('price_pc') if source.get('price_pc') not in (None, '') else source.get('unit_price'))
@@ -173,6 +174,7 @@ def shipment_lines(order, quantities):
             'unit_price': each,
             'total': total,
             'source_index': index,
+            'serial': serials.get(index),
         })
         pcs += qty
         sqf += area * qty
@@ -276,6 +278,75 @@ def shipment_progress(order):
 BACKORDER_HEADERS = ('Order', 'Customer') + tuple(
     'BO quantity' if name == 'Quantity' else name for name in production.PRODUCTION_HEADERS
 )
+
+
+def packed_quantities_to_ship(order):
+    """Packed pieces that have not shipped yet. Empty when the order has no packing lists."""
+    import packing
+    if not (order or {}).get('packing_lists'):
+        return {}
+    chosen = {}
+    for row in packing.packing_progress(order)['serials']:
+        left = max(0, int(row.get('packed') or 0) - shipped_qty(order, row['index']))
+        left = min(left, remaining_qty(order, row['index']))
+        if left > 0:
+            chosen[row['index']] = left
+    return chosen
+
+
+def shipment_pdf_bytes(order, shipment):
+    """A packing slip for one shipment. Goods leave Ora Glass Inc, so the slip has no GST."""
+    import io
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table
+    from xml.sax.saxutils import escape
+    from documents import _styles, header_address_block, piece_size_text
+    styles = _styles()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+                            topMargin=0.55 * inch, bottomMargin=0.5 * inch)
+    story = [
+        Paragraph('Shipment / Packing slip<br/>' + header_address_block({'issuer': 'us', 'kind': 'shipment', 'currency': 'usd'}), styles['title']),
+        Spacer(1, 8),
+        Paragraph(
+            f"<b>Shipment:</b> {escape(shipment.get('number') or '')}"
+            f"&nbsp;&nbsp;<b>Date:</b> {escape(shipment.get('date') or '')}"
+            f"&nbsp;&nbsp;<b>Rack:</b> {escape(shipment.get('rack') or '')}",
+            styles['small'],
+        ),
+        Paragraph(
+            f"<b>Sold To:</b> {escape(order.get('company') or '')}"
+            f"&nbsp;&nbsp;<b>Job:</b> {escape(order.get('project') or '')}",
+            styles['small'],
+        ),
+        Spacer(1, 8),
+    ]
+    catalog = {}
+    try:
+        import packing
+        catalog = {row['index']: row for row in packing.serial_catalog(order)}
+    except Exception:
+        catalog = {}
+    data = [['Serial', 'Floor', 'Product', 'Size', 'Pcs']]
+    for line in shipment.get('lines') or []:
+        info = catalog.get(line.get('index')) or {}
+        item = ((order.get('items') or [None])[line.get('index')] if line.get('index') is not None else None) or {}
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        size = info.get('size') or piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit'))
+        data.append([
+            str(line.get('serial') or info.get('serial') or ''),
+            info.get('floor') or item.get('floor') or '',
+            info.get('product') or item.get('name') or '',
+            size,
+            str(line.get('qty') or line.get('pcs') or ''),
+        ])
+    table = Table(data, colWidths=[0.7 * inch, 0.9 * inch, 2.4 * inch, 2.4 * inch, 0.7 * inch])
+    story.append(table)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"<b>Total pcs:</b> {escape(str(shipment.get('pcs') or ''))}", styles['small']))
+    doc.build(story)
+    return buffer.getvalue()
 
 
 def backorder_table(orders):
