@@ -98,6 +98,10 @@ def test_editing_a_draft_keeps_the_quote_number_and_reprices_at_its_tier(client)
     assert b'Save quote' in calculator.data
     assert b'Editing quote #' in calculator.data
     assert b'Duplicate line' in calculator.data
+    assert b'class="igu-name"' in calculator.data
+    assert b'class="line-actions"' in calculator.data
+    assert b'Update line' in calculator.data
+    assert b'openSizeIndex === i' in calculator.data
     assert b'aria-label="Quantity"' in calculator.data
 
     created = client.post(f'/api/quotes/{quote_id}/order', json={'customer_id': 'harbor-glass'})
