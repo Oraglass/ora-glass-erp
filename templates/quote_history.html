@@ -226,6 +226,9 @@ function renderQuotes(rows) {
     let action = '<button type="button" data-id="' + esc(quote.id) + '" class="pdf-btn" style="background:#C41E3A;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">PDF</button>';
     action += ' <button type="button" class="copy-btn" data-action="copy" data-id="' + esc(quote.id) + '" style="background:#fff;color:#333;border:1px solid #ccc;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Copy quote</button>';
     action += ' <button type="button" class="detail-btn" data-action="detail" data-id="' + esc(quote.id) + '" style="background:#fff;color:#333;border:1px solid #ccc;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Details</button>';
+    if (quote.can_edit) {
+      action += ' <button type="button" class="edit-btn" data-action="edit" data-id="' + esc(quote.id) + '" style="background:#fff;color:#333;border:1px solid #ccc;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Edit quote</button>';
+    }
     if (CAN_ORDER && !quote.order_id) {
       if (quote.type === 'size') {
         action += ' <button type="button" class="order-btn" data-action="order" data-id="' + esc(quote.id) + '" style="background:#fff;color:#C41E3A;border:1px solid #C41E3A;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px">Order for production</button>';
@@ -474,7 +477,13 @@ function showQuoteDetail(quote) {
   {% else %}
   const rateNote = '';
   {% endif %}
+  const edits = (quote.revisions || []).map(rev => '<li>Revision ' + esc(rev.number) + ' · ' + esc(rev.user) + ' · ' + esc(rev.at) + (rev.note ? ' · ' + esc(rev.note) : '') + '</li>').join('');
+  const editNote = quote.edited_at ? '<p class="note" id="quote-edited">Edited ' + esc(quote.edited_at) + ' by ' + esc(quote.edited_by || '') + '</p>' : '';
+  const editLink = quote.can_edit ? '<p><a href="/quotes?edit=' + encodeURIComponent(quote.id) + '">Edit quote</a></p>' : '';
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quoteNumber(quote)) + '</h3>'
+    + editNote
+    + editLink
+    + (edits ? '<div class="log" id="quote-revisions"><h3 style="color:#333;font-size:14px">Revision history</h3><ul>' + edits + '</ul></div>' : '')
     + tax
     + (quote.source ? '<p class="note">Source: ' + esc(quote.source) + '</p>' : '')
     + (quote.po ? '<p class="note">PO / reference: ' + esc(quote.po) + '</p>' : '')
@@ -597,6 +606,10 @@ document.getElementById('quote-list').addEventListener('click', async (event) =>
   }
   if (button.dataset.action === 'detail') {
     showQuoteDetail(catalog.find(item => String(item.id) === String(button.getAttribute('data-id'))));
+    return;
+  }
+  if (button.dataset.action === 'edit') {
+    window.location = '/quotes?edit=' + encodeURIComponent(button.getAttribute('data-id'));
     return;
   }
   if (button.dataset.action === 'order') {

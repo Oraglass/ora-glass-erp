@@ -132,6 +132,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
+<button type="button" class="btn" id="save-sqf-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
 </div>
 </div>
 <div id="tab-size" class="tab-content">
@@ -184,6 +185,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
 <p id="company-discount-line" hidden style="margin:12px 0 0;font-size:14px;font-weight:600"></p>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
+<button type="button" class="btn" id="save-size-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
 </div>
 </div>
 {% include 'partials/import_order.html' %}
@@ -192,6 +194,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <script id="sealant-match-data" type="application/json">{{ sealant_matches|tojson }}</script>
 <script>
 const SEALANT_MATCH = JSON.parse(document.getElementById('sealant-match-data').textContent);
+window.SEALANT_MATCH = SEALANT_MATCH;
 function showTab(id, button){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');var target=button;if(!target&&typeof event!=='undefined'&&event.target&&event.target.classList&&event.target.classList.contains('tab'))target=event.target;if(!target)target=document.querySelector('.tab[data-tab="'+id+'"]');if(target)target.classList.add('active');if(id==='orgadata'&&typeof window.resetOrgadataImport==='function')window.resetOrgadataImport()}
 let selectedCurrency=null;let erpRate={{ erp_rate }};let quoteItems=[];let sizeQuoteItems=[];const IRREGULAR_RATE={{ irregular_rate }};
 function selectCurrency(c){if(selectedCurrency&&selectedCurrency!==c&&(quoteItems.length>0||sizeQuoteItems.length>0)){if(!confirm('Changing currency will clear your quote. Continue?'))return;quoteItems=[];sizeQuoteItems=[];renderQuoteList();renderSizeQuoteList()}selectedCurrency=c;document.getElementById('btn-usd').classList.remove('selected');document.getElementById('btn-cad').classList.remove('selected');document.getElementById('btn-'+c).classList.add('selected');const mult=c==='cad'?erpRate:1;const curr=c.toUpperCase();if(document.getElementById('result').style.display==='block'){const base=parseFloat(document.getElementById('price').textContent)/(c==='usd'?erpRate:1);document.getElementById('price').textContent=(base*mult).toFixed(2);document.getElementById('curr-label').textContent=curr}if(document.getElementById('size-result').style.display==='block'){const baseSqf=parseFloat(document.getElementById('s-price-sqf').textContent)/(c==='usd'?erpRate:1);const basePc=parseFloat(document.getElementById('s-price').textContent)/(c==='usd'?erpRate:1);const pcs=parseInt(document.getElementById('pcs').textContent)||1;document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(baseSqf*mult).toFixed(2);document.getElementById('s-price').textContent=(basePc*mult).toFixed(2);document.getElementById('s-total').textContent=(basePc*mult*pcs).toFixed(2)}calculate();calcSize()}
@@ -241,7 +244,7 @@ function dualSize(width, height, unit) {
   }
   return inchFraction(wmm / 25.4) + ' x ' + inchFraction(hmm / 25.4) + ' in (' + displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm)';
 }
-function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;sizeQuoteItems.push({name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}});const added=sizeQuoteItems[sizeQuoteItems.length-1];added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;renderSizeQuoteList()}
+function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
 function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem('+i+')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
 function removeSizeItem(i){sizeQuoteItems.splice(i,1);renderSizeQuoteList()}
@@ -300,7 +303,7 @@ function remarkControls(item, index, listName) {
 const renderSqfQuoteList = renderQuoteList;
 renderQuoteList = function () {
   const tbody = document.getElementById('quote-body');
-  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
+  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSqfItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
   document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
@@ -311,9 +314,10 @@ renderSizeQuoteList = function () {
     const checked = item.irregular_shape ? ' checked' : '';
     const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
     const pcs = Number(item.pcs) || 1;
-    const shownSize = (item.spec && item.spec.width) ? dualSize(item.spec.width, item.spec.height, item.spec.unit) : item.size;
+    const unit = item.spec && item.spec.unit === 'mm' ? 'mm' : 'in';
+    const shownSize = (item.spec && item.spec.width) ? '<input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit : quoteEsc(item.size || '');
     const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-floor"></td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
-    return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + quoteEsc(shownSize) + '</td><td class="col-qty">' + quoteEsc(item.pcs) + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
+    return '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + specEditor(item, i) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Edit line" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSizeItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
   const taxBase = sizeQuoteItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
@@ -323,6 +327,9 @@ renderSizeQuoteList = function () {
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
 let draftQuoteId = null;
+let draftType = null;
+let draftTier = '';
+let editingQuote = false;
 let draftExtras = [];
 let draftShipProvince = '';
 let draftTaxLabel = '';
@@ -376,17 +383,23 @@ function editSizeItem(index) {
   showTab('size');
   const set = (id, value) => {
     const field = document.getElementById(id);
-    if (field && value != null && value !== '') field.value = value;
+    if (!field || value == null) return;
+    field.value = value;
   };
   set('s-glass1', spec.glass1);
+  if (typeof updateTemper === 'function') updateTemper('s-glass1', 's-temper1');
   set('s-temper1', spec.temper1 || 'n/a');
   set('s-spacer1', spec.spacer1 || '');
+  if (typeof updateSealant === 'function') updateSealant('s-spacer1', 's-sealant1');
   set('s-sealant1', spec.sealant1 || '');
   set('s-glass2', spec.glass2 || 'n/a');
+  if (typeof updateTemper === 'function') updateTemper('s-glass2', 's-temper2');
   set('s-temper2', spec.temper2 || 'n/a');
   set('s-spacer2', spec.spacer2 || '');
+  if (typeof updateSealant === 'function') updateSealant('s-spacer2', 's-sealant2');
   set('s-sealant2', spec.sealant2 || '');
   set('s-glass3', spec.glass3 || 'n/a');
+  if (typeof updateTemper === 'function') updateTemper('s-glass3', 's-temper3');
   set('s-temper3', spec.temper3 || 'n/a');
   set('width', spec.width);
   set('height', spec.height);
@@ -395,9 +408,201 @@ function editSizeItem(index) {
   set('unit', lastUnit);
   const irregular = document.getElementById('s-irregular');
   if (irregular) irregular.checked = !!item.irregular_shape;
-  sizeQuoteItems.splice(index, 1);
-  renderSizeQuoteList();
+  window.editingLineMeta = {
+    floor: item.floor || item.mark || '',
+    remarks: item.remarks || '',
+    remarkOpen: !!(item.remarks),
+    source_filename: item.source_filename || '',
+    line_number: item.line_number || '',
+    line_id: item.line_id || ''
+  };
+  window.replacingLineIndex = index;
+  const addButton = document.querySelector('#tab-size button[onclick="addSizeToQuote()"]');
+  if (addButton) addButton.textContent = 'Update line';
   if (typeof calcSize === 'function') calcSize();
+}
+function placeSizeLine(item) {
+  if (item && item.spec && typeof iguNameFromSpec === 'function') {
+    const rebuilt = iguNameFromSpec(item.spec);
+    if (rebuilt) item.name = rebuilt;
+  }
+  if (window.replacingLineIndex != null && window.replacingLineIndex >= 0 && window.replacingLineIndex < sizeQuoteItems.length) {
+    sizeQuoteItems.splice(window.replacingLineIndex, 1, item);
+  } else {
+    sizeQuoteItems.push(item);
+  }
+  window.replacingLineIndex = null;
+  window.editingLineMeta = null;
+  const addButton = document.querySelector('#tab-size button[onclick="addSizeToQuote()"]');
+  if (addButton) addButton.textContent = 'Add to Quote';
+}
+function nextLineNumber(list) {
+  return (list || []).reduce((max, item) => Math.max(max, parseInt(item && item.line_number, 10) || 0), 0) + 1;
+}
+function duplicateSizeItem(index) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  const copy = JSON.parse(JSON.stringify(item));
+  delete copy.line_id;
+  delete copy.drawing;
+  delete copy.drawing_file;
+  delete copy.drawing_stored;
+  copy.line_number = nextLineNumber(sizeQuoteItems);
+  sizeQuoteItems.splice(index + 1, 0, copy);
+  renderSizeQuoteList();
+  repriceSizeItem(index + 1);
+}
+function duplicateSqfItem(index) {
+  const item = quoteItems[index];
+  if (!item) return;
+  const copy = Object.assign({}, item);
+  delete copy.line_id;
+  delete copy.drawing;
+  copy.line_number = nextLineNumber(quoteItems);
+  quoteItems.splice(index + 1, 0, copy);
+  renderQuoteList();
+}
+function setSizeQty(index, value) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  item.pcs = Math.max(1, parseInt(value, 10) || 1);
+  if (item.spec) item.spec.pcs = item.pcs;
+  repriceSizeItem(index);
+}
+function setSizeDimension(index, key, value) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  item.spec = Object.assign({}, item.spec || {});
+  item.spec[key] = value;
+  const unit = item.spec.unit === 'mm' ? 'mm' : 'in';
+  item.size = (item.spec.width || '') + ' x ' + (item.spec.height || '') + ' ' + unit;
+  repriceSizeItem(index);
+}
+async function repriceSizeItem(index) {
+  const item = sizeQuoteItems[index];
+  const spec = item && item.spec;
+  if (!item || !spec || !selectedCurrency) return;
+  const width = parseFloat(spec.width) || 0;
+  const height = parseFloat(spec.height) || 0;
+  const pcs = parseInt(item.pcs, 10) || 1;
+  const unit = spec.unit === 'mm' ? 'mm' : 'in';
+  const real = unit === 'mm' ? (width * height) / 92903.04 : (width * height) / 144;
+  const tier = document.getElementById('s-tier');
+  const tierId = (typeof editingQuote !== 'undefined' && editingQuote && typeof draftTier !== 'undefined' && draftTier) ? draftTier : (tier ? tier.value : '');
+  const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    glass1: spec.glass1 || '', glass2: spec.glass2 || '', glass3: spec.glass3 || '',
+    temper1: spec.temper1 || 'n/a', temper2: spec.temper2 || 'n/a', temper3: spec.temper3 || 'n/a',
+    spacer1: spec.spacer1 || '', spacer2: spec.spacer2 || '',
+    sealant1: spec.sealant1 || '', sealant2: spec.sealant2 || '',
+    tier: tierId, fx_rate: erpRate
+  })});
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || result.price_sqf == null) return;
+  const mult = selectedCurrency === 'cad' ? erpRate : 1;
+  const minimum = (draftQuoteId && window.draftMinimumSqf != null) ? Number(window.draftMinimumSqf) : Number(result.minimum_sqf) || 0;
+  const charged = Math.max(real, minimum);
+  item.real_sqf = Number(real.toFixed(2));
+  item.sqf = charged.toFixed(2);
+  item.minimum_sqf = minimum;
+  item.priceSqf = (Number(result.price_sqf) * mult).toFixed(2);
+  const each = Number(result.price_sqf) * charged * mult;
+  item.pricePc = each.toFixed(2);
+  item.total = (each * pcs).toFixed(2);
+  item.pcs = pcs;
+  const rebuilt = iguNameFromSpec(item.spec);
+  if (rebuilt) item.name = rebuilt;
+  renderSizeQuoteList();
+}
+function iguNameFromSpec(spec) {
+  if (!spec) return '';
+  function cleanGlass(name, temper) {
+    if (!name || name === 'n/a') return '';
+    let text = String(name).replace(' Jumbo', '').replace(' Large', '').replace(' / sqf', '');
+    const found = text.match(/(\d+)mm/);
+    if (!found) return '';
+    text = text.replace(/\d+mm/, '').trim();
+    return found[1] + 'mm' + text + (temper === 'yes' ? ' Tempered' : '');
+  }
+  function cleanSpacer(name, sealant) {
+    if (!name || name === 'n/a') return '';
+    const found = String(name).match(/(\d+)mm/);
+    if (!found) return '';
+    const type = String(name).toLowerCase().indexOf('techno') >= 0 ? 'Technoform' : 'SuperSpacer';
+    const seal = sealant && String(sealant).toLowerCase().indexOf('silicone') >= 0 ? 'Silicone' : 'Polysulfide';
+    return found[1] + 'mm' + type + ' with Argon(' + seal + ')';
+  }
+  const parts = [];
+  let total = 0;
+  [1, 2, 3].forEach(index => {
+    const glass = spec['glass' + index];
+    const token = cleanGlass(glass, spec['temper' + index]);
+    if (!token) return;
+    parts.push(token);
+    total += parseInt(String(glass).match(/(\d+)mm/)[1], 10);
+    const spacer = spec['spacer' + index];
+    if (spacer && spacer !== 'n/a' && index < 3) {
+      const gap = cleanSpacer(spacer, spec['sealant' + index]);
+      if (gap) {
+        parts.push(gap);
+        total += parseInt(String(spacer).match(/(\d+)mm/)[1], 10);
+      }
+    }
+  });
+  if (!parts.length) return '';
+  const inches = total / 25.4;
+  let whole = Math.floor(inches);
+  let numer = Math.round((inches - whole) * 16);
+  if (numer >= 16) { whole += Math.floor(numer / 16); numer = numer % 16; }
+  let frac = String(whole);
+  if (numer > 0) {
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const divisor = gcd(numer, 16);
+    const bit = (numer / divisor) + '/' + (16 / divisor);
+    frac = whole ? (whole + ' ' + bit) : bit;
+  }
+  return total + ' (' + frac + '") - ' + parts.join('+');
+}
+function catalogOptions(sourceId, selected) {
+  const source = document.getElementById(sourceId);
+  if (!source) return '';
+  return Array.from(source.options).map(opt => '<option value="' + quoteEsc(opt.value) + '"' + (opt.value === (selected || '') ? ' selected' : '') + '>' + quoteEsc(opt.textContent) + '</option>').join('');
+}
+function sealantChoices(spacer, selected) {
+  const match = (window.SEALANT_MATCH || {})[spacer] || {};
+  const names = match.options && match.options.length ? match.options : [];
+  const chosen = selected && names.indexOf(selected) >= 0 ? selected : (match.selected || selected || '');
+  const options = names.map(name => '<option value="' + quoteEsc(name) + '"' + (name === chosen ? ' selected' : '') + '>' + quoteEsc(name) + '</option>').join('');
+  return {html: options || '<option value="' + quoteEsc(chosen) + '">' + quoteEsc(chosen || 'Choose a sealant') + '</option>', chosen: chosen, message: match.message || ''};
+}
+function specEditor(item, index) {
+  const spec = item.spec || {};
+  function lite(number) {
+    const glassSource = number === 1 ? 's-glass1' : 's-glass2';
+    const glass = spec['glass' + number] || (number === 1 ? '' : 'n/a');
+    const temper = spec['temper' + number] === 'yes' ? 'yes' : 'n/a';
+    return '<div class="note">Lite ' + number + ' <select aria-label="Glass ' + number + '" onchange="setLineSpec(' + index + ', \'glass' + number + '\', this.value)">' + catalogOptions(glassSource, glass) + '</select> <select aria-label="Tempering ' + number + '" onchange="setLineSpec(' + index + ', \'temper' + number + '\', this.value)"><option value="n/a"' + (temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (temper === 'yes' ? ' selected' : '') + '>Tempered</option></select></div>';
+  }
+  function gap(number) {
+    const spacer = spec['spacer' + number] || '';
+    const choice = sealantChoices(spacer, spec['sealant' + number] || '');
+    return '<div class="note">Spacer ' + number + ' <select aria-label="Spacer ' + number + '" onchange="setLineSpec(' + index + ', \'spacer' + number + '\', this.value)">' + catalogOptions('s-spacer1', spacer) + '</select> Sealant <select aria-label="Sealant ' + number + '" onchange="setLineSpec(' + index + ', \'sealant' + number + '\', this.value)">' + choice.html + '</select>' + (choice.message ? '<span class="note"> ' + quoteEsc(choice.message) + '</span>' : '') + '</div>';
+  }
+  if (!item.spec) return '';
+  return lite(1) + gap(1) + lite(2) + gap(2) + lite(3);
+}
+function setLineSpec(index, field, value) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  item.spec = Object.assign({}, item.spec || {});
+  item.spec[field] = value;
+  if (field === 'spacer1' || field === 'spacer2') {
+    const sealantField = field === 'spacer1' ? 'sealant1' : 'sealant2';
+    const choice = sealantChoices(value, item.spec[sealantField]);
+    item.spec[sealantField] = choice.chosen;
+  }
+  const rebuilt = iguNameFromSpec(item.spec);
+  if (rebuilt) item.name = rebuilt;
+  repriceSizeItem(index);
 }
 function quotePayload(items, type) {
   const body = {
@@ -437,7 +642,7 @@ const saveNewSizeQuote = exportSizeQuote;
 exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
+  const items = sizeItemsForSave();
   const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
   const savedBody = await saved.json().catch(() => ({}));
   const exportBody = {items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate, type: 'size'};
@@ -460,16 +665,34 @@ function lineFromStored(item, currency, project) {
     pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
     irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate,
     remarks: item.remarks || '', floor: item.floor || item.mark || '',
-    minimum_sqf: item.minimum_sqf, real_sqf: item.real_sqf
+    minimum_sqf: item.minimum_sqf, real_sqf: item.real_sqf,
+    line_id: item.line_id || '', source_filename: item.source_filename || '', line_number: item.line_number || ''
   };
 }
+function sizeItemsForSave() {
+  return sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || '', line_id: i.line_id || '', source_filename: i.source_filename || '', line_number: i.line_number || ''}));
+}
+async function saveEditedQuote() {
+  if (!draftQuoteId || !selectedCurrency) { alert('Select currency first'); return; }
+  const type = draftType === 'size' ? 'size' : 'sqf';
+  const items = type === 'size' ? sizeItemsForSave() : quoteItems;
+  const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, type))});
+  const body = await saved.json().catch(() => ({}));
+  if (!saved.ok) { alert(body.error || 'Could not save the quote'); return; }
+  showCopyNote('Saved quote #' + body.id + '. This is the same quote number.');
+}
 async function loadCopiedQuote() {
-  const draft = new URLSearchParams(location.search).get('draft');
+  const params = new URLSearchParams(location.search);
+  const draft = params.get('edit') || params.get('draft');
   if (!draft) return;
+  editingQuote = !!params.get('edit');
   const res = await fetch('/api/quotes/' + encodeURIComponent(draft));
   if (!res.ok) return;
   const quote = await res.json();
+  if (editingQuote && !quote.can_edit) return;
   draftQuoteId = quote.id;
+  draftType = quote.type === 'size' ? 'size' : 'sqf';
+  draftTier = quote.tier || '';
   if (quote.additional_discount_percent != null) companyDiscountPercent = Number(quote.additional_discount_percent);
   const storedMinimum = (quote.items || []).find(item => item && item.minimum_sqf != null);
   if (storedMinimum) window.draftMinimumSqf = Number(storedMinimum.minimum_sqf) || 0;
@@ -479,7 +702,11 @@ async function loadCopiedQuote() {
   document.getElementById('project-name').value = quote.project || '';
   const jobAddress = document.getElementById('job-address');
   if (jobAddress) jobAddress.value = quote.job_address || '';
-  showCopyNote(quote.notes || '');
+  showCopyNote(editingQuote ? ('Editing quote #' + quote.id + '. Save keeps this quote number.') : (quote.notes || ''));
+  if (editingQuote) {
+    const saveButton = document.getElementById(draftType === 'size' ? 'save-size-quote' : 'save-sqf-quote');
+    if (saveButton) saveButton.hidden = false;
+  }
   showQuoteTaxLines(quote.tax_lines || []);
   if (quote.fx_rate) erpRate = Number(quote.fx_rate);
   selectedCurrency = quote.currency || 'usd';
@@ -623,6 +850,10 @@ if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
   lockQuoteCurrency(currency, note);
   applyCompanyMinimum();
 });
+const saveSqf = document.getElementById('save-sqf-quote');
+if (saveSqf) saveSqf.addEventListener('click', saveEditedQuote);
+const saveSize = document.getElementById('save-size-quote');
+if (saveSize) saveSize.addEventListener('click', saveEditedQuote);
 loadCopiedQuote();
 let companyDiscountPercent = {{ company_discount_percent|tojson }};
 function quoteDiscountPercent() {
