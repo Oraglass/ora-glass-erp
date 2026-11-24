@@ -7,6 +7,24 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .container{max-width:1100px;margin:20px auto;padding:0 20px}
+.detail-page{max-width:1280px}
+.detail-page,.detail-page .note,.detail-page table,.detail-page .section{font-size:14px}
+.detail-page .section{margin-top:28px}
+.detail-page .section h3{color:#333;font-size:16px;margin:0}
+.detail-page .actions{margin:10px 0}
+.detail-page .totals{max-width:none;width:100%;margin:12px 0 0}
+.detail-page .coverage{margin-top:0}
+.detail-page .clip{display:block;max-width:36rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.detail-page td.size,.detail-page th.size{white-space:nowrap}
+.detail-page .back{display:inline-block;margin:0 0 12px;font-size:14px}
+.detail-page #ship-confirm{border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:8px 0 12px;background:#fafafa}
+.detail-page .field-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:8px 0}
+.detail-page .field-row label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#333}
+.detail-page .field-row input{font-size:14px;padding:8px;border:1px solid #ddd;border-radius:4px;min-width:10rem}
+.more{position:relative;display:inline-block}
+.more>summary{list-style:none;cursor:pointer}
+.more>summary::-webkit-details-marker{display:none}
+.more-menu{position:absolute;z-index:4;left:0;top:calc(100% + 4px);background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;min-width:220px}
 .card{background:white;border-radius:8px;padding:20px}
 .filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
 .filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
@@ -53,7 +71,12 @@ a{color:#C41E3A}
 <body>
 {% set show_back = true %}
 {% include 'partials/header.html' %}
-<div class="container"><div class="card">
+<div class="container{% if focus_id is defined and focus_id %} detail-page{% endif %}">
+{% if focus_id is defined and focus_id %}<a class="back" href="/orders">← Back to orders</a>{% endif %}
+<div class="card">
+{% if focus_id is defined and focus_id %}
+<div id="order-detail"></div>
+{% else %}
 <h2 style="color:#333">Production orders</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <p class="note" id="price-note"></p>
@@ -103,6 +126,7 @@ a{color:#C41E3A}
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
 </table>
 <div id="order-detail" style="margin-top:24px"></div>
+{% endif %}
 {% if can_edit %}
 <div id="order-editor" class="editor" hidden>
 <h3 style="color:#333;margin-bottom:8px">Edit order</h3>
@@ -261,12 +285,70 @@ function describeChange(change) {
   if (change.old !== undefined) return change.field + ': ' + JSON.stringify(change.old) + ' → ' + JSON.stringify(change.new);
   return change.field + ' ' + (action || 'updated');
 }
+function displaySize(label) {
+  const text = String(label || '');
+  const match = text.match(/^(.*) in \((.*) mm\)$/);
+  if (match) return match[1] + ' in / ' + match[2] + ' mm';
+  return text;
+}
+function clipText(text, tip) {
+  const title = tip || text || '';
+  return '<span class="clip" title="' + esc(title) + '">' + esc(text || '') + '</span>';
+}
+function todayISO() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+function sectionBlock(titleHtml, buttons, summary, body) {
+  return '<section class="section"><h3>' + titleHtml + '</h3>'
+    + (buttons ? '<div class="actions">' + buttons + '</div>' : '')
+    + (summary ? '<p class="note">' + summary + '</p>' : '')
+    + (body || '')
+    + '</section>';
+}
+function racksBeingShipped(order) {
+  const ready = {};
+  (order.packing_serials || []).forEach(row => {
+    if (Number(row.packed) > Number(row.shipped || 0)) ready[String(row.serial)] = true;
+  });
+  const racks = [];
+  (order.packing_lists || []).forEach(list => {
+    const hit = (list.lines || []).some(line => ready[String(line.serial)]);
+    const rack = String(list.rack || '').trim();
+    if (hit && rack && racks.indexOf(rack) < 0) racks.push(rack);
+  });
+  return racks.join(', ');
+}
+function shipConfirmPanel(order) {
+  const ready = (order.packing_serials || []).filter(row => Number(row.packed) > Number(row.shipped || 0));
+  if (!STAFF || !ready.length) return '';
+  const rows = ready.map(row => {
+    const qty = Number(row.packed) - Number(row.shipped || 0);
+    return '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+      + '<td class="num">' + esc(qty) + '</td>'
+      + '<td class="num"><input data-ship-index="' + esc(row.index) + '" type="number" min="0" max="' + esc(qty) + '" value="' + esc(qty) + '" readonly aria-label="Ship qty for serial ' + esc(row.serial) + '"></td></tr>';
+  }).join('');
+  return '<div id="ship-confirm" hidden>'
+    + '<p class="note">Packed pieces that have not shipped. The quantities are filled in. Turn on Adjust quantities to change them.</p>'
+    + '<div class="field-row">'
+    + '<label>Shipping date<input id="ship-date" type="date" required value="' + todayISO() + '" aria-label="Shipping date"></label>'
+    + '<label>Truck plate<input id="ship-truck" type="text" aria-label="Truck plate" placeholder="Optional"></label>'
+    + '<label>Rack number<input id="ship-rack" type="text" value="' + esc(racksBeingShipped(order)) + '" aria-label="Rack number"></label>'
+    + '<label>Shipment number<input id="ship-number" type="text" aria-label="Shipment number" placeholder="Optional"></label>'
+    + '<label>Notes<input id="ship-notes" type="text" aria-label="Notes" placeholder="Optional"></label>'
+    + '</div>'
+    + '<table id="ship-lines"><thead><tr><th>Serial</th><th>Floor</th><th>Size</th><th class="num">Ready</th><th class="num">Ship qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div class="actions"><button type="button" class="btn secondary" id="adjust-qty" aria-pressed="false">Adjust quantities</button>'
+    + '<button type="button" class="btn" id="confirm-ship">Confirm</button></div></div>';
+}
 function packingBlock(order) {
   const serials = order.packing_serials || [];
   const lists = order.packing_lists || [];
   if (!serials.length && !lists.length) return '';
   const totals = order.packing_totals || {};
-  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td>' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td><td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const showShipped = (order.shipments || []).length > 0 || serials.some(row => Number(row.shipped) > 0);
+  const shippedHead = showShipped ? '<th class="num">Shipped</th>' : '';
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
   const listBlocks = lists.map(list => {
     const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
     const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
@@ -284,14 +366,17 @@ function packingBlock(order) {
   const shipPacked = STAFF && (order.packing_serials || []).some(row => Number(row.packed) > Number(row.shipped || 0))
     ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
   const invoiceCustomer = STAFF && order.invoice_state === 'ready'
-    ? '<button type="button" class="btn" id="invoice-customer">Invoice customer</button>' : '';
+    ? '<button type="button" class="btn" id="invoice-customer">Create invoice</button>' : '';
   const prints = '<a class="btn secondary" id="print-packing-list" href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists.pdf">Print Packing List</a>'
     + '<a class="btn secondary" id="print-backorder" href="/api/orders/' + encodeURIComponent(order.id) + '/backorder.pdf">Print Back Ordered List</a>';
-  return '<div id="order-packing"><h3 style="color:#333;font-size:16px;margin-top:16px">Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
+  const shippedTotal = serials.reduce((sum, row) => sum + Number(row.shipped || 0), 0);
+  const summary = 'Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + (showShipped ? ' · Shipped ' + esc(shippedTotal) : '') + ' · BO ' + esc(totals.bo || 0);
+  return '<section class="section" id="order-packing"><h3>Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
     + '<div class="actions">' + prints + shipPacked + invoiceCustomer + '</div>'
-    + '<p class="note" id="packing-totals">Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + ' · BO ' + esc(totals.bo || 0) + '</p>'
-    + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
-    + listBlocks + historyBlock + '</div>';
+    + shipConfirmPanel(order)
+    + '<p class="note" id="packing-totals">' + summary + '</p>'
+    + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th>' + shippedHead + '<th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
+    + listBlocks + historyBlock + '</section>';
 }
 function changelogBlock(order) {
   const entries = order.changelog || [];
@@ -307,32 +392,40 @@ function renderDetail(order) {
   currentOrder = order;
   const box = document.getElementById('order-detail');
   if (!order) { box.innerHTML = ''; return; }
-  const rows = (order.items || []).map(item => {
+  const serialOf = {};
+  (order.packing_serials || []).forEach(row => { serialOf[row.index] = row.serial; });
+  const rows = (order.items || []).map((item, index) => {
     const spec = item.spec || {};
-    const size = item.size_label ? esc(item.size_label) : (spec.width ? esc(spec.width) + ' x ' + esc(spec.height) + ' ' + esc(spec.unit || '') : '');
+    const rawSize = item.size_label || (spec.width ? spec.width + ' x ' + spec.height + ' ' + (spec.unit || '') : '');
+    const size = displaySize(rawSize);
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
-    const remark = item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '';
-    const idNote = STAFF && item.production_note ? '<br><span class="note">' + esc(item.production_note) + '</span>' : '';
-    const left = (order.shipping && order.shipping.lines || []).find(line => line.index === (order.items || []).indexOf(item) && line.remaining);
-    const remain = left ? '<br><span class="note">' + esc(left.remaining) + ' still to ship</span>' : '';
     const floor = item.floor || item.mark || item.location || '';
     const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
     const each = Number(item.sqf);
     const qty = Number(item.pcs);
     const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
-    return '<tr><td>' + esc(item.name) + (size ? '<br><span class="note">' + size + '</span>' : '') + remark + idNote + remain + '</td><td>' + esc(charge ? '' : floor) + '</td><td class="num">' + esc(lineSqf) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td>' + prices + '</tr>';
+    const tip = [item.name, item.remarks, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
+    const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : '');
+    return '<tr><td class="num">' + esc(serial) + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
-  let buttons = '';
-  if (order.can_release) buttons += '<button type="button" class="btn" id="approve-production">Approve for production</button>';
-  if (order.can_respond) buttons += '<button type="button" class="btn" id="approve-changes">Approve changes</button><button type="button" class="btn secondary" id="reject-changes">Reject with comment</button>';
-  if (CAN_STATUS && order.status === 'approved') buttons += '<button type="button" class="btn" id="mark-sent">Mark sent to production</button>';
-  if (CAN_STATUS && order.status === 'sent') buttons += '<button type="button" class="btn" id="mark-made">Mark made</button>';
-  if (CAN_STATUS && order.status === 'made') buttons += '<button type="button" class="btn" id="mark-delivered">Mark delivered</button>';
-  if (order.can_unapprove) buttons += '<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>';
-  if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) buttons += '<button type="button" class="btn secondary" id="edit-order">Edit order</button>';
-  buttons += '<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
-  if (STAFF && order.excel_ready) buttons += '<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Download production Excel</a>';
+  const primary = [];
+  const secondary = [];
+  primary.push('<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Open PDF</a>');
+  if (STAFF && order.excel_ready) primary.push('<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Production Excel</a>');
+  if (order.can_unapprove) primary.push('<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>');
+  if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
+  if (order.can_release) secondary.push('<button type="button" class="btn" id="approve-production">Approve for production</button>');
+  if (order.can_respond) {
+    secondary.push('<button type="button" class="btn" id="approve-changes">Approve changes</button>');
+    secondary.push('<button type="button" class="btn secondary" id="reject-changes">Reject with comment</button>');
+  }
+  if (CAN_STATUS && order.status === 'approved') secondary.push('<button type="button" class="btn" id="mark-sent">Mark sent to production</button>');
+  if (CAN_STATUS && order.status === 'sent') secondary.push('<button type="button" class="btn" id="mark-made">Mark made</button>');
+  if (CAN_STATUS && order.status === 'made') secondary.push('<button type="button" class="btn" id="mark-delivered">Mark delivered</button>');
+  let buttons = primary.join('');
+  if (secondary.length > 1) buttons += '<details class="more"><summary class="btn secondary">More</summary><div class="more-menu">' + secondary.join('') + '</div></details>';
+  else buttons += secondary.join('');
   if (STAFF && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
@@ -355,32 +448,50 @@ function renderDetail(order) {
       + '<input type="file" required aria-label="Replace drawing for ' + esc(drawing.filename || 'line') + '">'
       + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
   }).join('');
-  const drawingBlock = drawings ? '<div id="order-drawings"><h3 style="color:#333;font-size:16px;margin-top:12px">Drawings</h3>' + drawings + '</div>' : '';
+  const drawingBlock = drawings ? sectionBlock('Drawings', '', 'Shop drawings attached to this order.', drawings) : '';
   const shipping = order.shipping || {};
-  const shipHead = '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>';
-  const shipRows = (order.shipments || []).map(shipment => '<div class="note">Shipment ' + esc(shipment.number) + ' · ' + esc(shipment.date) + ' · ' + esc(shipment.pcs) + ' pcs · ' + esc(shipment.sqf) + ' sqf' + (shipment.rack ? ' · ' + esc(shipment.rack) : '') + (shipment.invoice_number ? ' · Invoice ' + esc(shipment.invoice_number) : '') + ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/pdf">Shipment PDF</a>' + (shipment.packing_list ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/packing-list">Packing list</a>' : '') + '</div>').join('');
-  const glass = (shipping.lines || []).filter(line => line.remaining).map(line => {
-    return '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.name) + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.remaining) + '</td><td><input data-ship-index="' + esc(line.index) + '" type="number" min="0" max="' + esc(line.remaining) + '" value="0" aria-label="Ship quantity for serial ' + esc(line.serial) + '"></td></tr>';
+  const shipRows = (order.shipments || []).map(shipment => {
+    const pdf = '<a href="/api/orders/' + encodeURIComponent(order.id) + '/shipments/' + encodeURIComponent(shipment.id) + '/pdf">PDF</a>';
+    const invoiceLink = shipment.invoice_id ? '<a href="/invoices/' + esc(shipment.invoice_id) + '">' + esc(shipment.invoice_number || 'Invoice') + '</a>' : '';
+    return '<tr><td>' + esc(shipment.number) + '</td><td>' + esc(shipment.date) + '</td><td>' + esc(shipment.truck_plate || '') + '</td><td>' + esc(shipment.rack || '') + '</td><td class="num">' + esc(shipment.pcs) + '</td><td>' + esc(shipment.notes || '') + '</td><td>' + pdf + '</td><td>' + invoiceLink + '</td></tr>';
   }).join('');
-  const glassTable = glass
-    ? '<table id="ship-lines"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Left</th><th>Ship qty</th></tr></thead><tbody>' + glass + '</tbody></table>'
-    : '<p class="note">Nothing left to ship.</p>';
+  const shipTable = shipRows
+    ? '<table id="shipment-history"><thead><tr><th>Shipment #</th><th>Date</th><th>Truck</th><th>Rack</th><th class="num">Pcs</th><th>Notes</th><th>PDF</th><th>Invoice</th></tr></thead><tbody>' + shipRows + '</tbody></table>'
+    : '<p class="note">No shipments recorded yet.</p>';
   const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
     ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
-  const shipForm = STAFF ? '<div id="shipment-entry"><h3 style="color:#333;font-size:16px">Shipments</h3>' + shipHead + shipRows + partial
-    + '<form id="shipment-form"><div class="edit-grid" style="margin-top:8px"><input id="ship-number" placeholder="Shipment number" aria-label="Shipment number" required><input id="ship-date" type="date" aria-label="Shipment date" required><input id="ship-rack" placeholder="Rack code or remarks" aria-label="Rack code"><input id="ship-weight" placeholder="Weight" aria-label="Weight"></div>'
-    + glassTable + '<label class="note">Packing list PDF <input id="ship-file" type="file" accept="application/pdf"></label> <button type="button" class="btn secondary" id="match-packing">Match packing list</button> <button type="submit" class="btn">Record shipment</button><div id="packing-review"></div></form></div>' : shipHead + shipRows;
-  const summary = changeSummary(order);
-  box.innerHTML = '<h3 style="color:#333">Order ' + esc(order.id) + ' ' + badge(order) + '</h3>'
-    + summary
-    + '<div class="actions">' + buttons + '</div>'
-    + '<p class="note">Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier') + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.</p>'
-    + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
-    + notes + jobText + jobForm + tax + (documents ? documentNote : invoice)
-    + shipForm
+  const shipmentSection = sectionBlock('Shipments ' + '<span class="badge">' + esc((shipping.label || 'Not shipped')) + '</span>', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>' + shipTable + partial);
+  const lineCount = (order.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation').length;
+  const lineSummary = lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
+  const linesTable = '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
+  const when = order.approved_at_display || order.approved_at || '';
+  const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.tier_label || order.tier || '', (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
+  const headerSummary = headerBits.map(esc).join(' · ')
+    + (PRICES ? ' · ' + money(order, order.total) : '')
+    + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
+    + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
+  const headerExtra = ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
+    + notes + jobText + jobForm + tax;
+  const invoiceRows = (order.documents || []).map(doc => {
+    const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
+    const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
+    const fx = {% if show_fx_rate %}(doc.fx_rate ? 'FXUSDCAD ' + esc(doc.fx_rate) : ''){% else %}''{% endif %};
+    return '<tr><td><a href="/invoices/' + esc(doc.id) + '">' + esc(doc.number) + '</a></td><td>' + esc(kind) + '</td><td>' + esc(company) + '</td><td>' + esc(String(doc.currency || '').toUpperCase()) + '</td><td>' + fx + '</td><td>' + (doc.voided ? 'Void' : '') + (doc.qbo_warning ? ' <span class="error">' + esc(doc.qbo_warning) + '</span>' : '') + '</td></tr>';
+  }).join('');
+  const invoiceBody = invoiceRows
+    ? '<table><thead><tr><th>Number</th><th>Kind</th><th>Company</th><th>Currency</th><th>FX</th><th></th></tr></thead><tbody>' + invoiceRows + '</tbody></table>'
+    : (invoice || '<p class="note">No invoices yet.</p>');
+  const coverage = coverageBlock(order);
+  const coverageSection = coverage ? sectionBlock('Credit coverage', '', 'How this order sits against the customer credit limit and prepayments.', coverage) : '';
+  box.innerHTML = sectionBlock('Order ' + esc(order.id) + ' ' + badge(order) + ' ' + invoiceBadge(order), buttons, headerSummary, headerExtra)
+    + changeSummary(order)
+    + sectionBlock('Order lines', '', lineSummary, linesTable)
+    + packingBlock(order)
+    + shipmentSection
+    + sectionBlock('Invoices ' + invoiceBadge(order), '', 'Customer and intercompany invoices for this order.', invoiceBody)
     + drawingBlock
-    + '<table><thead><tr><th>Item</th><th>Floor</th><th class="num">Total sqf</th><th class="num">Qty</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>'
-    + totalsTable(order) + coverageBlock(order) + packingBlock(order) + changelogBlock(order);
+    + coverageSection
+    + changelogBlock(order);
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
   const delivered = document.getElementById('mark-delivered');
@@ -414,9 +525,35 @@ function renderDetail(order) {
     });
   });
   const shipPacked = document.getElementById('ship-packed');
-  if (shipPacked) shipPacked.addEventListener('click', async () => {
+  const shipPanel = document.getElementById('ship-confirm');
+  if (shipPacked && shipPanel) shipPacked.addEventListener('click', () => {
+    shipPanel.hidden = false;
+    shipPanel.scrollIntoView({block: 'nearest'});
+  });
+  const adjustQty = document.getElementById('adjust-qty');
+  if (adjustQty && shipPanel) adjustQty.addEventListener('click', () => {
+    const on = adjustQty.getAttribute('aria-pressed') !== 'true';
+    adjustQty.setAttribute('aria-pressed', on ? 'true' : 'false');
+    shipPanel.querySelectorAll('[data-ship-index]').forEach(input => { input.readOnly = !on; });
+  });
+  const confirmShip = document.getElementById('confirm-ship');
+  if (confirmShip && shipPanel) confirmShip.addEventListener('click', async () => {
+    const date = document.getElementById('ship-date').value;
+    if (!date) { alert('Enter the shipping date.'); return; }
+    const lines = [];
+    shipPanel.querySelectorAll('[data-ship-index]').forEach(input => {
+      lines.push({index: Number(input.getAttribute('data-ship-index')), qty: Number(input.value || 0)});
+    });
     const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/ship-packed', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        date: date,
+        number: document.getElementById('ship-number').value,
+        rack: document.getElementById('ship-rack').value,
+        truck_plate: document.getElementById('ship-truck').value,
+        notes: document.getElementById('ship-notes').value,
+        lines: lines
+      })
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) { alert(payload.error || 'Could not ship the packed pieces'); return; }
@@ -452,57 +589,6 @@ function renderDetail(order) {
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) { alert(payload.error || 'Could not change invoicing'); partialBox.checked = !partialBox.checked; return; }
     renderDetail(payload);
-  });
-  const matchPacking = document.getElementById('match-packing');
-  if (matchPacking) matchPacking.addEventListener('click', async () => {
-    const file = document.getElementById('ship-file').files[0];
-    if (!file) { alert('Choose a packing-list PDF.'); return; }
-    const body = new FormData();
-    body.append('packing_list', file);
-    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/shipments/preview', {method: 'POST', body});
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(payload.error || 'Could not read the packing list'); return; }
-    if (payload.number) document.getElementById('ship-number').value = payload.number;
-    if (payload.date) document.getElementById('ship-date').value = payload.date;
-    if (payload.rack) document.getElementById('ship-rack').value = payload.rack;
-    shipmentForm.querySelectorAll('[data-ship-index]').forEach(input => { input.value = '0'; });
-    (payload.lines || []).forEach(line => {
-      const input = shipmentForm.querySelector('[data-ship-index="' + line.index + '"]');
-      if (input) input.value = line.qty;
-    });
-    const warnings = (payload.warnings || []).map(text => '<p class="note" style="color:#9a3412">' + esc(text) + '</p>').join('');
-    const matched = (payload.matched || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor_code || '') + '</td><td>' + esc(line.product_id || '') + '</td><td>' + esc(line.name) + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td><td class="num">' + esc(line.bo_after) + '</td><td>' + (line.over ? 'More than the order has left' : 'Matched') + '</td></tr>').join('');
-    const unmatched = (payload.unmatched || []).map(line => '<tr style="color:#9f1239"><td>' + esc(line.qty) + '</td><td>' + esc(line.floor) + '</td><td>' + esc(line.size || ((line.width_mm || '') + ' x ' + (line.height_mm || '') + ' mm')) + '</td><td>' + esc(line.description) + '</td><td>Not on this order</td></tr>').join('');
-    document.getElementById('packing-review').innerHTML = '<div id="packing-review-body" style="margin-top:12px">'
-      + '<h3 style="color:#333;font-size:16px">Review packing list</h3>'
-      + '<p class="note">Check the match, then record the shipment. Nothing is saved until you do.</p>'
-      + warnings
-      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product ID</th><th>Product</th><th>Size</th><th class="num">Shipped</th><th class="num">BO after</th><th></th></tr></thead><tbody>'
-      + (matched || '<tr><td colspan="8">No packing-list rows matched this order.</td></tr>')
-      + '</tbody></table>'
-      + (unmatched ? '<table><thead><tr><th>Qty</th><th>Floor</th><th>Size</th><th>Description</th><th></th></tr></thead><tbody>' + unmatched + '</tbody></table>' : '')
-      + '</div>';
-  });
-  const shipmentForm = document.getElementById('shipment-form');
-  if (shipmentForm) shipmentForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const lines = [];
-    shipmentForm.querySelectorAll('[data-ship-index]').forEach(input => {
-      lines.push({index: Number(input.getAttribute('data-ship-index')), qty: Number(input.value || 0)});
-    });
-    const body = new FormData();
-    body.append('number', document.getElementById('ship-number').value);
-    body.append('date', document.getElementById('ship-date').value);
-    body.append('rack', document.getElementById('ship-rack').value);
-    body.append('weight', document.getElementById('ship-weight').value);
-    body.append('lines', JSON.stringify(lines));
-    const file = document.getElementById('ship-file').files[0];
-    if (file) body.append('packing_list', file);
-    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/shipments', {method: 'POST', body});
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(payload.error || 'Could not record the shipment'); return; }
-    renderDetail(payload);
-    load();
   });
   box.querySelectorAll('.replace-drawing').forEach(form => {
     form.addEventListener('submit', async (event) => {
@@ -735,6 +821,7 @@ async function loadCustomers() {
   if (!res.ok) return;
   const rows = await res.json();
   const select = document.getElementById('order-customer');
+  if (!select) return;
   const current = select.value;
   select.innerHTML = '<option value="">All customers</option>' + rows.map(row => {
     const label = row.name;
@@ -771,18 +858,22 @@ async function loadPacking() {
   if ((body.inbox || []).length) renderPackingReview({saved: [], review: body.inbox});
 }
 async function load() {
+  if (FOCUS) {
+    const detail = await fetch('/api/orders/' + FOCUS);
+    if (detail.status === 401) { window.location = '/login'; return; }
+    if (detail.ok) renderDetail(await detail.json());
+    return;
+  }
   const res = await fetch('/api/orders?' + orderQuery().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   const orders = await res.json();
-  document.getElementById('price-note').textContent = PRICES ? '' : 'Prices are not shown on this account.';
+  const priceNote = document.getElementById('price-note');
+  if (priceNote) priceNote.textContent = PRICES ? '' : 'Prices are not shown on this account.';
   render(orders);
   await loadPacking();
-  if (FOCUS && !currentOrder) {
-    const detail = await fetch('/api/orders/' + FOCUS);
-    if (detail.ok) renderDetail(await detail.json());
-  }
 }
-document.getElementById('order-filter').addEventListener('click', load);
+const orderFilter = document.getElementById('order-filter');
+if (orderFilter) orderFilter.addEventListener('click', load);
 const packingForm = document.getElementById('packing-upload');
 if (packingForm) {
   packingForm.addEventListener('submit', async event => {
@@ -828,7 +919,8 @@ if (packingForm) {
 }
 const orderSort = document.getElementById('order-sort');
 if (orderSort) orderSort.addEventListener('change', load);
-document.getElementById('order-status').addEventListener('change', load);
+const orderStatus = document.getElementById('order-status');
+if (orderStatus) orderStatus.addEventListener('change', load);
 const orderInvoice = document.getElementById('order-invoice');
 if (orderInvoice) orderInvoice.addEventListener('change', load);
 const editor = document.getElementById('order-editor');

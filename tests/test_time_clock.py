@@ -80,7 +80,8 @@ def test_punch_flow_blocks_a_second_punch_in_and_keeps_location_optional(client)
     assert again.status_code == 409
     assert b'Already punched in' in again.data
 
-    start = datetime(2026, 11, 10, 16, 0, tzinfo=timezone.utc)
+    anchor = pacific_date(datetime.now(timezone.utc)) - timedelta(days=2)
+    start = datetime(anchor.year, anchor.month, anchor.day, 16, 0, tzinfo=timezone.utc)
     _set_time(1, start)
     started = client.post('/api/punches', json={'action': 'break_start'})
     assert started.status_code == 200
@@ -93,7 +94,7 @@ def test_punch_flow_blocks_a_second_punch_in_and_keeps_location_optional(client)
     _set_time(load_punches()[-1]['id'], start + timedelta(hours=3))
     me = client.get('/api/punches/me').get_json()
     assert me['status'] == 'out'
-    worked = next(day for day in me['days'] if day['date'] == '2026-11-10')
+    worked = next(day for day in me['days'] if day['date'] == anchor.isoformat())
     assert worked['hours'] == 2.0
     assert worked['missing_out'] is False
     assert client.get('/time-clock').status_code in (302, 403)
@@ -210,7 +211,7 @@ def test_manager_corrections_keep_the_original_and_exports(client):
     assert bad.status_code == 400
     corrected = client.post(f'/api/time-clock/{punch_id}/correct', json={
         'reason': 'Clock was fast',
-        'at_pacific': '2026-11-10T08:05',
+        'at_pacific': f'{(pacific_date(datetime.now(timezone.utc)) - timedelta(days=2)).isoformat()}T08:05',
         'note': 'Adjusted',
     })
     assert corrected.status_code == 200
@@ -225,11 +226,12 @@ def test_manager_corrections_keep_the_original_and_exports(client):
     sheet = client.get('/api/time-clock?user=casey@oraglass.us').get_json()
     assert sheet['punches'][0]['user'] == 'casey@oraglass.us'
     assert sheet['days'][0]['missing_out'] is True
-    exported = client.get('/api/time-clock/export.csv?user=casey@oraglass.us')
+    recent = (pacific_date(datetime.now(timezone.utc)) - timedelta(days=2)).isoformat()
+    exported = client.get(f'/api/time-clock/export.csv?user=casey@oraglass.us&from={recent}&to={recent}')
     assert exported.status_code == 200
     assert b'casey@oraglass.us' in exported.data
     assert b'missing_punch_out' in exported.data
-    pdf = client.get('/api/time-clock/timesheet.pdf?user=casey@oraglass.us&from=2026-11-01&to=2026-11-30')
+    pdf = client.get(f'/api/time-clock/timesheet.pdf?user=casey@oraglass.us&from={recent}&to={recent}')
     assert pdf.status_code == 200
     assert pdf.data.startswith(b'%PDF')
     assert b'Lynden' in pdf.data or b'Casey' in pdf.data or len(pdf.data) > 1000
