@@ -30,6 +30,21 @@ def _pcs(item):
 
 
 def glass_rows(order):
+    if (order or {}).get('legacy'):
+        import packing
+        return [{
+            'index': row['index'],
+            'serial': row['serial'],
+            'name': row['product'] or 'Glass',
+            'pcs': row['ordered'],
+            'sqf_each': 0,
+            'price_pc': 0,
+            'price_sqf': 0,
+            'mark': row['floor'] or '',
+            'product_id': '',
+            'remarks': '',
+            'spec': {},
+        } for row in packing.serial_catalog(order)]
     rows = []
     for index, item in enumerate((order or {}).get('items') or []):
         if not is_glass_line(item):
@@ -94,7 +109,11 @@ def invoiced_qty(order, index):
 
 
 def remaining_qty(order, index):
-    item = ((order or {}).get('items') or [None])[index] if index < len((order or {}).get('items') or []) else None
+    if (order or {}).get('legacy'):
+        ordered = next((row['pcs'] for row in glass_rows(order) if row['index'] == index), 0)
+        return max(0, ordered - shipped_qty(order, index))
+    items = (order or {}).get('items') or []
+    item = items[index] if 0 <= index < len(items) else None
     if not item:
         return 0
     return max(0, _pcs(item) - shipped_qty(order, index))
@@ -126,6 +145,7 @@ def parse_quantities(raw, order):
         return None, 'Enter a quantity for at least one line.'
     chosen = {}
     items = (order or {}).get('items') or []
+    legacy = {row['index']: row for row in glass_rows(order)} if (order or {}).get('legacy') else {}
     for row in raw:
         if not isinstance(row, dict):
             return None, 'Each shipped line needs a quantity.'
@@ -136,13 +156,16 @@ def parse_quantities(raw, order):
             return None, 'Quantity must be a whole number.'
         if qty <= 0:
             continue
-        if index < 0 or index >= len(items) or not is_glass_line(items[index]):
+        if (order or {}).get('legacy'):
+            if index not in legacy:
+                return None, 'That line is not on this order.'
+        elif index < 0 or index >= len(items) or not is_glass_line(items[index]):
             return None, 'That line is not on this order.'
         if index in chosen:
             return None, 'A line can only be entered once on a shipment.'
         left = remaining_qty(order, index)
         if qty > left:
-            name = items[index].get('name') or 'Glass'
+            name = legacy[index]['name'] if (order or {}).get('legacy') else (items[index].get('name') or 'Glass')
             return None, f'Only {left} of {name} are left to ship.'
         chosen[index] = qty
     if not chosen:
@@ -151,6 +174,28 @@ def parse_quantities(raw, order):
 
 
 def shipment_lines(order, quantities):
+    if (order or {}).get('legacy'):
+        catalog = {row['index']: row for row in glass_rows(order)}
+        built = []
+        pcs = 0
+        for index, qty in sorted(quantities.items()):
+            info = catalog.get(index) or {}
+            built.append({
+                'name': info.get('name') or 'Glass',
+                'description': info.get('name') or 'Glass',
+                'spec': {},
+                'pcs': qty,
+                'qty': qty,
+                'sqf': 0,
+                'price_sqf': 0,
+                'price_pc': 0,
+                'unit_price': 0,
+                'total': 0,
+                'source_index': index,
+                'serial': info.get('serial'),
+            })
+            pcs += qty
+        return built, pcs, 0.0
     items = order.get('items') or []
     links = _linked_charges(items)
     built = []
@@ -222,6 +267,29 @@ def shipment_progress(order):
         shipped_value += row['price_pc'] * shipped
         invoiced_value += row['price_pc'] * invoiced
         remaining_sqf += row['sqf_each'] * left
+        if (order or {}).get('legacy') and (left or left_invoice):
+            import packing
+            info = next((item for item in packing.serial_catalog(order) if item['index'] == index), {})
+            lines.append({
+                'index': index,
+                'serial': row['serial'],
+                'floor_code': info.get('floor') or '',
+                'size': info.get('size') or '',
+                'product_id': '',
+                'name': info.get('product') or row['name'],
+                'width_mm': None,
+                'height_mm': None,
+                'width_in': None,
+                'height_in': None,
+                'ordered': row['pcs'],
+                'shipped': shipped,
+                'invoiced': invoiced,
+                'remaining': left,
+                'bo_qty': left,
+                'unit_price': 0,
+                'remarks': '',
+            })
+            continue
         if left or left_invoice:
             import currency_rules
             rate, _effective = currency_rules.rate_on((order or {}).get('date'))
@@ -252,7 +320,9 @@ def shipment_progress(order):
             })
     fully_shipped = ordered_pcs > 0 and shipped_pcs >= ordered_pcs
     fully_invoiced = ordered_pcs > 0 and invoiced_pcs >= ordered_pcs
-    if fully_shipped and fully_invoiced:
+    if (order or {}).get('legacy') and fully_shipped:
+        label = 'Shipped'
+    elif fully_shipped and fully_invoiced:
         label = 'Fully shipped & invoiced'
     elif shipped_pcs > 0:
         label = 'Partially shipped'
@@ -332,7 +402,9 @@ def shipment_pdf_bytes(order, shipment):
     data = [['Serial', 'Floor', 'Product', 'Size', 'Pcs']]
     for line in shipment.get('lines') or []:
         info = catalog.get(line.get('index')) or {}
-        item = ((order.get('items') or [None])[line.get('index')] if line.get('index') is not None else None) or {}
+        items = order.get('items') or []
+        index = line.get('index')
+        item = items[index] if isinstance(index, int) and 0 <= index < len(items) else {}
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         size = info.get('size') or piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit'))
         data.append([

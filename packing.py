@@ -500,6 +500,15 @@ def list_key(parsed):
     return number.casefold() or rack.casefold()
 
 
+def match_customer_ids(name, customers):
+    """Customer ids whose company name matches the packing list, even with no ERP order yet."""
+    found = []
+    for customer_id, customer in (customers or {}).items():
+        if _names_match(name, (customer or {}).get('name')):
+            found.append(customer_id)
+    return found
+
+
 def recognized_customer_ids(parsed, orders):
     """Company ids the packing-list customer name matches. Empty when it matches nobody."""
     name = (parsed or {}).get('customer') or ''
@@ -547,6 +556,38 @@ def candidate_orders(parsed, orders):
             continue
         hits.append(order)
     return hits
+
+
+def _legacy_catalog(order):
+    """A pre-ERP job has no quote lines. The packing list itself is the piece list."""
+    from documents import piece_size_text
+    found = {}
+    for entry in (order or {}).get('packing_lists') or []:
+        if not entry.get('current', True):
+            continue
+        for line in entry.get('lines') or []:
+            try:
+                serial = int(line.get('serial'))
+                qty = int(line.get('qty') or 0)
+            except (TypeError, ValueError):
+                continue
+            if qty <= 0:
+                continue
+            if line.get('width_mm') not in (None, '') and line.get('height_mm') not in (None, ''):
+                size = piece_size_text(line.get('width_mm'), line.get('height_mm'), 'mm')
+            elif line.get('width_in') not in (None, '') and line.get('height_in') not in (None, ''):
+                size = piece_size_text(line.get('width_in'), line.get('height_in'), 'in')
+            else:
+                size = ''
+            found[serial] = {
+                'serial': serial,
+                'index': serial,
+                'ordered': qty,
+                'floor': line.get('floor') or '',
+                'product': line.get('description') or 'Glass',
+                'size': size,
+            }
+    return [found[key] for key in sorted(found)]
 
 
 def _serial_fully_packed(order, serial):
@@ -645,6 +686,8 @@ def choose_packing_order(parsed, hits, orders=None):
 
 def serial_catalog(order):
     """Production serials for one order. The serial is the Excel serial, not an IGU number."""
+    if (order or {}).get('legacy'):
+        return _legacy_catalog(order)
     from documents import piece_size_text
     catalog = []
     serial = 1
@@ -680,7 +723,39 @@ def serial_catalog(order):
 
 
 def classify_rows(order, parsed):
-    """Keep rows whose production serial is on the order. The description is never checked."""
+    """Keep rows whose production serial is on the order. The description is never checked.
+
+    A legacy job has no ERP lines. Every numbered packing row is kept, and that
+    quantity is the whole job.
+    """
+    if (order or {}).get('legacy'):
+        matched = []
+        unmatched = []
+        for row in (parsed or {}).get('rows') or []:
+            try:
+                serial = int(row.get('serial'))
+                qty = int(row.get('qty') or 0)
+            except (TypeError, ValueError):
+                unmatched.append({
+                    'serial': None,
+                    'qty': row.get('qty') or 0,
+                    'description': row.get('description') or '',
+                    'reason': 'This row has no production serial number.',
+                })
+                continue
+            if qty <= 0:
+                continue
+            matched.append({
+                'serial': serial,
+                'qty': qty,
+                'floor': row.get('floor') or '',
+                'description': row.get('description') or '',
+                'width_in': row.get('width_in'),
+                'height_in': row.get('height_in'),
+                'width_mm': row.get('width_mm'),
+                'height_mm': row.get('height_mm'),
+            })
+        return matched, unmatched
     catalog = {row['serial']: row for row in serial_catalog(order)}
     matched = []
     unmatched = []
