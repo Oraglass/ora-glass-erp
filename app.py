@@ -2354,6 +2354,7 @@ def orders():
         can_decide=can_place_production_orders(user),
         show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
+        can_remake=_can_create_remake(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in glass],
         spacer_names=[item.get('name') for item in spacers],
@@ -2380,6 +2381,7 @@ def order_detail(order_id):
         can_decide=can_place_production_orders(user),
         show_fx_rate=user.get('role') != 'customer',
         can_status=can_update_order_status(user),
+        can_remake=_can_create_remake(user),
         is_admin=user.get('role') == 'admin',
         glass_names=[item.get('name') for item in glass],
         spacer_names=[item.get('name') for item in spacers],
@@ -6090,6 +6092,8 @@ def filter_order_rows(orders):
             continue
         if status in {'packed', 'partial'} and order.get('pack_status') != status:
             continue
+        if status == 'remake' and (not order.get('remake') or order_status(order) == 'voided'):
+            continue
         if status in STATUS_LABELS and order_status(order) != status:
             continue
         invoice_state = clean_text(request.args.get('invoice'), 20).lower()
@@ -6329,6 +6333,8 @@ def _customer_invoice_state(order):
     ) or bool(order.get('customer_invoice_id'))
     if has_customer_invoice:
         return 'invoiced', 'Invoiced'
+    if order.get('remake') and not order.get('charge_customer'):
+        return 'not_invoiced', 'Not charged'
     if order.get('packing_lists'):
         complete = packing.packing_progress(order)['status'] == 'packed'
     else:
@@ -6376,6 +6382,77 @@ def _packing_payload(order, staff):
     return payload
 
 
+def _can_create_remake(user):
+    """Admin, sales, and production can send a service order. Customers cannot."""
+    return bool(user) and user.get('role') in {'admin', 'sales', 'production'}
+
+
+def _remake_number(parent, orders):
+    label = str((parent or {}).get('number') or (parent or {}).get('id') or '')
+    prefix = f'{label}-R'
+    taken = []
+    for order in orders or []:
+        if order.get('remake_of') != (parent or {}).get('id'):
+            continue
+        suffix = str(order.get('number') or '')
+        if suffix.startswith(prefix) and suffix[len(prefix):].isdigit():
+            taken.append(int(suffix[len(prefix):]))
+    return f'{prefix}{max(taken or [0]) + 1}'
+
+
+def _remake_view(order):
+    orders = load_orders()
+    parent = next((row for row in orders if row.get('id') == order.get('remake_of')), None)
+    children = []
+    for other in orders:
+        if other.get('remake_of') != order.get('id'):
+            continue
+        children.append({
+            'id': other.get('id'),
+            'number': other.get('number') or str(other.get('id') or ''),
+            'status': order_status(other),
+            'status_label': _order_review_label(other),
+            'charge_customer': bool(other.get('charge_customer')),
+            'reason': other.get('remake_reason') or '',
+        })
+    children.sort(key=lambda row: row.get('number') or '')
+    return {
+        'number': order.get('number') or '',
+        'remake': bool(order.get('remake')),
+        'remake_of': order.get('remake_of'),
+        'remake_of_number': (parent or {}).get('number') or (str(parent.get('id')) if parent else ''),
+        'remake_reason': order.get('remake_reason') or '',
+        'charge_customer': bool(order.get('charge_customer')) if order.get('remake') else None,
+        'remakes': children,
+    }
+
+
+def _remake_line(source, qty, serial, reason):
+    item = json.loads(json.dumps(source))
+    try:
+        ordered = int(item.get('pcs') or 0)
+    except (TypeError, ValueError):
+        ordered = 0
+    each = item.get('price_pc')
+    if each in (None, ''):
+        each = item.get('unit_price')
+    if each in (None, '') and ordered:
+        each = money(item.get('total')) / ordered
+    each = money(each)
+    item['pcs'] = qty
+    item['qty'] = qty
+    item['price_pc'] = each
+    item['unit_price'] = each
+    item['total'] = round(each * qty, 2)
+    item['source_serial'] = serial
+    note = f'Remake of serial {serial}'
+    if reason:
+        note = f'{note}. {reason}'
+    existing = strip_copy_history(item.get('remarks') or '')
+    item['remarks'] = f'{existing} {note}'.strip() if existing else note
+    return item
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -6412,6 +6489,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'voided_at_display': format_pacific(order.get('voided_at')),
         'void_reason': order.get('void_reason') or '',
         'can_void': _can_void(user, order),
+        **_remake_view(order),
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
@@ -7447,7 +7525,10 @@ def _void_block_reason(order):
     status = order_status(order)
     if status == 'voided':
         return 'This order is already voided.'
-    if status in {'sent', 'made', 'delivered'}:
+    if order.get('remake'):
+        if status in {'made', 'delivered'}:
+            return 'This order cannot be voided because it has been sent to production.'
+    elif status in {'sent', 'made', 'delivered'}:
         return 'This order cannot be voided because it has been sent to production.'
     if order.get('shipments'):
         return 'This order cannot be voided because it has a shipment.'
@@ -7475,6 +7556,8 @@ def _can_void(user, order):
 
 def _can_unapprove(order):
     """Approved or sent orders can return to review until something has shipped or been invoiced."""
+    if order.get('remake'):
+        return False
     if _order_is_invoiced(order) or (order.get('shipments') or []):
         return False
     return order_status(order) in {'approved', 'sent'}
@@ -7678,6 +7761,132 @@ def void_order(order_id):
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
+@app.route('/api/orders/<int:order_id>/remake', methods=['POST'])
+@module_required('orders')
+def create_remake(order_id):
+    """A service order for pieces that have to be made again. No new quote."""
+    user = current_user()
+    if not _can_create_remake(user):
+        return json_error('You do not have permission to create a remake.', 403)
+    parent = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not parent:
+        return json_error('Not found', 404)
+    if order_status(parent) == 'voided':
+        return json_error('This order is voided.', 400)
+    if order_status(parent) not in RELEASED_STATUSES:
+        return json_error('A remake starts from a production order.', 400)
+    data = json_body() or {}
+    if 'charge_customer' not in data or not isinstance(data.get('charge_customer'), bool):
+        return json_error('Choose whether to charge the customer.', 400)
+    charge = data.get('charge_customer')
+    reason = strip_copy_history(clean_text(data.get('reason'), 300))
+    requested = data.get('lines')
+    if not isinstance(requested, list) or not requested:
+        return json_error('Select at least one glass line.', 400)
+    import packing
+    catalog = {row['serial']: row for row in packing.serial_catalog(parent)}
+    chosen = {}
+    for row in requested:
+        if not isinstance(row, dict):
+            return json_error('Each remake line needs a serial and a quantity.', 400)
+        try:
+            serial = int(row.get('serial'))
+            qty = int(row.get('qty') or 0)
+        except (TypeError, ValueError):
+            return json_error('Remake quantity must be a whole number.', 400)
+        if serial not in catalog:
+            return json_error(f'Serial {serial} is not on this order.', 400)
+        if serial in chosen:
+            return json_error(f'Serial {serial} can only be entered once.', 400)
+        ordered = int(catalog[serial]['ordered'] or 0)
+        if qty < 1 or qty > ordered:
+            return json_error(f'Remake quantity for serial {serial} must be from 1 to {ordered}.', 400)
+        chosen[serial] = qty
+    items = []
+    for serial, qty in sorted(chosen.items()):
+        source = (parent.get('items') or [])[catalog[serial]['index']]
+        items.append(_remake_line(source, qty, serial, reason))
+    discount = parent.get('discount') or {'type': 'percent', 'value': 0}
+    if discount.get('type') != 'percent':
+        discount = {'type': 'percent', 'value': 0}
+    summary, error = price_summary(items, discount, [])
+    if error:
+        return json_error(error, 400)
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, parent.get('additional_discount_percent'))
+    orders = load_orders()
+    number = _remake_number(parent, orders)
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    record = {
+        'remake': True,
+        'number': number,
+        'remake_of': parent.get('id'),
+        'remake_reason': reason,
+        'charge_customer': charge,
+        'quote_id': parent.get('quote_id'),
+        'customer_id': parent.get('customer_id'),
+        'company': parent.get('company') or '',
+        'project': parent.get('project') or '',
+        'po': parent.get('po') or parent.get('customer_po') or '',
+        'job_address': parent.get('job_address') or '',
+        'notes': f'Remake {number} of order {parent.get("number") or parent.get("id")}.' + (f' {reason}' if reason else ''),
+        'currency': parent.get('currency') or 'usd',
+        'fx_rate': parent.get('fx_rate'),
+        'tier': parent.get('tier'),
+        'tier_label': parent.get('tier_label') or '',
+        'items': items,
+        'discount': discount,
+        'discount_amount': summary.get('discount_amount') or 0,
+        'additional_discount_percent': summary.get('additional_discount_percent') or 0,
+        'additional_discount_amount': summary.get('additional_discount_amount') or 0,
+        'price_addon_percent': parent.get('price_addon_percent') or 0,
+        'extra_charges': [],
+        'igu_subtotal': summary.get('igu_subtotal') or 0,
+        'igu_total': summary.get('igu_total') or 0,
+        'extras_total': 0,
+        'pretax_total': summary.get('total') or 0,
+        'tax_lines': [],
+        'tax_total': 0,
+        'total': summary.get('total') or 0,
+        'ship_province': parent.get('ship_province') or '',
+        'qbo_tax_code': parent.get('qbo_tax_code') or '',
+        'tax_label': parent.get('tax_label') or '',
+        'pst_number': parent.get('pst_number') or '',
+        'qst_number': parent.get('qst_number') or '',
+        'seller_gst_number': parent.get('seller_gst_number') or '',
+        'show_seller_gst': bool(parent.get('show_seller_gst')),
+        'drawings': [],
+        'status': 'sent',
+        'changelog': [],
+        'revisions': [],
+        'revision': 0,
+        'shipments': [],
+        'packing_lists': [],
+        'approved_by': user.get('email') or '',
+        'converted_by': user.get('email') or '',
+        'approved_at': created_at,
+        'date': date.today().isoformat(),
+    }
+    if not charge:
+        record['total'] = 0
+        record['pretax_total'] = 0
+        record['igu_subtotal'] = 0
+        record['igu_total'] = 0
+        record['discount_amount'] = 0
+        record['additional_discount_amount'] = 0
+    _stamp_log(record, user, [{
+        'field': 'remake',
+        'action': 'added',
+        'new': number,
+    }])
+    saved = append_order(record)
+    try:
+        production.write_order_workbook(saved)
+    except Exception:
+        logger.exception('Could not write the remake production Excel file')
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
 @app.route('/api/orders/<int:order_id>/customer-decision', methods=['POST'])
 @module_required('orders')
 def customer_order_decision(order_id):
@@ -7810,7 +8019,9 @@ def set_order_status(order_id):
             'new': STATUS_LABELS[target],
         }]
         if target == 'delivered':
-            if updated.get('shipments'):
+            if updated.get('remake') and not updated.get('charge_customer'):
+                changes.append({'field': 'invoice', 'action': 'kept', 'new': 'This remake is not charged to the customer.'})
+            elif updated.get('shipments'):
                 changes.append({'field': 'shipments', 'action': 'kept', 'new': 'Billing follows the shipments.'})
             elif updated.get('invoice_id'):
                 return None, 'This order already has an invoice.'
@@ -8611,10 +8822,14 @@ def invoice_completed_order(order_id):
         return json_error('Not found', 404)
     if order_status(visible) == 'voided':
         return json_error('This order is voided and cannot be invoiced.', 400)
+    if visible.get('remake') and not visible.get('charge_customer'):
+        return json_error('This remake is not charged to the customer.', 400)
 
     def mutator(order):
         if order_status(order) == 'voided':
             return None, 'This order is voided and cannot be invoiced.'
+        if order.get('remake') and not order.get('charge_customer'):
+            return None, 'This remake is not charged to the customer.'
         state, _label = _customer_invoice_state(order)
         if state == 'invoiced':
             return None, 'This order already has a customer invoice.'
@@ -8969,6 +9184,8 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
     import quickbooks
     customer = _order_customer(order)
     mode = _billing_mode(order)
+    if mode != 'canada' and order.get('remake') and not order.get('charge_customer'):
+        return None, None
     items = json.loads(json.dumps(shipment.get('items') or []))
     full_value = shipments.shipment_progress(order)['ordered_value'] or money(order.get('total'))
     charges = order.get('extra_charges') or [] if include_extras else []
@@ -9066,6 +9283,8 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
 def _issue_final_customer_invoice(order, user):
     """One invoice for the whole order. Used for US orders when shipping is complete, and for Canada."""
     import quickbooks
+    if order.get('remake') and not order.get('charge_customer'):
+        return None, None
     if any(
         row.get('order_id') == order.get('id') and row.get('kind') != 'intercompany' and not row.get('voided')
         and (row.get('issuer') or 'us') == ('ca' if quickbooks.is_canadian(_order_customer(order)) else 'us')

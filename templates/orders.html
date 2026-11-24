@@ -21,6 +21,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .detail-page .field-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:8px 0}
 .detail-page .field-row label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#333}
 .detail-page .field-row input{font-size:14px;padding:8px;border:1px solid #ddd;border-radius:4px;min-width:10rem}
+.detail-page #remake-form textarea{width:28rem;max-width:100%;font-size:14px;padding:8px;border:1px solid #ddd;border-radius:4px}
+.detail-page #remake-form select{font-size:14px;padding:8px;border:1px solid #ddd;border-radius:4px}
 .more{position:relative;display:inline-block}
 .more>summary{list-style:none;cursor:pointer}
 .more>summary::-webkit-details-marker{display:none}
@@ -50,6 +52,7 @@ a{color:#C41E3A}
 .badge.made{background:#efe7ff;color:#6d28d9}
 .badge.delivered{background:#d4edda;color:#155724}
 .badge.voided{background:#eee;color:#444}
+.badge.remake{background:#fef3c7;color:#92400e}
 .badge.packed{background:#d4edda;color:#155724}
 .badge.partial{background:#fff4e5;color:#9a3412}
 .badge.not_invoiced{background:#fde8ec;color:#9f1239}
@@ -104,6 +107,7 @@ a{color:#C41E3A}
 <option value="voided">Voided</option>
 <option value="partial">Partially packed</option>
 <option value="packed">Packed</option>
+<option value="remake">Remake</option>
 </select>
 <select id="order-invoice" aria-label="Invoice status">
 <option value="">All invoice states</option>
@@ -195,6 +199,7 @@ const CAN_DECIDE = {{ can_decide|tojson }};
 const SPACERS = {{ spacer_names|tojson }};
 const CAN_JOB_ADDRESS = {{ can_job_address|tojson }};
 const CAN_STATUS = {{ can_status|tojson }};
+const CAN_REMAKE = {{ can_remake|tojson }};
 const IS_ADMIN = {{ is_admin|tojson }};
 const GLASS = {{ glass_names|tojson }};
 const IRREGULAR_RATE = {{ irregular_rate|default(50) }};
@@ -214,9 +219,13 @@ function money(order, amount) {
 function moneyText(currency, amount) {
   return String(currency || '').toUpperCase() + ' $' + Number(amount || 0).toFixed(2);
 }
+function orderNumber(order) {
+  return order.number || order.id;
+}
 function badge(order) {
   const status = order.status || 'approved';
   let html = '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
+  if (order.remake) html += ' <span class="badge remake" id="remake-badge-' + esc(order.id) + '">Remake</span>';
   if (order.pack_status_label) html += ' <span class="badge ' + esc(order.pack_status || 'partial') + '" id="pack-badge-' + esc(order.id) + '">' + esc(order.pack_status_label) + '</span>';
   return html;
 }
@@ -255,7 +264,7 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -435,6 +444,31 @@ function shipConfirmPanel(order) {
     + '<div class="actions"><button type="button" class="btn secondary" id="adjust-qty" aria-pressed="false">Adjust quantities</button>'
     + '<button type="button" class="btn" id="confirm-ship">Confirm</button></div></div>';
 }
+function remakeForm(order) {
+  if (!CAN_REMAKE) return '';
+  if (['approved', 'sent', 'made', 'delivered'].indexOf(order.status) < 0) return '';
+  const lines = (order.packing_serials || []).filter(row => Number(row.ordered) > 0);
+  if (!lines.length) return '';
+  const rows = lines.map(row => {
+    const max = Number(row.ordered) || 1;
+    return '<tr><td><input type="checkbox" data-remake-serial="' + esc(row.serial) + '" aria-label="Remake serial ' + esc(row.serial) + '"></td>'
+      + '<td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+      + '<td class="num">' + esc(row.ordered) + '</td>'
+      + '<td class="num"><input data-remake-qty="' + esc(row.serial) + '" type="number" min="1" max="' + esc(max) + '" value="1" aria-label="Remake qty for serial ' + esc(row.serial) + '"></td></tr>';
+  }).join('');
+  return '<section class="section" id="remake-form"><h3>Remake / service order</h3>'
+    + '<p class="note">Send selected pieces back to production without a new quote. The remake keeps this customer, project, spec, and the original serials.</p>'
+    + '<table id="remake-lines"><thead><tr><th></th><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Remake qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div class="field-row"><label>Reason<textarea id="remake-reason" rows="2" placeholder="Breakage, production defect, customer damage" aria-label="Remake reason"></textarea></label>'
+    + '<label>Charge customer<select id="remake-charge" aria-label="Charge customer"><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select></label></div>'
+    + '<div class="actions"><button type="button" class="btn" id="create-remake">Create remake</button></div></section>';
+}
+function remakesBlock(order) {
+  const rows = order.remakes || [];
+  if (!rows.length) return '';
+  const list = rows.map(row => '<li><a id="remake-link-' + esc(row.id) + '" href="/orders/' + encodeURIComponent(row.id) + '">' + esc(row.number) + '</a> · ' + esc(row.status_label) + (row.charge_customer ? ' · Charged' : ' · Not charged') + (row.reason ? ' · ' + esc(row.reason) : '') + '</li>').join('');
+  return '<section class="section" id="order-remakes"><h3>Remakes</h3><p class="note">Service orders made from this order.</p><ul id="remake-list">' + list + '</ul></section>';
+}
 function packingBlock(order) {
   const serials = order.packing_serials || [];
   const lists = order.packing_lists || [];
@@ -572,7 +606,13 @@ function renderDetail(order) {
     + (PRICES ? ' · ' + money(order, order.total) : '')
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
-  const headerExtra = ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
+  const remakeNote = order.remake
+    ? '<p class="note" id="remake-note">Remake ' + esc(order.number) + ' of <a href="/orders/' + encodeURIComponent(order.remake_of) + '">order ' + esc(order.remake_of_number || order.remake_of) + '</a>.'
+      + (order.remake_reason ? ' ' + esc(order.remake_reason) + '.' : '')
+      + (order.charge_customer ? ' Charged to the customer.' : ' Not charged to the customer.')
+      + '</p>'
+    : '';
+  const headerExtra = remakeNote + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
     + voidNote + voidPanel + notes + jobText + jobForm + tax;
   const invoiceRows = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
@@ -585,9 +625,11 @@ function renderDetail(order) {
     : (invoice || '<p class="note">No invoices yet.</p>');
   const coverage = coverageBlock(order);
   const coverageSection = coverage ? sectionBlock('Credit coverage', '', 'How this order sits against the customer credit limit and prepayments.', coverage) : '';
-  box.innerHTML = sectionBlock('Order ' + esc(order.id) + ' ' + badge(order) + ' ' + invoiceBadge(order), buttons, headerSummary, headerExtra)
+  box.innerHTML = sectionBlock('Order ' + esc(orderNumber(order)) + ' ' + badge(order) + ' ' + invoiceBadge(order), buttons, headerSummary, headerExtra)
     + changeSummary(order)
     + sectionBlock('Order lines', '', lineSummary, linesTable)
+    + remakeForm(order)
+    + remakesBlock(order)
     + packingBlock(order)
     + shipmentSection
     + sectionBlock('Invoices ' + invoiceBadge(order), '', 'Customer and intercompany invoices for this order.', invoiceBody)
@@ -615,6 +657,30 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const createRemake = document.getElementById('create-remake');
+  if (createRemake) createRemake.addEventListener('click', async () => {
+    const charge = document.getElementById('remake-charge').value;
+    if (!charge) { alert('Choose whether to charge the customer.'); return; }
+    const lines = [];
+    document.querySelectorAll('[data-remake-serial]').forEach(box => {
+      if (!box.checked) return;
+      const serial = box.getAttribute('data-remake-serial');
+      const qty = document.querySelector('[data-remake-qty="' + serial + '"]');
+      lines.push({serial: Number(serial), qty: Number(qty && qty.value)});
+    });
+    if (!lines.length) { alert('Select at least one glass line.'); return; }
+    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/remake', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        lines: lines,
+        reason: document.getElementById('remake-reason').value,
+        charge_customer: charge === 'yes'
+      })
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(payload.error || 'Could not create the remake'); return; }
+    window.location = '/orders/' + encodeURIComponent(payload.id);
+  });
   const unapprove = document.getElementById('unapprove-order');
   if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to ' + (order.company || 'the customer') + ' for review, and the production Excel stays locked until it is approved again.'));
   const voidButton = document.getElementById('void-order');

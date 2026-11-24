@@ -238,7 +238,10 @@ def _filename_part(value):
 
 
 def production_filename(order):
-    """Customer.Project.PO.xlsx. An empty PO uses the ERP order number."""
+    """Customer.Project.PO.xlsx. An empty PO uses the ERP order number.
+
+    A remake keeps that name and adds its child number, for example 24-R1.
+    """
     order = order or {}
     company = _filename_part(order.get('company') or 'Customer')
     project = _filename_part(order.get('project') or 'Order')
@@ -246,8 +249,22 @@ def production_filename(order):
     if not po:
         po = _filename_part(order.get('id'))
     parts = [part for part in (company, project, po) if part]
+    if order.get('remake') and order.get('number'):
+        parts.append(_filename_part(order.get('number')))
     stem = '.'.join(parts) or f"order-{order.get('id') or 'export'}"
     return stem + '.xlsx'
+
+
+def line_serial(item, fallback):
+    """A remake keeps the original production serial. Other lines count from 1."""
+    raw = (item or {}).get('source_serial')
+    if raw in (None, ''):
+        return fallback
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number > 0 else fallback
 
 
 def content_disposition(filename):
@@ -786,8 +803,8 @@ def export_lines(items, currency=None, fx_rate=None):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        rows.append(line_export(item, serial=serial, currency=currency, fx_rate=fx_rate))
-        serial += 1
+        rows.append(line_export(item, serial=line_serial(item, serial), currency=currency, fx_rate=fx_rate))
+        serial = line_serial(item, serial) + 1
     return rows
 
 

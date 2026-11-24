@@ -557,7 +557,8 @@ def serial_catalog(order):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        exported = production.line_export(item, serial=serial)
+        exported = production.line_export(item, serial=production.line_serial(item, serial))
+        serial = production.line_serial(item, serial)
         try:
             ordered = int(item.get('pcs') or 0)
         except (TypeError, ValueError):
