@@ -129,6 +129,37 @@ def test_remake_restarts_serials_and_keeps_the_floor(client):
     assert shop.get_json()['number'] == f'{order_id}-R3'
 
 
+def test_the_remake_button_opens_a_separate_service_order(client):
+    """Submitting the panel creates a new order, not a quote, and returns to that page."""
+    from storage import load_quotes
+    order_id = _order(client)
+    quotes_before = len(load_quotes())
+    page = client.get(f'/orders/{order_id}').data
+    assert b'id="toggle-remake"' in page
+    assert b"window.location = '/orders/' + encodeURIComponent(payload.id)" in page
+    assert b'id="remake-link-' in page
+    assert b'Remake of Order' in page
+    created = _remake(client, order_id, serial=2, qty=1, reason='Breakage')
+    assert created.status_code == 200, created.get_json()
+    body = created.get_json()
+    assert body['id'] != order_id
+    assert body['remake'] is True
+    assert body.get('quote_id') in (None, '')
+    assert len(load_quotes()) == quotes_before
+    assert body['remake_of'] == order_id
+    assert body['remake_of_number'] == order_id or str(body['remake_of_number']) == str(order_id)
+    assert body['notes'].startswith(f'Remake of Order {order_id}')
+    assert [row['serial'] for row in body['packing_serials']] == [1]
+    assert body['packing_serials'][0]['floor'] == 'W02'
+    stored = next(row for row in load_orders() if row['id'] == body['id'])
+    assert stored.get('quote_id') in (None, '')
+    assert stored['items'][0]['floor'] == 'W02'
+    assert stored['items'][0]['source_serial'] == 2
+    parent = client.get(f'/api/orders/{order_id}').get_json()
+    assert parent['remakes'][0]['id'] == body['id']
+    assert parent['remakes'][0]['number'] == body['number']
+
+
 def test_charged_us_remake_invoices_the_customer_when_shipped(client):
     order_id = _order(client)
     created = _remake(client, order_id, charge=True)

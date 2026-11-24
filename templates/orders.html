@@ -666,7 +666,7 @@ function renderDetail(order) {
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
   const remakeNote = order.remake
-    ? '<p class="note" id="remake-note">Remake ' + esc(order.number) + ' of <a href="/orders/' + encodeURIComponent(order.remake_of) + '">order ' + esc(order.remake_of_number || order.remake_of) + '</a>.'
+    ? '<p class="note" id="remake-note">Remake of Order <a id="remake-of-order" href="/orders/' + encodeURIComponent(order.remake_of) + '">' + esc(order.remake_of_number || order.remake_of) + '</a>.'
       + (order.remake_reason ? ' ' + esc(order.remake_reason) + '.' : '')
       + (order.charge_customer ? ' Charged to the customer.' : ' Not charged to the customer.')
       + '</p>'
