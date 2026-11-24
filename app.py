@@ -961,6 +961,30 @@ def quotes_visible_to(user, quotes):
     return [quote for quote in quotes if quote.get('user') == user.get('email')]
 
 
+def can_edit_quote(user, quote):
+    """Draft quotes can be changed in the calculator until they are ordered or voided.
+
+    Admin and sales can edit any draft they can see. A customer can edit a draft
+    of their own company when Quote History already shows it to them.
+    """
+    if not user or not isinstance(quote, dict):
+        return False
+    if quote.get('order_id'):
+        return False
+    if str(quote.get('status') or '').lower() in {'void', 'voided'}:
+        return False
+    if quote.get('status') != 'draft':
+        return False
+    if not quotes_visible_to(user, [quote]):
+        return False
+    role = user.get('role')
+    if role in {'admin', 'sales'}:
+        return True
+    if role == 'customer':
+        return True
+    return False
+
+
 def staff_can_order(user):
     """Admins and Ora Glass staff who have the Orders module. Customers never qualify."""
     if not user or user.get('role') == 'customer':
@@ -3872,15 +3896,19 @@ def save_quote():
         except (TypeError, ValueError):
             return json_error('Not found', 404)
         existing = _visible_quote(user, quote_id)
-        if not existing or existing.get('status') != 'draft':
+        if not existing or not can_edit_quote(user, existing):
             return json_error('That quote cannot be replaced.', 400)
+        stored_tier = clean_text(existing.get('tier'), 20)
+        if stored_tier in tiers:
+            tier = stored_tier
+        old_items = list(existing.get('items') or [])
         existing['project'] = project
         existing['customer_id'] = customer_id
         existing['company'] = company
         kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
         existing['items'] = _repriced_quote_items(
             items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
-            _effective_minimum(customer),
+            _effective_minimum(customer), keep_identity=True,
         ) if quote_type == 'size' else priced
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
@@ -3899,6 +3927,7 @@ def save_quote():
         if 'ship_province' in data:
             existing['ship_province'] = _ship_province(data.get('ship_province'), owner)
         existing.update(_canada_tax_fields(owner, existing.get('ship_province')))
+        _record_quote_edit(existing, user, old_items)
         saved = replace_quote(quote_id, existing)
         if saved:
             _remember_igus(saved.get('items'), saved.get('date'))
@@ -3948,6 +3977,7 @@ def _quote_for_viewer(quote, user, orders=None):
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
+    row['can_edit'] = can_edit_quote(user, quote)
     row['has_source_pdf'] = bool(row.get('source_file'))
     row.pop('source_file', None)
     row['source_filenames'] = _source_filenames(row)
@@ -3978,7 +4008,43 @@ def _copied_extras(raw):
     return charges
 
 
-def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0):
+def _quote_money_total(items):
+    total = 0.0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get('total') if item.get('total') not in (None, '') else item.get('price') or 0
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def _record_quote_edit(quote, user, old_items):
+    """Keep the quote number and record who edited it, when, and which lines changed."""
+    new_items = quote.get('items') or []
+    number = int(quote.get('revision') or 0) + 1
+    at = datetime.now(ZoneInfo('America/Los_Angeles')).replace(microsecond=0).isoformat()
+    email = user.get('email') or ''
+    revisions = [row for row in (quote.get('revisions') or []) if isinstance(row, dict)]
+    revisions.append({
+        'number': number,
+        'at': at,
+        'user': email,
+        'kind': 'edit',
+        'lines': _revision_lines(old_items, new_items),
+        'old_total': _quote_money_total(old_items),
+        'new_total': _quote_money_total(new_items),
+    })
+    quote['revisions'] = revisions
+    quote['revision'] = number
+    quote['edited_at'] = at
+    quote['edited_by'] = email
+    quote['updated_by'] = email
+
+
+def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0, keep_identity=False):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
     for item in items or []:
@@ -4003,6 +4069,10 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             floor = production.floor_code(item)
             if floor:
                 copied_line['floor'] = floor
+            if keep_identity:
+                for key in ('line_id', 'source_filename', 'line_number'):
+                    if item.get(key) not in (None, ''):
+                        copied_line[key] = item.get(key)
             rows.append(copied_line)
             continue
         plain = {

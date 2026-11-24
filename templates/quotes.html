@@ -132,6 +132,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
+<button type="button" class="btn" id="save-sqf-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
 </div>
 </div>
 <div id="tab-size" class="tab-content">
@@ -184,6 +185,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
 <p id="company-discount-line" hidden style="margin:12px 0 0;font-size:14px;font-weight:600"></p>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
+<button type="button" class="btn" id="save-size-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
 </div>
 </div>
 {% include 'partials/import_order.html' %}
@@ -323,6 +325,8 @@ renderSizeQuoteList = function () {
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
 let draftQuoteId = null;
+let draftType = null;
+let editingQuote = false;
 let draftExtras = [];
 let draftShipProvince = '';
 let draftTaxLabel = '';
@@ -437,7 +441,7 @@ const saveNewSizeQuote = exportSizeQuote;
 exportSizeQuote = async function () {
   if (!selectedCurrency) { alert('Select currency first'); return; }
   const project = document.getElementById('project-name').value;
-  const items = sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || ''}));
+  const items = sizeItemsForSave();
   const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, 'size'))});
   const savedBody = await saved.json().catch(() => ({}));
   const exportBody = {items, currency: selectedCurrency, project, tax_label: draftTaxLabel, ship_province: draftShipProvince, fx_rate: erpRate, type: 'size'};
@@ -460,16 +464,33 @@ function lineFromStored(item, currency, project) {
     pricePc: item.price_pc, pcs: item.pcs, currency, project, spec,
     irregular_shape: !!item.irregular_shape, surcharge_rate: item.surcharge_rate,
     remarks: item.remarks || '', floor: item.floor || item.mark || '',
-    minimum_sqf: item.minimum_sqf, real_sqf: item.real_sqf
+    minimum_sqf: item.minimum_sqf, real_sqf: item.real_sqf,
+    line_id: item.line_id || '', source_filename: item.source_filename || '', line_number: item.line_number || ''
   };
 }
+function sizeItemsForSave() {
+  return sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || '', line_id: i.line_id || '', source_filename: i.source_filename || '', line_number: i.line_number || ''}));
+}
+async function saveEditedQuote() {
+  if (!draftQuoteId || !selectedCurrency) { alert('Select currency first'); return; }
+  const type = draftType === 'size' ? 'size' : 'sqf';
+  const items = type === 'size' ? sizeItemsForSave() : quoteItems;
+  const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, type))});
+  const body = await saved.json().catch(() => ({}));
+  if (!saved.ok) { alert(body.error || 'Could not save the quote'); return; }
+  showCopyNote('Saved quote #' + body.id + '. This is the same quote number.');
+}
 async function loadCopiedQuote() {
-  const draft = new URLSearchParams(location.search).get('draft');
+  const params = new URLSearchParams(location.search);
+  const draft = params.get('edit') || params.get('draft');
   if (!draft) return;
+  editingQuote = !!params.get('edit');
   const res = await fetch('/api/quotes/' + encodeURIComponent(draft));
   if (!res.ok) return;
   const quote = await res.json();
+  if (editingQuote && !quote.can_edit) return;
   draftQuoteId = quote.id;
+  draftType = quote.type === 'size' ? 'size' : 'sqf';
   if (quote.additional_discount_percent != null) companyDiscountPercent = Number(quote.additional_discount_percent);
   const storedMinimum = (quote.items || []).find(item => item && item.minimum_sqf != null);
   if (storedMinimum) window.draftMinimumSqf = Number(storedMinimum.minimum_sqf) || 0;
@@ -479,7 +500,11 @@ async function loadCopiedQuote() {
   document.getElementById('project-name').value = quote.project || '';
   const jobAddress = document.getElementById('job-address');
   if (jobAddress) jobAddress.value = quote.job_address || '';
-  showCopyNote(quote.notes || '');
+  showCopyNote(editingQuote ? ('Editing quote #' + quote.id + '. Save keeps this quote number.') : (quote.notes || ''));
+  if (editingQuote) {
+    const saveButton = document.getElementById(draftType === 'size' ? 'save-size-quote' : 'save-sqf-quote');
+    if (saveButton) saveButton.hidden = false;
+  }
   showQuoteTaxLines(quote.tax_lines || []);
   if (quote.fx_rate) erpRate = Number(quote.fx_rate);
   selectedCurrency = quote.currency || 'usd';
@@ -623,6 +648,10 @@ if (quoteCustomer) quoteCustomer.addEventListener('change', function () {
   lockQuoteCurrency(currency, note);
   applyCompanyMinimum();
 });
+const saveSqf = document.getElementById('save-sqf-quote');
+if (saveSqf) saveSqf.addEventListener('click', saveEditedQuote);
+const saveSize = document.getElementById('save-size-quote');
+if (saveSize) saveSize.addEventListener('click', saveEditedQuote);
 loadCopiedQuote();
 let companyDiscountPercent = {{ company_discount_percent|tojson }};
 function quoteDiscountPercent() {
