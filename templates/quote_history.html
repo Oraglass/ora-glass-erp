@@ -454,7 +454,11 @@ if (sortSelect) sortSelect.addEventListener('change', applyFilters);
 function showQuoteDetail(quote) {
   const box = document.getElementById('quote-detail');
   if (!box || !quote) return;
-  const lines = (quote.items || []).map(item => '<tr><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + (item.size_label ? '<br><span class="note">' + esc(item.size_label) + '</span>' : '') + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>').join('');
+  const lines = (quote.items || []).map(item => {
+    const file = item.source_filename ? '<br><span class="note">' + esc(item.source_filename) + '</span>' : '';
+    const size = item.size_label ? '<br><span class="note">' + esc(item.size_label) + '</span>' : '';
+    return '<tr><td>' + esc(item.line_number || '') + '</td><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + size + file + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>';
+  }).join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const tax = (quote.tax_lines || []).length
     ? (quote.tax_lines || []).map(line => '<p class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%: $' + Number(line.amount || 0).toFixed(2) + '</p>').join('')
@@ -473,12 +477,102 @@ function showQuoteDetail(quote) {
     + (quote.notes ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + (quote.job_address ? '<p class="note">Job address<br>' + esc(quote.job_address).replace(/\n/g, '<br>') + '</p>' : '')
     + rateNote
-    + '<table><thead><tr><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
+    + '<table><thead><tr><th>#</th><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
+    + appendImportMarkup(quote)
     + (Number(quote.additional_discount_amount) ? '<p style="margin-top:8px;font-weight:600">Additional discount (' + esc(quote.additional_discount_percent) + '%)  -$' + Number(quote.additional_discount_amount).toFixed(2) + '</p>' : '')
     + (typeof internalPriceNote === 'function' ? internalPriceNote(quote) : '')
     + (extras ? '<p class="help">Extras</p><ul>' + extras + '</ul>' : '')
     + '<p style="margin-top:10px"><button type="button" class="copy-btn" data-action="copy" data-id="' + esc(quote.id) + '" style="background:#C41E3A;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer">Copy quote</button></p>';
   box.scrollIntoView({block: 'nearest'});
+  bindAppendImport(quote, function (payload) {
+    const index = catalog.findIndex(item => String(item.id) === String(payload.quote.id));
+    if (index >= 0) catalog[index] = payload.quote;
+    else catalog.push(payload.quote);
+    showQuoteDetail(payload.quote);
+  });
+}
+function appendImportMarkup(quote) {
+  if (!quote || !quote.import_kind) return '';
+  if (quote.append_blocked) return '<p class="note" id="append-blocked">' + esc(quote.append_blocked) + '</p>';
+  if (!quote.can_append_file) return '';
+  const accept = quote.import_kind === 'orgadata' ? 'application/pdf,.pdf' : '.pdf,.xlsx,.xls,.csv,application/pdf';
+  return '<div class="actions" id="append-import" style="margin-top:12px"><input type="file" id="append-file" accept="' + accept + '" aria-label="Another order file"> <button type="button" class="btn" id="append-import-btn">Import another file</button></div><p class="note" id="append-import-message"></p><div id="append-review"></div>';
+}
+function productOptions(names, selected) {
+  return '<option value=""></option>' + (names || []).map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+}
+function bindAppendImport(quote, onSaved) {
+  const button = document.getElementById('append-import-btn');
+  if (!button || !quote) return;
+  const note = document.getElementById('append-import-message');
+  function say(text) { if (note) note.textContent = text || ''; }
+  async function send(body, json) {
+    const res = await fetch('/api/quotes/' + encodeURIComponent(quote.id) + '/import-file', json ? {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    } : {method: 'POST', body: body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { say(payload.error || 'The file was not added.'); return; }
+    if (payload.needs_review) { renderAppendReview(quote, payload, send, say); return; }
+    say('Added ' + (payload.added || 0) + ' lines.');
+    if (payload.quote) onSaved(payload);
+  }
+  button.addEventListener('click', () => {
+    const file = document.getElementById('append-file').files[0];
+    if (!file) { say('Choose a file.'); return; }
+    const body = new FormData();
+    body.append('file', file);
+    send(body, false);
+  });
+}
+function renderAppendReview(quote, data, send, say) {
+  const box = document.getElementById('append-review');
+  if (!box) return;
+  if (data.import_kind === 'orgadata') {
+    const blocks = (data.blocks || []).map((block, index) => {
+      const lites = (block.lites || []).map((lite, liteIndex) => '<label class="note">' + esc(lite.source || 'Glass') + '<select data-lite="' + liteIndex + '">' + productOptions(data.glass, lite.product) + '</select> <select data-temper="' + liteIndex + '"><option value="yes"' + (lite.temper === 'yes' ? ' selected' : '') + '>Tempered</option><option value="n/a"' + (lite.temper !== 'yes' ? ' selected' : '') + '>Not tempered</option></select></label>').join('');
+      const spacers = (block.spacers || []).map((spacer, spacerIndex) => '<label class="note">Spacer ' + esc(spacer.gap_mm || '') + '<select data-spacer="' + spacerIndex + '">' + productOptions(data.spacers, spacer.product) + '</select></label>').join('');
+      return '<div data-append-block="' + index + '"><p><strong>' + esc(block.name || 'Glass') + '</strong></p>' + lites + spacers + '</div>';
+    }).join('');
+    box.innerHTML = '<p class="note">' + esc(data.error || 'Match the glass and spacer, then add the lines.') + '</p>' + blocks + '<button type="button" class="btn" id="append-confirm">Add these lines</button>';
+    document.getElementById('append-confirm').addEventListener('click', () => {
+      const blocks = [];
+      box.querySelectorAll('[data-append-block]').forEach(section => {
+        const lites = [];
+        section.querySelectorAll('[data-lite]').forEach(select => {
+          const temper = section.querySelector('[data-temper="' + select.getAttribute('data-lite') + '"]');
+          lites.push({product: select.value, temper: temper ? temper.value : 'n/a'});
+        });
+        const spacers = [];
+        section.querySelectorAll('[data-spacer]').forEach(select => spacers.push({product: select.value}));
+        blocks.push({lites: lites, spacers: spacers});
+      });
+      send({import_id: data.import_id, blocks: blocks, remember: true}, true);
+    });
+    return;
+  }
+  if (data.status === 'choose_template') {
+    const options = (data.templates || []).map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    box.innerHTML = '<label class="note">Template <select id="append-template">' + options + '</select></label> <button type="button" class="btn" id="append-confirm">Read with this template</button>';
+    document.getElementById('append-confirm').addEventListener('click', () => {
+      send({import_id: data.import_id, template_id: Number(document.getElementById('append-template').value)}, true);
+    });
+    return;
+  }
+  const glass = (data.unmatched_glass || []).map(name => '<label class="note">' + esc(name) + '<select data-map="glass" data-raw="' + esc(name) + '">' + productOptions(data.glass, '') + '</select></label>').join('');
+  const spacer = (data.unmatched_spacer || []).map(name => '<label class="note">' + esc(name) + '<select data-map="spacer" data-raw="' + esc(name) + '">' + productOptions(data.spacers, '') + '</select></label>').join('');
+  box.innerHTML = '<p class="note">' + esc(data.error || 'Match each name, then add the lines.') + '</p>' + glass + spacer + '<button type="button" class="btn" id="append-confirm">Add these lines</button>';
+  document.getElementById('append-confirm').addEventListener('click', () => {
+    const glassMap = {};
+    const spacerMap = {};
+    let missing = false;
+    box.querySelectorAll('select[data-map]').forEach(select => {
+      if (!select.value) missing = true;
+      const bucket = select.getAttribute('data-map') === 'spacer' ? spacerMap : glassMap;
+      bucket[select.getAttribute('data-raw')] = select.value;
+    });
+    if (missing) { say('Choose a product for every name.'); return; }
+    send({import_id: data.import_id, glass: glassMap, spacer: spacerMap, remember: true}, true);
+  });
 }
 async function copyQuote(id) {
   const res = await fetch('/api/quotes/' + encodeURIComponent(id) + '/copy', {

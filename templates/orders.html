@@ -285,6 +285,89 @@ function describeChange(change) {
   if (change.old !== undefined) return change.field + ': ' + JSON.stringify(change.old) + ' → ' + JSON.stringify(change.new);
   return change.field + ' ' + (action || 'updated');
 }
+function appendImportMarkup(order) {
+  if (!order || !order.import_kind) return '';
+  if (order.append_blocked) return '<p class="note" id="append-blocked">' + esc(order.append_blocked) + '</p>';
+  if (!order.can_append_file) return '';
+  const accept = order.import_kind === 'orgadata' ? 'application/pdf,.pdf' : '.pdf,.xlsx,.xls,.csv,application/pdf';
+  return '<div class="actions" id="append-import"><input type="file" id="append-file" accept="' + accept + '" aria-label="Another order file"><button type="button" class="btn" id="append-import-btn">Import another file</button></div><p class="note" id="append-import-message"></p><div id="append-review"></div>';
+}
+function productOptions(names, selected) {
+  return '<option value=""></option>' + (names || []).map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+}
+function bindAppendImport(order, onSaved) {
+  const button = document.getElementById('append-import-btn');
+  if (!button || !order || !order.quote_id) return;
+  const note = document.getElementById('append-import-message');
+  function say(text) { if (note) note.textContent = text || ''; }
+  async function send(body, json) {
+    const res = await fetch('/api/quotes/' + encodeURIComponent(order.quote_id) + '/import-file', json ? {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    } : {method: 'POST', body: body});
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) { say(payload.error || 'The file was not added.'); return; }
+    if (payload.needs_review) { renderAppendReview(payload, send, say); return; }
+    say('Added ' + (payload.added || 0) + ' lines.');
+    if (payload.order) onSaved(payload);
+  }
+  button.addEventListener('click', () => {
+    const file = document.getElementById('append-file').files[0];
+    if (!file) { say('Choose a file.'); return; }
+    const body = new FormData();
+    body.append('file', file);
+    send(body, false);
+  });
+}
+function renderAppendReview(data, send, say) {
+  const box = document.getElementById('append-review');
+  if (!box) return;
+  if (data.import_kind === 'orgadata') {
+    const blocks = (data.blocks || []).map((block, index) => {
+      const lites = (block.lites || []).map((lite, liteIndex) => '<label class="note">' + esc(lite.source || 'Glass') + '<select data-lite="' + liteIndex + '">' + productOptions(data.glass, lite.product) + '</select> <select data-temper="' + liteIndex + '"><option value="yes"' + (lite.temper === 'yes' ? ' selected' : '') + '>Tempered</option><option value="n/a"' + (lite.temper !== 'yes' ? ' selected' : '') + '>Not tempered</option></select></label>').join('');
+      const spacers = (block.spacers || []).map((spacer, spacerIndex) => '<label class="note">Spacer<select data-spacer="' + spacerIndex + '">' + productOptions(data.spacers, spacer.product) + '</select></label>').join('');
+      return '<div data-append-block="' + index + '"><p><strong>' + esc(block.name || 'Glass') + '</strong></p>' + lites + spacers + '</div>';
+    }).join('');
+    box.innerHTML = '<p class="note">' + esc(data.error || 'Match the glass and spacer, then add the lines.') + '</p>' + blocks + '<button type="button" class="btn" id="append-confirm">Add these lines</button>';
+    document.getElementById('append-confirm').addEventListener('click', () => {
+      const blocks = [];
+      box.querySelectorAll('[data-append-block]').forEach(section => {
+        const lites = [];
+        section.querySelectorAll('[data-lite]').forEach(select => {
+          const temper = section.querySelector('[data-temper="' + select.getAttribute('data-lite') + '"]');
+          lites.push({product: select.value, temper: temper ? temper.value : 'n/a'});
+        });
+        const spacers = [];
+        section.querySelectorAll('[data-spacer]').forEach(select => spacers.push({product: select.value}));
+        blocks.push({lites: lites, spacers: spacers});
+      });
+      send({import_id: data.import_id, blocks: blocks, remember: true}, true);
+    });
+    return;
+  }
+  if (data.status === 'choose_template') {
+    const options = (data.templates || []).map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    box.innerHTML = '<label class="note">Template <select id="append-template">' + options + '</select></label> <button type="button" class="btn" id="append-confirm">Read with this template</button>';
+    document.getElementById('append-confirm').addEventListener('click', () => {
+      send({import_id: data.import_id, template_id: Number(document.getElementById('append-template').value)}, true);
+    });
+    return;
+  }
+  const glass = (data.unmatched_glass || []).map(name => '<label class="note">' + esc(name) + '<select data-map="glass" data-raw="' + esc(name) + '">' + productOptions(data.glass, '') + '</select></label>').join('');
+  const spacer = (data.unmatched_spacer || []).map(name => '<label class="note">' + esc(name) + '<select data-map="spacer" data-raw="' + esc(name) + '">' + productOptions(data.spacers, '') + '</select></label>').join('');
+  box.innerHTML = '<p class="note">' + esc(data.error || 'Match each name, then add the lines.') + '</p>' + glass + spacer + '<button type="button" class="btn" id="append-confirm">Add these lines</button>';
+  document.getElementById('append-confirm').addEventListener('click', () => {
+    const glassMap = {};
+    const spacerMap = {};
+    let missing = false;
+    box.querySelectorAll('select[data-map]').forEach(select => {
+      if (!select.value) missing = true;
+      const bucket = select.getAttribute('data-map') === 'spacer' ? spacerMap : glassMap;
+      bucket[select.getAttribute('data-raw')] = select.value;
+    });
+    if (missing) { say('Choose a product for every name.'); return; }
+    send({import_id: data.import_id, glass: glassMap, spacer: spacerMap, remember: true}, true);
+  });
+}
 function displaySize(label) {
   const text = String(label || '');
   const match = text.match(/^(.*) in \((.*) mm\)$/);
@@ -404,9 +487,10 @@ function renderDetail(order) {
     const each = Number(item.sqf);
     const qty = Number(item.pcs);
     const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
-    const tip = [item.name, item.remarks, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
-    const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : '');
-    return '<tr><td class="num">' + esc(serial) + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
+    const tip = [item.name, item.remarks, item.source_filename, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
+    const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : (item.line_number || ''));
+    const source = !charge && item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
+    return '<tr><td class="num">' + esc(serial) + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + source + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   const primary = [];
@@ -463,7 +547,7 @@ function renderDetail(order) {
   const shipmentSection = sectionBlock('Shipments ' + '<span class="badge">' + esc((shipping.label || 'Not shipped')) + '</span>', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>' + shipTable + partial);
   const lineCount = (order.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation').length;
   const lineSummary = lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
-  const linesTable = '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
+  const linesTable = appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
   const when = order.approved_at_display || order.approved_at || '';
   const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.tier_label || order.tier || '', (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
   const headerSummary = headerBits.map(esc).join(' · ')
@@ -492,6 +576,7 @@ function renderDetail(order) {
     + drawingBlock
     + coverageSection
     + changelogBlock(order);
+  bindAppendImport(order, payload => { if (payload.order) renderDetail(payload.order); });
   const sent = document.getElementById('mark-sent');
   const made = document.getElementById('mark-made');
   const delivered = document.getElementById('mark-delivered');
