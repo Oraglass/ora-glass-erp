@@ -16,7 +16,13 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .detail-page .coverage{margin-top:0}
 .detail-page .clip{display:block;max-width:36rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .detail-page #priced-lines{table-layout:auto}
-.detail-page #priced-lines th.floor,.detail-page #priced-lines td.floor{white-space:nowrap;width:8.5rem;min-width:8.5rem}
+.detail-page #priced-lines th.floor,.detail-page #priced-lines td.floor,.detail-page #remake-lines th.floor,.detail-page #remake-lines td.floor{white-space:nowrap;width:8.5rem;min-width:8.5rem}
+.detail-page #remake-panel{border:1px solid #e5e5e5;border-radius:6px;background:#fafafa}
+.detail-page #remake-panel summary{cursor:pointer;font-weight:600;font-size:16px;color:#333;padding:10px 12px;list-style:none}
+.detail-page #remake-panel summary::-webkit-details-marker{display:none}
+.detail-page #remake-panel summary::before{content:'▸ ';color:#C41E3A}
+.detail-page #remake-panel[open] summary::before{content:'▾ '}
+.detail-page #remake-panel .remake-body{padding:0 12px 12px}
 .detail-page #priced-lines th.product,.detail-page #priced-lines td.product{white-space:normal;word-break:break-word;min-width:18rem}
 .detail-page #priced-lines th.num,.detail-page #priced-lines td.num{text-align:right;white-space:nowrap}
 .detail-page #priced-lines .line-note{display:block;margin-top:4px;color:#666;font-size:12px;font-weight:600}
@@ -494,16 +500,16 @@ function remakeForm(order) {
   const rows = lines.map(row => {
     const max = Number(row.ordered) || 1;
     return '<tr><td><input type="checkbox" data-remake-serial="' + esc(row.serial) + '" aria-label="Remake serial ' + esc(row.serial) + '"></td>'
-      + '<td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+      + '<td>' + esc(row.serial) + '</td><td class="floor">' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
       + '<td class="num">' + esc(row.ordered) + '</td>'
       + '<td class="num"><input data-remake-qty="' + esc(row.serial) + '" type="number" min="1" max="' + esc(max) + '" value="1" aria-label="Remake qty for serial ' + esc(row.serial) + '"></td></tr>';
   }).join('');
-  return '<section class="section" id="remake-form"><h3>Remake / service order</h3>'
+  return '<section class="section" id="remake-form"><details id="remake-panel"><summary>Remake / service order</summary><div class="remake-body">'
     + '<p class="note">Send selected pieces back to production without a new quote. The remake keeps this customer, project, spec, and the original serials.</p>'
-    + '<table id="remake-lines"><thead><tr><th></th><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Remake qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table id="remake-lines"><thead><tr><th></th><th>Serial</th><th class="floor">Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Remake qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div class="field-row"><label>Reason<textarea id="remake-reason" rows="2" placeholder="Breakage, production defect, customer damage" aria-label="Remake reason"></textarea></label>'
     + '<label>Charge customer<select id="remake-charge" aria-label="Charge customer"><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select></label></div>'
-    + '<div class="actions"><button type="button" class="btn" id="create-remake">Create remake</button></div></section>';
+    + '<div class="actions"><button type="button" class="btn" id="create-remake">Create remake</button></div></div></details></section>';
 }
 function remakesBlock(order) {
   const rows = order.remakes || [];
@@ -713,8 +719,10 @@ function renderDetail(order) {
   if (edit) edit.addEventListener('click', () => openEditor(order));
   const createRemake = document.getElementById('create-remake');
   if (createRemake) createRemake.addEventListener('click', async () => {
+    const panel = document.getElementById('remake-panel');
+    const reopen = () => { if (panel) panel.open = true; };
     const charge = document.getElementById('remake-charge').value;
-    if (!charge) { alert('Choose whether to charge the customer.'); return; }
+    if (!charge) { reopen(); alert('Choose whether to charge the customer.'); return; }
     const lines = [];
     document.querySelectorAll('[data-remake-serial]').forEach(box => {
       if (!box.checked) return;
@@ -722,7 +730,7 @@ function renderDetail(order) {
       const qty = document.querySelector('[data-remake-qty="' + serial + '"]');
       lines.push({serial: Number(serial), qty: Number(qty && qty.value)});
     });
-    if (!lines.length) { alert('Select at least one glass line.'); return; }
+    if (!lines.length) { reopen(); alert('Select at least one glass line.'); return; }
     const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/remake', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -732,7 +740,7 @@ function renderDetail(order) {
       })
     });
     const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(payload.error || 'Could not create the remake'); return; }
+    if (!res.ok) { reopen(); alert(payload.error || 'Could not create the remake'); return; }
     window.location = '/orders/' + encodeURIComponent(payload.id);
   });
   const unapprove = document.getElementById('unapprove-order');

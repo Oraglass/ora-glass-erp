@@ -62,6 +62,10 @@ def test_remake_restarts_serials_and_keeps_the_floor(client):
     order_id = _order(client)
     page = client.get(f'/orders/{order_id}')
     assert b'Remake / service order' in page.data
+    assert b'<details id="remake-panel">' in page.data
+    assert b'<details id="remake-panel" open' not in page.data
+    assert b'#remake-lines td.floor{white-space:nowrap' in page.data
+    assert b'panel.open = true' in page.data
     assert b'value="remake"' in client.get('/orders').data
     refused = client.post(f'/api/orders/{order_id}/remake', json={'lines': [{'serial': 2, 'qty': 1}]})
     assert refused.status_code == 400
