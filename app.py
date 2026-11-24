@@ -4262,10 +4262,36 @@ def _trim_num(value):
 
 
 def _import_spec(line):
+    sealants = _live_materials()[2]
+    if line.get('igu'):
+        glasses = [
+            line.get('glass_product') or '',
+            line.get('glass2_product') or '',
+            line.get('glass3_product') or '',
+        ]
+        spacers = [line.get('spacer_product') or '', line.get('spacer2_product') or '']
+        lites = line.get('lites') if isinstance(line.get('lites'), list) else []
+        spec = {
+            'width': line.get('width'),
+            'height': line.get('height'),
+            'unit': 'in',
+            'argon': bool(line.get('argon')),
+        }
+        for index in range(3):
+            glass = glasses[index]
+            temper = 'n/a'
+            if index < len(lites) and isinstance(lites[index], dict) and lites[index].get('temper') in {'yes', 'n/a'}:
+                temper = lites[index]['temper']
+            spec[f'glass{index + 1}'] = glass
+            spec[f'temper{index + 1}'] = temper if glass else 'n/a'
+            spacer = spacers[index] if index < 2 else ''
+            spec[f'spacer{index + 1}'] = spacer
+            spec[f'sealant{index + 1}'] = suggest_sealant(spacer, sealants).get('selected') or '' if spacer else ''
+        return spec
     spacer = line.get('spacer_product') or ''
     sealant = ''
     if spacer:
-        sealant = suggest_sealant(spacer, _live_materials()[2]).get('selected') or ''
+        sealant = suggest_sealant(spacer, sealants).get('selected') or ''
     return {
         'glass1': line.get('glass_product') or '',
         'temper1': 'n/a',
@@ -4289,6 +4315,10 @@ def _price_import_line(line, tier, currency, fx_rate=None):
     line['sqf'] = None
     line['total'] = None
     if line.get('errors') or not line.get('glass_product') or not line.get('width') or not line.get('height') or not line.get('qty'):
+        return
+    if line.get('igu') and (not line.get('glass2_product') or not line.get('spacer_product')):
+        return
+    if line.get('igu') and int(line.get('panes') or 2) >= 3 and (not line.get('glass3_product') or not line.get('spacer2_product')):
         return
     priced = _reprice(_import_spec(line), line.get('qty'), tier, currency, load_tiers(), fx_rate)
     line.update(priced)
@@ -4317,13 +4347,44 @@ def _apply_saved_mappings(parsed, customer_id, tier, currency, extra_glass=None,
             spacer_map[str(source).casefold()] = known
     exact_glass = {name.casefold(): name for name in glass_names}
     exact_spacer = {name.casefold(): name for name in spacer_names}
+    aliases = orgadata_import.aliases_for(customer_id)
+    glass_aliases = dict(aliases.get('glass') or {})
+    spacer_aliases = dict(aliases.get('spacer') or {})
+    for source, product in glass_map.items():
+        glass_aliases.setdefault(orgadata_import.glass_alias_key(source), product)
+    sealants = _live_materials()[2]
     unmatched_glass = []
     unmatched_spacer = []
     for line in parsed.get('lines') or []:
-        errors = [error for error in (line.get('errors') or []) if not str(error).startswith('Unmatched')]
+        errors = [error for error in (line.get('errors') or []) if not str(error).startswith('Unmatched') and not str(error).startswith('Choose an ERP')]
         raw_glass = line.get('glass_name') or ''
+        build = orgadata_import.match_igu_description(
+            raw_glass, glass_names, spacer_names, {'glass': glass_aliases, 'spacer': spacer_aliases},
+        ) if raw_glass else None
+        if build:
+            line['igu'] = True
+            line['argon'] = bool(build.get('argon'))
+            line['lites'] = build.get('lites') or []
+            line['spacers'] = build.get('spacers') or []
+            line['panes'] = len(line['lites'])
+            line['glass_product'] = line['lites'][0].get('product') if line['lites'] else ''
+            line['glass2_product'] = line['lites'][1].get('product') if len(line['lites']) > 1 else ''
+            line['glass3_product'] = line['lites'][2].get('product') if len(line['lites']) > 2 else ''
+            line['spacer_product'] = line['spacers'][0].get('product') if line['spacers'] else ''
+            line['spacer2_product'] = line['spacers'][1].get('product') if len(line['spacers']) > 1 else ''
+            line['sealant'] = suggest_sealant(line['spacer_product'], sealants).get('selected') or '' if line['spacer_product'] else ''
+            line['sealant2'] = suggest_sealant(line['spacer2_product'], sealants).get('selected') or '' if line['spacer2_product'] else ''
+            if build.get('warnings'):
+                errors.extend(build['warnings'])
+            line['errors'] = errors
+            _price_import_line(line, tier, currency)
+            continue
+        line['igu'] = False
         product = glass_map.get(raw_glass.casefold()) or exact_glass.get(raw_glass.casefold(), '') if raw_glass else ''
         line['glass_product'] = product or ''
+        line['glass2_product'] = ''
+        line['glass3_product'] = ''
+        line['spacer2_product'] = ''
         if raw_glass and not product:
             errors.append('Unmatched glass')
             if raw_glass not in unmatched_glass:
@@ -4379,9 +4440,10 @@ def _present_import(record, template, user, currency='usd', extra_glass=None, ex
     unmatched_glass, unmatched_spacer = _apply_saved_mappings(
         parsed, record.get('customer_id'), tier, currency, extra_glass, extra_spacer,
     )
+    igu_open = any(line.get('igu') and line.get('errors') for line in parsed.get('lines') or [])
     if parsed.get('error') or parsed.get('looks_wrong'):
         status = 'needs_review'
-    elif unmatched_glass or unmatched_spacer:
+    elif unmatched_glass or unmatched_spacer or igu_open:
         status = 'needs_mapping'
     else:
         status = 'preview'
@@ -4691,6 +4753,9 @@ def _normalize_import_lines(raw_lines):
             qty = 0
         if qty < 1 or qty > 10000:
             errors.append('Quantity must be a whole number.')
+        glass_name = clean_text(raw.get('glass_name'), 500)
+        parsed_igu = orgadata_import.parse_igu_description(glass_name)
+        igu = bool(raw.get('igu')) or bool(parsed_igu)
         glass = _known_product(raw.get('glass_product'), glass_names)
         if not glass:
             errors.append('Choose one of our glass products.')
@@ -4698,18 +4763,53 @@ def _normalize_import_lines(raw_lines):
         spacer = _known_product(spacer_raw, spacer_names) if spacer_raw else ''
         if spacer_raw and not spacer:
             errors.append('Choose one of our spacers.')
+        glass2 = _known_product(raw.get('glass2_product'), glass_names) if raw.get('glass2_product') else ''
+        glass3 = _known_product(raw.get('glass3_product'), glass_names) if raw.get('glass3_product') else ''
+        spacer2 = _known_product(raw.get('spacer2_product'), spacer_names) if raw.get('spacer2_product') else ''
+        panes = len(parsed_igu['lites']) if parsed_igu else (3 if glass3 or spacer2 else 2)
+        if igu:
+            if not glass2:
+                errors.append('Choose the inner glass.')
+            if not spacer:
+                errors.append('Choose a spacer.')
+            if panes >= 3 and not glass3:
+                errors.append('Choose the middle glass.')
+            if panes >= 3 and not spacer2:
+                errors.append('Choose the second spacer.')
         if errors:
             blocked = True
+        argon = raw.get('argon')
+        if isinstance(argon, str):
+            argon = argon.lower() in {'1', 'true', 'yes', 'argon'}
+        elif argon is None and parsed_igu:
+            argon = parsed_igu.get('argon')
+        lites = []
+        if parsed_igu:
+            products = [glass, glass2, glass3]
+            for index, lite in enumerate(parsed_igu['lites']):
+                lites.append({
+                    'source': lite.get('source') or '',
+                    'thickness_mm': lite.get('thickness_mm'),
+                    'product': products[index] if index < len(products) else '',
+                    'temper': 'yes' if parsed_igu.get('tempered') else 'n/a',
+                })
         line = {
             'mark': clean_text(raw.get('mark'), 80),
             'width': width,
             'height': height,
             'unit': 'in',
             'qty': qty,
-            'glass_name': clean_text(raw.get('glass_name'), 200),
+            'glass_name': glass_name,
             'spacer_name': clean_text(raw.get('spacer_name'), 200),
             'glass_product': glass,
+            'glass2_product': glass2,
+            'glass3_product': glass3,
             'spacer_product': spacer,
+            'spacer2_product': spacer2,
+            'igu': igu,
+            'panes': panes if igu else 1,
+            'argon': bool(argon),
+            'lites': lites,
             'irregular_shape': bool(raw.get('irregular_shape') or raw.get('irregular')),
             'errors': errors,
         }
@@ -4744,10 +4844,16 @@ def quote_from_import(import_id):
         _price_import_line(line, tier, currency, fx_rate)
         spec = _import_spec(line)
         size = f"{_trim_num(line['width'])} x {_trim_num(line['height'])} in"
-        parts = [line.get('mark') or '', line.get('glass_product') or '']
-        if line.get('spacer_product'):
-            parts.append(line['spacer_product'])
-        parts.append(size)
+        makeup = production.makeup_from_spec(spec) if line.get('igu') else ''
+        if makeup and not line.get('argon'):
+            makeup = makeup.replace(' with Argon', '')
+        if makeup:
+            parts = [line.get('mark') or '', makeup, size]
+        else:
+            parts = [line.get('mark') or '', line.get('glass_product') or '']
+            if line.get('spacer_product'):
+                parts.append(line['spacer_product'])
+            parts.append(size)
         items.append({
             'name': ' - '.join(part for part in parts if part),
             'sqf': line.get('sqf'),
@@ -5453,10 +5559,16 @@ def _items_from_order_import_lines(lines, tier, currency, fx_rate):
             return None, 'Match every name before adding these lines.'
         spec = _import_spec(fresh)
         size = f"{_trim_num(fresh['width'])} x {_trim_num(fresh['height'])} in"
-        parts = [fresh.get('mark') or '', fresh.get('glass_product') or '']
-        if fresh.get('spacer_product'):
-            parts.append(fresh['spacer_product'])
-        parts.append(size)
+        makeup = production.makeup_from_spec(spec) if fresh.get('igu') else ''
+        if makeup and not fresh.get('argon'):
+            makeup = makeup.replace(' with Argon', '')
+        if makeup:
+            parts = [fresh.get('mark') or '', makeup, size]
+        else:
+            parts = [fresh.get('mark') or '', fresh.get('glass_product') or '']
+            if fresh.get('spacer_product'):
+                parts.append(fresh['spacer_product'])
+            parts.append(size)
         built.append({
             'name': ' - '.join(part for part in parts if part),
             'sqf': fresh.get('sqf'),
