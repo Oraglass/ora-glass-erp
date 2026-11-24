@@ -29,14 +29,26 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .sealant-note{color:#C41E3A;font-size:11px;margin-top:6px;line-height:1.3}
 .sealant-note:empty{display:none}
 .quote-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
-.quote-table th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:1px solid #ddd}
+.quote-table th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:1px solid #ddd;vertical-align:middle}
 .quote-table td{padding:8px;border-bottom:1px solid #eee;vertical-align:middle}
-.quote-table .col-product{text-align:left;overflow-wrap:anywhere;word-break:break-word}
-.quote-table .col-size{width:11rem;white-space:nowrap}
-.quote-table .col-qty{width:4rem;text-align:right;white-space:nowrap}
-.quote-table .col-price{width:9rem;text-align:right;white-space:nowrap}
-.quote-table .col-remove{width:2.75rem;text-align:center}
-.quote-remove{background:#fff;border:1px solid #e7b3bc;color:#C41E3A;border-radius:4px;width:28px;height:28px;cursor:pointer;font-size:16px;line-height:1;padding:0}
+.quote-table .col-line{width:3.25rem;text-align:right;font-variant-numeric:tabular-nums}
+.quote-table .col-product{text-align:left}
+.quote-table .col-floor{width:6.75rem}
+.quote-table .col-size{width:14rem;white-space:normal;vertical-align:top}
+.quote-table .size-imperial{display:block;white-space:nowrap}
+.quote-table .size-metric{display:block;color:#666;font-size:12px;line-height:1.3;white-space:nowrap}
+.quote-table .size-edit{margin-top:4px;color:#555;font-size:12px}
+.quote-table .col-qty{width:4.75rem}
+.quote-table .col-price{width:7.25rem;text-align:right;white-space:nowrap}
+.quote-table .col-actions{width:13.75rem}
+.igu-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.35;max-height:2.7em;word-break:break-word}
+.line-actions{display:flex;gap:4px;align-items:center;flex-wrap:nowrap}
+.quote-remove{background:#fff;border:1px solid #e7b3bc;color:#C41E3A;border-radius:4px;height:28px;padding:0 8px;cursor:pointer;font-size:12px;line-height:1}
+.line-editor td{background:#fafafa;padding:12px 10px 14px}
+.line-editor-grid{display:grid;grid-template-columns:8.5rem minmax(0,1fr) 8.5rem minmax(0,1fr);gap:8px 12px;align-items:center}
+.line-editor-grid .editor-label{font-size:12px;font-weight:600;color:#555}
+.line-editor-grid select,.line-editor-grid input[type=text]{width:100%;max-width:none;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box}
+.line-editor-actions{display:flex;gap:8px;margin-top:12px}
 .quote-remove:hover{background:#fde8ec}
 .quote-remove:focus-visible{outline:2px solid #C41E3A;outline-offset:2px}
 .import-grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:12px}
@@ -130,7 +142,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div id="quote-list" style="margin-top:20px;display:none">
 <h3 style="color:#333;margin-bottom:10px">Quote Items</h3>
 <label style="display:flex;gap:8px;align-items:center;margin:0 0 10px;font-size:13px"><input type="checkbox" data-show-remarks onchange="toggleShowRemarks(this.checked)"> Show remarks</label>
-<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-remove"></th></tr></thead><tbody id="quote-body"></tbody></table>
+<table class="quote-table"><thead><tr><th class="col-line">#</th><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price/sqf</th><th class="col-actions">Actions</th></tr></thead><tbody id="quote-body"></tbody></table>
 <button class="btn" style="margin-top:15px" onclick="exportQuote()">Export Quote</button>
 <button type="button" class="btn" id="save-sqf-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
 </div>
@@ -182,7 +194,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <p id="copy-note-lines" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:14px;font-weight:600"></p>
 <p id="quote-tax-lines" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <p id="drawing-note" hidden style="margin:0 0 12px;padding:10px 12px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:14px;font-weight:600">{{ drawing_note }}</p>
-<table class="quote-table"><thead><tr><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-remove"></th></tr></thead><tbody id="size-quote-body"></tbody></table>
+<table class="quote-table"><thead><tr><th class="col-line">#</th><th class="col-product">Product</th><th class="col-floor">Floor</th><th class="col-size">Size</th><th class="col-qty">Qty</th><th class="col-price">Price</th><th class="col-actions">Actions</th></tr></thead><tbody id="size-quote-body"></tbody></table>
 <p id="company-discount-line" hidden style="margin:12px 0 0;font-size:14px;font-weight:600"></p>
 <button class="btn" style="margin-top:15px" onclick="exportSizeQuote()">Export Quote</button>
 <button type="button" class="btn" id="save-size-quote" hidden style="margin-top:15px;margin-left:8px;background:#333">Save quote</button>
@@ -205,7 +217,7 @@ function updateTemper(glassId,temperId){const glassEl=document.getElementById(gl
 document.getElementById('glass1').addEventListener('change',function(){updateTemper('glass1','temper1');showSize('glass1','size1')});
 function liteIsEmpty(value){return !value||value==='n/a'}
 function clearSpacerAndSealant(prefix,which){const spacer=document.getElementById(prefix+'spacer'+which);const sealant=document.getElementById(prefix+'sealant'+which);const temper=document.getElementById(prefix+'temper'+which);if(spacer)spacer.value='';if(sealant)sealant.value='';if(temper)temper.value='n/a';if(spacer&&sealant)updateSealant(spacer.id,sealant.id)}
-function onLiteChange(prefix,layer){const glass=document.getElementById(prefix+'glass'+layer);if(!glass||!liteIsEmpty(glass.value))return;if(layer==='3')clearSpacerAndSealant(prefix,'2');if(layer==='2'){clearSpacerAndSealant(prefix,'1');const inner=document.getElementById(prefix+'glass3');if(inner)inner.value='';clearSpacerAndSealant(prefix,'2')}}
+function onLiteChange(prefix,layer){const glass=document.getElementById(prefix+'glass'+layer);if(!glass)return;function restoreSealant(which){const spacer=document.getElementById(prefix+'spacer'+which);const sealant=document.getElementById(prefix+'sealant'+which);if(spacer&&sealant&&!liteIsEmpty(spacer.value))updateSealant(spacer.id,sealant.id)}if(!liteIsEmpty(glass.value)){if(layer==='3')restoreSealant('2');if(layer==='2')restoreSealant('1');return}if(layer==='3')clearSpacerAndSealant(prefix,'2');if(layer==='2'){clearSpacerAndSealant(prefix,'1');const inner=document.getElementById(prefix+'glass3');if(inner)inner.value='';clearSpacerAndSealant(prefix,'2')}}
 document.getElementById('glass2').addEventListener('change',function(){onLiteChange('','2');updateTemper('glass2','temper2');showSize('glass2','size2')});
 document.getElementById('glass3').addEventListener('change',function(){onLiteChange('','3');updateTemper('glass3','temper3');showSize('glass3','size3')});
 document.getElementById('spacer1').addEventListener('change',()=>updateSealant('spacer1','sealant1'));
@@ -213,10 +225,27 @@ document.getElementById('spacer2').addEventListener('change',()=>updateSealant('
 function autoCalc(){if(!selectedCurrency)return;const g1=document.getElementById('glass1').value;const s1=document.getElementById('spacer1').value;const g2=document.getElementById('glass2').value;const s2=document.getElementById('spacer2').value;const g3=document.getElementById('glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}calculate()}
 ['glass1','glass2','glass3','temper1','temper2','temper3','spacer1','spacer2','sealant1','sealant2','tier'].forEach(id=>{document.getElementById(id).addEventListener('change',autoCalc)});
 async function calculate(){if(!selectedCurrency)return;const data={glass1:document.getElementById('glass1').value,glass2:document.getElementById('glass2').value,glass3:document.getElementById('glass3').value,temper1:document.getElementById('temper1').value,temper2:document.getElementById('temper2').value,temper3:document.getElementById('temper3').value,spacer1:document.getElementById('spacer1').value,spacer2:document.getElementById('spacer2').value,sealant1:document.getElementById('sealant1').value,sealant2:document.getElementById('sealant2').value,tier:document.getElementById('tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();if(!draftQuoteId&&result.fx_rate)erpRate=Number(result.fx_rate);const price=selectedCurrency==='cad'?result.price_sqf*erpRate:result.price_sqf;document.getElementById('price').textContent=price.toFixed(2);document.getElementById('curr-label').textContent=selectedCurrency.toUpperCase();document.getElementById('result').style.display='block';document.getElementById('igu-name').textContent=generateIGUName()}
-function generateIGUName(){const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;const t1=document.getElementById('temper1').value;const t2=document.getElementById('temper2').value;const t3=document.getElementById('temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];if(g1)parts.push(cleanGlass(g1,t1));if(s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2,t2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3,t3));let totalMm=0;['glass1','glass2','glass3','spacer1','spacer2'].forEach(id=>{const val=document.getElementById(id).value;const m=val.match(/(\d+)mm/);if(m)totalMm+=parseInt(m[1])});const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
+function componentThickness(name) {
+  const text = String(name || '');
+  if (!text || text === 'n/a') return 0;
+  const mmParts = [];
+  const mmRe = /(\d+(?:\.\d+)?)\s*mm/ig;
+  let match;
+  while ((match = mmRe.exec(text))) mmParts.push(Number(match[1]));
+  const laminated = /lam|\bpvb\b|\bsgp\b|interlayer/i.test(text) || mmParts.length > 1;
+  let inches = 0;
+  if (laminated) {
+    const inchRe = /(\d+(?:\.\d+)?)\s*(?:inches|inch|in|"|″|”)/ig;
+    while ((match = inchRe.exec(text))) inches += Number(match[1]) * 25.4;
+  }
+  const round = value => Math.round(value * 100) / 100;
+  if (laminated && (mmParts.length || inches)) return round(mmParts.reduce((sum, value) => sum + value, 0) + inches);
+  return mmParts.length ? round(mmParts[0]) : 0;
+}
+function generateIGUName(){const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;const t1=document.getElementById('temper1').value;const t2=document.getElementById('temper2').value;const t3=document.getElementById('temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
 function addToQuote(){const name=document.getElementById('igu-name').textContent;const price=document.getElementById('price').textContent;const project=document.getElementById('project-name').value;if(!name||!selectedCurrency)return;quoteItems.push({name,price,currency:selectedCurrency,project,size:'-',pcs:'-'});renderQuoteList()}
 function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML=quoteItems.map((item,i)=>'<tr><td class="col-product">'+item.name+'</td><td class="col-size">'+(item.size||'-')+'</td><td class="col-qty">'+(item.pcs||'-')+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.price+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem('+i+')">×</button></td></tr>').join('');document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
-function removeItem(i){quoteItems.splice(i,1);renderQuoteList()}
+function removeItem(i){openSqfIndex=null;quoteItems.splice(i,1);renumberLines(quoteItems);renderQuoteList()}
 async function exportQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems,currency:selectedCurrency,project,type:'sqf',tier:document.getElementById('tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:quoteItems,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 function dualSize(width, height, unit) {
   const w = Number(width), h = Number(height);
@@ -242,16 +271,18 @@ function dualSize(width, height, unit) {
     if (Math.abs(number - Math.round(number)) < 1e-9) return String(Math.round(number));
     return String(number);
   }
-  return inchFraction(wmm / 25.4) + ' x ' + inchFraction(hmm / 25.4) + ' in (' + displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm)';
+  const imperial = inchFraction(wmm / 25.4) + ' x ' + inchFraction(hmm / 25.4) + ' in';
+  const metric = displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm';
+  return '<span class="size-imperial">' + imperial + '</span><span class="size-metric">' + metric + '</span>';
 }
 function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
 function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem('+i+')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
-function removeSizeItem(i){sizeQuoteItems.splice(i,1);renderSizeQuoteList()}
+function removeSizeItem(i){openSizeIndex=null;sizeQuoteItems.splice(i,1);renumberLines(sizeQuoteItems);renderSizeQuoteList()}
 async function exportSizeQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;const items=sizeQuoteItems.map(i=>({name:i.name+' - '+i.size,sqf:i.sqf,price_sqf:i.priceSqf,price_pc:i.pricePc,total:i.total,pcs:i.pcs,spec:i.spec||null,irregular_shape:!!i.irregular_shape,surcharge_rate:i.surcharge_rate||null}));await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project,type:'size',tier:document.getElementById('s-tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
 function checkSheetSize(){const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const unit=document.getElementById('unit').value;const glasses=['s-glass1','s-glass2','s-glass3'];let error='';for(const id of glasses){const el=document.getElementById(id);const sel=el.options[el.selectedIndex];if(sel&&sel.dataset.size){const match=sel.dataset.size.match(/(\d+)"x(\d+)"/);if(match){const sheetW=parseInt(match[1]);const sheetH=parseInt(match[2]);let inputW=w;let inputH=h;if(unit==='mm'){inputW=w/25.4;inputH=h/25.4}const fits=(inputW<=sheetW&&inputH<=sheetH)||(inputW<=sheetH&&inputH<=sheetW);if(!fits){error='Size exceeds sheet ('+sel.dataset.size+') for '+sel.value;break}}}}const errEl=document.getElementById('size-error');if(error){if(!errEl){const div=document.createElement('div');div.id='size-error';div.style.cssText='color:#C41E3A;font-size:13px;margin:10px 0;font-weight:bold;padding:10px;background:#fff0f0;border-radius:4px';const dimSection=document.querySelector('#tab-size .section');dimSection.parentNode.insertBefore(div,dimSection.nextSibling)}document.getElementById('size-error').textContent=error;document.getElementById('size-error').style.display='block';return false}else if(errEl){errEl.style.display='none'}return true}
 async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize())return;const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?erpRate:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);window.sizeMinimumSqf=Number(result.minimum_sqf)||0;const chargedSqf=Math.max(sqf,(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0);document.getElementById('area').textContent=chargedSqf.toFixed(2);const areaTotal=document.getElementById('area-total');if(areaTotal)areaTotal.textContent=(chargedSqf*pcs).toFixed(2);const minimumNote=document.getElementById('minimum-sqf-note');if(minimumNote){const shown=(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0;minimumNote.hidden=!(shown>0);minimumNote.textContent=shown>0?('Pieces smaller than '+shown+' sq ft are charged as '+shown+' sq ft.'):'';}const pricePerPc=result.price_sqf*chargedSqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block'}
-function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];if(g1)parts.push(cleanGlass(g1,t1));if(s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2&&g2!=='n/a'){parts.push(cleanGlass(g2,t2));if(s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2))}if(g3&&g3!=='n/a')parts.push(cleanGlass(g3,t3));let totalMm=0;['s-glass1','s-glass2','s-glass3','s-spacer1','s-spacer2'].forEach(id=>{const val=document.getElementById(id).value;const m=val.match(/(\d+)mm/);if(m)totalMm+=parseInt(m[1])});const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
+function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+')}
 document.getElementById('s-glass1').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size1').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass1','s-temper1');calculate();calcSize()});
 document.getElementById('s-glass2').addEventListener('change',function(){onLiteChange('s-','2');const sel=this.options[this.selectedIndex];document.getElementById('s-size2').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass2','s-temper2');calcSize()});
 document.getElementById('s-glass3').addEventListener('change',function(){onLiteChange('s-','3');const sel=this.options[this.selectedIndex];document.getElementById('s-size3').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass3','s-temper3');calcSize()});
@@ -266,6 +297,13 @@ document.getElementById('s-spacer1').addEventListener('change',function(){update
 <script>
 function quoteEsc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function shownQuoteSize(item) {
+  const spec = item.spec || {};
+  if (spec.width && spec.height) return dualSize(spec.width, spec.height, spec.unit || 'in');
+  const match = String(item.size || '').match(/^([\d.]+)\s*x\s*([\d.]+)\s*(mm|in)?$/i);
+  if (match) return dualSize(match[1], match[2], match[3] || 'in');
+  return quoteEsc(item.size || '-');
 }
 let showRemarks = false;
 function toggleShowRemarks(checked) {
@@ -292,7 +330,7 @@ function setFloor(listName, index, value) {
 }
 function floorCell(item, index, listName) {
   const value = item.floor || item.mark || '';
-  return '<td class="col-floor"><input type="text" aria-label="Floor" placeholder="W12" maxlength="80" value="' + quoteEsc(value) + '" oninput="setFloor(\'' + listName + '\',' + index + ', this.value)" style="width:5.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td>';
+  return '<td class="col-floor"><input type="text" aria-label="Floor" placeholder="W12" maxlength="80" value="' + quoteEsc(value) + '" oninput="setFloor(\'' + listName + '\',' + index + ', this.value)" style="width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box"></td>';
 }
 function remarkControls(item, index, listName) {
   const open = showRemarks || item.remarkOpen || !!(item.remarks);
@@ -300,24 +338,65 @@ function remarkControls(item, index, listName) {
   const field = open ? '<input type="text" aria-label="Remarks" placeholder="Remarks" value="' + quoteEsc(item.remarks || '') + '" oninput="setRemark(\'' + listName + '\',' + index + ', this.value)" style="width:100%;margin-top:4px;padding:4px;border:1px solid #ddd;border-radius:4px">' : '';
   return '<div style="margin-top:4px"><label style="font-size:12px;color:#555"><input type="checkbox"' + marked + ' onchange="toggleLineRemark(\'' + listName + '\',' + index + ', this.checked)"> Remark</label>' + field + '</div>';
 }
+var openSizeIndex = null;
+var openSqfIndex = null;
+function lineActions(index, kind) {
+  const edit = kind === 'size' ? 'openSizeEditor(' + index + ')' : 'openSqfEditor(' + index + ')';
+  const dup = kind === 'size' ? 'duplicateSizeItem(' + index + ')' : 'duplicateSqfItem(' + index + ')';
+  const rem = kind === 'size' ? 'removeSizeItem(' + index + ')' : 'removeItem(' + index + ')';
+  return '<td class="col-actions"><div class="line-actions"><button type="button" class="quote-remove" aria-label="Edit line" onclick="' + edit + '">Edit</button><button type="button" class="quote-remove" aria-label="Duplicate line" onclick="' + dup + '">Duplicate</button><button type="button" class="quote-remove" aria-label="Remove item" onclick="' + rem + '">Remove</button></div></td>';
+}
+function nameCell(name) {
+  const text = name || '';
+  return '<td class="col-product"><div class="igu-name" title="' + quoteEsc(text) + '">' + quoteEsc(text) + '</div></td>';
+}
+function openSizeEditor(index) {
+  openSqfIndex = null;
+  openSizeIndex = index;
+  renderQuoteList();
+  renderSizeQuoteList();
+}
+function openSqfEditor(index) {
+  openSizeIndex = null;
+  openSqfIndex = index;
+  renderQuoteList();
+  renderSizeQuoteList();
+}
+function cancelLineEditor() {
+  openSizeIndex = null;
+  openSqfIndex = null;
+  renderQuoteList();
+  renderSizeQuoteList();
+}
 const renderSqfQuoteList = renderQuoteList;
 renderQuoteList = function () {
+  renumberLines(quoteItems);
   const tbody = document.getElementById('quote-body');
-  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSqfItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
+  tbody.innerHTML = quoteItems.map((item, i) => {
+    const number = i + 1;
+    const remark = (showRemarks && item.remarks) ? '<div class="note">' + quoteEsc(item.remarks) + '</div>' : '';
+    const panel = openSqfIndex === i ? '<tr class="line-editor" data-line-editor="sqf-' + i + '"><td colspan="7"><div class="line-editor-grid"><span class="editor-label">Remark</span><input type="text" data-field="remarks" aria-label="Remarks" value="' + quoteEsc(item.remarks || '') + '"></div><div class="line-editor-actions"><button type="button" class="btn" onclick="updateSqfEditor()">Update line</button><button type="button" class="btn" style="background:#333" onclick="cancelLineEditor()">Cancel</button></div></td></tr>' : '';
+    return '<tr><td class="col-line">' + quoteEsc(number) + '</td>' + nameCell(item.name) + floorCell(item, i, 'sqf') + '<td class="col-size">' + shownQuoteSize(item) + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td>' + lineActions(i, 'sqf') + '</tr>' + remarkRow(remark, i) + panel;
+  }).join('');
   document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
+function remarkRow(remark) {
+  if (!remark) return '';
+  return '<tr><td></td><td colspan="6">' + remark + '</td></tr>';
+}
 const renderSizedQuoteList = renderSizeQuoteList;
 renderSizeQuoteList = function () {
+  renumberLines(sizeQuoteItems);
   const tbody = document.getElementById('size-quote-body');
   tbody.innerHTML = sizeQuoteItems.map((item, i) => {
-    const checked = item.irregular_shape ? ' checked' : '';
     const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
     const pcs = Number(item.pcs) || 1;
     const unit = item.spec && item.spec.unit === 'mm' ? 'mm' : 'in';
-    const shownSize = (item.spec && item.spec.width) ? '<input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit : quoteEsc(item.size || '');
-    const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-floor"></td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
-    return '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + specEditor(item, i) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Edit line" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSizeItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
+    const shownSize = (item.spec && item.spec.width) ? dualSize(item.spec.width, item.spec.height, unit) + '<div class="size-edit"><input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit + '</div>' : shownQuoteSize(item);
+    const extra = item.irregular_shape ? '<tr><td class="col-line"></td><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + '</td><td></td><td></td><td></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
+    const panel = openSizeIndex === i ? '<tr class="line-editor" data-line-editor="' + i + '"><td colspan="7">' + specEditor(item, i) + '</td></tr>' : '';
+    return '<tr><td class="col-line">' + (i + 1) + '</td>' + nameCell(item.name) + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td>' + lineActions(i, 'size') + '</tr>' + panel + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
   const taxBase = sizeQuoteItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
@@ -413,7 +492,6 @@ function editSizeItem(index) {
     remarks: item.remarks || '',
     remarkOpen: !!(item.remarks),
     source_filename: item.source_filename || '',
-    line_number: item.line_number || '',
     line_id: item.line_id || ''
   };
   window.replacingLineIndex = index;
@@ -426,20 +504,25 @@ function placeSizeLine(item) {
     const rebuilt = iguNameFromSpec(item.spec);
     if (rebuilt) item.name = rebuilt;
   }
+  delete item.line_number;
   if (window.replacingLineIndex != null && window.replacingLineIndex >= 0 && window.replacingLineIndex < sizeQuoteItems.length) {
     sizeQuoteItems.splice(window.replacingLineIndex, 1, item);
   } else {
     sizeQuoteItems.push(item);
   }
+  renumberLines(sizeQuoteItems);
   window.replacingLineIndex = null;
   window.editingLineMeta = null;
   const addButton = document.querySelector('#tab-size button[onclick="addSizeToQuote()"]');
   if (addButton) addButton.textContent = 'Add to Quote';
 }
-function nextLineNumber(list) {
-  return (list || []).reduce((max, item) => Math.max(max, parseInt(item && item.line_number, 10) || 0), 0) + 1;
+function renumberLines(list) {
+  (list || []).forEach((item, index) => {
+    if (item) item.line_number = index + 1;
+  });
 }
 function duplicateSizeItem(index) {
+  openSizeIndex = null;
   const item = sizeQuoteItems[index];
   if (!item) return;
   const copy = JSON.parse(JSON.stringify(item));
@@ -447,19 +530,22 @@ function duplicateSizeItem(index) {
   delete copy.drawing;
   delete copy.drawing_file;
   delete copy.drawing_stored;
-  copy.line_number = nextLineNumber(sizeQuoteItems);
+  delete copy.line_number;
   sizeQuoteItems.splice(index + 1, 0, copy);
+  renumberLines(sizeQuoteItems);
   renderSizeQuoteList();
   repriceSizeItem(index + 1);
 }
 function duplicateSqfItem(index) {
+  openSqfIndex = null;
   const item = quoteItems[index];
   if (!item) return;
   const copy = Object.assign({}, item);
   delete copy.line_id;
   delete copy.drawing;
-  copy.line_number = nextLineNumber(quoteItems);
+  delete copy.line_number;
   quoteItems.splice(index + 1, 0, copy);
+  renumberLines(quoteItems);
   renderQuoteList();
 }
 function setSizeQty(index, value) {
@@ -513,8 +599,41 @@ async function repriceSizeItem(index) {
   if (rebuilt) item.name = rebuilt;
   renderSizeQuoteList();
 }
+function liteBlank(value) {
+  return !value || value === 'n/a';
+}
+function normalizeSpec(spec) {
+  const next = Object.assign({}, spec || {});
+  if ('glass2' in next && liteBlank(next.glass2)) {
+    next.glass2 = '';
+    next.temper2 = 'n/a';
+    next.spacer1 = '';
+    next.sealant1 = '';
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+    return next;
+  }
+  if ('glass3' in next && liteBlank(next.glass3)) {
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  if ('spacer1' in next && liteBlank(next.spacer1)) {
+    next.spacer1 = '';
+    next.sealant1 = '';
+  }
+  if ('spacer2' in next && liteBlank(next.spacer2)) {
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  return next;
+}
 function iguNameFromSpec(spec) {
   if (!spec) return '';
+  spec = normalizeSpec(spec);
   function cleanGlass(name, temper) {
     if (!name || name === 'n/a') return '';
     let text = String(name).replace(' Jumbo', '').replace(' Large', '').replace(' / sqf', '');
@@ -538,17 +657,19 @@ function iguNameFromSpec(spec) {
     const token = cleanGlass(glass, spec['temper' + index]);
     if (!token) return;
     parts.push(token);
-    total += parseInt(String(glass).match(/(\d+)mm/)[1], 10);
+    total += componentThickness(glass);
     const spacer = spec['spacer' + index];
     if (spacer && spacer !== 'n/a' && index < 3) {
       const gap = cleanSpacer(spacer, spec['sealant' + index]);
       if (gap) {
         parts.push(gap);
-        total += parseInt(String(spacer).match(/(\d+)mm/)[1], 10);
+        total += componentThickness(spacer);
       }
     }
   });
   if (!parts.length) return '';
+  total = Math.round(total * 100) / 100;
+  if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
   const inches = total / 25.4;
   let whole = Math.floor(inches);
   let numer = Math.round((inches - whole) * 16);
@@ -568,6 +689,9 @@ function catalogOptions(sourceId, selected) {
   return Array.from(source.options).map(opt => '<option value="' + quoteEsc(opt.value) + '"' + (opt.value === (selected || '') ? ' selected' : '') + '>' + quoteEsc(opt.textContent) + '</option>').join('');
 }
 function sealantChoices(spacer, selected) {
+  if (!spacer || spacer === 'n/a') {
+    return {html: '<option value="">n/a</option>', chosen: '', message: ''};
+  }
   const match = (window.SEALANT_MATCH || {})[spacer] || {};
   const names = match.options && match.options.length ? match.options : [];
   const chosen = selected && names.indexOf(selected) >= 0 ? selected : (match.selected || selected || '');
@@ -580,15 +704,111 @@ function specEditor(item, index) {
     const glassSource = number === 1 ? 's-glass1' : 's-glass2';
     const glass = spec['glass' + number] || (number === 1 ? '' : 'n/a');
     const temper = spec['temper' + number] === 'yes' ? 'yes' : 'n/a';
-    return '<div class="note">Lite ' + number + ' <select aria-label="Glass ' + number + '" onchange="setLineSpec(' + index + ', \'glass' + number + '\', this.value)">' + catalogOptions(glassSource, glass) + '</select> <select aria-label="Tempering ' + number + '" onchange="setLineSpec(' + index + ', \'temper' + number + '\', this.value)"><option value="n/a"' + (temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (temper === 'yes' ? ' selected' : '') + '>Tempered</option></select></div>';
+    return '<span class="editor-label">Lite ' + number + '</span><select aria-label="Glass ' + number + '" data-field="glass' + number + '" onchange="onPanelGlass(' + index + ', ' + number + ')">' + catalogOptions(glassSource, glass) + '</select><span class="editor-label">Tempering ' + number + '</span><select aria-label="Tempering ' + number + '" data-field="temper' + number + '"><option value="n/a"' + (temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (temper === 'yes' ? ' selected' : '') + '>Tempered</option></select>';
   }
   function gap(number) {
     const spacer = spec['spacer' + number] || '';
     const choice = sealantChoices(spacer, spec['sealant' + number] || '');
-    return '<div class="note">Spacer ' + number + ' <select aria-label="Spacer ' + number + '" onchange="setLineSpec(' + index + ', \'spacer' + number + '\', this.value)">' + catalogOptions('s-spacer1', spacer) + '</select> Sealant <select aria-label="Sealant ' + number + '" onchange="setLineSpec(' + index + ', \'sealant' + number + '\', this.value)">' + choice.html + '</select>' + (choice.message ? '<span class="note"> ' + quoteEsc(choice.message) + '</span>' : '') + '</div>';
+    return '<span class="editor-label">Spacer ' + number + '</span><select aria-label="Spacer ' + number + '" data-field="spacer' + number + '" onchange="refreshPanelSealant(' + index + ', ' + number + ')">' + catalogOptions('s-spacer1', spacer) + '</select><span class="editor-label">Sealant ' + number + '</span><span><select aria-label="Sealant ' + number + '" data-field="sealant' + number + '">' + choice.html + '</select><span class="note" data-sealant-note="' + number + '">' + quoteEsc(choice.message || '') + '</span></span>';
   }
-  if (!item.spec) return '';
-  return lite(1) + gap(1) + lite(2) + gap(2) + lite(3);
+  return '<div class="line-editor-grid">' + lite(1) + gap(1) + lite(2) + gap(2) + lite(3)
+    + '<span class="editor-label">Irregular shape</span><label><input type="checkbox" data-field="irregular"' + (item.irregular_shape ? ' checked' : '') + '> Irregular shape</label>'
+    + '<span class="editor-label">Remark</span><input type="text" data-field="remarks" aria-label="Remarks" value="' + quoteEsc(item.remarks || '') + '">'
+    + '</div><div class="line-editor-actions"><button type="button" class="btn" onclick="updateSizeEditor()">Update line</button><button type="button" class="btn" style="background:#333" onclick="cancelLineEditor()">Cancel</button></div>';
+}
+function refreshPanelSealant(index, number) {
+  const panel = document.querySelector('[data-line-editor="' + index + '"]');
+  if (!panel) return;
+  const spacer = panel.querySelector('[data-field="spacer' + number + '"]');
+  const sealant = panel.querySelector('[data-field="sealant' + number + '"]');
+  if (!spacer || !sealant) return;
+  const choice = sealantChoices(spacer.value, '');
+  sealant.innerHTML = choice.html;
+  if (choice.chosen) sealant.value = choice.chosen;
+  const note = panel.querySelector('[data-sealant-note="' + number + '"]');
+  if (note) note.textContent = choice.message || '';
+  syncOpenLine(index);
+}
+function clearPanelGap(panel, number) {
+  const spacer = panel.querySelector('[data-field="spacer' + number + '"]');
+  const sealant = panel.querySelector('[data-field="sealant' + number + '"]');
+  if (spacer) spacer.value = '';
+  if (sealant) {
+    sealant.innerHTML = '<option value="">n/a</option>';
+    sealant.value = '';
+  }
+  const note = panel.querySelector('[data-sealant-note="' + number + '"]');
+  if (note) note.textContent = '';
+}
+function onPanelGlass(index, number) {
+  const panel = document.querySelector('[data-line-editor="' + index + '"]');
+  if (!panel) return;
+  const glass = panel.querySelector('[data-field="glass' + number + '"]');
+  if (!glass) return;
+  if (liteBlank(glass.value)) {
+    if (number === 3) clearPanelGap(panel, 2);
+    if (number === 2) {
+      clearPanelGap(panel, 1);
+      const inner = panel.querySelector('[data-field="glass3"]');
+      if (inner) inner.value = '';
+      const temper = panel.querySelector('[data-field="temper3"]');
+      if (temper) temper.value = 'n/a';
+      clearPanelGap(panel, 2);
+    }
+  } else if (number > 1) {
+    const spacer = panel.querySelector('[data-field="spacer' + (number - 1) + '"]');
+    const sealant = panel.querySelector('[data-field="sealant' + (number - 1) + '"]');
+    if (spacer && sealant && !liteBlank(spacer.value)) {
+      const choice = sealantChoices(spacer.value, '');
+      sealant.innerHTML = choice.html;
+      if (choice.chosen) sealant.value = choice.chosen;
+    }
+  }
+  syncOpenLine(index);
+}
+function syncOpenLine(index) {
+  const panel = document.querySelector('[data-line-editor="' + index + '"]');
+  const item = sizeQuoteItems[index];
+  if (!panel || !item) return;
+  item.spec = Object.assign({}, item.spec || {});
+  ['glass1', 'temper1', 'spacer1', 'sealant1', 'glass2', 'temper2', 'spacer2', 'sealant2', 'glass3', 'temper3'].forEach(field => {
+    const el = panel.querySelector('[data-field="' + field + '"]');
+    if (el) item.spec[field] = el.value;
+  });
+  item.spec = normalizeSpec(item.spec);
+  const rebuilt = iguNameFromSpec(item.spec);
+  if (rebuilt) item.name = rebuilt;
+  repriceSizeItem(index);
+}
+function updateSizeEditor() {
+  const index = openSizeIndex;
+  const panel = document.querySelector('[data-line-editor="' + index + '"]');
+  const item = sizeQuoteItems[index];
+  if (!panel || !item) return;
+  item.spec = Object.assign({}, item.spec || {});
+  ['glass1', 'temper1', 'spacer1', 'sealant1', 'glass2', 'temper2', 'spacer2', 'sealant2', 'glass3', 'temper3'].forEach(field => {
+    const el = panel.querySelector('[data-field="' + field + '"]');
+    if (el) item.spec[field] = el.value;
+  });
+  item.spec = normalizeSpec(item.spec);
+  const irregular = panel.querySelector('[data-field="irregular"]');
+  if (irregular) item.irregular_shape = irregular.checked;
+  const remark = panel.querySelector('[data-field="remarks"]');
+  if (remark) item.remarks = remark.value;
+  const rebuilt = iguNameFromSpec(item.spec);
+  if (rebuilt) item.name = rebuilt;
+  openSizeIndex = null;
+  repriceSizeItem(index);
+}
+function updateSqfEditor() {
+  const index = openSqfIndex;
+  const panel = document.querySelector('[data-line-editor="sqf-' + index + '"]');
+  const item = quoteItems[index];
+  if (!panel || !item) return;
+  const remark = panel.querySelector('[data-field="remarks"]');
+  if (remark) item.remarks = remark.value;
+  openSqfIndex = null;
+  renderQuoteList();
 }
 function setLineSpec(index, field, value) {
   const item = sizeQuoteItems[index];
@@ -597,9 +817,10 @@ function setLineSpec(index, field, value) {
   item.spec[field] = value;
   if (field === 'spacer1' || field === 'spacer2') {
     const sealantField = field === 'spacer1' ? 'sealant1' : 'sealant2';
-    const choice = sealantChoices(value, item.spec[sealantField]);
+    const choice = sealantChoices(value, '');
     item.spec[sealantField] = choice.chosen;
   }
+  item.spec = normalizeSpec(item.spec);
   const rebuilt = iguNameFromSpec(item.spec);
   if (rebuilt) item.name = rebuilt;
   repriceSizeItem(index);
@@ -670,11 +891,13 @@ function lineFromStored(item, currency, project) {
   };
 }
 function sizeItemsForSave() {
+  renumberLines(sizeQuoteItems);
   return sizeQuoteItems.map(i => ({name: i.name + ' - ' + i.size, sqf: i.sqf, real_sqf: i.real_sqf, minimum_sqf: i.minimum_sqf, price_sqf: i.priceSqf, price_pc: i.pricePc, total: i.total, pcs: i.pcs, spec: i.spec || null, irregular_shape: !!i.irregular_shape, surcharge_rate: i.surcharge_rate || null, remarks: i.remarks || '', floor: i.floor || i.mark || '', line_id: i.line_id || '', source_filename: i.source_filename || '', line_number: i.line_number || ''}));
 }
 async function saveEditedQuote() {
   if (!draftQuoteId || !selectedCurrency) { alert('Select currency first'); return; }
   const type = draftType === 'size' ? 'size' : 'sqf';
+  renumberLines(type === 'size' ? sizeQuoteItems : quoteItems);
   const items = type === 'size' ? sizeItemsForSave() : quoteItems;
   const saved = await fetch('/api/quotes', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(quotePayload(items, type))});
   const body = await saved.json().catch(() => ({}));

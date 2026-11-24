@@ -116,9 +116,44 @@ def spacer_token(name, sealant):
     return f'{match.group(1)}mm{kind} with Argon({seal})'
 
 
+def normalize_igu_spec(spec):
+    """Drop the gap in front of a lite that is n/a, and the sealant of a spacer that is n/a.
+
+    Lite 3 n/a makes a double: spacer 2 and sealant 2 are cleared. Lite 2 n/a makes a
+    single: spacer 1 and sealant 1 are cleared, and lite 3 goes with them.
+    """
+    spec = dict(spec or {})
+
+    def blank(value):
+        return str(value or '').strip().lower() in {'', 'n/a'}
+
+    if 'glass2' in spec and blank(spec.get('glass2')):
+        spec['glass2'] = ''
+        spec['temper2'] = 'n/a'
+        spec['spacer1'] = ''
+        spec['sealant1'] = ''
+        spec['glass3'] = ''
+        spec['temper3'] = 'n/a'
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+        return spec
+    if 'glass3' in spec and blank(spec.get('glass3')):
+        spec['glass3'] = ''
+        spec['temper3'] = 'n/a'
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+    if 'spacer1' in spec and blank(spec.get('spacer1')):
+        spec['spacer1'] = ''
+        spec['sealant1'] = ''
+    if 'spacer2' in spec and blank(spec.get('spacer2')):
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+    return spec
+
+
 def makeup_from_spec(spec):
     """Canonical IGU makeup. Empty when the line is not a build-up we can name."""
-    spec = spec or {}
+    spec = normalize_igu_spec(spec)
     parts = []
     for index in (1, 2, 3):
         glass = spec.get(f'glass{index}') or ''
@@ -717,23 +752,30 @@ def lookup_product(spec, fallback_name=''):
 def excel_identity(item):
     """Production Excel name and ID. A match uses the registry text exactly."""
     spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
-    found = lookup_product(spec, item.get('name') or '')
+    source_name = item.get('name') or ''
+    try:
+        import documents
+        if documents.name_thickness_mismatch(item):
+            source_name = documents.build_label(spec) or source_name
+    except Exception:
+        source_name = item.get('name') or ''
+    found = lookup_product(spec, source_name)
     if makeup_from_spec(spec) and found.get('product_name'):
         return {
             'product_id': found['product_id'],
             'product_name': found['product_name'],
             'matched': bool(found['product_id']),
         }
-    hit = registry_for_name(item.get('name') or '')
+    hit = registry_for_name(source_name)
     if hit:
         return {
             'product_id': hit['product_id'],
             'product_name': hit['product_name'],
             'matched': True,
         }
-    _key, fallback = canonical_build(item.get('name') or found.get('product_name') or '')
+    _key, fallback = canonical_build(source_name or found.get('product_name') or '')
     if not fallback:
-        fallback = strip_size_suffix(strip_inch_overall(item.get('name') or ''))
+        fallback = strip_size_suffix(strip_inch_overall(source_name or ''))
     return {'product_id': '', 'product_name': fallback, 'matched': False}
 
 
@@ -780,19 +822,48 @@ def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
 
 
 def export_lines(items, currency=None, fx_rate=None):
-    """One production row per glass line. Surcharge and drawing charges are not units."""
-    rows = []
-    serial = 1
+    """One production row per glass line. A surcharge is a note on that line, not a unit."""
+    from documents import charge_label
+    glass = []
+    notes = []
+    leading = []
+    dwg = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        if item.get('kind') in {SURCHARGE_KIND, DWG_KIND}:
+        if item.get('kind') == SURCHARGE_KIND:
+            if notes:
+                notes[-1].append(item)
+            else:
+                leading.append(item)
+            continue
+        if item.get('kind') == DWG_KIND:
+            dwg.append(item)
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        rows.append(line_export(item, serial=serial, currency=currency, fx_rate=fx_rate))
-        serial += 1
+        glass.append(item)
+        notes.append(list(leading))
+        leading = []
+    for charge in dwg:
+        parent = None
+        for index, item in enumerate(glass):
+            if item.get('line_id') and str(item.get('line_id')) == str(charge.get('drawing_for') or ''):
+                parent = index
+                break
+        if parent is None and glass:
+            parent = len(glass) - 1
+        if parent is not None:
+            notes[parent].append(charge)
+    rows = []
+    for serial, item in enumerate(glass, start=1):
+        row = line_export(item, serial=serial, currency=currency, fx_rate=fx_rate)
+        extra = [charge_label(charge, currency) for charge in notes[serial - 1]]
+        if extra:
+            remark = row.get('Remarks') or ''
+            row['Remarks'] = (remark + '\n' if remark else '') + '\n'.join(extra)
+        rows.append(row)
     return rows
 
 
@@ -831,6 +902,36 @@ def workbook_bytes(items, currency=None, fx_rate=None):
                 cell.value = int(value) if str(value).isdigit() else value
             else:
                 cell.value = '' if value is None else value
+    from openpyxl.styles import Alignment
+    widths = {
+        'Serial Number': 16,
+        'Floor Code': 18,
+        'Product ID': 14,
+        'Product Name': 64,
+        'Unit Price': 12,
+        'Width(mm)': 14,
+        'Height(mm)': 14,
+        'Width(In)': 14,
+        'Height(In)': 14,
+        'Quantity': 12,
+        'Remarks': 42,
+    }
+    numeric = {'Unit Price', 'Width(mm)', 'Height(mm)', 'Quantity'}
+    for column, header in enumerate(PRODUCTION_HEADERS, start=1):
+        sheet.column_dimensions[sheet.cell(1, column).column_letter].width = widths.get(header, 14)
+        header_cell = sheet.cell(1, column)
+        header_cell.alignment = Alignment(horizontal='right' if header in numeric else 'left', wrap_text=False)
+    for row_index in range(2, sheet.max_row + 1):
+        for column, header in enumerate(PRODUCTION_HEADERS, start=1):
+            cell = sheet.cell(row_index, column)
+            if header == 'Product Name':
+                cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
+            elif header == 'Floor Code':
+                cell.alignment = Alignment(wrap_text=False, horizontal='left')
+            elif header in numeric:
+                cell.alignment = Alignment(horizontal='right')
+            elif header == 'Remarks':
+                cell.alignment = Alignment(wrap_text=True, vertical='top')
     from io import BytesIO
     buffer = BytesIO()
     book.save(buffer)

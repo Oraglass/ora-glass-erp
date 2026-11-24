@@ -103,6 +103,43 @@ def _display_mm(value):
     return f'{number:.2f}'.rstrip('0').rstrip('.')
 
 
+def _plain_measure(value):
+    number = float(value)
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return f'{number:.4f}'.rstrip('0').rstrip('.')
+
+
+def drawing_caption(item):
+    """First line identifies the quote row. The IGU makeup is the second line."""
+    name = str((item or {}).get('name') or '')
+    thickness, spec = '', name
+    if ' - ' in name:
+        thickness, spec = name.split(' - ', 1)
+    bits = [f"Line {(item or {}).get('line_number') or ''}"]
+    if thickness:
+        bits.append(thickness.strip())
+    spec_row = (item or {}).get('spec') if isinstance((item or {}).get('spec'), dict) else {}
+    width, height = spec_row.get('width'), spec_row.get('height')
+    if width not in (None, '') and height not in (None, ''):
+        try:
+            bits.append(f'{_plain_measure(width)} x {_plain_measure(height)}')
+        except (TypeError, ValueError):
+            bits.append(f'{width} x {height}')
+    pcs = (item or {}).get('pcs')
+    if pcs not in (None, '', '-'):
+        try:
+            bits.append(f'Qty {_plain_measure(pcs)}')
+        except (TypeError, ValueError):
+            bits.append(f'Qty {pcs}')
+    floor = (item or {}).get('floor') or (item or {}).get('mark') or ''
+    if floor:
+        bits.append(f'Floor {floor}')
+    if (item or {}).get('irregular_shape'):
+        bits.append('Irregular')
+    return ' · '.join(bits), spec.strip()
+
+
 def piece_size_text(width, height, unit=None):
     """Piece size in inches and millimetres. 25.4 mm is one inch."""
     if width in (None, '') or height in (None, ''):
@@ -129,54 +166,173 @@ def dimension_lines(width, height, unit):
     return wide, high
 
 
+_MM_THICKNESS = re.compile(r'(\d+(?:\.\d+)?)\s*mm', re.IGNORECASE)
+_INCH_LAYER = re.compile(r'(\d+(?:\.\d+)?)\s*(?:inch(?:es)?|in|"|″|”)', re.IGNORECASE)
+_LAMINATED = re.compile(r'lam|\bpvb\b|\bsgp\b|interlayer', re.IGNORECASE)
+_LEADING_THICKNESS = re.compile(r'^\s*(\d+(?:\.\d+)?)')
+_PIECE_SIZE_SUFFIX = re.compile(
+    r'\s+-\s+\d+(?:\.\d+)?\s+x\s+\d+(?:\.\d+)?\s*(?:mm|in)\b\s*$',
+    re.IGNORECASE,
+)
+
+
+def _round_mm(value):
+    number = round(float(value), 2)
+    if abs(number - round(number)) < 1e-9:
+        return float(int(round(number)))
+    return number
+
+
+def component_thickness_mm(name):
+    """Millimetres in one lite or spacer.
+
+    A monolithic name uses its one millimetre number. A laminated lite is the
+    sum of every ply and the interlayer, whether those are written in
+    millimetres or as an inch layer such as 0.030".
+    """
+    text = str(name or '').strip()
+    if not text or text.lower() == 'n/a':
+        return 0.0
+    millimetres = [float(value) for value in _MM_THICKNESS.findall(text)]
+    laminated = bool(_LAMINATED.search(text)) or len(millimetres) > 1
+    inches = 0.0
+    if laminated:
+        inches = sum(float(value) * 25.4 for value in _INCH_LAYER.findall(text))
+    if laminated and (millimetres or inches):
+        return _round_mm(sum(millimetres) + inches)
+    if millimetres:
+        return _round_mm(millimetres[0])
+    return 0.0
+
+
 def overall_thickness_mm(spec):
-    """Glass plus spacer millimetres, the overall unit size in the build name."""
+    """Glass plus spacer millimetres, the overall unit size in the build name.
+
+    Each lite contributes its full thickness. Laminated glass counts every ply
+    and the interlayer, not only the first number in the product name.
+    """
+    from production import normalize_igu_spec
+    spec = normalize_igu_spec(spec)
+    total = 0.0
+    found = False
+    for index in (1, 2, 3):
+        glass = spec.get(f'glass{index}') or ''
+        if not glass or str(glass).strip().lower() == 'n/a':
+            continue
+        glass_mm = component_thickness_mm(glass)
+        if glass_mm <= 0:
+            continue
+        found = True
+        total += glass_mm
+        if index < 3:
+            spacer = spec.get(f'spacer{index}') or ''
+            if spacer and str(spacer).strip().lower() != 'n/a':
+                total += component_thickness_mm(spacer)
+    if found:
+        return _round_mm(total)
     makeup = makeup_from_spec(spec)
     if not makeup:
         return 0.0
-    total = 0.0
+    parsed = 0.0
     for part in makeup.split('+'):
         match = re.match(r'\s*(\d+(?:\.\d+)?)mm', part, re.IGNORECASE)
         if match:
-            total += float(match.group(1))
-    return total
+            parsed += float(match.group(1))
+    return _round_mm(parsed)
 
 
 def build_label(spec):
     """Full IGU name: 32 (1 1/4") - 4mmSolarban60 VT Tempered+24mm..."""
-    makeup = makeup_from_spec(spec)
-    if not makeup:
-        return ''
-    total = overall_thickness_mm(spec)
-    if total <= 0:
-        return makeup
-    mm = int(total) if float(total).is_integer() else total
-    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
+    return _igu_label(spec)
 
 
 def igu_name_from_spec(spec):
     """IGU name the quote calculator builds: overall millimetres, inch fraction, then the lites."""
+    return _igu_label(spec)
+
+
+def name_thickness_mismatch(item):
+    """True when a stored name leads with a thickness that is not the spec sum."""
+    if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return False
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    label = igu_name_from_spec(spec) if spec else ''
+    if not label:
+        return False
+    current = _PIECE_SIZE_SUFFIX.sub('', str(item.get('name') or '')).strip()
+    match = _LEADING_THICKNESS.match(current)
+    if not match:
+        return False
+    return abs(float(match.group(1)) - overall_thickness_mm(spec)) > 0.01
+
+
+def sync_line_name(item):
+    """Replace a line name with the name its spec builds. A piece size is not part of that name."""
+    if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return False
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    label = igu_name_from_spec(spec) if spec else ''
+    if not label or item.get('name') == label:
+        return False
+    item['name'] = label
+    return True
+
+
+def sync_item_names(items, only_mismatch=False):
+    """Rebuild IGU names from their specs. A following surcharge note uses the new name."""
+    changed = False
+    previous = None
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') == 'irregular_surcharge':
+            if previous:
+                expected = f"Irregular shape surcharge – {previous.get('name') or 'Glass'}"
+                if item.get('name') != expected:
+                    item['name'] = expected
+                    if item.get('description'):
+                        item['description'] = expected
+                    changed = True
+            continue
+        if item.get('kind') == 'dwg_creation':
+            continue
+        if only_mismatch and not name_thickness_mismatch(item):
+            previous = item
+            continue
+        if sync_line_name(item):
+            changed = True
+        previous = item
+    return changed
+
+
+def glass_thickness_mm(spec):
+    """Sum of the lite thicknesses. Spacers are not glass. Laminated lites include every ply."""
+    from production import normalize_igu_spec
+    spec = normalize_igu_spec(spec)
+    total = 0.0
+    for index in (1, 2, 3):
+        name = str((spec or {}).get(f'glass{index}') or '')
+        if not name or name.strip().lower() == 'n/a':
+            continue
+        total += component_thickness_mm(name)
+    return _round_mm(total)
+
+
+def _format_overall_mm(total):
+    number = _round_mm(total)
+    if float(number).is_integer():
+        return str(int(number))
+    return f'{number:.2f}'.rstrip('0').rstrip('.')
+
+
+def _igu_label(spec):
     makeup = makeup_from_spec(spec)
     if not makeup:
         return ''
     total = overall_thickness_mm(spec)
     if total <= 0:
         return makeup
-    mm = int(total) if float(total).is_integer() else total
-    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
-
-
-def glass_thickness_mm(spec):
-    """Sum of the lite thicknesses. Spacers are not glass."""
-    total = 0.0
-    for index in (1, 2, 3):
-        name = str((spec or {}).get(f'glass{index}') or '')
-        if not name or name == 'n/a':
-            continue
-        match = re.search(r'(\d+(?:\.\d+)?)\s*mm', name, re.IGNORECASE)
-        if match:
-            total += float(match.group(1))
-    return total
+    return f'{_format_overall_mm(total)} ({quote_form_fraction(total)}") - {makeup}'
 
 
 def real_area(item):
@@ -279,6 +435,7 @@ def _styles():
         'head': ParagraphStyle('DocHead', parent=base, fontName='Helvetica-Bold', fontSize=6, leading=7.5, alignment=TA_CENTER),
         'num': ParagraphStyle('DocNum', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_RIGHT),
         'center': ParagraphStyle('DocCenter', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
+        'floor': ParagraphStyle('DocFloor', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
         'foot': ParagraphStyle('DocFoot', parent=base, fontName='Helvetica', fontSize=8, leading=11),
         'sum_label': ParagraphStyle('SumLabel', parent=base, fontName='Helvetica', fontSize=8, leading=11),
         'sum_amount': ParagraphStyle('SumAmount', parent=base, fontName='Helvetica', fontSize=8, leading=11),
@@ -407,6 +564,14 @@ def layout_lines(items):
     return ordered
 
 
+def charge_label(item, currency):
+    """Short note for a surcharge that belongs under its glass line."""
+    kind = (item or {}).get('kind')
+    label = 'DWG drawing creation' if kind == 'dwg_creation' else 'Irregular shape surcharge'
+    code = 'CAD' if str(currency or '').lower() == 'cad' else 'USD'
+    return f'{label} +{code} ${_line_total(item):.2f}'
+
+
 def _line_total(item):
     if item.get('total') not in (None, ''):
         return _number(item.get('total'))
@@ -426,39 +591,77 @@ def _size_table(items, currency, styles):
     total_pcs = 0
     total_money = 0.0
     number = 0
+    body = []
     for item in layout_lines(items):
-        charge = is_charge_line(item)
-        pieces = 0 if charge else _pieces(item)
-        shown_pieces = pieces or (0 if charge or item.get('sqf') in (None, '') else pieces)
-        if not charge and not shown_pieces and item.get('sqf') not in (None, ''):
+        if is_charge_line(item) and item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            total_money += _line_total(item)
+            if body:
+                body[-1]['notes'].append(charge_label(item, currency))
+            continue
+        if is_charge_line(item):
+            total_money += _line_total(item)
+            body.append({
+                'number': '',
+                'pieces': '',
+                'wide': '',
+                'high': '',
+                'floor': '',
+                'desc': escape(str(item.get('name') or '')),
+                'notes': [],
+                'area': '',
+                'price_sqf': '',
+                'price_pc': '',
+                'amount': f'{_line_total(item):.2f}',
+            })
+            continue
+        pieces = _pieces(item)
+        shown_pieces = pieces or (0 if item.get('sqf') in (None, '') else pieces)
+        if not shown_pieces and item.get('sqf') not in (None, ''):
             shown_pieces = 1
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         has_size = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
-        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size and not charge else ('', '')
-        area = 0.0 if charge else (charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0)
+        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size else ('', '')
+        area = charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0
         price_sqf = item.get('price_sqf')
         price_pc = item.get('price_pc')
         amount = _line_total(item)
-        if not charge:
-            number += 1
-            total_pcs += shown_pieces
-            total_sqf += area
+        number += 1
+        total_pcs += shown_pieces
+        total_sqf += area
         total_money += amount
+        floor = escape(floor_code(item)).replace(' ', '&nbsp;')
+        body.append({
+            'number': str(number),
+            'pieces': str(shown_pieces or ''),
+            'wide': wide,
+            'high': high,
+            'floor': floor,
+            'desc': line_description(item),
+            'notes': [],
+            'area': '' if not area else f'{area:.2f}',
+            'price_sqf': '' if price_sqf in (None, '', 0, '0') else f'{_number(price_sqf):.2f}',
+            'price_pc': '' if price_pc in (None, '') else f'{_number(price_pc):.2f}',
+            'amount': f'{amount:.2f}',
+        })
+    for entry in body:
+        desc = entry['desc']
+        if entry['notes']:
+            desc += '<br/>' + '<br/>'.join(escape(note) for note in entry['notes'])
         rows.append([
-            Paragraph('' if charge else str(number), styles['center']),
-            Paragraph('' if charge else str(shown_pieces or ''), styles['center']),
-            Paragraph(wide, styles['center']),
-            Paragraph(high, styles['center']),
-            Paragraph('' if charge else escape(floor_code(item)), styles['center']),
-            Paragraph(line_description(item), styles['desc']),
-            Paragraph('' if charge or not area else f'{area:.2f}', styles['num']),
-            Paragraph('' if charge or price_sqf in (None, '', 0, '0') else f'{_number(price_sqf):.2f}', styles['num']),
-            Paragraph('' if charge or price_pc in (None, '') else f'{_number(price_pc):.2f}', styles['num']),
-            Paragraph(f'{amount:.2f}', styles['num']),
+            Paragraph(entry['number'], styles['center']),
+            Paragraph(entry['pieces'], styles['center']),
+            Paragraph(entry['wide'], styles['center']),
+            Paragraph(entry['high'], styles['center']),
+            Paragraph(entry['floor'], styles['floor']),
+            Paragraph(desc, styles['desc']),
+            Paragraph(entry['area'], styles['num']),
+            Paragraph(entry['price_sqf'], styles['num']),
+            Paragraph(entry['price_pc'], styles['num']),
+            Paragraph(entry['amount'], styles['num']),
         ])
     widths = [
-        0.38 * inch, 0.38 * inch, 0.68 * inch, 0.68 * inch, 0.55 * inch,
-        2.15 * inch, 0.55 * inch, 0.72 * inch, 0.68 * inch, 0.93 * inch,
+        0.38 * inch, 0.38 * inch, 0.68 * inch, 0.68 * inch, 0.95 * inch,
+        1.75 * inch, 0.55 * inch, 0.72 * inch, 0.68 * inch, 0.93 * inch,
     ]
     table = Table(rows, colWidths=widths, repeatRows=1)
     table.setStyle(_grid())
@@ -475,17 +678,33 @@ def _sqf_table(items, currency, styles):
     total_money = 0.0
     total_pcs = 0
     number = 0
+    body = []
     for item in layout_lines(items):
         amount = _line_total(item)
         total_money += amount
-        charge = is_charge_line(item)
-        if not charge:
-            number += 1
-            total_pcs += _pieces(item) or 1
+        if is_charge_line(item) and item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            if body:
+                body[-1]['notes'].append(charge_label(item, currency))
+            continue
+        if is_charge_line(item):
+            body.append({
+                'number': '',
+                'desc': escape(str(item.get('name') or '')),
+                'notes': [],
+                'amount': f'{amount:.2f}',
+            })
+            continue
+        number += 1
+        total_pcs += _pieces(item) or 1
+        body.append({'number': str(number), 'desc': line_description(item), 'notes': [], 'amount': f'{amount:.2f}'})
+    for entry in body:
+        desc = entry['desc']
+        if entry['notes']:
+            desc += '<br/>' + '<br/>'.join(escape(note) for note in entry['notes'])
         rows.append([
-            Paragraph('' if charge else str(number), styles['center']),
-            Paragraph(line_description(item), styles['cell']),
-            Paragraph(f'{amount:.2f}', styles['num']),
+            Paragraph(entry['number'], styles['center']),
+            Paragraph(desc, styles['cell']),
+            Paragraph(entry['amount'], styles['num']),
         ])
     rows.append([
         Paragraph('', styles['cell']),

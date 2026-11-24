@@ -15,6 +15,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer}
 .btn-secondary{background:#fff;color:#333;border:1px solid #ccc}
 table{width:100%;border-collapse:collapse;font-size:13px}
+.size-imperial{display:block}
+.size-metric{display:block;color:#666;font-size:12px;line-height:1.3}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee}
 .sort-btn{background:none;border:0;font:inherit;font-weight:600;cursor:pointer;padding:0;color:#333}
@@ -164,7 +166,9 @@ function drawingMarkup(quote) {
   const lines = irregularLines(quote);
   if (!lines.length) return '';
   return '<p class="help drawing-note">' + esc(DRAWING_NOTE) + '</p>' + lines.map(line => {
-    return '<div class="form-group"><label>Drawing for ' + esc(line.name || 'irregular shape') + '</label><input type="file" required data-line="' + esc(line.line_id) + '"></div>';
+    const title = line.drawing_title || ('Line ' + (line.line_number || ''));
+    const spec = line.drawing_spec || '';
+    return '<div class="form-group"><label>' + esc(title) + (spec ? '<br><span class="note">' + esc(spec) + '</span>' : '') + '</label><input type="file" required data-line="' + esc(line.line_id) + '" aria-label="' + esc(title) + '"></div>';
   }).join('') + '<p class="help" data-dwg-preview></p>';
 }
 function bindDrawingPanel(root) {
@@ -463,10 +467,14 @@ if (sortSelect) sortSelect.addEventListener('change', applyFilters);
 function showQuoteDetail(quote) {
   const box = document.getElementById('quote-detail');
   if (!box || !quote) return;
+  let glassNumber = 0;
   const lines = (quote.items || []).map(item => {
+    const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
+    const number = charge ? '' : ++glassNumber;
     const file = item.source_filename ? '<br><span class="note">' + esc(item.source_filename) + '</span>' : '';
-    const size = item.size_label ? '<br><span class="note">' + esc(item.size_label) + '</span>' : '';
-    return '<tr><td>' + esc(item.line_number || '') + '</td><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + size + file + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>';
+    const sizeMatch = String(item.size_label || '').match(/^(.*) in \((.*) mm\)$/);
+    const size = sizeMatch ? '<br><span class="size-imperial">' + esc(sizeMatch[1] + ' in') + '</span><span class="size-metric">' + esc(sizeMatch[2] + ' mm') + '</span>' : (item.size_label ? '<br><span class="note">' + esc(item.size_label) + '</span>' : '');
+    return '<tr><td>' + esc(number) + '</td><td>' + esc(item.name) + (item.remarks ? '<br><span class="note">' + esc(item.remarks) + '</span>' : '') + size + file + '</td><td>' + esc(item.floor || item.mark || '') + '</td><td>' + esc(item.pcs) + '</td><td>$' + Number(item.total || item.price || 0).toFixed(2) + '</td></tr>';
   }).join('');
   const extras = (quote.extra_charges || []).map(charge => '<li>' + esc(charge.label) + ' $' + Number(charge.amount || 0).toFixed(2) + '</li>').join('');
   const tax = (quote.tax_lines || []).length

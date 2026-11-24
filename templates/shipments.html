@@ -15,6 +15,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
 th{background:#f5f5f5;text-align:left;padding:6px;border-bottom:2px solid #ddd;white-space:nowrap}
 td{padding:6px;border-bottom:1px solid #eee;vertical-align:top}
+.size-imperial{display:block;white-space:nowrap}
+.size-metric{display:block;color:#666;font-size:11px;line-height:1.3;white-space:nowrap}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 summary{cursor:pointer;font-weight:600;color:#333}
 summary a{color:#C41E3A}
@@ -36,6 +38,12 @@ summary a{color:#C41E3A}
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function displaySize(label) {
+  const text = String(label || '');
+  const match = text.match(/^(.*) in \((.*) mm\)$/);
+  if (!match) return esc(text);
+  return '<span class="size-imperial">' + esc(match[1] + ' in') + '</span><span class="size-metric">' + esc(match[2] + ' mm') + '</span>';
+}
 function render(rows) {
   const box = document.getElementById('backorders');
   if (!rows.length) { box.innerHTML = '<div class="card"><p class="note">Nothing is waiting to ship.</p></div>'; return; }
@@ -44,7 +52,7 @@ function render(rows) {
       + '<td>' + esc(line.serial) + '</td>'
       + '<td>' + esc(line.floor_code || '') + '</td>'
       + '<td>' + esc(line.name) + '</td>'
-      + '<td>' + esc(line.size || '') + '</td>'
+      + '<td class="size">' + displaySize(line.size || '') + '</td>'
       + '<td class="num">' + esc(line.packed || 0) + '</td>'
       + '<td class="num">' + esc(line.shipped || 0) + '</td>'
       + '<td class="num">' + esc(line.not_packed != null ? line.not_packed : line.bo_qty) + '</td>'

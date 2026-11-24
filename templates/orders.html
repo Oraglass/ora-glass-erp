@@ -15,7 +15,15 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .detail-page .totals{max-width:none;width:100%;margin:12px 0 0}
 .detail-page .coverage{margin-top:0}
 .detail-page .clip{display:block;max-width:36rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.detail-page td.size,.detail-page th.size{white-space:nowrap}
+.detail-page #priced-lines{table-layout:auto}
+.detail-page #priced-lines th.floor,.detail-page #priced-lines td.floor,.detail-page #remake-lines th.floor,.detail-page #remake-lines td.floor{white-space:nowrap;width:8.5rem;min-width:8.5rem}
+.detail-page #remake-panel{margin-top:12px}
+.detail-page #priced-lines th.product,.detail-page #priced-lines td.product{white-space:normal;word-break:break-word;min-width:18rem}
+.detail-page #priced-lines th.num,.detail-page #priced-lines td.num{text-align:right;white-space:nowrap}
+.detail-page #priced-lines .line-note{display:block;margin-top:4px;color:#666;font-size:12px;font-weight:600}
+.detail-page td.size,.detail-page th.size{white-space:normal;vertical-align:top}
+.detail-page .size-imperial{display:block;white-space:nowrap}
+.detail-page .size-metric{display:block;color:#666;font-size:12px;line-height:1.3;white-space:nowrap}
 .detail-page .back{display:inline-block;margin:0 0 12px;font-size:14px}
 .detail-page #ship-confirm{border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:8px 0 12px;background:#fafafa}
 .detail-page .field-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:8px 0}
@@ -393,8 +401,43 @@ function renderAppendReview(data, send, say) {
 function displaySize(label) {
   const text = String(label || '');
   const match = text.match(/^(.*) in \((.*) mm\)$/);
-  if (match) return match[1] + ' in / ' + match[2] + ' mm';
-  return text;
+  if (!match) return esc(text);
+  return '<span class="size-imperial">' + esc(match[1] + ' in') + '</span><span class="size-metric">' + esc(match[2] + ' mm') + '</span>';
+}
+function surchargeNote(order, charge) {
+  const label = charge.kind === 'dwg_creation' ? 'DWG drawing creation' : 'Irregular shape surcharge';
+  const raw = charge.total != null && charge.total !== '' ? charge.total : charge.price_pc;
+  const amount = Number(raw);
+  const shown = Number.isFinite(amount) ? ('+' + moneyText(order && order.currency, amount)) : '';
+  return '<div class="line-note">' + esc(label + (shown ? ' ' + shown : '')) + '</div>';
+}
+function orderLineRows(order) {
+  const items = order.items || [];
+  const glass = [];
+  const charges = [];
+  items.forEach(item => {
+    if (!item) return;
+    if (item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation') charges.push(item);
+    else glass.push(item);
+  });
+  const attached = glass.map(() => []);
+  let last = -1;
+  items.forEach(item => {
+    if (!item) return;
+    if (item.kind === 'dwg_creation') return;
+    if (item.kind === 'irregular_surcharge') {
+      if (last >= 0) attached[last].push(item);
+      return;
+    }
+    last = glass.indexOf(item);
+  });
+  charges.forEach(item => {
+    if (item.kind !== 'dwg_creation') return;
+    const parent = glass.findIndex(line => line.line_id && String(line.line_id) === String(item.drawing_for));
+    if (parent >= 0) attached[parent].push(item);
+    else if (glass.length) attached[glass.length - 1].push(item);
+  });
+  return glass.map((item, index) => ({item: item, number: index + 1, charges: attached[index]}));
 }
 function clipText(text, tip) {
   const title = tip || text || '';
@@ -429,7 +472,7 @@ function shipConfirmPanel(order) {
   if (!STAFF || !ready.length) return '';
   const rows = ready.map(row => {
     const qty = Number(row.packed) - Number(row.shipped || 0);
-    return '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+    return '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td>'
       + '<td class="num">' + esc(qty) + '</td>'
       + '<td class="num"><input data-ship-index="' + esc(row.index) + '" type="number" min="0" max="' + esc(qty) + '" value="' + esc(qty) + '" readonly aria-label="Ship qty for serial ' + esc(row.serial) + '"></td></tr>';
   }).join('');
@@ -454,16 +497,20 @@ function remakeForm(order) {
   const rows = lines.map(row => {
     const max = Number(row.ordered) || 1;
     return '<tr><td><input type="checkbox" data-remake-serial="' + esc(row.serial) + '" aria-label="Remake serial ' + esc(row.serial) + '"></td>'
-      + '<td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+      + '<td>' + esc(row.serial) + '</td><td class="floor">' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td>'
       + '<td class="num">' + esc(row.ordered) + '</td>'
       + '<td class="num"><input data-remake-qty="' + esc(row.serial) + '" type="number" min="1" max="' + esc(max) + '" value="1" aria-label="Remake qty for serial ' + esc(row.serial) + '"></td></tr>';
   }).join('');
-  return '<section class="section" id="remake-form"><h3>Remake / service order</h3>'
+  return '<div id="remake-panel" hidden>'
     + '<p class="note">Send selected pieces back to production without a new quote. The remake keeps this customer, project, spec, and the original serials.</p>'
-    + '<table id="remake-lines"><thead><tr><th></th><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Remake qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<table id="remake-lines"><thead><tr><th></th><th>Serial</th><th class="floor">Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Remake qty</th></tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div class="field-row"><label>Reason<textarea id="remake-reason" rows="2" placeholder="Breakage, production defect, customer damage" aria-label="Remake reason"></textarea></label>'
     + '<label>Charge customer<select id="remake-charge" aria-label="Charge customer"><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select></label></div>'
-    + '<div class="actions"><button type="button" class="btn" id="create-remake">Create remake</button></div></section>';
+    + '<div class="actions"><button type="button" class="btn" id="create-remake">Create remake</button></div></div>';
+}
+function remakeToggle(order) {
+  if (!remakeForm(order)) return '';
+  return '<button type="button" class="btn secondary" id="toggle-remake" aria-expanded="false" aria-controls="remake-panel">Remake / service order</button>';
 }
 function remakesBlock(order) {
   const rows = order.remakes || [];
@@ -478,9 +525,9 @@ function packingBlock(order) {
   const totals = order.packing_totals || {};
   const showShipped = (order.shipments || []).length > 0 || serials.some(row => Number(row.shipped) > 0);
   const shippedHead = showShipped ? '<th class="num">Shipped</th>' : '';
-  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
   const listBlocks = lists.map(list => {
-    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
+    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td class="size">' + displaySize(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
     const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
     const unmatched = STAFF && (list.unmatched || []).length
       ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
@@ -527,23 +574,21 @@ function renderDetail(order) {
   currentOrder = order;
   const box = document.getElementById('order-detail');
   if (!order) { box.innerHTML = ''; return; }
-  const serialOf = {};
-  (order.packing_serials || []).forEach(row => { serialOf[row.index] = row.serial; });
-  const rows = (order.items || []).map((item, index) => {
+  const rows = orderLineRows(order).map(row => {
+    const item = row.item;
     const spec = item.spec || {};
     const rawSize = item.size_label || (spec.width ? spec.width + ' x ' + spec.height + ' ' + (spec.unit || '') : '');
     const size = displaySize(rawSize);
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
     const floor = item.floor || item.mark || item.location || '';
-    const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
     const each = Number(item.sqf);
     const qty = Number(item.pcs);
-    const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
-    const tip = [item.name, item.remarks, item.source_filename, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
-    const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : (item.line_number || ''));
+    const lineSqf = item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
+    const notes = row.charges.map(charge => surchargeNote(order, charge)).join('');
     const remakeOf = item.source_serial ? '<div class="note" id="remake-of-' + esc(order.id) + '-' + esc(item.source_serial) + '">Remake of #' + esc(item.source_serial) + '</div>' : '';
-    const source = !charge && item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
-    return '<tr><td class="num">' + esc(serial) + remakeOf + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + source + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
+    const source = item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
+    const number = row.number;
+    return '<tr><td class="num">' + esc(number) + remakeOf + '</td><td class="floor">' + esc(floor) + '</td><td class="product">' + esc(item.name || '') + notes + source + '</td><td class="size">' + size + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   const primary = [];
@@ -564,6 +609,7 @@ function renderDetail(order) {
   let buttons = primary.join('');
   if (secondary.length > 1) buttons += '<details class="more"><summary class="btn secondary">More</summary><div class="more-menu">' + secondary.join('') + '</div></details>';
   else buttons += secondary.join('');
+  buttons += remakeToggle(order);
   if (STAFF && !order.legacy && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
   const voidNote = order.status === 'voided'
     ? '<p class="note" id="voided-note">Voided' + (order.voided_by ? ' by ' + esc(order.voided_by) : '') + (order.voided_at_display ? ' · ' + esc(order.voided_at_display) : '') + (order.void_reason ? '. ' + esc(order.void_reason) : '') + '</p>'
@@ -587,9 +633,10 @@ function renderDetail(order) {
   const drawings = (order.drawings || []).map(drawing => {
     const href = '/api/orders/' + encodeURIComponent(order.id) + '/drawings/' + encodeURIComponent(drawing.line_id);
     const charge = drawing.is_dwg ? '' : ' <span class="note">DWG drawing creation applies until this file is replaced with a .dwg.</span>';
-    return '<div style="margin:8px 0"><a href="' + href + '">Download ' + esc(drawing.filename || 'drawing') + '</a>' + charge
+    const lineLabel = drawing.line_number ? ('Line ' + drawing.line_number + ' · ') : '';
+    return '<div style="margin:8px 0">' + esc(lineLabel) + '<a href="' + href + '">Download ' + esc(drawing.filename || 'drawing') + '</a>' + charge
       + '<form class="replace-drawing" data-line="' + esc(drawing.line_id) + '" style="margin-top:6px;display:flex;gap:8px;align-items:center">'
-      + '<input type="file" required aria-label="Replace drawing for ' + esc(drawing.filename || 'line') + '">'
+      + '<input type="file" required aria-label="Replace drawing for ' + esc(lineLabel || drawing.filename || 'line') + '">'
       + '<button type="submit" class="btn small secondary">Replace drawing</button></form></div>';
   }).join('');
   const drawingBlock = drawings ? sectionBlock('Drawings', '', 'Shop drawings attached to this order.', drawings) : '';
@@ -611,7 +658,7 @@ function renderDetail(order) {
     : lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
   const linesTable = order.legacy
     ? ''
-    : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
+    : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th class="floor">Floor</th><th class="product">Product</th><th class="size">Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
   const when = order.approved_at_display || order.approved_at || '';
   const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.legacy ? '' : (order.tier_label || order.tier || ''), (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
   const headerSummary = order.legacy
@@ -621,7 +668,7 @@ function renderDetail(order) {
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
   const remakeNote = order.remake
-    ? '<p class="note" id="remake-note">Remake ' + esc(order.number) + ' of <a href="/orders/' + encodeURIComponent(order.remake_of) + '">order ' + esc(order.remake_of_number || order.remake_of) + '</a>.'
+    ? '<p class="note" id="remake-note">Remake of Order <a id="remake-of-order" href="/orders/' + encodeURIComponent(order.remake_of) + '">' + esc(order.remake_of_number || order.remake_of) + '</a>.'
       + (order.remake_reason ? ' ' + esc(order.remake_reason) + '.' : '')
       + (order.charge_customer ? ' Charged to the customer.' : ' Not charged to the customer.')
       + '</p>'
@@ -640,10 +687,13 @@ function renderDetail(order) {
     : (invoice || '<p class="note">No invoices yet.</p>');
   const coverage = coverageBlock(order);
   const coverageSection = coverage ? sectionBlock('Credit coverage', '', 'How this order sits against the customer credit limit and prepayments.', coverage) : '';
-  box.innerHTML = sectionBlock('Order ' + esc(orderNumber(order)) + ' ' + badge(order) + ' ' + invoiceBadge(order), buttons, headerSummary, headerExtra)
+  box.innerHTML = '<section class="section"><h3>Order ' + esc(orderNumber(order)) + ' ' + badge(order) + ' ' + invoiceBadge(order) + '</h3>'
+    + '<div class="actions">' + buttons + '</div>'
+    + remakeForm(order)
+    + '<p class="note">' + headerSummary + '</p>'
+    + headerExtra + '</section>'
     + changeSummary(order)
     + sectionBlock('Order lines', '', lineSummary, linesTable)
-    + remakeForm(order)
     + remakesBlock(order)
     + packingBlock(order)
     + shipmentSection
@@ -672,10 +722,24 @@ function renderDetail(order) {
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
+  const toggleRemake = document.getElementById('toggle-remake');
+  if (toggleRemake) toggleRemake.addEventListener('click', () => {
+    const panel = document.getElementById('remake-panel');
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    toggleRemake.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+  });
   const createRemake = document.getElementById('create-remake');
   if (createRemake) createRemake.addEventListener('click', async () => {
+    const panel = document.getElementById('remake-panel');
+    const toggle = document.getElementById('toggle-remake');
+    const reopen = () => {
+      if (!panel) return;
+      panel.hidden = false;
+      if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    };
     const charge = document.getElementById('remake-charge').value;
-    if (!charge) { alert('Choose whether to charge the customer.'); return; }
+    if (!charge) { reopen(); alert('Choose whether to charge the customer.'); return; }
     const lines = [];
     document.querySelectorAll('[data-remake-serial]').forEach(box => {
       if (!box.checked) return;
@@ -683,7 +747,7 @@ function renderDetail(order) {
       const qty = document.querySelector('[data-remake-qty="' + serial + '"]');
       lines.push({serial: Number(serial), qty: Number(qty && qty.value)});
     });
-    if (!lines.length) { alert('Select at least one glass line.'); return; }
+    if (!lines.length) { reopen(); alert('Select at least one glass line.'); return; }
     const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/remake', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -693,7 +757,7 @@ function renderDetail(order) {
       })
     });
     const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(payload.error || 'Could not create the remake'); return; }
+    if (!res.ok) { reopen(); alert(payload.error || 'Could not create the remake'); return; }
     window.location = '/orders/' + encodeURIComponent(payload.id);
   });
   const unapprove = document.getElementById('unapprove-order');
@@ -859,6 +923,106 @@ async function postDecision(path, body, message) {
   if (!res.ok) { alert(payload.error || 'Could not update the order'); return; }
   renderDetail(payload);
   load();
+}
+function componentThickness(name) {
+  const text = String(name || '');
+  if (!text || text === 'n/a') return 0;
+  const mmParts = [];
+  const mmRe = /(\d+(?:\.\d+)?)\s*mm/ig;
+  let match;
+  while ((match = mmRe.exec(text))) mmParts.push(Number(match[1]));
+  const laminated = /lam|\bpvb\b|\bsgp\b|interlayer/i.test(text) || mmParts.length > 1;
+  let inches = 0;
+  if (laminated) {
+    const inchRe = /(\d+(?:\.\d+)?)\s*(?:inches|inch|in|"|″|”)/ig;
+    while ((match = inchRe.exec(text))) inches += Number(match[1]) * 25.4;
+  }
+  const round = value => Math.round(value * 100) / 100;
+  if (laminated && (mmParts.length || inches)) return round(mmParts.reduce((sum, value) => sum + value, 0) + inches);
+  return mmParts.length ? round(mmParts[0]) : 0;
+}
+function orderLiteBlank(value) {
+  return !value || value === 'n/a';
+}
+function orderNormalizeSpec(spec) {
+  const next = Object.assign({}, spec || {});
+  if ('glass2' in next && orderLiteBlank(next.glass2)) {
+    next.glass2 = '';
+    next.temper2 = 'n/a';
+    next.spacer1 = '';
+    next.sealant1 = '';
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+    return next;
+  }
+  if ('glass3' in next && orderLiteBlank(next.glass3)) {
+    next.glass3 = '';
+    next.temper3 = 'n/a';
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  if ('spacer1' in next && orderLiteBlank(next.spacer1)) {
+    next.spacer1 = '';
+    next.sealant1 = '';
+  }
+  if ('spacer2' in next && orderLiteBlank(next.spacer2)) {
+    next.spacer2 = '';
+    next.sealant2 = '';
+  }
+  return next;
+}
+function orderIguName(spec) {
+  spec = orderNormalizeSpec(spec);
+  function cleanGlass(name, temper) {
+    if (!name || name === 'n/a') return '';
+    let text = String(name).replace(' Jumbo', '').replace(' Large', '').replace(' / sqf', '');
+    const found = text.match(/(\d+(?:\.\d+)?)mm/);
+    if (!found) return '';
+    text = text.replace(/(\d+(?:\.\d+)?)mm/, '').trim();
+    return found[1] + 'mm' + text + (temper === 'yes' ? ' Tempered' : '');
+  }
+  function cleanSpacer(name, sealant) {
+    if (!name || name === 'n/a') return '';
+    const found = String(name).match(/(\d+(?:\.\d+)?)mm/);
+    if (!found) return '';
+    const type = String(name).toLowerCase().indexOf('techno') >= 0 ? 'Technoform' : 'SuperSpacer';
+    const seal = sealant && String(sealant).toLowerCase().indexOf('silicone') >= 0 ? 'Silicone' : 'Polysulfide';
+    return found[1] + 'mm' + type + ' with Argon(' + seal + ')';
+  }
+  function fraction(total) {
+    const inches = total / 25.4;
+    let whole = Math.floor(inches);
+    let numer = Math.round((inches - whole) * 16);
+    if (numer >= 16) { whole += Math.floor(numer / 16); numer = numer % 16; }
+    if (numer <= 0) return String(whole);
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const divisor = gcd(numer, 16);
+    const bit = (numer / divisor) + '/' + (16 / divisor);
+    return whole ? (whole + ' ' + bit) : bit;
+  }
+  const parts = [];
+  let total = 0;
+  [1, 2, 3].forEach(index => {
+    const glass = spec['glass' + index];
+    const token = cleanGlass(glass, spec['temper' + index]);
+    if (!token) return;
+    parts.push(token);
+    total += componentThickness(glass);
+    const spacer = spec['spacer' + index];
+    if (spacer && spacer !== 'n/a' && index < 3) {
+      const gap = cleanSpacer(spacer, spec['sealant' + index]);
+      if (gap) {
+        parts.push(gap);
+        total += componentThickness(spacer);
+      }
+    }
+  });
+  if (!parts.length) return '';
+  total = Math.round(total * 100) / 100;
+  if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
+  return total + ' (' + fraction(total) + '") - ' + parts.join('+');
 }
 function blankSpec(glass, width, height, unit) {
   return {glass1: glass, temper1: 'n/a', spacer1: 'n/a', sealant1: 'n/a', glass2: 'n/a', temper2: 'n/a', spacer2: 'n/a', sealant2: 'n/a', glass3: 'n/a', temper3: 'n/a', width: Number(width), height: Number(height), unit: unit || 'in'};
@@ -1172,6 +1336,56 @@ const orderInvoice = document.getElementById('order-invoice');
 if (orderInvoice) orderInvoice.addEventListener('change', load);
 const editor = document.getElementById('order-editor');
 if (editor) {
+  document.getElementById('order-lines').addEventListener('change', async (event) => {
+    const input = event.target.closest('[data-line]');
+    if (!input) return;
+    const field = input.getAttribute('data-field');
+    if (['glass1', 'glass2', 'spacer1', 'temper1'].indexOf(field) < 0) return;
+    const index = Number(input.getAttribute('data-line'));
+    const item = (draft.items || [])[index];
+    if (!item) return;
+    const spec = Object.assign({}, item.spec || {});
+    document.querySelectorAll('[data-line="' + index + '"]').forEach(control => {
+      const key = control.getAttribute('data-field');
+      if (['glass1', 'temper1', 'spacer1', 'glass2', 'width', 'height', 'unit'].indexOf(key) >= 0) spec[key] = control.value;
+    });
+    item.spec = orderNormalizeSpec(spec);
+    const rebuilt = orderIguName(item.spec);
+    if (rebuilt) {
+      item.name = rebuilt;
+      const nameInput = document.querySelector('[data-line="' + index + '"][data-field="name"]');
+      if (nameInput) nameInput.value = rebuilt;
+    }
+    const spacerInput = document.querySelector('[data-line="' + index + '"][data-field="spacer1"]');
+    if (spacerInput && !item.spec.spacer1) spacerInput.value = '';
+    const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      glass1: item.spec.glass1 || '', glass2: item.spec.glass2 || '', glass3: item.spec.glass3 || '',
+      temper1: item.spec.temper1 || 'n/a', temper2: item.spec.temper2 || 'n/a', temper3: item.spec.temper3 || 'n/a',
+      spacer1: item.spec.spacer1 || '', spacer2: item.spec.spacer2 || '',
+      sealant1: item.spec.sealant1 || '', sealant2: item.spec.sealant2 || '',
+      tier: (currentOrder && currentOrder.tier) || '',
+      fx_rate: (currentOrder && currentOrder.fx_rate) || '',
+      customer_id: (currentOrder && currentOrder.customer_id) || ''
+    })});
+    const result = await res.json().catch(() => ({}));
+    if (res.ok && result.price_sqf != null) {
+      const currency = String((currentOrder && currentOrder.currency) || 'usd').toLowerCase();
+      const fx = Number(result.fx_rate || (currentOrder && currentOrder.fx_rate) || 1);
+      const priceSqf = currency === 'cad' ? Number(result.price_sqf) * fx : Number(result.price_sqf);
+      const width = Number(item.spec.width) || 0;
+      const height = Number(item.spec.height) || 0;
+      const real = item.spec.unit === 'mm' ? (width * height) / 92903.04 : (width * height) / 144;
+      const charged = Math.max(real, Number(item.minimum_sqf || result.minimum_sqf || 0));
+      const pcsInput = document.querySelector('[data-line="' + index + '"][data-field="pcs"]');
+      const pcs = pcsInput ? Number(pcsInput.value || item.pcs || 1) : Number(item.pcs || 1);
+      item.sqf = Number(charged.toFixed(2));
+      item.price_sqf = Number(priceSqf.toFixed(2));
+      item.price_pc = Number((priceSqf * charged).toFixed(2));
+      item.total = Number((item.price_pc * pcs).toFixed(2));
+      item.pcs = pcs;
+    }
+    refreshPreview();
+  });
   document.getElementById('order-lines').addEventListener('click', (event) => {
     const button = event.target.closest('[data-remove]');
     if (!button) return;

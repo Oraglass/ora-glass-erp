@@ -435,6 +435,8 @@ def calculate_price_sqf(
     tiers use scale 1, so their temper add-on stays the flat tempering amount.
     extra_per_sqf is added once and is not scaled.
     """
+    from production import normalize_igu_spec
+    data = normalize_igu_spec(data)
     temper_prices = TEMPER_PRICES if temper_prices is None else temper_prices
     try:
         scale = float(tier5_scale) if tier == 'T5' else 1.0
@@ -638,6 +640,8 @@ def expand_irregular_lines(items, default_rate=DEFAULT_IRREGULAR_RATE):
         elif item.get('surcharge_rate') not in (None, ''):
             stored = item.get('surcharge_rate')
         item['irregular_shape'] = irregular
+        import documents
+        documents.sync_line_name(item)
         if irregular:
             if not item.get('line_id'):
                 item['line_id'] = secrets.token_hex(4)

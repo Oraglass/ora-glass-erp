@@ -18,3 +18,9 @@ def test_clearing_a_lite_clears_its_spacer_and_sealant():
     assert "if(layer==='3')clearSpacerAndSealant(prefix,'2')" in PAGE
     assert "if(layer==='2')" in PAGE
     assert "clearSpacerAndSealant(prefix,'1')" in PAGE
+    assert 'function restoreSealant' in PAGE
+    assert 'function onPanelGlass' in PAGE
+    assert 'function clearPanelGap' in PAGE
+    orgadata = (Path(__file__).resolve().parents[1] / 'templates' / 'partials' / 'orgadata_import.html').read_text()
+    assert 'function clearOrgadataGap' in orgadata
+    assert "fillSealant(spacerRow, event.target.value, '')" in orgadata

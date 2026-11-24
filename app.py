@@ -1271,6 +1271,10 @@ def bootstrap_once():
         _migrate_order_one_review()
     except Exception:
         logger.exception('Order 1 review migration failed')
+    try:
+        _migrate_igu_names()
+    except Exception:
+        logger.exception('IGU name normalization failed')
     _state['bootstrapped'] = True
 
 
@@ -3906,10 +3910,10 @@ def save_quote():
         existing['customer_id'] = customer_id
         existing['company'] = company
         kept_discount, kept_addon = _saved_or_company_terms(existing, customer)
-        existing['items'] = _repriced_quote_items(
+        existing['items'] = _assign_line_numbers(_repriced_quote_items(
             items, tier, currency, tiers, fx_rate, _price_factor(kept_addon),
             _effective_minimum(customer), keep_identity=True,
-        ) if quote_type == 'size' else priced
+        ) if quote_type == 'size' else priced)
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
         existing['fx_rate'] = fx_rate
@@ -3942,7 +3946,7 @@ def save_quote():
         'customer_id': customer_id,
         'project': project,
         'job_address': clean_text(data.get('job_address'), 500),
-        'items': _charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced,
+        'items': _assign_line_numbers(_charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced),
         'currency': currency,
         'fx_rate': fx_rate,
         'type': quote_type,
@@ -3973,7 +3977,15 @@ def _quote_for_viewer(quote, user, orders=None):
                 item['remarks'] = strip_copy_history(item.get('remarks'))
         items.append(item)
     import documents
-    row['items'] = documents.describe_items(items)
+    row['items'] = _assign_line_numbers(documents.describe_items(items))
+    for item in row['items']:
+        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        if not item.get('irregular_shape'):
+            continue
+        title, spec = documents.drawing_caption(item)
+        item['drawing_title'] = title
+        item['drawing_spec'] = spec
     if user.get('role') == 'customer':
         row.pop('price_addon_percent', None)
         row.pop('fx_rate', None)
@@ -4044,6 +4056,36 @@ def _record_quote_edit(quote, user, old_items):
     quote['updated_by'] = email
 
 
+def _fill_open_sealants(spec):
+    """A spacer with no sealant, or a sealant that does not fit it, gets the quote-form auto-select."""
+    sealants = [item.get('name') for item in _live_materials()[2]]
+    for index in (1, 2):
+        spacer = spec.get(f'spacer{index}') or ''
+        if not spacer:
+            continue
+        current = spec.get(f'sealant{index}') or ''
+        suggestion = suggest_sealant(spacer, sealants)
+        options = list(suggestion.get('options') or [])
+        if current and current in options:
+            continue
+        spec[f'sealant{index}'] = suggestion.get('selected') or ''
+    return spec
+
+
+def _assign_line_numbers(items):
+    """Glass lines are numbered 1, 2, 3… by their position. A copied number is not kept."""
+    number = 1
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            item.pop('line_number', None)
+            continue
+        item['line_number'] = number
+        number += 1
+    return items
+
+
 def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0, keep_identity=False):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
@@ -4053,6 +4095,8 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
         if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if spec:
+            spec = _fill_open_sealants(production.normalize_igu_spec(spec))
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
             stored_minimum = item.get('minimum_sqf') if 'minimum_sqf' in item else minimum_sqf
             priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor, stored_minimum)
@@ -4061,11 +4105,10 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
                 'spec': spec,
                 'irregular_shape': bool(item.get('irregular_shape')),
             }
-            if keep_identity:
-                import documents
-                label = documents.igu_name_from_spec(spec)
-                if label:
-                    copied_line['name'] = label
+            import documents
+            label = documents.igu_name_from_spec(spec)
+            if label:
+                copied_line['name'] = label
             copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
                 remark = strip_copy_history(clean_text(item.get('remarks'), 500))
@@ -4075,7 +4118,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             if floor:
                 copied_line['floor'] = floor
             if keep_identity:
-                for key in ('line_id', 'source_filename', 'line_number'):
+                for key in ('line_id', 'source_filename'):
                     if item.get(key) not in (None, ''):
                         copied_line[key] = item.get(key)
             rows.append(copied_line)
@@ -4095,7 +4138,7 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
         if floor:
             plain['floor'] = floor
         rows.append(plain)
-    return expand_irregular_lines(rows, load_pricing_settings()['irregular_shape_surcharge'])
+    return expand_irregular_lines(_assign_line_numbers(rows), load_pricing_settings()['irregular_shape_surcharge'])
 
 
 def _tier_for_copy(user, source, customers, tiers):
@@ -4113,6 +4156,9 @@ def get_quote(quote_id):
     quote = _visible_quote(user, quote_id)
     if not quote:
         return json_error('Not found', 404)
+    import documents
+    if documents.sync_item_names(quote.get('items'), only_mismatch=True):
+        replace_quote(quote_id, quote)
     return jsonify(_with_quote_tax(_quote_for_viewer(quote, user)))
 
 
@@ -5147,10 +5193,11 @@ def _orgadata_refresh_warnings(mapped):
             warning for warning in (block.get('warnings') or [])
             if not str(warning).startswith('Choose an ERP') and not str(warning).startswith('Quantity ')
         ]
-        for lite in block.get('lites') or []:
+        active_lites, active_spacers = _orgadata_active(block)
+        for lite in active_lites:
             if not lite.get('product'):
                 block['warnings'].append(f'Choose an ERP glass for {lite.get("source") or "this lite"}.')
-        for spacer in block.get('spacers') or []:
+        for spacer in active_spacers:
             if not spacer.get('product') and (spacer.get('source') or spacer.get('gap_mm')):
                 block['warnings'].append(
                     f'Choose an ERP spacer for {spacer.get("source") or "the spacer"} {spacer.get("gap_mm")} mm.'
@@ -5172,14 +5219,10 @@ def _orgadata_refresh_warnings(mapped):
 
 
 def _orgadata_ready(block):
-    lites = block.get('lites') or []
+    lites, spacers = _orgadata_active(block)
     if not lites or any(not lite.get('product') for lite in lites):
         return False
-    needed = max(len(lites) - 1, 0)
-    spacers = (block.get('spacers') or [])[:needed]
-    if len(spacers) < needed or any(not spacer.get('product') for spacer in spacers):
-        return False
-    if any(not spacer.get('sealant') for spacer in spacers):
+    if any(not spacer.get('product') or not spacer.get('sealant') for spacer in spacers):
         return False
     return True
 
@@ -5210,7 +5253,67 @@ def _orgadata_spec(block, width_mm, height_mm):
         spec.setdefault(f'temper{index}', 'n/a')
         spec.setdefault(f'spacer{index}', '')
         spec.setdefault(f'sealant{index}', '')
-    return spec
+    return production.normalize_igu_spec(spec)
+
+
+def _blank_product(value):
+    return str(value or '').strip().lower() in {'', 'n/a'}
+
+
+def _orgadata_active(block):
+    """Lites and gaps that are still part of the unit. The first n/a lite ends it."""
+    lites = list(block.get('lites') or [])
+    spacers = list(block.get('spacers') or [])
+    cut = len(lites)
+    for index, lite in enumerate(lites):
+        if index > 0 and _blank_product(lite.get('product')):
+            cut = index
+            break
+    return lites[:cut], spacers[:max(cut - 1, 0)]
+
+
+def _clear_spacer(spacer):
+    spacer['product'] = ''
+    spacer['sealant'] = ''
+    spacer['matched'] = False
+    spacer['sealant_options'] = []
+    spacer['sealant_message'] = ''
+
+
+def _orgadata_drop_empty_gaps(mapped, edits):
+    """A lite set to n/a clears the gap in front of it. A spacer set to n/a clears its sealant.
+
+    The rows stay on the preview so the lite or spacer can be chosen again. Pricing and
+    the IGU name use only the lites that are still set.
+    """
+    incoming_blocks = edits.get('blocks') if isinstance(edits, dict) and isinstance(edits.get('blocks'), list) else []
+    for index, block in enumerate(mapped.get('blocks') or []):
+        lites = block.get('lites') or []
+        spacers = block.get('spacers') or []
+        posted = incoming_blocks[index] if index < len(incoming_blocks) and isinstance(incoming_blocks[index], dict) else {}
+        posted_lites = posted.get('lites') if isinstance(posted.get('lites'), list) else []
+        cut = len(lites)
+        for lite_index, lite_in in enumerate(posted_lites):
+            if lite_index == 0 or lite_index >= len(lites) or not isinstance(lite_in, dict) or 'product' not in lite_in:
+                continue
+            if _blank_product(lite_in.get('product')):
+                cut = lite_index
+                break
+        if cut < len(lites):
+            for lite in lites[cut:]:
+                lite['product'] = ''
+                lite['matched'] = False
+                if lite.get('temper') not in {'yes', 'n/a'}:
+                    lite['temper'] = 'n/a'
+            for spacer in spacers[max(cut - 1, 0):]:
+                _clear_spacer(spacer)
+        posted_spacers = posted.get('spacers') if isinstance(posted.get('spacers'), list) else []
+        for spacer_index, spacer_in in enumerate(posted_spacers):
+            if spacer_index >= len(spacers) or not isinstance(spacer_in, dict) or 'product' not in spacer_in:
+                continue
+            if _blank_product(spacer_in.get('product')):
+                _clear_spacer(spacers[spacer_index])
+    return mapped
 
 
 def _orgadata_fill_sealants(mapped):
@@ -5218,7 +5321,13 @@ def _orgadata_fill_sealants(mapped):
     sealants = _live_materials()[2]
     for block in mapped.get('blocks') or []:
         for spacer in block.get('spacers') or []:
-            suggestion = suggest_sealant(spacer.get('product') or '', sealants)
+            product = spacer.get('product') or ''
+            if not product or product == 'n/a':
+                spacer['sealant'] = ''
+                spacer['sealant_options'] = []
+                spacer['sealant_message'] = ''
+                continue
+            suggestion = suggest_sealant(product, sealants)
             options = list(suggestion.get('options') or [])
             posted = spacer.get('sealant') or ''
             if posted and posted in options:
@@ -5299,6 +5408,7 @@ def _orgadata_preview(record, user, edits=None, locked=None):
     aliases = orgadata_import.aliases_for(customer_id)
     mapped = orgadata_import.map_document(parsed, glass_names, spacer_names, aliases)
     mapped = _orgadata_apply_edits(mapped, edits or {}, glass_names, spacer_names)
+    mapped = _orgadata_drop_empty_gaps(mapped, edits or {})
     mapped = _orgadata_refresh_warnings(mapped)
     mapped = _orgadata_fill_sealants(mapped)
     if isinstance(edits, dict) and edits.get('remember') and customer_id:
@@ -5440,9 +5550,10 @@ def _orgadata_quote_items(preview):
     items = []
     blocked = False
     for block in preview.get('blocks') or []:
-        if any(not lite.get('matched') for lite in block.get('lites') or []):
+        active_lites, active_spacers = _orgadata_active(block)
+        if any(not lite.get('matched') for lite in active_lites):
             blocked = True
-        if any(not spacer.get('matched') for spacer in block.get('spacers') or []):
+        if any(not spacer.get('matched') for spacer in active_spacers):
             blocked = True
         for line in block.get('lines') or []:
             if line.get('warnings') or line.get('total') in (None, ''):
@@ -6623,6 +6734,28 @@ def _remake_line(source, qty, serial, reason):
     return item
 
 
+def _public_drawings(order):
+    numbers = {}
+    for item in (order or {}).get('items') or []:
+        if isinstance(item, dict) and item.get('line_id') and item.get('line_number') not in (None, ''):
+            numbers[str(item.get('line_id'))] = item.get('line_number')
+    rows = []
+    for drawing in (order or {}).get('drawings') or []:
+        if not isinstance(drawing, dict):
+            continue
+        number = drawing.get('line_number')
+        if number in (None, ''):
+            number = numbers.get(str(drawing.get('line_id') or ''))
+        rows.append({
+            'line_id': drawing.get('line_id'),
+            'line_number': number if number not in (None, '') else '',
+            'filename': drawing.get('filename') or '',
+            'is_dwg': bool(drawing.get('is_dwg')),
+            'uploaded_at': drawing.get('uploaded_at') or '',
+        })
+    return rows
+
+
 def order_for_viewer(order, user, with_coverage=False):
     status = order_status(order)
     summary, _error = price_summary(
@@ -6664,16 +6797,7 @@ def order_for_viewer(order, user, with_coverage=False):
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
-        'drawings': [
-            {
-                'line_id': drawing.get('line_id'),
-                'filename': drawing.get('filename') or '',
-                'is_dwg': bool(drawing.get('is_dwg')),
-                'uploaded_at': drawing.get('uploaded_at') or '',
-            }
-            for drawing in order.get('drawings') or []
-            if isinstance(drawing, dict)
-        ],
+        'drawings': _public_drawings(order),
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
         'tax_lines': order.get('tax_lines') or [],
@@ -6966,8 +7090,7 @@ def convert_quote_to_order(quote_id):
             line['line_id'] = item.get('line_id')
         if item.get('source_filename'):
             line['source_filename'] = item.get('source_filename')
-        if item.get('line_number'):
-            line['line_number'] = item.get('line_number')
+        line['line_number'] = len(priced_items) + 1
         if item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = item.get('surcharge_rate')
         priced_items.append(line)
@@ -7088,6 +7211,7 @@ def convert_quote_to_order(quote_id):
                 record = drawing_store.store_drawing(order['id'], line.get('line_id'), filename, payload)
             except drawing_store.DrawingError as exc:
                 return json_error(str(exc), 400)
+            record['line_number'] = line.get('line_number')
             record['uploaded_by'] = user.get('email') or ''
             saved_drawings.append(record)
         def remember(row):
@@ -7214,6 +7338,19 @@ def replace_order_drawing(order_id, line_id):
     except drawing_store.DrawingError as exc:
         return json_error(str(exc), 400)
     record['uploaded_by'] = user.get('email') or ''
+    previous = next(
+        (item for item in order.get('drawings') or [] if str(item.get('line_id')) == str(line_id)),
+        None,
+    )
+    if previous and previous.get('line_number') not in (None, ''):
+        record['line_number'] = previous.get('line_number')
+    else:
+        match = next(
+            (item for item in order.get('items') or [] if str(item.get('line_id')) == str(line_id)),
+            None,
+        )
+        if match and match.get('line_number') not in (None, ''):
+            record['line_number'] = match.get('line_number')
 
     def mutator(row):
         row['drawings'] = [
@@ -7259,9 +7396,13 @@ def get_orders():
 @module_required('orders')
 def get_order(order_id):
     user = current_user()
-    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    orders = load_orders()
+    order = next((row for row in orders_visible_to(user, orders) if row.get('id') == order_id), None)
     if not order:
         return json_error('Not found', 404)
+    import documents
+    if documents.sync_item_names(order.get('items'), only_mismatch=True):
+        save_orders(orders)
     return jsonify(order_for_viewer(order, user, with_coverage=True))
 
 
@@ -7314,6 +7455,7 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
                 spec[key] = clean_text(spec_in.get(key), 120)
         if not _usable_size_spec(spec):
             return None, 'Each line needs a glass type and a positive size.'
+        spec = _fill_open_sealants(production.normalize_igu_spec(spec))
         for key in ('glass1', 'glass2', 'glass3', 'spacer1', 'spacer2', 'sealant1', 'sealant2'):
             if spec.get(key) and not _known_priced_name(spec.get(key)):
                 return None, 'Unknown material on a line.'
@@ -7325,7 +7467,8 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
             return None, 'Quantity must be at least 1.'
         line_minimum = raw_item.get('minimum_sqf') if 'minimum_sqf' in raw_item else minimum_sqf
         priced = _reprice(spec, pcs, tier, currency, tiers, fx_rate, price_factor, line_minimum)
-        name = clean_text(raw_item.get('name'), 200)
+        import documents
+        name = documents.igu_name_from_spec(spec) or clean_text(raw_item.get('name'), 200)
         if not name:
             name = f"{spec.get('glass1')} - {spec.get('width')} x {spec.get('height')} {spec.get('unit')}"
         line = {
@@ -7380,6 +7523,27 @@ def _orders_awaiting_staff(user):
         1 for order in load_orders()
         if order_status(order) in {'submitted', 'reapproved'} and order.get('review_for') != 'customer'
     )
+
+
+def _migrate_igu_names():
+    """Stored lines whose thickness prefix does not match the spec are rebuilt once."""
+    import documents
+    quotes = load_quotes()
+    changed = False
+    for quote in quotes:
+        if documents.sync_item_names(quote.get('items'), only_mismatch=True):
+            changed = True
+    if changed:
+        save_quotes(quotes)
+        logger.info('Rebuilt IGU names on saved quotes so the thickness matches the spec.')
+    orders = load_orders()
+    changed = False
+    for order in orders:
+        if documents.sync_item_names(order.get('items'), only_mismatch=True):
+            changed = True
+    if changed:
+        save_orders(orders)
+        logger.info('Rebuilt IGU names on saved orders so the thickness matches the spec.')
 
 
 def _migrate_order_one_review():
@@ -8001,13 +8165,13 @@ def create_remake(order_id):
         'remake_of': parent.get('id'),
         'remake_reason': reason,
         'charge_customer': charge,
-        'quote_id': parent.get('quote_id'),
+        'quote_id': None,
         'customer_id': parent.get('customer_id'),
         'company': parent.get('company') or '',
         'project': parent.get('project') or '',
         'po': parent.get('po') or parent.get('customer_po') or '',
         'job_address': parent.get('job_address') or '',
-        'notes': f'Remake {number} of order {parent.get("number") or parent.get("id")}.' + (f' {reason}' if reason else ''),
+        'notes': f'Remake of Order {parent.get("number") or parent.get("id")}.' + (f' {reason}' if reason else ''),
         'currency': parent.get('currency') or 'usd',
         'fx_rate': parent.get('fx_rate'),
         'tier': parent.get('tier'),
