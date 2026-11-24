@@ -213,7 +213,8 @@ function renderQuotes(rows) {
     const total = subtotal - (Number(quote.additional_discount_amount) || 0) + taxSum;
     let status = '-';
     if (quote.order_id) {
-      status = 'Approved for order. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
+      const label = quote.order_status || 'Approved for order';
+      status = esc(label) + '. <a href="/orders/' + esc(quote.order_id) + '">Used for production order ' + esc(quote.order_id) + '</a>';
     } else if (quote.status === 'draft') {
       status = 'Draft';
     }

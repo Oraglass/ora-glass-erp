@@ -49,6 +49,7 @@ a{color:#C41E3A}
 .badge.sent{background:#e7f1ff;color:#1d4ed8}
 .badge.made{background:#efe7ff;color:#6d28d9}
 .badge.delivered{background:#d4edda;color:#155724}
+.badge.voided{background:#eee;color:#444}
 .badge.packed{background:#d4edda;color:#155724}
 .badge.partial{background:#fff4e5;color:#9a3412}
 .badge.not_invoiced{background:#fde8ec;color:#9f1239}
@@ -100,6 +101,7 @@ a{color:#C41E3A}
 <option value="sent">Sent to production</option>
 <option value="made">Made</option>
 <option value="delivered">Delivered</option>
+<option value="voided">Voided</option>
 <option value="partial">Partially packed</option>
 <option value="packed">Packed</option>
 </select>
@@ -498,7 +500,8 @@ function renderDetail(order) {
   primary.push('<a class="btn secondary" id="order-confirmation" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Open PDF</a>');
   if (STAFF && order.excel_ready) primary.push('<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Production Excel</a>');
   if (order.can_unapprove) primary.push('<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>');
-  if (CAN_EDIT && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
+  if (order.can_void) primary.push('<button type="button" class="btn secondary" id="void-order">Void</button>');
+  if (CAN_EDIT && order.status !== 'voided' && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
   if (order.can_release) secondary.push('<button type="button" class="btn" id="approve-production">Approve for production</button>');
   if (order.can_respond) {
     secondary.push('<button type="button" class="btn" id="approve-changes">Approve changes</button>');
@@ -511,6 +514,12 @@ function renderDetail(order) {
   if (secondary.length > 1) buttons += '<details class="more"><summary class="btn secondary">More</summary><div class="more-menu">' + secondary.join('') + '</div></details>';
   else buttons += secondary.join('');
   if (STAFF && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
+  const voidNote = order.status === 'voided'
+    ? '<p class="note" id="voided-note">Voided' + (order.voided_by ? ' by ' + esc(order.voided_by) : '') + (order.voided_at_display ? ' · ' + esc(order.voided_at_display) : '') + (order.void_reason ? '. ' + esc(order.void_reason) : '') + '</p>'
+    : '';
+  const voidPanel = order.can_void
+    ? '<div id="void-panel" hidden><p class="note">Void this order? It leaves the open order list. A reason is optional.</p><textarea id="void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea><div class="actions"><button type="button" class="btn" id="void-confirm">Void order</button><button type="button" class="btn secondary" id="void-cancel">Cancel</button></div></div>'
+    : '';
   const invoice = order.invoice_number ? '<p class="note">Invoice <a href="/invoices/' + esc(order.invoice_id) + '">' + esc(order.invoice_number) + '</a></p>' : '';
   const documents = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
@@ -555,7 +564,7 @@ function renderDetail(order) {
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
   const headerExtra = ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
-    + notes + jobText + jobForm + tax;
+    + voidNote + voidPanel + notes + jobText + jobForm + tax;
   const invoiceRows = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
@@ -598,7 +607,14 @@ function renderDetail(order) {
   if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
   const unapprove = document.getElementById('unapprove-order');
-  if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to Ora Glass review and the production Excel stays locked until it is approved again.'));
+  if (unapprove) unapprove.addEventListener('click', () => postDecision('/unapprove', {}, 'Unapprove this order? It goes back to ' + (order.company || 'the customer') + ' for review, and the production Excel stays locked until it is approved again.'));
+  const voidButton = document.getElementById('void-order');
+  const voidBox = document.getElementById('void-panel');
+  if (voidButton && voidBox) voidButton.addEventListener('click', () => { voidBox.hidden = false; });
+  const voidCancel = document.getElementById('void-cancel');
+  if (voidCancel && voidBox) voidCancel.addEventListener('click', () => { voidBox.hidden = true; });
+  const voidConfirm = document.getElementById('void-confirm');
+  if (voidConfirm) voidConfirm.addEventListener('click', () => postDecision('/void', {reason: (document.getElementById('void-reason') || {}).value || ''}, ''));
   document.querySelectorAll('[data-remove-packing]').forEach(button => {
     button.addEventListener('click', async () => {
       if (!window.confirm('Remove this packing list from the order and recalculate what is packed?')) return;
@@ -938,9 +954,15 @@ async function loadPacking() {
   const box = document.getElementById('packing-projects');
   if (!box) return;
   const groups = body.projects || [];
-  if (!groups.length) { box.innerHTML = ''; return; }
-  box.innerHTML = groups.map(group => '<p class="note"><a href="/orders/' + esc(group.order_id) + '">' + esc(group.company) + ' / ' + esc(group.project) + '</a> · ' + esc(group.pack_status_label || 'Not packed') + ' · Ordered ' + esc((group.totals || {}).ordered || 0) + ' · Packed ' + esc((group.totals || {}).packed || 0) + ' · BO ' + esc((group.totals || {}).bo || 0) + '</p>').join('');
+  const review = document.getElementById('packing-review');
+  if (!groups.length) {
+    if (box) box.innerHTML = '';
+  } else {
+    box.innerHTML = groups.map(group => '<p class="note"><a href="/orders/' + esc(group.order_id) + '">' + esc(group.company) + ' / ' + esc(group.project) + '</a> · ' + esc(group.pack_status_label || 'Not packed') + ' · Ordered ' + esc((group.totals || {}).ordered || 0) + ' · Packed ' + esc((group.totals || {}).packed || 0) + ' · BO ' + esc((group.totals || {}).bo || 0) + '</p>').join('');
+  }
+  if (!review) return;
   if ((body.inbox || []).length) renderPackingReview({saved: [], review: body.inbox});
+  else review.innerHTML = '';
 }
 async function load() {
   if (FOCUS) {

@@ -19,6 +19,7 @@ STATUS_LABELS = {
     'sent': 'Sent to production',
     'made': 'Made',
     'delivered': 'Delivered',
+    'voided': 'Voided',
 }
 # Staff can release these to production. Excel export waits until then.
 REVIEW_STATUSES = ('submitted', 'customer_review', 'reapproved')
