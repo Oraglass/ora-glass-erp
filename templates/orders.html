@@ -123,6 +123,11 @@ a{color:#C41E3A}
 <div id="packing-projects"></div>
 </form>
 {% endif %}
+<div id="list-void-panel" hidden style="margin:12px 0">
+<p class="note" id="list-void-note">Void this order? It leaves the open order list. A reason is optional.</p>
+<textarea id="list-void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea>
+<div class="actions"><button type="button" class="btn" id="list-void-confirm">Void order</button><button type="button" class="btn secondary" id="list-void-cancel">Cancel</button></div>
+</div>
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
@@ -233,6 +238,10 @@ function orderOpenLink(order) {
   const cls = review ? 'btn small' : 'btn small secondary';
   return '<a class="' + cls + '" id="open-order-' + esc(order.id) + '" href="/orders/' + encodeURIComponent(order.id) + '">' + label + '</a>';
 }
+function orderVoidLink(order) {
+  if (!order.can_void) return '';
+  return '<button type="button" class="btn small secondary" id="list-void-' + esc(order.id) + '" data-list-void="' + esc(order.id) + '">Void</button>';
+}
 function render(orders) {
   const head = document.getElementById('order-head');
   head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
@@ -246,7 +255,7 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(order.id) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -981,6 +990,40 @@ async function load() {
 }
 const orderFilter = document.getElementById('order-filter');
 if (orderFilter) orderFilter.addEventListener('click', load);
+const orderList = document.getElementById('order-list');
+if (orderList) orderList.addEventListener('click', event => {
+  const button = event.target.closest('[data-list-void]');
+  if (!button) return;
+  const panel = document.getElementById('list-void-panel');
+  if (!panel) return;
+  panel.hidden = false;
+  panel.dataset.orderId = button.getAttribute('data-list-void');
+  const note = document.getElementById('list-void-note');
+  if (note) note.textContent = 'Void order ' + button.getAttribute('data-list-void') + '? It leaves the open order list. A reason is optional.';
+  const reason = document.getElementById('list-void-reason');
+  if (reason) reason.value = '';
+  panel.scrollIntoView({block: 'nearest'});
+});
+const listVoidCancel = document.getElementById('list-void-cancel');
+if (listVoidCancel) listVoidCancel.addEventListener('click', () => {
+  const panel = document.getElementById('list-void-panel');
+  if (panel) panel.hidden = true;
+});
+const listVoidConfirm = document.getElementById('list-void-confirm');
+if (listVoidConfirm) listVoidConfirm.addEventListener('click', async () => {
+  const panel = document.getElementById('list-void-panel');
+  const orderId = panel && panel.dataset.orderId;
+  if (!orderId) return;
+  const reason = (document.getElementById('list-void-reason') || {}).value || '';
+  const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/void', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({reason: reason})
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not void the order'); return; }
+  panel.hidden = true;
+  load();
+});
 const packingForm = document.getElementById('packing-upload');
 if (packingForm) {
   packingForm.addEventListener('submit', async event => {
