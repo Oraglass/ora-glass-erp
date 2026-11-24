@@ -1,5 +1,7 @@
 """A draft quote can be edited in place. The quote number stays, and the order uses the new lines."""
 
+import io
+
 from quoting import reprice_size_line
 from storage import load_orders, load_quotes, load_tiers, save_quotes, save_tiers
 from tests.conftest import login, write_user
@@ -167,3 +169,86 @@ def test_editing_a_draft_keeps_the_quote_number_and_reprices_at_its_tier(client)
         'id': own_id, 'items': [_line(pcs=1, irregular=False)],
         'currency': 'usd', 'project': 'After void', 'type': 'size', 'tier': 'T2',
     }).status_code == 400
+
+
+def test_a_duplicated_line_is_priced_on_its_own_and_needs_its_own_drawing(client):
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'boss@harbor.example', 'customer', customer_id='harbor-glass', customer_name='Harbor Glass',
+        customer_tier='T2', customer_subrole='management',
+    )
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    original = _draft(client, [_line(pcs=2, irregular=True)])
+    quote_id = original['id']
+    wider = dict(SPEC)
+    wider['width'] = 30
+    wider['height'] = 20
+    saved = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [
+            {
+                'name': 'Clear Glass 4mm - 24 x 36 in',
+                'pcs': 2,
+                'spec': SPEC,
+                'floor': 'W12',
+                'remarks': 'Lobby lite',
+                'line_id': 'line-1',
+                'line_number': 1,
+                'irregular_shape': True,
+                'source_filename': 'glass-order.pdf',
+            },
+            {
+                'name': 'Clear Glass 4mm - 30 x 20 in',
+                'pcs': 1,
+                'spec': wider,
+                'floor': 'W13',
+                'remarks': 'Lobby lite',
+                'line_number': 2,
+                'irregular_shape': True,
+                'source_filename': 'glass-order.pdf',
+            },
+        ],
+        'currency': 'usd',
+        'project': 'Lobby',
+        'type': 'size',
+        'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()['id'] == quote_id
+    stored = next(row for row in load_quotes() if row['id'] == quote_id)
+    glass = [row for row in stored['items'] if row.get('spec')]
+    assert [row['line_number'] for row in glass] == [1, 2]
+    assert glass[0]['line_id'] == 'line-1'
+    assert glass[1]['line_id'] and glass[1]['line_id'] != 'line-1'
+    assert glass[1]['floor'] == 'W13'
+    assert glass[1]['remarks'] == 'Lobby lite'
+    assert glass[1]['spec']['glass1'] == 'Clear Glass 4mm'
+    assert glass[1]['spec']['width'] == 30
+    pricing = __import__('app').PRICING
+    tiers = load_tiers()
+    assert glass[0]['total'] == reprice_size_line(SPEC, 2, 'T2', 'usd', pricing, tiers)['total']
+    assert glass[1]['total'] == reprice_size_line(wider, 1, 'T2', 'usd', pricing, tiers)['total']
+    assert glass[0]['total'] != glass[1]['total']
+    page = client.get('/quotes')
+    assert b'duplicateSizeItem' in page.data
+    assert b'duplicateSqfItem' in page.data
+    assert b'aria-label="Width"' in page.data
+    missing = client.post(f'/api/quotes/{quote_id}/order', data={
+        'customer_id': 'harbor-glass',
+        'drawing_line-1': (io.BytesIO(b'AC1015'), 'lobby.dwg'),
+    }, content_type='multipart/form-data')
+    assert missing.status_code == 400
+    body = missing.get_json()
+    assert body['needs_drawings'] is True
+    assert [row['line_id'] for row in body['lines']] == [glass[1]['line_id']]
+    created = client.post(f'/api/quotes/{quote_id}/order', data={
+        'customer_id': 'harbor-glass',
+        'drawing_line-1': (io.BytesIO(b'AC1015'), 'lobby.dwg'),
+        f"drawing_{glass[1]['line_id']}": (io.BytesIO(b'other'), 'copy.pdf'),
+    }, content_type='multipart/form-data')
+    assert created.status_code == 200, created.get_json()
+    order = next(row for row in load_orders() if row['id'] == created.get_json()['order_id'])
+    drawings = {row['line_id']: row for row in order['drawings']}
+    assert set(drawings) == {'line-1', glass[1]['line_id']}
+    assert drawings['line-1']['filename'] == 'lobby.dwg'
+    assert drawings[glass[1]['line_id']]['filename'] == 'copy.pdf'

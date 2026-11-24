@@ -302,7 +302,7 @@ function remarkControls(item, index, listName) {
 const renderSqfQuoteList = renderQuoteList;
 renderQuoteList = function () {
   const tbody = document.getElementById('quote-body');
-  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSqfItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
+  tbody.innerHTML = quoteItems.map((item, i) => '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + remarkControls(item, i, 'sqf') + '</td>' + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSqfItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem(' + i + ')">×</button></td></tr>').join('');
   document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
 };
@@ -313,9 +313,10 @@ renderSizeQuoteList = function () {
     const checked = item.irregular_shape ? ' checked' : '';
     const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
     const pcs = Number(item.pcs) || 1;
-    const shownSize = (item.spec && item.spec.width) ? dualSize(item.spec.width, item.spec.height, item.spec.unit) : item.size;
+    const unit = item.spec && item.spec.unit === 'mm' ? 'mm' : 'in';
+    const shownSize = (item.spec && item.spec.width) ? '<input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.5rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit : quoteEsc(item.size || '');
     const extra = item.irregular_shape ? '<tr><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + ' - ' + quoteEsc(item.size) + '</td><td class="col-floor"></td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
-    return '<tr><td class="col-product">' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + quoteEsc(shownSize) + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Edit line" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSizeItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
+    return '<tr><td class="col-product"><span class="note">Line ' + quoteEsc(item.line_number || (i + 1)) + '</span><br>' + quoteEsc(item.name) + remarkControls(item, i, 'size') + '<div style="font-size:12px;color:#555"><label><input type="checkbox"' + checked + ' onchange="toggleIrregular(' + i + ', this.checked)"> Irregular shape</label></div></td>' + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Edit line" onclick="editSizeItem(' + i + ')">Edit</button> <button type="button" class="quote-remove" aria-label="Duplicate line" onclick="duplicateSizeItem(' + i + ')">Duplicate</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem(' + i + ')">×</button></td></tr>' + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
   const taxBase = sizeQuoteItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
@@ -417,28 +418,78 @@ function editSizeItem(index) {
   renderSizeQuoteList();
   if (typeof calcSize === 'function') calcSize();
 }
+function nextLineNumber(list) {
+  return (list || []).reduce((max, item) => Math.max(max, parseInt(item && item.line_number, 10) || 0), 0) + 1;
+}
 function duplicateSizeItem(index) {
   const item = sizeQuoteItems[index];
   if (!item) return;
   const copy = JSON.parse(JSON.stringify(item));
   delete copy.line_id;
+  delete copy.drawing;
+  delete copy.drawing_file;
+  delete copy.drawing_stored;
+  copy.line_number = nextLineNumber(sizeQuoteItems);
   sizeQuoteItems.splice(index + 1, 0, copy);
   renderSizeQuoteList();
+  repriceSizeItem(index + 1);
 }
 function duplicateSqfItem(index) {
   const item = quoteItems[index];
   if (!item) return;
-  quoteItems.splice(index + 1, 0, Object.assign({}, item));
+  const copy = Object.assign({}, item);
+  delete copy.line_id;
+  delete copy.drawing;
+  copy.line_number = nextLineNumber(quoteItems);
+  quoteItems.splice(index + 1, 0, copy);
   renderQuoteList();
 }
 function setSizeQty(index, value) {
   const item = sizeQuoteItems[index];
   if (!item) return;
-  const pcs = Math.max(1, parseInt(value, 10) || 1);
+  item.pcs = Math.max(1, parseInt(value, 10) || 1);
+  if (item.spec) item.spec.pcs = item.pcs;
+  repriceSizeItem(index);
+}
+function setSizeDimension(index, key, value) {
+  const item = sizeQuoteItems[index];
+  if (!item) return;
+  item.spec = Object.assign({}, item.spec || {});
+  item.spec[key] = value;
+  const unit = item.spec.unit === 'mm' ? 'mm' : 'in';
+  item.size = (item.spec.width || '') + ' x ' + (item.spec.height || '') + ' ' + unit;
+  repriceSizeItem(index);
+}
+async function repriceSizeItem(index) {
+  const item = sizeQuoteItems[index];
+  const spec = item && item.spec;
+  if (!item || !spec || !selectedCurrency) return;
+  const width = parseFloat(spec.width) || 0;
+  const height = parseFloat(spec.height) || 0;
+  const pcs = parseInt(item.pcs, 10) || 1;
+  const unit = spec.unit === 'mm' ? 'mm' : 'in';
+  const real = unit === 'mm' ? (width * height) / 92903.04 : (width * height) / 144;
+  const tier = document.getElementById('s-tier');
+  const res = await fetch('/api/calculate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+    glass1: spec.glass1 || '', glass2: spec.glass2 || '', glass3: spec.glass3 || '',
+    temper1: spec.temper1 || 'n/a', temper2: spec.temper2 || 'n/a', temper3: spec.temper3 || 'n/a',
+    spacer1: spec.spacer1 || '', spacer2: spec.spacer2 || '',
+    sealant1: spec.sealant1 || '', sealant2: spec.sealant2 || '',
+    tier: tier ? tier.value : '', fx_rate: erpRate
+  })});
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || result.price_sqf == null) return;
+  const mult = selectedCurrency === 'cad' ? erpRate : 1;
+  const minimum = (draftQuoteId && window.draftMinimumSqf != null) ? Number(window.draftMinimumSqf) : Number(result.minimum_sqf) || 0;
+  const charged = Math.max(real, minimum);
+  item.real_sqf = Number(real.toFixed(2));
+  item.sqf = charged.toFixed(2);
+  item.minimum_sqf = minimum;
+  item.priceSqf = (Number(result.price_sqf) * mult).toFixed(2);
+  const each = Number(result.price_sqf) * charged * mult;
+  item.pricePc = each.toFixed(2);
+  item.total = (each * pcs).toFixed(2);
   item.pcs = pcs;
-  if (item.spec) item.spec.pcs = pcs;
-  const each = parseFloat(item.pricePc);
-  if (!isNaN(each)) item.total = (each * pcs).toFixed(2);
   renderSizeQuoteList();
 }
 function quotePayload(items, type) {
