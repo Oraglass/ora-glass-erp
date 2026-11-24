@@ -21,7 +21,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .detail-page #priced-lines th.product,.detail-page #priced-lines td.product{white-space:normal;word-break:break-word;min-width:18rem}
 .detail-page #priced-lines th.num,.detail-page #priced-lines td.num{text-align:right;white-space:nowrap}
 .detail-page #priced-lines .line-note{display:block;margin-top:4px;color:#666;font-size:12px;font-weight:600}
-.detail-page td.size,.detail-page th.size{white-space:nowrap}
+.detail-page td.size,.detail-page th.size{white-space:normal;vertical-align:top}
+.detail-page .size-imperial{display:block;white-space:nowrap}
+.detail-page .size-metric{display:block;color:#666;font-size:12px;line-height:1.3;white-space:nowrap}
 .detail-page .back{display:inline-block;margin:0 0 12px;font-size:14px}
 .detail-page #ship-confirm{border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:8px 0 12px;background:#fafafa}
 .detail-page .field-row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:8px 0}
@@ -399,8 +401,8 @@ function renderAppendReview(data, send, say) {
 function displaySize(label) {
   const text = String(label || '');
   const match = text.match(/^(.*) in \((.*) mm\)$/);
-  if (match) return match[1] + ' in / ' + match[2] + ' mm';
-  return text;
+  if (!match) return esc(text);
+  return '<span class="size-imperial">' + esc(match[1] + ' in') + '</span><span class="size-metric">' + esc(match[2] + ' mm') + '</span>';
 }
 function surchargeNote(order, charge) {
   const label = charge.kind === 'dwg_creation' ? 'DWG drawing creation' : 'Irregular shape surcharge';
@@ -470,7 +472,7 @@ function shipConfirmPanel(order) {
   if (!STAFF || !ready.length) return '';
   const rows = ready.map(row => {
     const qty = Number(row.packed) - Number(row.shipped || 0);
-    return '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+    return '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td>'
       + '<td class="num">' + esc(qty) + '</td>'
       + '<td class="num"><input data-ship-index="' + esc(row.index) + '" type="number" min="0" max="' + esc(qty) + '" value="' + esc(qty) + '" readonly aria-label="Ship qty for serial ' + esc(row.serial) + '"></td></tr>';
   }).join('');
@@ -495,7 +497,7 @@ function remakeForm(order) {
   const rows = lines.map(row => {
     const max = Number(row.ordered) || 1;
     return '<tr><td><input type="checkbox" data-remake-serial="' + esc(row.serial) + '" aria-label="Remake serial ' + esc(row.serial) + '"></td>'
-      + '<td>' + esc(row.serial) + '</td><td class="floor">' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td>'
+      + '<td>' + esc(row.serial) + '</td><td class="floor">' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td>'
       + '<td class="num">' + esc(row.ordered) + '</td>'
       + '<td class="num"><input data-remake-qty="' + esc(row.serial) + '" type="number" min="1" max="' + esc(max) + '" value="1" aria-label="Remake qty for serial ' + esc(row.serial) + '"></td></tr>';
   }).join('');
@@ -523,9 +525,9 @@ function packingBlock(order) {
   const totals = order.packing_totals || {};
   const showShipped = (order.shipments || []).length > 0 || serials.some(row => Number(row.shipped) > 0);
   const shippedHead = showShipped ? '<th class="num">Shipped</th>' : '';
-  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
   const listBlocks = lists.map(list => {
-    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
+    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td class="size">' + displaySize(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
     const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
     const unmatched = STAFF && (list.unmatched || []).length
       ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
@@ -586,7 +588,7 @@ function renderDetail(order) {
     const remakeOf = item.source_serial ? '<div class="note" id="remake-of-' + esc(order.id) + '-' + esc(item.source_serial) + '">Remake of #' + esc(item.source_serial) + '</div>' : '';
     const source = item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
     const number = row.number;
-    return '<tr><td class="num">' + esc(number) + remakeOf + '</td><td class="floor">' + esc(floor) + '</td><td class="product">' + esc(item.name || '') + notes + source + '</td><td class="size">' + esc(size) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
+    return '<tr><td class="num">' + esc(number) + remakeOf + '</td><td class="floor">' + esc(floor) + '</td><td class="product">' + esc(item.name || '') + notes + source + '</td><td class="size">' + size + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   const primary = [];

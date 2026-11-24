@@ -247,3 +247,20 @@ def test_staff_can_unapprove_and_an_approved_edit_waits_for_the_customer(client)
     client.post('/logout')
     assert login(client, 'boss@harbor.example').status_code == 302
     assert client.post(f'/api/orders/{second_id}/unapprove', json={}).status_code == 403
+
+
+def test_on_screen_sizes_stack_inches_over_millimetres():
+    """Order, remake, quote, and shipment size cells show inches, then millimetres."""
+    assert documents.piece_size_text(1058, 2830, 'mm') == '41 21/32 x 111 13/32 in (1058 x 2830 mm)'
+    orders = open('templates/orders.html', encoding='utf-8').read()
+    quotes = open('templates/quotes.html', encoding='utf-8').read()
+    history = open('templates/quote_history.html', encoding='utf-8').read()
+    shipments_page = open('templates/shipments.html', encoding='utf-8').read()
+    assert "in / " not in orders
+    assert 'class="size-metric"' in orders
+    assert 'displaySize(row.size' in orders
+    assert 'class="size-metric"' in quotes
+    assert "in ('" not in quotes
+    assert 'dualSize(item.spec.width, item.spec.height, unit)' in quotes
+    assert 'class="size-metric"' in history
+    assert 'class="size-metric"' in shipments_page

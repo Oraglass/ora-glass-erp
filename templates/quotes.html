@@ -34,7 +34,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .quote-table .col-line{width:3.25rem;text-align:right;font-variant-numeric:tabular-nums}
 .quote-table .col-product{text-align:left}
 .quote-table .col-floor{width:6.75rem}
-.quote-table .col-size{width:12.5rem}
+.quote-table .col-size{width:14rem;white-space:normal;vertical-align:top}
+.quote-table .size-imperial{display:block;white-space:nowrap}
+.quote-table .size-metric{display:block;color:#666;font-size:12px;line-height:1.3;white-space:nowrap}
+.quote-table .size-edit{margin-top:4px;color:#555;font-size:12px}
 .quote-table .col-qty{width:4.75rem}
 .quote-table .col-price{width:7.25rem;text-align:right;white-space:nowrap}
 .quote-table .col-actions{width:13.75rem}
@@ -251,7 +254,9 @@ function dualSize(width, height, unit) {
     if (Math.abs(number - Math.round(number)) < 1e-9) return String(Math.round(number));
     return String(number);
   }
-  return inchFraction(wmm / 25.4) + ' x ' + inchFraction(hmm / 25.4) + ' in (' + displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm)';
+  const imperial = inchFraction(wmm / 25.4) + ' x ' + inchFraction(hmm / 25.4) + ' in';
+  const metric = displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm';
+  return '<span class="size-imperial">' + imperial + '</span><span class="size-metric">' + metric + '</span>';
 }
 function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
@@ -275,6 +280,13 @@ document.getElementById('s-spacer1').addEventListener('change',function(){update
 <script>
 function quoteEsc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function shownQuoteSize(item) {
+  const spec = item.spec || {};
+  if (spec.width && spec.height) return dualSize(spec.width, spec.height, spec.unit || 'in');
+  const match = String(item.size || '').match(/^([\d.]+)\s*x\s*([\d.]+)\s*(mm|in)?$/i);
+  if (match) return dualSize(match[1], match[2], match[3] || 'in');
+  return quoteEsc(item.size || '-');
 }
 let showRemarks = false;
 function toggleShowRemarks(checked) {
@@ -347,7 +359,7 @@ renderQuoteList = function () {
     const number = i + 1;
     const remark = (showRemarks && item.remarks) ? '<div class="note">' + quoteEsc(item.remarks) + '</div>' : '';
     const panel = openSqfIndex === i ? '<tr class="line-editor" data-line-editor="sqf-' + i + '"><td colspan="7"><div class="line-editor-grid"><span class="editor-label">Remark</span><input type="text" data-field="remarks" aria-label="Remarks" value="' + quoteEsc(item.remarks || '') + '"></div><div class="line-editor-actions"><button type="button" class="btn" onclick="updateSqfEditor()">Update line</button><button type="button" class="btn" style="background:#333" onclick="cancelLineEditor()">Cancel</button></div></td></tr>' : '';
-    return '<tr><td class="col-line">' + quoteEsc(number) + '</td>' + nameCell(item.name) + floorCell(item, i, 'sqf') + '<td class="col-size">' + quoteEsc(item.size || '-') + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td>' + lineActions(i, 'sqf') + '</tr>' + remarkRow(remark, i) + panel;
+    return '<tr><td class="col-line">' + quoteEsc(number) + '</td>' + nameCell(item.name) + floorCell(item, i, 'sqf') + '<td class="col-size">' + shownQuoteSize(item) + '</td><td class="col-qty">' + quoteEsc(item.pcs || '-') + '</td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.price) + '</td>' + lineActions(i, 'sqf') + '</tr>' + remarkRow(remark, i) + panel;
   }).join('');
   document.getElementById('quote-list').style.display = quoteItems.length ? 'block' : 'none';
   document.querySelectorAll('[data-show-remarks]').forEach(box => { box.checked = showRemarks; });
@@ -364,7 +376,7 @@ renderSizeQuoteList = function () {
     const rate = Number(item.surcharge_rate || IRREGULAR_RATE);
     const pcs = Number(item.pcs) || 1;
     const unit = item.spec && item.spec.unit === 'mm' ? 'mm' : 'in';
-    const shownSize = (item.spec && item.spec.width) ? '<input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit : quoteEsc(item.size || '');
+    const shownSize = (item.spec && item.spec.width) ? dualSize(item.spec.width, item.spec.height, unit) + '<div class="size-edit"><input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit + '</div>' : shownQuoteSize(item);
     const extra = item.irregular_shape ? '<tr><td class="col-line"></td><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + '</td><td></td><td></td><td></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
     const panel = openSizeIndex === i ? '<tr class="line-editor" data-line-editor="' + i + '"><td colspan="7">' + specEditor(item, i) + '</td></tr>' : '';
     return '<tr><td class="col-line">' + (i + 1) + '</td>' + nameCell(item.name) + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td>' + lineActions(i, 'size') + '</tr>' + panel + extra;
