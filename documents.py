@@ -316,6 +316,7 @@ def _styles():
         'head': ParagraphStyle('DocHead', parent=base, fontName='Helvetica-Bold', fontSize=6, leading=7.5, alignment=TA_CENTER),
         'num': ParagraphStyle('DocNum', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_RIGHT),
         'center': ParagraphStyle('DocCenter', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
+        'floor': ParagraphStyle('DocFloor', parent=base, fontName='Helvetica', fontSize=6.5, leading=8, alignment=TA_CENTER),
         'foot': ParagraphStyle('DocFoot', parent=base, fontName='Helvetica', fontSize=8, leading=11),
         'sum_label': ParagraphStyle('SumLabel', parent=base, fontName='Helvetica', fontSize=8, leading=11),
         'sum_amount': ParagraphStyle('SumAmount', parent=base, fontName='Helvetica', fontSize=8, leading=11),
@@ -444,6 +445,14 @@ def layout_lines(items):
     return ordered
 
 
+def charge_label(item, currency):
+    """Short note for a surcharge that belongs under its glass line."""
+    kind = (item or {}).get('kind')
+    label = 'DWG drawing creation' if kind == 'dwg_creation' else 'Irregular shape surcharge'
+    code = 'CAD' if str(currency or '').lower() == 'cad' else 'USD'
+    return f'{label} +{code} ${_line_total(item):.2f}'
+
+
 def _line_total(item):
     if item.get('total') not in (None, ''):
         return _number(item.get('total'))
@@ -463,39 +472,77 @@ def _size_table(items, currency, styles):
     total_pcs = 0
     total_money = 0.0
     number = 0
+    body = []
     for item in layout_lines(items):
-        charge = is_charge_line(item)
-        pieces = 0 if charge else _pieces(item)
-        shown_pieces = pieces or (0 if charge or item.get('sqf') in (None, '') else pieces)
-        if not charge and not shown_pieces and item.get('sqf') not in (None, ''):
+        if is_charge_line(item) and item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            total_money += _line_total(item)
+            if body:
+                body[-1]['notes'].append(charge_label(item, currency))
+            continue
+        if is_charge_line(item):
+            total_money += _line_total(item)
+            body.append({
+                'number': '',
+                'pieces': '',
+                'wide': '',
+                'high': '',
+                'floor': '',
+                'desc': escape(str(item.get('name') or '')),
+                'notes': [],
+                'area': '',
+                'price_sqf': '',
+                'price_pc': '',
+                'amount': f'{_line_total(item):.2f}',
+            })
+            continue
+        pieces = _pieces(item)
+        shown_pieces = pieces or (0 if item.get('sqf') in (None, '') else pieces)
+        if not shown_pieces and item.get('sqf') not in (None, ''):
             shown_pieces = 1
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         has_size = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
-        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size and not charge else ('', '')
-        area = 0.0 if charge else (charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0)
+        wide, high = dimension_lines(spec.get('width'), spec.get('height'), spec.get('unit')) if has_size else ('', '')
+        area = charged_sqf(item) if has_size or item.get('sqf') not in (None, '', 0, '0') else 0.0
         price_sqf = item.get('price_sqf')
         price_pc = item.get('price_pc')
         amount = _line_total(item)
-        if not charge:
-            number += 1
-            total_pcs += shown_pieces
-            total_sqf += area
+        number += 1
+        total_pcs += shown_pieces
+        total_sqf += area
         total_money += amount
+        floor = escape(floor_code(item)).replace(' ', '&nbsp;')
+        body.append({
+            'number': str(number),
+            'pieces': str(shown_pieces or ''),
+            'wide': wide,
+            'high': high,
+            'floor': floor,
+            'desc': line_description(item),
+            'notes': [],
+            'area': '' if not area else f'{area:.2f}',
+            'price_sqf': '' if price_sqf in (None, '', 0, '0') else f'{_number(price_sqf):.2f}',
+            'price_pc': '' if price_pc in (None, '') else f'{_number(price_pc):.2f}',
+            'amount': f'{amount:.2f}',
+        })
+    for entry in body:
+        desc = entry['desc']
+        if entry['notes']:
+            desc += '<br/>' + '<br/>'.join(escape(note) for note in entry['notes'])
         rows.append([
-            Paragraph('' if charge else str(number), styles['center']),
-            Paragraph('' if charge else str(shown_pieces or ''), styles['center']),
-            Paragraph(wide, styles['center']),
-            Paragraph(high, styles['center']),
-            Paragraph('' if charge else escape(floor_code(item)), styles['center']),
-            Paragraph(line_description(item), styles['desc']),
-            Paragraph('' if charge or not area else f'{area:.2f}', styles['num']),
-            Paragraph('' if charge or price_sqf in (None, '', 0, '0') else f'{_number(price_sqf):.2f}', styles['num']),
-            Paragraph('' if charge or price_pc in (None, '') else f'{_number(price_pc):.2f}', styles['num']),
-            Paragraph(f'{amount:.2f}', styles['num']),
+            Paragraph(entry['number'], styles['center']),
+            Paragraph(entry['pieces'], styles['center']),
+            Paragraph(entry['wide'], styles['center']),
+            Paragraph(entry['high'], styles['center']),
+            Paragraph(entry['floor'], styles['floor']),
+            Paragraph(desc, styles['desc']),
+            Paragraph(entry['area'], styles['num']),
+            Paragraph(entry['price_sqf'], styles['num']),
+            Paragraph(entry['price_pc'], styles['num']),
+            Paragraph(entry['amount'], styles['num']),
         ])
     widths = [
-        0.38 * inch, 0.38 * inch, 0.68 * inch, 0.68 * inch, 0.55 * inch,
-        2.15 * inch, 0.55 * inch, 0.72 * inch, 0.68 * inch, 0.93 * inch,
+        0.38 * inch, 0.38 * inch, 0.68 * inch, 0.68 * inch, 0.95 * inch,
+        1.75 * inch, 0.55 * inch, 0.72 * inch, 0.68 * inch, 0.93 * inch,
     ]
     table = Table(rows, colWidths=widths, repeatRows=1)
     table.setStyle(_grid())
@@ -512,17 +559,33 @@ def _sqf_table(items, currency, styles):
     total_money = 0.0
     total_pcs = 0
     number = 0
+    body = []
     for item in layout_lines(items):
         amount = _line_total(item)
         total_money += amount
-        charge = is_charge_line(item)
-        if not charge:
-            number += 1
-            total_pcs += _pieces(item) or 1
+        if is_charge_line(item) and item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            if body:
+                body[-1]['notes'].append(charge_label(item, currency))
+            continue
+        if is_charge_line(item):
+            body.append({
+                'number': '',
+                'desc': escape(str(item.get('name') or '')),
+                'notes': [],
+                'amount': f'{amount:.2f}',
+            })
+            continue
+        number += 1
+        total_pcs += _pieces(item) or 1
+        body.append({'number': str(number), 'desc': line_description(item), 'notes': [], 'amount': f'{amount:.2f}'})
+    for entry in body:
+        desc = entry['desc']
+        if entry['notes']:
+            desc += '<br/>' + '<br/>'.join(escape(note) for note in entry['notes'])
         rows.append([
-            Paragraph('' if charge else str(number), styles['center']),
-            Paragraph(line_description(item), styles['cell']),
-            Paragraph(f'{amount:.2f}', styles['num']),
+            Paragraph(entry['number'], styles['center']),
+            Paragraph(desc, styles['cell']),
+            Paragraph(entry['amount'], styles['num']),
         ])
     rows.append([
         Paragraph('', styles['cell']),

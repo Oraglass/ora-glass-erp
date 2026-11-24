@@ -15,6 +15,11 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .detail-page .totals{max-width:none;width:100%;margin:12px 0 0}
 .detail-page .coverage{margin-top:0}
 .detail-page .clip{display:block;max-width:36rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.detail-page #priced-lines{table-layout:auto}
+.detail-page #priced-lines th.floor,.detail-page #priced-lines td.floor{white-space:nowrap;width:8.5rem;min-width:8.5rem}
+.detail-page #priced-lines th.product,.detail-page #priced-lines td.product{white-space:normal;word-break:break-word;min-width:18rem}
+.detail-page #priced-lines th.num,.detail-page #priced-lines td.num{text-align:right;white-space:nowrap}
+.detail-page #priced-lines .line-note{display:block;margin-top:4px;color:#666;font-size:12px;font-weight:600}
 .detail-page td.size,.detail-page th.size{white-space:nowrap}
 .detail-page .back{display:inline-block;margin:0 0 12px;font-size:14px}
 .detail-page #ship-confirm{border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:8px 0 12px;background:#fafafa}
@@ -396,6 +401,41 @@ function displaySize(label) {
   if (match) return match[1] + ' in / ' + match[2] + ' mm';
   return text;
 }
+function surchargeNote(order, charge) {
+  const label = charge.kind === 'dwg_creation' ? 'DWG drawing creation' : 'Irregular shape surcharge';
+  const raw = charge.total != null && charge.total !== '' ? charge.total : charge.price_pc;
+  const amount = Number(raw);
+  const shown = Number.isFinite(amount) ? ('+' + moneyText(order && order.currency, amount)) : '';
+  return '<div class="line-note">' + esc(label + (shown ? ' ' + shown : '')) + '</div>';
+}
+function orderLineRows(order) {
+  const items = order.items || [];
+  const glass = [];
+  const charges = [];
+  items.forEach(item => {
+    if (!item) return;
+    if (item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation') charges.push(item);
+    else glass.push(item);
+  });
+  const attached = glass.map(() => []);
+  let last = -1;
+  items.forEach(item => {
+    if (!item) return;
+    if (item.kind === 'dwg_creation') return;
+    if (item.kind === 'irregular_surcharge') {
+      if (last >= 0) attached[last].push(item);
+      return;
+    }
+    last = glass.indexOf(item);
+  });
+  charges.forEach(item => {
+    if (item.kind !== 'dwg_creation') return;
+    const parent = glass.findIndex(line => line.line_id && String(line.line_id) === String(item.drawing_for));
+    if (parent >= 0) attached[parent].push(item);
+    else if (glass.length) attached[glass.length - 1].push(item);
+  });
+  return glass.map((item, index) => ({item: item, number: index + 1, charges: attached[index]}));
+}
 function clipText(text, tip) {
   const title = tip || text || '';
   return '<span class="clip" title="' + esc(title) + '">' + esc(text || '') + '</span>';
@@ -527,23 +567,21 @@ function renderDetail(order) {
   currentOrder = order;
   const box = document.getElementById('order-detail');
   if (!order) { box.innerHTML = ''; return; }
-  const serialOf = {};
-  (order.packing_serials || []).forEach(row => { serialOf[row.index] = row.serial; });
-  const rows = (order.items || []).map((item, index) => {
+  const rows = orderLineRows(order).map(row => {
+    const item = row.item;
     const spec = item.spec || {};
     const rawSize = item.size_label || (spec.width ? spec.width + ' x ' + spec.height + ' ' + (spec.unit || '') : '');
     const size = displaySize(rawSize);
     const prices = PRICES ? '<td class="num">' + money(order, item.price_sqf) + '</td><td class="num">' + money(order, item.total) + '</td>' : '';
     const floor = item.floor || item.mark || item.location || '';
-    const charge = item.kind === 'irregular_surcharge' || item.kind === 'dwg_creation';
     const each = Number(item.sqf);
     const qty = Number(item.pcs);
-    const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
-    const tip = [item.name, item.remarks, item.source_filename, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
-    const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : (item.line_number || ''));
+    const lineSqf = item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
+    const notes = row.charges.map(charge => surchargeNote(order, charge)).join('');
     const remakeOf = item.source_serial ? '<div class="note" id="remake-of-' + esc(order.id) + '-' + esc(item.source_serial) + '">Remake of #' + esc(item.source_serial) + '</div>' : '';
-    const source = !charge && item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
-    return '<tr><td class="num">' + esc(serial) + remakeOf + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + source + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
+    const source = item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
+    const number = row.number;
+    return '<tr><td class="num">' + esc(number) + remakeOf + '</td><td class="floor">' + esc(floor) + '</td><td class="product">' + esc(item.name || '') + notes + source + '</td><td class="size">' + esc(size) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   const primary = [];
@@ -612,7 +650,7 @@ function renderDetail(order) {
     : lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
   const linesTable = order.legacy
     ? ''
-    : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
+    : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th class="floor">Floor</th><th class="product">Product</th><th class="size">Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
   const when = order.approved_at_display || order.approved_at || '';
   const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.legacy ? '' : (order.tier_label || order.tier || ''), (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
   const headerSummary = order.legacy

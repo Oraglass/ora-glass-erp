@@ -218,8 +218,8 @@ def test_charges_are_not_counted_as_pieces_and_the_id_column_is_blank():
     assert b'(ID)' not in text
     assert b'\\(1\\)' not in text
     assert b'\\(4\\)' not in text
-    assert b'Irregular shape surcharge' in text
-    assert b'DWG drawing creation' in text
+    assert b'Irregular shape surcharge +USD $200.00' in text
+    assert b'DWG drawing creation +USD $75.00' in text
     assert b'Delivery' in text
     assert text.find(b'DWG drawing creation') < text.find(b'(2)')
     from pathlib import Path

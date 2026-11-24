@@ -815,19 +815,48 @@ def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
 
 
 def export_lines(items, currency=None, fx_rate=None):
-    """One production row per glass line. Surcharge and drawing charges are not units."""
-    rows = []
-    serial = 1
+    """One production row per glass line. A surcharge is a note on that line, not a unit."""
+    from documents import charge_label
+    glass = []
+    notes = []
+    leading = []
+    dwg = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        if item.get('kind') in {SURCHARGE_KIND, DWG_KIND}:
+        if item.get('kind') == SURCHARGE_KIND:
+            if notes:
+                notes[-1].append(item)
+            else:
+                leading.append(item)
+            continue
+        if item.get('kind') == DWG_KIND:
+            dwg.append(item)
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        rows.append(line_export(item, serial=serial, currency=currency, fx_rate=fx_rate))
-        serial += 1
+        glass.append(item)
+        notes.append(list(leading))
+        leading = []
+    for charge in dwg:
+        parent = None
+        for index, item in enumerate(glass):
+            if item.get('line_id') and str(item.get('line_id')) == str(charge.get('drawing_for') or ''):
+                parent = index
+                break
+        if parent is None and glass:
+            parent = len(glass) - 1
+        if parent is not None:
+            notes[parent].append(charge)
+    rows = []
+    for serial, item in enumerate(glass, start=1):
+        row = line_export(item, serial=serial, currency=currency, fx_rate=fx_rate)
+        extra = [charge_label(charge, currency) for charge in notes[serial - 1]]
+        if extra:
+            remark = row.get('Remarks') or ''
+            row['Remarks'] = (remark + '\n' if remark else '') + '\n'.join(extra)
+        rows.append(row)
     return rows
 
 
@@ -866,6 +895,36 @@ def workbook_bytes(items, currency=None, fx_rate=None):
                 cell.value = int(value) if str(value).isdigit() else value
             else:
                 cell.value = '' if value is None else value
+    from openpyxl.styles import Alignment
+    widths = {
+        'Serial Number': 16,
+        'Floor Code': 18,
+        'Product ID': 14,
+        'Product Name': 64,
+        'Unit Price': 12,
+        'Width(mm)': 14,
+        'Height(mm)': 14,
+        'Width(In)': 14,
+        'Height(In)': 14,
+        'Quantity': 12,
+        'Remarks': 42,
+    }
+    numeric = {'Unit Price', 'Width(mm)', 'Height(mm)', 'Quantity'}
+    for column, header in enumerate(PRODUCTION_HEADERS, start=1):
+        sheet.column_dimensions[sheet.cell(1, column).column_letter].width = widths.get(header, 14)
+        header_cell = sheet.cell(1, column)
+        header_cell.alignment = Alignment(horizontal='right' if header in numeric else 'left', wrap_text=False)
+    for row_index in range(2, sheet.max_row + 1):
+        for column, header in enumerate(PRODUCTION_HEADERS, start=1):
+            cell = sheet.cell(row_index, column)
+            if header == 'Product Name':
+                cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
+            elif header == 'Floor Code':
+                cell.alignment = Alignment(wrap_text=False, horizontal='left')
+            elif header in numeric:
+                cell.alignment = Alignment(horizontal='right')
+            elif header == 'Remarks':
+                cell.alignment = Alignment(wrap_text=True, vertical='top')
     from io import BytesIO
     buffer = BytesIO()
     book.save(buffer)

@@ -78,6 +78,48 @@ def test_orders_list_has_review_and_open_and_shipments_use_excel_serials(client)
     assert progress['lines'][1]['size'] == '20 x 30 in (508 x 762 mm)'
 
 
+def test_order_lines_keep_the_floor_and_the_full_name_and_attach_the_surcharge():
+    from pathlib import Path
+    page = Path('templates/orders.html').read_text()
+    assert 'td.floor{white-space:nowrap' in page
+    assert 'td.product{white-space:normal' in page
+    assert 'function surchargeNote' in page
+    assert 'function orderLineRows' in page
+    assert 'class="floor"' in page
+    assert 'class="product"' in page
+    items = [
+        {
+            'name': '28 (1 1/8") - 6mmClear+16mmSpacer+6mmClear',
+            'pcs': 2, 'sqf': 8, 'price_sqf': 12, 'total': 192, 'floor': 'P45 / 1',
+            'line_id': 'g1', 'spec': dict(SPEC),
+        },
+        {'kind': 'irregular_surcharge', 'name': 'Irregular shape surcharge', 'pcs': 2, 'price_sqf': 0, 'total': 100},
+        {
+            'name': 'Same build', 'pcs': 1, 'sqf': 4, 'price_sqf': 12, 'total': 48, 'floor': 'P46 / 3',
+            'spec': dict(SPEC, width=20, height=30),
+        },
+    ]
+    exported = production.export_lines(items, currency='cad')
+    assert [row['Serial Number'] for row in exported] == [1, 2]
+    assert exported[0]['Floor Code'] == 'P45 / 1'
+    assert exported[0]['Product Name']
+    assert '...' not in exported[0]['Product Name']
+    assert 'Irregular shape surcharge +CAD $100.00' in exported[0]['Remarks']
+    assert 'Irregular' not in (exported[1]['Remarks'] or '')
+    import io
+    from openpyxl import load_workbook
+    sheet = load_workbook(io.BytesIO(production.workbook_bytes(items, currency='cad'))).active
+    assert sheet.column_dimensions['B'].width >= 16
+    assert sheet.column_dimensions['D'].width >= 40
+    pdf = documents.build_pdf({
+        'kind': 'order', 'id': 9, 'type': 'size', 'currency': 'cad',
+        'company': 'Harbor', 'date': '2026-11-24', 'items': items,
+    })
+    text = pdf_text(pdf)
+    assert b'P45' in text
+    assert b'Irregular shape surcharge +CAD $100.00' in text
+
+
 def test_production_excel_uses_two_decimals_and_fractional_inches():
     import io
     from openpyxl import load_workbook
