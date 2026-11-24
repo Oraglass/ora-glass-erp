@@ -169,10 +169,15 @@ def _parse_id_qty_lines(cleaned):
             width_mm = float(millimetres.group(1))
             height_mm = float(millimetres.group(2))
             break
+        floor = ''
+        for look in range(index + 1, following):
+            if _FLOOR.fullmatch(cleaned[look]):
+                floor = re.sub(r'\s+', ' ', cleaned[look]).strip()
+                break
         rows.append({
             'serial': serial,
             'qty': qty,
-            'floor': '',
+            'floor': floor,
             'description': '',
             'width_in': None if width_in is None else round(width_in, 4),
             'height_in': None if height_in is None else round(height_in, 4),
@@ -544,23 +549,6 @@ def candidate_orders(parsed, orders):
     return hits
 
 
-def _packing_serials(parsed):
-    found = []
-    for row in (parsed or {}).get('rows') or []:
-        try:
-            serial = int(row.get('serial'))
-            qty = int(row.get('qty') or 0)
-        except (TypeError, ValueError):
-            continue
-        if qty > 0 and serial not in found:
-            found.append(serial)
-    return found
-
-
-def _serial_set(order):
-    return {row['serial'] for row in serial_catalog(order)}
-
-
 def _serial_fully_packed(order, serial):
     for row in packing_progress(order)['serials']:
         if row['serial'] == serial:
@@ -568,42 +556,90 @@ def _serial_fully_packed(order, serial):
     return False
 
 
+def _packing_rows(parsed):
+    rows = []
+    for row in (parsed or {}).get('rows') or []:
+        try:
+            serial = int(row.get('serial'))
+            qty = int(row.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            rows.append({'serial': serial, 'floor': str(row.get('floor') or '').strip()})
+    return rows
+
+
+def _catalog_map(order):
+    return {row['serial']: row for row in serial_catalog(order)}
+
+
+def _covers_serials(order, rows):
+    catalog = _catalog_map(order)
+    return all(row['serial'] in catalog for row in rows)
+
+
+def _floors_fit(order, rows):
+    """True when every packing floor matches that remake serial. None when the list has no floor."""
+    catalog = _catalog_map(order)
+    given = matched = 0
+    for row in rows:
+        if not row['floor']:
+            continue
+        given += 1
+        info = catalog.get(row['serial']) or {}
+        if floors_match(info.get('floor') or '', row['floor']):
+            matched += 1
+    if given == 0:
+        return None
+    return matched == given
+
+
 def choose_packing_order(parsed, hits, orders=None):
     """Pick one order when the customer and project match more than one.
 
-    A remake keeps the original project and serials. Once those serials are
-    fully packed on the original, the next list for them belongs to the open
-    remake, not the order that is already packed.
+    A remake starts its own serials at 1, so those numbers also exist on the
+    original order. Match a remake list to the remake, and use the floor note
+    to choose among open remakes. Do not treat the remake's serials as the
+    original order's serials.
     """
     if not hits:
         return None
     if len(hits) == 1:
         return hits[0]
-    serials = _packing_serials(parsed)
-    if not serials:
+    rows = _packing_rows(parsed)
+    if not rows:
         return None
-    orders = hits if orders is None else orders
-    covered = [order for order in hits if serials and _serial_set(order).issuperset(serials)]
+    covered = [order for order in hits if _covers_serials(order, rows)]
     if len(covered) == 1:
         return covered[0]
     if len(covered) < 2:
         return None
-    preferred = []
-    for order in covered:
-        if not order.get('remake'):
-            continue
-        if str(order.get('status') or '').lower() in {'delivered', 'voided'}:
-            continue
-        if not any(not _serial_fully_packed(order, serial) for serial in serials):
-            continue
-        parent = next((row for row in orders if row.get('id') == order.get('remake_of')), None)
-        if parent is not None:
-            parent_serials = _serial_set(parent)
-            if any(serial in parent_serials and not _serial_fully_packed(parent, serial) for serial in serials):
-                continue
-        preferred.append(order)
-    if len(preferred) == 1:
-        return preferred[0]
+
+    def remake_open(order):
+        return bool(order.get('remake')) and str(order.get('status') or '').lower() not in {'delivered', 'voided'}
+
+    remakes = [order for order in covered if remake_open(order)]
+    originals = [order for order in covered if not order.get('remake')]
+    floor_remakes = [order for order in remakes if _floors_fit(order, rows) is True]
+    if len(floor_remakes) == 1:
+        return floor_remakes[0]
+    if len(floor_remakes) > 1:
+        return None
+    floor_originals = [order for order in originals if _floors_fit(order, rows) is True]
+    if len(floor_originals) == 1 and not floor_remakes:
+        return floor_originals[0]
+    if any(_floors_fit(order, rows) is not None for order in covered):
+        return None
+    open_remakes = [
+        order for order in remakes
+        if any(not _serial_fully_packed(order, row['serial']) for row in rows)
+    ]
+    originals_open = [
+        order for order in originals
+        if any(not _serial_fully_packed(order, row['serial']) for row in rows)
+    ]
+    if len(open_remakes) == 1 and not originals_open:
+        return open_remakes[0]
     return None
 
 
@@ -620,20 +656,25 @@ def serial_catalog(order):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        exported = production.line_export(item, serial=production.line_serial(item, serial))
-        serial = production.line_serial(item, serial)
+        exported = production.line_export(item, serial=serial)
         try:
             ordered = int(item.get('pcs') or 0)
         except (TypeError, ValueError):
             ordered = 0
-        catalog.append({
+        entry = {
             'serial': exported['Serial Number'],
             'index': index,
             'ordered': ordered,
             'floor': exported['Floor Code'],
             'product': exported['Product Name'],
             'size': piece_size_text(spec.get('width'), spec.get('height'), spec.get('unit')),
-        })
+        }
+        if item.get('source_serial') not in (None, ''):
+            try:
+                entry['source_serial'] = int(item.get('source_serial'))
+            except (TypeError, ValueError):
+                pass
+        catalog.append(entry)
         serial += 1
     return catalog
 

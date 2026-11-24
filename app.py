@@ -6461,11 +6461,9 @@ def _remake_line(source, qty, serial, reason):
     item['unit_price'] = each
     item['total'] = round(each * qty, 2)
     item['source_serial'] = serial
-    note = f'Remake of serial {serial}'
     if reason:
-        note = f'{note}. {reason}'
-    existing = strip_copy_history(item.get('remarks') or '')
-    item['remarks'] = f'{existing} {note}'.strip() if existing else note
+        existing = strip_copy_history(item.get('remarks') or '')
+        item['remarks'] = f'{existing} {reason}'.strip() if existing else reason
     return item
 
 

@@ -30,8 +30,10 @@ def _order(client, pcs=4):
     assert login(client, 'boss@harbor.example').status_code == 302
     first = _size_item()
     first['pcs'] = pcs
+    first['floor'] = 'W01'
     second = _size_item()
     second['pcs'] = 2
+    second['floor'] = 'W02'
     second['spec'] = dict(SPEC, width=30, height=40)
     saved = client.post('/api/quotes', json={
         'items': [first, second], 'currency': 'usd', 'project': 'Lobby', 'type': 'size', 'tier': 'T2',
@@ -44,6 +46,7 @@ def _order(client, pcs=4):
     order_id = created.get_json()['order_id']
     shown = client.get(f'/api/orders/{order_id}').get_json()
     assert [row['serial'] for row in shown['packing_serials']] == [1, 2]
+    assert [row['floor'] for row in shown['packing_serials']] == ['W01', 'W02']
     return order_id
 
 
@@ -55,7 +58,7 @@ def _remake(client, order_id, serial=2, qty=1, charge=True, reason='Breakage'):
     })
 
 
-def test_remake_keeps_the_serial_and_shows_on_the_order(client):
+def test_remake_restarts_serials_and_keeps_the_floor(client):
     order_id = _order(client)
     page = client.get(f'/orders/{order_id}')
     assert b'Remake / service order' in page.data
@@ -77,15 +80,21 @@ def test_remake_keeps_the_serial_and_shows_on_the_order(client):
     assert body['can_void'] is True
     line = next(row for row in load_orders() if row['id'] == body['id'])
     assert line['items'][0]['source_serial'] == 2
+    assert line['items'][0]['floor'] == 'W02'
     assert line['items'][0]['pcs'] == 1
     assert line['items'][0]['spec']['width'] == 30
+    assert [row['serial'] for row in body['packing_serials']] == [1]
+    assert body['packing_serials'][0]['source_serial'] == 2
+    assert body['packing_serials'][0]['floor'] == 'W02'
+    assert b'Remake of #' in page.data
     workbook = client.get(f"/api/orders/{body['id']}/production.xlsx")
     assert workbook.status_code == 200
     assert f'{order_id}-R1' in workbook.headers['Content-Disposition']
     sheet = load_workbook(io.BytesIO(workbook.data)).active
     headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
     values = {headers[index]: cell.value for index, cell in enumerate(next(sheet.iter_rows(min_row=2, max_row=2)))}
-    assert values['Serial Number'] == 2
+    assert values['Serial Number'] == 1
+    assert values['Floor Code'] == 'W02'
     assert 'Production defect' in values['Remarks']
     parent = client.get(f'/api/orders/{order_id}').get_json()
     assert parent['remakes'][0]['number'] == f'{order_id}-R1'
@@ -216,8 +225,8 @@ def _pack(number, rows, rack='1054'):
         f'Sales Delivery: {number}  Date: 11/23/2026',
         f'{rack} A1900*1220*1800',
     ]
-    for serial, qty in rows:
-        lines.extend([f'({serial}) {qty}', '24 36', '609.6 mm 914.4 mm'])
+    for serial, qty, floor in rows:
+        lines.extend([f'({serial}) {qty}', '24 36', floor, '609.6 mm 914.4 mm'])
     return '\n'.join(lines).encode()
 
 
@@ -229,42 +238,48 @@ def _upload_pack(client, number, rows, rack='1054'):
     )
 
 
-def test_a_remake_packing_list_attaches_to_the_open_remake(client):
+def test_a_remake_packing_list_uses_the_remake_serials_and_floor(client):
     order_id = _order(client)
-    early = _remake(client, order_id, serial=2, qty=1, charge=False, reason='Breakage')
-    remake_id = early.get_json()['id']
-    too_soon = _upload_pack(client, 'XF-EARLY', [(2, 1)], rack='1055')
-    assert too_soon.status_code == 200, too_soon.get_json()
-    assert too_soon.get_json()['saved'] == []
-    assert too_soon.get_json()['review'][0]['reason'] == 'ambiguous'
-    assert not next(row for row in load_orders() if row['id'] == remake_id).get('packing_lists')
+    of_w02 = _remake(client, order_id, serial=2, qty=1, charge=False, reason='Breakage')
+    w02_id = of_w02.get_json()['id']
+    of_w01 = _remake(client, order_id, serial=1, qty=1, charge=False, reason='Customer damage')
+    w01_id = of_w01.get_json()['id']
+    assert of_w02.get_json()['packing_serials'][0]['serial'] == 1
+    assert of_w02.get_json()['packing_serials'][0]['floor'] == 'W02'
+    assert of_w01.get_json()['packing_serials'][0]['floor'] == 'W01'
 
-    original = _upload_pack(client, 'XF-ORIG', [(1, 4), (2, 2)])
-    assert original.status_code == 200, original.get_json()
+    remade = _upload_pack(client, 'XF-W02', [(1, 1, 'W02')], rack='1056')
+    assert remade.status_code == 200, remade.get_json()
+    assert remade.get_json()['review'] == []
+    assert remade.get_json()['saved'][0]['order_id'] == w02_id
+    assert remade.get_json()['saved'][0]['pack_status'] == 'packed'
+    assert not next(row for row in load_orders() if row['id'] == order_id).get('packing_lists')
+
+    other = _upload_pack(client, 'XF-W01', [(1, 1, 'W01')], rack='1057')
+    assert other.get_json()['saved'][0]['order_id'] == w01_id
+    assert other.get_json()['review'] == []
+
+    original = _upload_pack(client, 'XF-ORIG', [(1, 4, 'W01'), (2, 2, 'W02')])
     assert original.get_json()['saved'][0]['order_id'] == order_id
     assert original.get_json()['saved'][0]['pack_status'] == 'packed'
 
-    again = _upload_pack(client, 'XF-REMAKE', [(2, 1)], rack='1056')
-    assert again.status_code == 200, again.get_json()
-    assert again.get_json()['review'] == []
-    saved = again.get_json()['saved'][0]
-    assert saved['order_id'] == remake_id
-    assert saved['pack_status'] == 'packed'
-    assert saved['totals']['bo'] == 0
-    remake = next(row for row in load_orders() if row['id'] == remake_id)
-    assert remake['packing_lists'][0]['number'] == 'XF-REMAKE'
-    assert remake['pack_status'] == 'packed'
     parent = client.get(f'/api/orders/{order_id}').get_json()
-    shown = parent['remakes'][0]
-    assert shown['id'] == remake_id
+    shown = next(row for row in parent['remakes'] if row['id'] == w02_id)
     assert shown['pack_status_label'] == 'Packed'
     assert shown['ship_status_label'] == 'Not shipped'
-    shipped = client.post(f'/api/orders/{remake_id}/ship-packed', json={
+    shipped = client.post(f'/api/orders/{w02_id}/ship-packed', json={
         'date': '2026-11-24', 'truck_plate': 'VAN-2', 'rack': '1056',
     })
     assert shipped.status_code == 200, shipped.get_json()
-    after = client.get(f'/api/orders/{order_id}').get_json()['remakes'][0]
+    after = next(row for row in client.get(f'/api/orders/{order_id}').get_json()['remakes'] if row['id'] == w02_id)
     assert after['ship_status_label'] == 'Shipped'
-    assert after['shipped'] == 1
-    original_lists = next(row for row in load_orders() if row['id'] == order_id)['packing_lists']
-    assert all(row.get('number') != 'XF-REMAKE' for row in original_lists)
+
+    again = _remake(client, order_id, serial=2, qty=1, charge=False, reason='Breakage')
+    tied = _upload_pack(client, 'XF-TIE', [(1, 1, 'W02')], rack='1058')
+    assert tied.get_json()['saved'] == []
+    assert tied.get_json()['review'][0]['reason'] == 'ambiguous'
+    assert all(
+        row.get('number') != 'XF-TIE'
+        for row in next(item for item in load_orders() if item['id'] == order_id).get('packing_lists') or []
+    )
+    assert again.get_json()['number'] == f'{order_id}-R3'

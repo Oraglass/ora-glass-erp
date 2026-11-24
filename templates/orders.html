@@ -476,7 +476,7 @@ function packingBlock(order) {
   const totals = order.packing_totals || {};
   const showShipped = (order.shipments || []).length > 0 || serials.some(row => Number(row.shipped) > 0);
   const shippedHead = showShipped ? '<th class="num">Shipped</th>' : '';
-  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + esc(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
   const listBlocks = lists.map(list => {
     const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td>' + esc(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
     const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
@@ -534,8 +534,9 @@ function renderDetail(order) {
     const lineSqf = charge || item.sqf == null || item.sqf === '' || !Number.isFinite(each) ? '' : Math.round(each * (Number.isFinite(qty) && qty > 0 ? qty : 1) * 100) / 100;
     const tip = [item.name, item.remarks, item.source_filename, STAFF ? item.production_note : ''].filter(Boolean).join(' — ');
     const serial = charge ? '' : (serialOf[index] != null ? serialOf[index] : (item.line_number || ''));
+    const remakeOf = item.source_serial ? '<div class="note" id="remake-of-' + esc(order.id) + '-' + esc(item.source_serial) + '">Remake of #' + esc(item.source_serial) + '</div>' : '';
     const source = !charge && item.source_filename ? '<div class="note">' + esc(item.source_filename) + '</div>' : '';
-    return '<tr><td class="num">' + esc(serial) + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + source + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
+    return '<tr><td class="num">' + esc(serial) + remakeOf + '</td><td>' + esc(charge ? '' : floor) + '</td><td>' + clipText(item.name, tip) + source + '</td><td class="size">' + esc(charge ? '' : size) + '</td><td class="num">' + esc(charge ? '' : item.pcs) + '</td><td class="num">' + esc(lineSqf) + '</td>' + prices + '</tr>';
   }).join('');
   const priceHead = PRICES ? '<th class="num">Price/sqf</th><th class="num">Line total</th>' : '';
   const primary = [];

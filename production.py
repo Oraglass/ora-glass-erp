@@ -255,18 +255,6 @@ def production_filename(order):
     return stem + '.xlsx'
 
 
-def line_serial(item, fallback):
-    """A remake keeps the original production serial. Other lines count from 1."""
-    raw = (item or {}).get('source_serial')
-    if raw in (None, ''):
-        return fallback
-    try:
-        number = int(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return number if number > 0 else fallback
-
-
 def content_disposition(filename):
     """Attachment header with an ASCII filename and an RFC 5987 filename*."""
     from urllib.parse import quote
@@ -803,8 +791,8 @@ def export_lines(items, currency=None, fx_rate=None):
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
         if spec.get('width') in (None, '') or spec.get('height') in (None, ''):
             continue
-        rows.append(line_export(item, serial=line_serial(item, serial), currency=currency, fx_rate=fx_rate))
-        serial = line_serial(item, serial) + 1
+        rows.append(line_export(item, serial=serial, currency=currency, fx_rate=fx_rate))
+        serial += 1
     return rows
 
 
