@@ -57,6 +57,24 @@ def _pieces(item):
     return pieces if pieces > 0 else 0
 
 
+def quote_form_fraction(millimetres):
+    """Nearest 1/16 inch, the same rounding the quote form uses in generateIGUName."""
+    inches = float(millimetres) / 25.4
+    whole = math.floor(inches)
+    numer = int(math.floor((inches - whole) * 16 + 0.5))
+    if numer >= 16:
+        whole += numer // 16
+        numer = numer % 16
+    if numer <= 0:
+        return str(int(whole))
+    divisor = math.gcd(numer, 16)
+    numer //= divisor
+    denom = 16 // divisor
+    if whole:
+        return f'{int(whole)} {numer}/{denom}'
+    return f'{numer}/{denom}'
+
+
 def inch_fraction(inches):
     """Nearest 1/32 inch, reduced, such as 49 1/4 or 77 23/32."""
     number = _number(inches)
@@ -133,7 +151,7 @@ def build_label(spec):
     if total <= 0:
         return makeup
     mm = int(total) if float(total).is_integer() else total
-    return f'{mm} ({inch_fraction(total / 25.4)}") - {makeup}'
+    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
 
 
 def glass_thickness_mm(spec):

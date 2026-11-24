@@ -17,6 +17,9 @@ def test_build_label_puts_overall_millimetres_and_inches_first():
         '32 (1 1/4") - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)'
         '+4mmClear Glass Tempered'
     )
+    assert documents.quote_form_fraction(28) == '1 1/8'
+    assert documents.quote_form_fraction(42) == '1 5/8'
+    assert documents.quote_form_fraction(47) == '1 7/8'
     text = documents.line_description({'spec': spec})
     assert text.startswith('32 (1 1/4") - 4mmSolarban60 VT Tempered /')
     assert '<br/>+' in text
@@ -57,7 +60,7 @@ def test_description_puts_the_production_id_on_its_own_components(monkeypatch):
         'glass2': 'SolarCoat 4mm', 'temper2': 'yes',
     }
     text = documents.line_description({'spec': spec})
-    assert text.startswith('26 (1 1/32") - 48 - ')
+    assert text.startswith('26 (1") - 48 - ')
     assert '<br/>+' in text
     assert ' /' in text
     assert makeup_from_spec(spec)

@@ -1,11 +1,7 @@
 <div id="tab-orgadata" class="tab-content">
 <h3 style="color:#333;margin-bottom:8px">ORGADATA GLASS ORDER</h3>
-<p class="import-note">Upload an Open Windows or HighQ Glass/Panel Order PDF. Sizes stay in millimetres and are also shown in inches. The quote is priced with the company tier, add-on, discount, minimum square feet, and tax. A scanned PDF is not read.</p>
+<p class="import-note">Sizes stay in millimeters and are also shown in inches. The quote is priced with the company tier, add-on, discount, minimum square feet, and tax. A scanned PDF is not read.</p>
 <div class="import-grid">
-{% if not import_customer %}
-<div class="form-group"><label for="orgadata-company">Customer</label>
-<select id="orgadata-company"><option value="">Select...</option></select></div>
-{% endif %}
 <div class="form-group"><label for="orgadata-file">ORGADATA GLASS ORDER PDF</label>
 <input type="file" id="orgadata-file" accept="application/pdf,.pdf"></div>
 <button type="button" class="btn" id="orgadata-upload">Import ORGADATA GLASS ORDER</button>
@@ -25,10 +21,11 @@
 <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:12px 0"><input type="checkbox" id="orgadata-remember" checked> Remember these glass and spacer matches for this company</label>
 <button type="button" class="btn" id="orgadata-refresh" style="margin-top:8px">Update preview</button>
 <button type="button" class="btn" id="orgadata-create" style="margin-top:8px;margin-left:8px">Create draft quote</button>
+<button type="button" class="btn" id="orgadata-cancel" style="margin-top:8px;margin-left:8px;background:#333">Cancel</button>
 <p id="orgadata-created" class="import-note"></p>
 </div>
 </div>
-<script id="orgadata-data" type="application/json">{{ {'customer': import_customer, 'companies': import_companies, 'glass': import_glass, 'spacers': import_spacers}|tojson }}</script>
+<script id="orgadata-data" type="application/json">{{ {'customer': import_customer, 'customerId': import_customer_id, 'glass': import_glass, 'spacers': import_spacers, 'sealants': import_sealants, 'sealantMatches': sealant_matches}|tojson }}</script>
 <script>
 (function () {
   const DATA = JSON.parse(document.getElementById('orgadata-data').textContent);
@@ -41,13 +38,22 @@
     el.className = bad ? 'import-error' : 'import-note';
     el.textContent = text || '';
   }
-  function options(names, selected) {
-    return '<option value=""></option>' + names.map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+  function customerError(text) {
+    const el = document.getElementById('quote-customer-error');
+    if (!el) {
+      if (text) message(text, true);
+      return;
+    }
+    el.hidden = !text;
+    el.textContent = text || '';
   }
-  function companySelect() {
-    const select = document.getElementById('orgadata-company');
-    if (!select) return;
-    select.innerHTML = '<option value="">Select...</option>' + DATA.companies.map(company => '<option value="' + esc(company.id) + '">' + esc(company.name) + '</option>').join('');
+  function topCustomerId() {
+    if (DATA.customer) return DATA.customerId || '';
+    const pick = document.getElementById('quote-customer');
+    return pick ? pick.value : '';
+  }
+  function options(names, selected) {
+    return '<option value=""></option>' + (names || []).map(name => '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
   }
   function money(value) {
     return value == null || value === '' ? '' : Number(value).toFixed(2);
@@ -56,27 +62,128 @@
     if (!items || !items.length) return '';
     return '<ul class="import-error">' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>';
   }
+  function sealantMatch(product) {
+    return (DATA.sealantMatches || {})[product] || {selected: '', options: DATA.sealants || [], message: ''};
+  }
+  function cleanGlass(name, temper) {
+    if (!name || name === 'n/a') return '';
+    let text = name.replace(' Jumbo', '').replace(' Large', '').replace(' / sqf', '');
+    const found = text.match(/(\d+)mm/);
+    if (!found) return '';
+    text = text.replace(/\d+mm/, '').trim();
+    return found[1] + 'mm' + text + (temper === 'yes' ? ' Tempered' : '');
+  }
+  function cleanSpacer(name, sealant) {
+    if (!name || name === 'n/a') return '';
+    const found = name.match(/(\d+)mm/);
+    if (!found) return '';
+    const type = name.toLowerCase().indexOf('techno') >= 0 ? 'Technoform' : 'SuperSpacer';
+    const seal = sealant && sealant.toLowerCase().indexOf('silicone') >= 0 ? 'Silicone' : 'Polysulfide';
+    return found[1] + 'mm' + type + ' with Argon(' + seal + ')';
+  }
+  function quoteFraction(totalMm) {
+    const inches = totalMm / 25.4;
+    let whole = Math.floor(inches);
+    let numer = Math.round((inches - whole) * 16);
+    if (numer >= 16) { whole += Math.floor(numer / 16); numer = numer % 16; }
+    if (numer <= 0) return String(whole);
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const divisor = gcd(numer, 16);
+    const frac = (numer / divisor) + '/' + (16 / divisor);
+    return whole ? (whole + ' ' + frac) : frac;
+  }
+  function pdfMillimeters(text) {
+    const found = String(text || '').match(/=\s*(\d+(?:\.\d+)?)/);
+    return found ? Number(found[1]) : null;
+  }
+  function blockSpecs(section) {
+    const lites = [];
+    section.querySelectorAll('[data-lite]').forEach(row => {
+      lites.push({
+        product: row.querySelector('[data-field="product"]').value,
+        temper: row.querySelector('[data-field="temper"]').value
+      });
+    });
+    const spacers = [];
+    section.querySelectorAll('[data-spacer]').forEach(row => {
+      spacers.push({
+        product: row.querySelector('[data-field="product"]').value,
+        sealant: row.querySelector('[data-field="sealant"]').value
+      });
+    });
+    return {lites: lites, spacers: spacers};
+  }
+  function generatedName(lites, spacers) {
+    if (!lites.length || lites.some(lite => !lite.product)) return '';
+    const needed = Math.max(lites.length - 1, 0);
+    if (spacers.slice(0, needed).some(spacer => !spacer.product || !spacer.sealant)) return '';
+    const parts = [];
+    let total = 0;
+    lites.forEach((lite, index) => {
+      const glass = cleanGlass(lite.product, lite.temper);
+      if (!glass) return;
+      parts.push(glass);
+      total += parseInt(lite.product.match(/(\d+)mm/)[1], 10);
+      if (index < needed) {
+        const spacer = spacers[index];
+        const token = cleanSpacer(spacer.product, spacer.sealant);
+        if (!token) return;
+        parts.push(token);
+        total += parseInt(spacer.product.match(/(\d+)mm/)[1], 10);
+      }
+    });
+    if (parts.length !== lites.length + needed) return '';
+    return total + ' (' + quoteFraction(total) + '") - ' + parts.join('+');
+  }
+  function refreshBlock(section) {
+    const specs = blockSpecs(section);
+    const name = generatedName(specs.lites, specs.spacers);
+    const nameEl = section.querySelector('[data-igu-name]');
+    if (nameEl) nameEl.textContent = name || 'Choose an ERP glass, spacer, and sealant.';
+    let total = null;
+    if (name) {
+      const found = name.match(/^(\d+(?:\.\d+)?)/);
+      total = found ? Number(found[1]) : null;
+    }
+    const computed = section.querySelector('[data-computed-thickness]');
+    if (computed) computed.textContent = total == null ? '' : (total + ' mm (' + quoteFraction(total) + '")');
+    const pdf = pdfMillimeters(section.querySelector('[data-field="thickness"]').value);
+    const flag = section.querySelector('[data-thickness-flag]');
+    if (flag) {
+      const mismatch = total != null && pdf != null && Math.abs(total - pdf) > 0.01;
+      flag.hidden = !mismatch;
+      flag.textContent = mismatch ? ('Computed thickness ' + total + ' mm does not match the PDF thickness (' + pdf + ' mm).') : '';
+    }
+    const glassReady = specs.lites.length && specs.lites.every(lite => lite.product);
+    const spacerReady = specs.spacers.every(spacer => spacer.product);
+    const sealantReady = specs.spacers.every(spacer => spacer.sealant);
+    section.querySelectorAll('.import-error li').forEach(item => {
+      const text = item.textContent || '';
+      if (text.indexOf('Choose an ERP glass') === 0) item.hidden = glassReady;
+      else if (text.indexOf('Choose an ERP spacer') === 0) item.hidden = spacerReady;
+      else if (text.indexOf('Choose a sealant') === 0) item.hidden = sealantReady;
+    });
+  }
+  function fillSealant(row, product, selected) {
+    const match = sealantMatch(product);
+    const chosen = selected && (match.options || []).indexOf(selected) >= 0 ? selected : (match.selected || '');
+    const select = row.querySelector('[data-field="sealant"]');
+    select.innerHTML = options(match.options || [], chosen);
+    if (chosen) select.value = chosen;
+    const note = row.querySelector('[data-sealant-note]');
+    if (note) note.textContent = match.message || '';
+  }
   function collect() {
     const blocks = [];
     document.querySelectorAll('[data-orgadata-block]').forEach(section => {
-      const lites = [];
-      section.querySelectorAll('[data-lite]').forEach(row => {
-        lites.push({
-          product: row.querySelector('[data-field="product"]').value,
-          temper: row.querySelector('[data-field="temper"]').value
-        });
-      });
-      const spacers = [];
-      section.querySelectorAll('[data-spacer]').forEach(row => {
-        spacers.push({product: row.querySelector('[data-field="product"]').value});
-      });
+      const specs = blockSpecs(section);
       blocks.push({
         name: section.querySelector('[data-field="name"]').value,
         configuration: section.querySelector('[data-field="configuration"]').value,
         thickness: section.querySelector('[data-field="thickness"]').value,
         spacer_source: section.querySelector('[data-field="spacer_source"]').value,
-        lites: lites,
-        spacers: spacers
+        lites: specs.lites,
+        spacers: specs.spacers
       });
     });
     const lines = [];
@@ -89,9 +196,8 @@
         height_mm: row.querySelector('[data-field="height_mm"]').value
       });
     });
-    const company = document.getElementById('orgadata-company');
     return {
-      customer_id: company ? company.value : '',
+      customer_id: topCustomerId(),
       project: document.getElementById('orgadata-project').value,
       po: document.getElementById('orgadata-po').value,
       contact: document.getElementById('orgadata-contact').value,
@@ -108,29 +214,37 @@
     document.getElementById('orgadata-po').value = data.po || '';
     document.getElementById('orgadata-contact').value = data.contact || '';
     document.getElementById('orgadata-date').value = data.reference_date || '';
-    const company = document.getElementById('orgadata-company');
-    if (company && data.customer_id) company.value = data.customer_id;
     const currency = String(data.currency || '').toUpperCase();
     document.getElementById('orgadata-meta').textContent = 'Source: ' + (data.source || 'ORGADATA GLASS ORDER') + (data.sender ? ' · From ' + data.sender : '') + (currency ? ' · Currency ' + currency : '');
     document.getElementById('orgadata-warnings').innerHTML = warningList(data.warnings);
     const root = document.getElementById('orgadata-blocks');
     root.innerHTML = (data.blocks || []).map((block, index) => {
       const lites = (block.lites || []).map((lite, liteIndex) => '<div class="map-row" data-lite="' + liteIndex + '"><label>ERP glass ' + (liteIndex + 1) + ' <span class="import-note">' + esc(lite.source) + ' · ' + esc(lite.thickness_mm) + ' mm</span></label><select data-field="product">' + options(DATA.glass, lite.product || '') + '</select><label>Tempered</label><select data-field="temper"><option value="n/a"' + (lite.temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (lite.temper === 'yes' ? ' selected' : '') + '>Tempered</option></select></div>').join('');
-      const spacers = (block.spacers || []).map((spacer, spacerIndex) => '<div class="map-row" data-spacer="' + spacerIndex + '"><label>ERP spacer ' + (spacerIndex + 1) + ' <span class="import-note">' + esc(spacer.source) + ' · ' + esc(spacer.gap_mm) + ' mm</span></label><select data-field="product">' + options(DATA.spacers, spacer.product || '') + '</select></div>').join('');
+      const spacers = (block.spacers || []).map((spacer, spacerIndex) => {
+        const match = sealantMatch(spacer.product || '');
+        const chosen = spacer.sealant || match.selected || '';
+        return '<div class="map-row" data-spacer="' + spacerIndex + '"><label>ERP spacer ' + (spacerIndex + 1) + ' <span class="import-note">' + esc(spacer.source) + ' · ' + esc(spacer.gap_mm) + ' mm</span></label><select data-field="product">' + options(DATA.spacers, spacer.product || '') + '</select><label>Sealant</label><select data-field="sealant">' + options(match.options || [], chosen) + '</select><p class="sealant-note" data-sealant-note>' + esc(spacer.sealant_message || match.message || '') + '</p></div>';
+      }).join('');
       const idText = block.product_id ? esc(block.product_id) : (block.product_id_missing ? 'No production ID yet' : '');
       const idNote = block.product_id_missing ? '<p class="import-error">No production ID yet for this IGU. ' + (data.can_set_production_id ? '<a href="/production-settings?tab=ids&amp;filter=missing">Add it in Production settings</a>. ' : 'Ora Glass adds it in Production settings. ') + 'The import does not invent an ID.</p>' : '';
-      const rows = (block.lines || []).map(line => '<tr data-orgadata-line="' + esc(line.line_number) + '"><td>' + esc(line.line_number) + '</td><td><input data-field="floor" value="' + esc(line.floor) + '" aria-label="Floor"></td><td>' + (line.product_id ? esc(line.product_id) : (line.product_id_missing ? 'No production ID yet' : '')) + '</td><td><input data-field="qty" value="' + esc(line.qty) + '" aria-label="Quantity"></td><td><input data-field="width_mm" value="' + esc(line.width_mm) + '" aria-label="Width millimetres"></td><td><input data-field="height_mm" value="' + esc(line.height_mm) + '" aria-label="Height millimetres"></td><td>' + esc(line.width_in == null ? '' : line.width_in) + '</td><td>' + esc(line.height_in == null ? '' : line.height_in) + '</td><td>' + esc(money(line.total)) + '</td><td>' + esc((line.warnings || []).join(' ')) + '</td></tr>').join('');
+      const rows = (block.lines || []).map(line => '<tr data-orgadata-line="' + esc(line.line_number) + '"><td>' + esc(line.line_number) + '</td><td><input data-field="floor" value="' + esc(line.floor) + '" aria-label="Floor"></td><td>' + (line.product_id ? esc(line.product_id) : (line.product_id_missing ? 'No production ID yet' : '')) + '</td><td><input data-field="qty" value="' + esc(line.qty) + '" aria-label="Quantity"></td><td><input data-field="width_mm" value="' + esc(line.width_mm) + '" aria-label="Width millimeters"></td><td><input data-field="height_mm" value="' + esc(line.height_mm) + '" aria-label="Height millimeters"></td><td>' + esc(line.width_in == null ? '' : line.width_in) + '</td><td>' + esc(line.height_in == null ? '' : line.height_in) + '</td><td>' + esc(money(line.total)) + '</td><td>' + esc((line.warnings || []).join(' ')) + '</td></tr>').join('');
+      const mismatch = block.thickness_mismatch ? '<p class="import-error" data-thickness-flag>Computed thickness ' + esc(block.computed_thickness_mm) + ' mm does not match the PDF thickness (' + esc(block.pdf_thickness_mm) + ' mm).</p>' : '<p class="import-error" data-thickness-flag hidden></p>';
+      const computed = block.computed_thickness_mm == null ? '' : (esc(block.computed_thickness_mm) + ' mm');
       return '<section data-orgadata-block="' + index + '" style="margin-top:16px"><h4 style="margin:0 0 8px">Glass block ' + (index + 1) + '</h4>'
         + '<div class="import-grid"><div class="form-group" style="flex:1 1 100%"><label>Name</label><input data-field="name" style="width:100%;max-width:none" value="' + esc(block.name) + '"></div>'
+        + '<div class="form-group" style="flex:1 1 100%"><label>IGU name</label><p class="import-note" data-igu-name style="margin:0;font-weight:600;color:#C41E3A">' + esc(block.igu_name || 'Choose an ERP glass, spacer, and sealant.') + '</p></div>'
         + '<div class="form-group"><label>Configuration</label><input data-field="configuration" value="' + esc(block.configuration) + '"></div>'
-        + '<div class="form-group"><label>Thickness</label><input data-field="thickness" value="' + esc(block.thickness) + '"></div>'
+        + '<div class="form-group"><label>PDF thickness</label><input data-field="thickness" value="' + esc(block.thickness) + '"></div>'
+        + '<div class="form-group"><label>Computed thickness</label><p class="import-note" data-computed-thickness style="margin:0">' + computed + '</p></div>'
         + '<div class="form-group"><label>Spacer</label><input data-field="spacer_source" value="' + esc(block.spacer_source) + '"></div></div>'
+        + mismatch
         + '<p class="import-note">Argon: ' + (block.argon ? 'yes' : 'no') + ' · Tempered on the order: ' + (block.tempered ? 'yes' : 'no') + '</p>'
         + '<p class="import-note"><b>ID</b> ' + idText + '</p>' + idNote
         + warningList(block.warnings) + lites + spacers
         + '<table class="import-table"><thead><tr><th>#</th><th>Floor</th><th>ID</th><th>Quantity</th><th>Width (mm)</th><th>Height (mm)</th><th>Width (in)</th><th>Height (in)</th><th>Price</th><th>Warnings</th></tr></thead><tbody>'
         + rows + '</tbody></table></section>';
     }).join('');
+    root.querySelectorAll('[data-orgadata-block]').forEach(refreshBlock);
   }
   async function post(url, body) {
     const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -141,18 +255,51 @@
     }
     return payload;
   }
-  companySelect();
+  function resetOrgadata() {
+    current = null;
+    const file = document.getElementById('orgadata-file');
+    if (file) file.value = '';
+    document.getElementById('orgadata-preview').style.display = 'none';
+    document.getElementById('orgadata-blocks').innerHTML = '';
+    document.getElementById('orgadata-warnings').innerHTML = '';
+    document.getElementById('orgadata-meta').textContent = '';
+    document.getElementById('orgadata-created').textContent = '';
+    message('');
+    customerError('');
+  }
+  window.resetOrgadataImport = resetOrgadata;
+  document.getElementById('orgadata-blocks').addEventListener('change', event => {
+    const section = event.target.closest('[data-orgadata-block]');
+    if (!section) return;
+    const spacerRow = event.target.closest('[data-spacer]');
+    if (spacerRow && event.target.getAttribute('data-field') === 'product') {
+      fillSealant(spacerRow, event.target.value, '');
+    }
+    refreshBlock(section);
+  });
+  const customerPick = document.getElementById('quote-customer');
+  if (customerPick) customerPick.addEventListener('change', () => customerError(''));
   document.getElementById('orgadata-upload').addEventListener('click', async () => {
     const file = document.getElementById('orgadata-file').files[0];
     if (!file) { message('Choose a PDF.', true); return; }
+    if (!DATA.customer && !topCustomerId()) {
+      customerError('Choose a customer company.');
+      message('');
+      return;
+    }
+    customerError('');
     const form = new FormData();
     form.append('file', file);
-    const company = document.getElementById('orgadata-company');
-    if (company && company.value) form.append('customer_id', company.value);
+    const customerId = topCustomerId();
+    if (customerId) form.append('customer_id', customerId);
     message('Reading the PDF…');
     const res = await fetch('/api/orgadata-imports', {method: 'POST', body: form});
     const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { message(payload.error || 'The PDF could not be read.', true); return; }
+    if (!res.ok) {
+      if ((payload.error || '') === 'Choose a customer company.') customerError(payload.error);
+      message(payload.error || 'The PDF could not be read.', true);
+      return;
+    }
     message('');
     render(payload);
   });
@@ -162,18 +309,26 @@
       render(await post('/api/orgadata-imports/' + current.id + '/preview', collect()));
       message('Preview updated.');
     } catch (error) {
+      if (error.message === 'Choose a customer company.') customerError(error.message);
       message(error.message, true);
     }
   });
   document.getElementById('orgadata-create').addEventListener('click', async () => {
     if (!current) return;
+    if (!DATA.customer && !topCustomerId()) {
+      customerError('Choose a customer company.');
+      return;
+    }
     try {
       const created = await post('/api/orgadata-imports/' + current.id + '/quote', collect());
-      document.getElementById('orgadata-created').textContent = 'Draft quote ' + created.id + ' was saved from ORGADATA GLASS ORDER.';
-      message('');
+      const saved = 'Draft quote ' + created.id + ' was saved from ORGADATA GLASS ORDER.';
+      resetOrgadata();
+      message(saved);
     } catch (error) {
+      if (error.message === 'Choose a customer company.') customerError(error.message);
       message(error.message, true);
     }
   });
+  document.getElementById('orgadata-cancel').addEventListener('click', () => resetOrgadata());
 })();
 </script>

@@ -286,6 +286,98 @@ def test_preview_maps_planibel_to_clear_and_keeps_position_on_the_floor(client):
     assert b'Import ORGADATA GLASS ORDER' in page.data
     assert b'ORGADATA GLASS ORDER preview' in page.data
     assert b'<th>#</th><th>Floor</th><th>ID</th>' in page.data
+    assert b'id="orgadata-company"' not in page.data
+    assert b'id="quote-customer-error"' in page.data
+    assert b'Upload an Open Windows or HighQ' not in page.data
+    assert b'millimeters' in page.data
+    assert b'millimetres' not in page.data
+    assert b'id="orgadata-cancel"' in page.data
+    assert b'resetOrgadataImport' in page.data
+    assert b'data-field="sealant"' in page.data
+
+
+def test_top_customer_is_sent_and_a_changed_lite_renames_the_igu(client):
+    """The quote line name follows the selected glass, spacer, and sealant."""
+    from documents import build_label
+    from quoting import suggest_sealant
+    write_user('admin@test.com', 'admin')
+    _open_windows()
+    customers = load_customers()
+    customers['open-windows-west'] = dict(customers['open-windows'])
+    customers['open-windows-west']['name'] = 'Open Windows West'
+    save_customers(customers)
+    login(client, 'admin@test.com')
+    missing = _upload(client, sample_text())
+    assert missing.status_code == 400
+    assert missing.get_json()['error'] == 'Choose a customer company.'
+    uploaded = _upload(client, sample_text(), customer_id='open-windows')
+    assert uploaded.status_code == 200, uploaded.get_json()
+    body = uploaded.get_json()
+    assert body['customer_id'] == 'open-windows'
+    both = {
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [{'product': CLEAR, 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+            'spacers': [{'product': SEEDED_SPACER}],
+        }],
+    }
+    preview = client.post(f"/api/orgadata-imports/{body['id']}/preview", json=both)
+    assert preview.status_code == 200, preview.get_json()
+    block = preview.get_json()['blocks'][0]
+    sealant = block['spacers'][0]['sealant']
+    assert sealant == suggest_sealant(SEEDED_SPACER, block['spacers'][0]['sealant_options'])['selected']
+    assert 'Polyurethane' in sealant
+    assert any('Silicone' in name for name in block['spacers'][0]['sealant_options'])
+    assert block['computed_thickness_mm'] == 28
+    assert block['thickness_mismatch'] is False
+    assert block['igu_name'].startswith('28 (1 1/8") - 6mmClear Glass Tempered+')
+    assert 'Polysulfide' in block['igu_name']
+    poly_total = preview.get_json()['lines'][0]['total']
+    silicone = next(name for name in block['spacers'][0]['sealant_options'] if 'Silicone' in name)
+    changed = client.post(f"/api/orgadata-imports/{body['id']}/preview", json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [{'product': 'Clear Glass 5mm', 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+            'spacers': [{'product': SEEDED_SPACER, 'sealant': silicone}],
+        }],
+    })
+    assert changed.status_code == 200, changed.get_json()
+    renamed = changed.get_json()['blocks'][0]
+    assert renamed['computed_thickness_mm'] == 27
+    assert renamed['pdf_thickness_mm'] == 28
+    assert renamed['thickness_mismatch'] is True
+    assert any('27 mm does not match the PDF thickness (28 mm)' in warning for warning in renamed['warnings'])
+    assert renamed['igu_name'].startswith('27 (1 1/16") - 5mmClear Glass Tempered+')
+    assert renamed['igu_name'].endswith('+6mmClear Glass Tempered')
+    assert 'Silicone' in renamed['igu_name']
+    assert changed.get_json()['lines'][0]['total'] != poly_total
+    narrow = client.post(f"/api/orgadata-imports/{body['id']}/preview", json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [{'product': CLEAR, 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+            'spacers': [{'product': 'Technoform 11mm / sqf'}],
+        }],
+    }).get_json()['blocks'][0]
+    offered = narrow['spacers'][0]['sealant_options']
+    choice = suggest_sealant('Technoform 11mm / sqf', offered)
+    assert narrow['spacers'][0]['sealant'] == choice['selected']
+    assert choice['selected']
+    if choice['match'] != 'exact':
+        assert 'Using' in narrow['spacers'][0]['sealant_message']
+    created = client.post(f"/api/orgadata-imports/{body['id']}/quote", json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [{'product': 'Clear Glass 5mm', 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+            'spacers': [{'product': SEEDED_SPACER, 'sealant': silicone}],
+        }],
+    })
+    assert created.status_code == 200, created.get_json()
+    item = created.get_json()['quote']['items'][0]
+    assert item['name'] == renamed['igu_name']
+    assert item['name'] == build_label(item['spec'])
+    assert item['spec']['glass1'] == 'Clear Glass 5mm'
+    assert item['spec']['sealant1'] == silicone
+    assert '5mmClear Glass Tempered' in item['name']
 
 
 def test_alias_prices_the_build_and_a_missing_production_id_is_not_invented(client):
