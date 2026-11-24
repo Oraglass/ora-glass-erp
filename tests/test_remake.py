@@ -207,3 +207,64 @@ def test_a_remake_can_be_voided_until_it_is_packed(client):
     assert blocked.status_code == 400
     assert 'packing' in blocked.get_json()['error']
     assert production.production_filename(next(item for item in load_orders() if item['id'] == packed_id)).endswith(f'{order_id}-R2.xlsx')
+
+
+def _pack(number, rows, rack='1054'):
+    lines = [
+        'Sold To: Harbor Glass',
+        'Job Name: Lobby',
+        f'Sales Delivery: {number}  Date: 11/23/2026',
+        f'{rack} A1900*1220*1800',
+    ]
+    for serial, qty in rows:
+        lines.extend([f'({serial}) {qty}', '24 36', '609.6 mm 914.4 mm'])
+    return '\n'.join(lines).encode()
+
+
+def _upload_pack(client, number, rows, rack='1054'):
+    return client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(_pack(number, rows, rack)), f'{number}.pdf.txt')},
+        content_type='multipart/form-data',
+    )
+
+
+def test_a_remake_packing_list_attaches_to_the_open_remake(client):
+    order_id = _order(client)
+    early = _remake(client, order_id, serial=2, qty=1, charge=False, reason='Breakage')
+    remake_id = early.get_json()['id']
+    too_soon = _upload_pack(client, 'XF-EARLY', [(2, 1)], rack='1055')
+    assert too_soon.status_code == 200, too_soon.get_json()
+    assert too_soon.get_json()['saved'] == []
+    assert too_soon.get_json()['review'][0]['reason'] == 'ambiguous'
+    assert not next(row for row in load_orders() if row['id'] == remake_id).get('packing_lists')
+
+    original = _upload_pack(client, 'XF-ORIG', [(1, 4), (2, 2)])
+    assert original.status_code == 200, original.get_json()
+    assert original.get_json()['saved'][0]['order_id'] == order_id
+    assert original.get_json()['saved'][0]['pack_status'] == 'packed'
+
+    again = _upload_pack(client, 'XF-REMAKE', [(2, 1)], rack='1056')
+    assert again.status_code == 200, again.get_json()
+    assert again.get_json()['review'] == []
+    saved = again.get_json()['saved'][0]
+    assert saved['order_id'] == remake_id
+    assert saved['pack_status'] == 'packed'
+    assert saved['totals']['bo'] == 0
+    remake = next(row for row in load_orders() if row['id'] == remake_id)
+    assert remake['packing_lists'][0]['number'] == 'XF-REMAKE'
+    assert remake['pack_status'] == 'packed'
+    parent = client.get(f'/api/orders/{order_id}').get_json()
+    shown = parent['remakes'][0]
+    assert shown['id'] == remake_id
+    assert shown['pack_status_label'] == 'Packed'
+    assert shown['ship_status_label'] == 'Not shipped'
+    shipped = client.post(f'/api/orders/{remake_id}/ship-packed', json={
+        'date': '2026-11-24', 'truck_plate': 'VAN-2', 'rack': '1056',
+    })
+    assert shipped.status_code == 200, shipped.get_json()
+    after = client.get(f'/api/orders/{order_id}').get_json()['remakes'][0]
+    assert after['ship_status_label'] == 'Shipped'
+    assert after['shipped'] == 1
+    original_lists = next(row for row in load_orders() if row['id'] == order_id)['packing_lists']
+    assert all(row.get('number') != 'XF-REMAKE' for row in original_lists)

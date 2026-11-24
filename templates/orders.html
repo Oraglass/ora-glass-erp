@@ -466,7 +466,7 @@ function remakeForm(order) {
 function remakesBlock(order) {
   const rows = order.remakes || [];
   if (!rows.length) return '';
-  const list = rows.map(row => '<li><a id="remake-link-' + esc(row.id) + '" href="/orders/' + encodeURIComponent(row.id) + '">' + esc(row.number) + '</a> · ' + esc(row.status_label) + (row.charge_customer ? ' · Charged' : ' · Not charged') + (row.reason ? ' · ' + esc(row.reason) : '') + '</li>').join('');
+  const list = rows.map(row => '<li id="remake-status-' + esc(row.id) + '"><a id="remake-link-' + esc(row.id) + '" href="/orders/' + encodeURIComponent(row.id) + '">' + esc(row.number) + '</a> · ' + esc(row.status_label) + (row.charge_customer ? ' · Charged' : ' · Not charged') + (row.reason ? ' · ' + esc(row.reason) : '') + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · ' + esc(row.ship_status_label || 'Not shipped') + '</li>').join('');
   return '<section class="section" id="order-remakes"><h3>Remakes</h3><p class="note">Service orders made from this order.</p><ul id="remake-list">' + list + '</ul></section>';
 }
 function packingBlock(order) {

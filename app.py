@@ -6403,10 +6403,20 @@ def _remake_number(parent, orders):
 def _remake_view(order):
     orders = load_orders()
     parent = next((row for row in orders if row.get('id') == order.get('remake_of')), None)
+    import packing
+    import shipments as shipment_rules
     children = []
     for other in orders:
         if other.get('remake_of') != order.get('id'):
             continue
+        progress = packing.packing_progress(other)
+        shipped = shipment_rules.shipment_progress(other)
+        if shipped['fully_shipped']:
+            ship_label = 'Shipped'
+        elif shipped['shipped_pcs'] > 0:
+            ship_label = 'Partially shipped'
+        else:
+            ship_label = 'Not shipped'
         children.append({
             'id': other.get('id'),
             'number': other.get('number') or str(other.get('id') or ''),
@@ -6414,6 +6424,12 @@ def _remake_view(order):
             'status_label': _order_review_label(other),
             'charge_customer': bool(other.get('charge_customer')),
             'reason': other.get('remake_reason') or '',
+            'pack_status': progress['status'],
+            'pack_status_label': progress['status_label'] or 'Not packed',
+            'ship_status_label': ship_label,
+            'packed': progress['totals']['packed'],
+            'bo': progress['totals']['bo'],
+            'shipped': shipped['shipped_pcs'],
         })
     children.sort(key=lambda row: row.get('number') or '')
     return {
@@ -8396,8 +8412,10 @@ def _place_parsed_packing(parsed, filename, stored, user):
         message = warnings[0] if warnings else 'No glass rows were found in that packing list.'
         queued = _queue_packing(parsed, filename, stored, user, 'no_match', message, [])
         return {'saved': None, 'review': queued}
-    hits = packing.candidate_orders(parsed, load_orders())
-    if len(hits) != 1:
+    orders = load_orders()
+    hits = packing.candidate_orders(parsed, orders)
+    chosen = packing.choose_packing_order(parsed, hits, orders)
+    if chosen is None:
         if len(hits) > 1:
             message = 'More than one order matches this customer and project. Choose the order.'
             reason = 'ambiguous'
@@ -8408,7 +8426,7 @@ def _place_parsed_packing(parsed, filename, stored, user):
             message = message + ' ' + ' '.join(warnings)
         queued = _queue_packing(parsed, filename, stored, user, reason, message, hits)
         return {'saved': None, 'review': queued}
-    order = hits[0]
+    order = chosen
     order_stored = _write_packing_file(order.get('id'), filename, _read_packing_file('inbox', stored))
 
     def mutator(current):

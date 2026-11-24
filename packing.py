@@ -544,6 +544,69 @@ def candidate_orders(parsed, orders):
     return hits
 
 
+def _packing_serials(parsed):
+    found = []
+    for row in (parsed or {}).get('rows') or []:
+        try:
+            serial = int(row.get('serial'))
+            qty = int(row.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0 and serial not in found:
+            found.append(serial)
+    return found
+
+
+def _serial_set(order):
+    return {row['serial'] for row in serial_catalog(order)}
+
+
+def _serial_fully_packed(order, serial):
+    for row in packing_progress(order)['serials']:
+        if row['serial'] == serial:
+            return row['ordered'] > 0 and row['bo'] <= 0
+    return False
+
+
+def choose_packing_order(parsed, hits, orders=None):
+    """Pick one order when the customer and project match more than one.
+
+    A remake keeps the original project and serials. Once those serials are
+    fully packed on the original, the next list for them belongs to the open
+    remake, not the order that is already packed.
+    """
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return hits[0]
+    serials = _packing_serials(parsed)
+    if not serials:
+        return None
+    orders = hits if orders is None else orders
+    covered = [order for order in hits if serials and _serial_set(order).issuperset(serials)]
+    if len(covered) == 1:
+        return covered[0]
+    if len(covered) < 2:
+        return None
+    preferred = []
+    for order in covered:
+        if not order.get('remake'):
+            continue
+        if str(order.get('status') or '').lower() in {'delivered', 'voided'}:
+            continue
+        if not any(not _serial_fully_packed(order, serial) for serial in serials):
+            continue
+        parent = next((row for row in orders if row.get('id') == order.get('remake_of')), None)
+        if parent is not None:
+            parent_serials = _serial_set(parent)
+            if any(serial in parent_serials and not _serial_fully_packed(parent, serial) for serial in serials):
+                continue
+        preferred.append(order)
+    if len(preferred) == 1:
+        return preferred[0]
+    return None
+
+
 def serial_catalog(order):
     """Production serials for one order. The serial is the Excel serial, not an IGU number."""
     from documents import piece_size_text
