@@ -252,3 +252,58 @@ def test_a_duplicated_line_is_priced_on_its_own_and_needs_its_own_drawing(client
     assert set(drawings) == {'line-1', glass[1]['line_id']}
     assert drawings['line-1']['filename'] == 'lobby.dwg'
     assert drawings[glass[1]['line_id']]['filename'] == 'copy.pdf'
+
+
+def test_changing_a_line_to_silicone_rebuilds_the_name_and_the_price(client):
+    from quoting import suggest_sealant
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    sealants = [item['name'] for item in __import__('app').SEALANTS]
+    spacers = [item['name'] for item in __import__('app').SPACERS]
+    spacer = next(name for name in spacers if 'super' in name.lower() and '16' in name)
+    choice = suggest_sealant(spacer, sealants)
+    poly = choice['selected']
+    silicone = next(name for name in choice['options'] if 'silicone' in name.lower())
+    assert 'poly' in poly.lower()
+    base = dict(SPEC)
+    base.update({
+        'glass1': 'Clear Glass 6mm', 'temper1': 'yes',
+        'spacer1': spacer, 'sealant1': poly,
+        'glass2': 'Clear Glass 6mm', 'temper2': 'yes',
+    })
+    original = _draft(client, [_line(pcs=1, irregular=False)])
+    quote_id = original['id']
+    saved = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [{
+            'name': 'old name', 'pcs': 1, 'spec': base, 'floor': 'W12', 'remarks': 'Seal',
+            'line_number': 1, 'irregular_shape': False,
+        }],
+        'currency': 'usd', 'project': 'Sealant', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    stored_poly = next(row for row in load_quotes() if row['id'] == quote_id)
+    poly_line = next(row for row in stored_poly['items'] if row.get('spec'))
+    assert poly_line['spec']['sealant1'] == poly
+    assert 'Polysulfide' in poly_line['name']
+    assert 'Silicone' not in poly_line['name']
+    switched = dict(base)
+    switched['sealant1'] = silicone
+    edited = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [{
+            'name': 'old name', 'pcs': 1, 'spec': switched, 'floor': 'W12', 'remarks': 'Seal',
+            'line_number': 1, 'irregular_shape': False,
+        }],
+        'currency': 'usd', 'project': 'Sealant', 'type': 'size', 'tier': 'T5',
+    })
+    assert edited.status_code == 200, edited.get_json()
+    stored_silicone = next(row for row in load_quotes() if row['id'] == quote_id)
+    line = next(row for row in stored_silicone['items'] if row.get('spec'))
+    assert line['spec']['sealant1'] == silicone
+    assert 'Silicone' in line['name']
+    assert 'Polysulfide' not in line['name']
+    assert stored_silicone['tier'] == 'T2'
+    expected = reprice_size_line(switched, 1, 'T2', 'usd', __import__('app').PRICING, load_tiers())
+    assert line['total'] == expected['total']
+    assert line['total'] != poly_line['total']

@@ -154,6 +154,18 @@ def build_label(spec):
     return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
 
 
+def igu_name_from_spec(spec):
+    """IGU name the quote calculator builds: overall millimetres, inch fraction, then the lites."""
+    makeup = makeup_from_spec(spec)
+    if not makeup:
+        return ''
+    total = overall_thickness_mm(spec)
+    if total <= 0:
+        return makeup
+    mm = int(total) if float(total).is_integer() else total
+    return f'{mm} ({quote_form_fraction(total)}") - {makeup}'
+
+
 def glass_thickness_mm(spec):
     """Sum of the lite thicknesses. Spacers are not glass."""
     total = 0.0

@@ -4061,6 +4061,11 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
                 'spec': spec,
                 'irregular_shape': bool(item.get('irregular_shape')),
             }
+            if keep_identity:
+                import documents
+                label = documents.igu_name_from_spec(spec)
+                if label:
+                    copied_line['name'] = label
             copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
                 remark = strip_copy_history(clean_text(item.get('remarks'), 500))
