@@ -308,14 +308,21 @@ def parse_text(text):
         if line.casefold() == 'glass':
             if block and (block['lines'] or block['name']):
                 document['blocks'].append(block)
-            block = _blank_block()
+                block = _blank_block()
+            elif block is None:
+                block = _blank_block()
             collecting_name = False
             continue
-        if block is None:
-            continue
         if line.lower().startswith('name:'):
+            if block and (block['lines'] or block['name']):
+                document['blocks'].append(block)
+                block = _blank_block()
+            elif block is None:
+                block = _blank_block()
             block['name'] = _collapse(line.split(':', 1)[1])
             collecting_name = True
+            continue
+        if block is None:
             continue
         if line.lower().startswith('configuration:'):
             collecting_name = False

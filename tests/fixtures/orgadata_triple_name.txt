@@ -1,0 +1,37 @@
+Open Windows / Richmond BC
+Date: 2026-11-20
+Glass/Panel Order
+Project name: AF17.0359.VLD.vlad.Triple G    Job number: 2026-00341
+Person in Charge: Vlad
+Glass
+Name:
+                                48 6UD80 + 4clear+ 6UD80, 48mm ULTRACLEAR 6mm Optisolar UD80 (2) + 4mm
+                                clear + 6mm Optisolar UD80 (5) TEMPERED ARGON
+Configuration:                  6+4+6mm
+Thickness:                      6/16/4/16/6 = 48 mm           Spacer:         Aluminium/Steel
+Position /                      Quantity       Width       Height         Area    Perimeter       Weight
+Number                                         [mm]         [mm]      [m²/Sum]     [m/Sum]      [kg/Sum]
+P45 / 1                                  2     1,058        2,830         5.99         7.78         119.7
+P45 / 3                                  2     1,145          824         1.89         3.94          37.7
+P46 / 1                                  2     1,058        2,830         5.99         7.78         119.7
+P46 / 3                                  2     1,145          824         1.89         3.94          37.7
+Sum:                                     8                               15.74        46.85         629.7
+                                                                                                   Page 1
+Name:            28 6UD80 + 6AGC Planibel G, 28mm ULTRACLEAR 6mm Optisolar UD80 (2) + 6mm
+                 AGC Planibel G (4) TEMPERED ARGON
+Configuration:   2x6mm
+Thickness:       6/16/6 = 28 mm                Spacer:        Aluminium/Steel
+Position /                      Quantity       Width       Height         Area    Perimeter       Weight
+Number                                         [mm]         [mm]      [m²/Sum]     [m/Sum]      [kg/Sum]
+W35 / 1                                  1     1,145        1,978         2.26         6.25          45.3
+W35 / 2                                  1     1,145        1,513         1.73         5.32          34.6
+Page 2
+Interior View
+Position /                      Quantity       Width       Height         Area    Perimeter       Weight
+Number                                         [mm]         [mm]      [m²/Sum]     [m/Sum]      [kg/Sum]
+W36 / 1                                  1     1,145        1,513         1.73         5.32          34.6
+Page 3
+W36 / 2                                  1     1,145        1,978         2.26         6.25          45.3
+Sum:                                     4                               7.98         23.14         159.8
+Sum Quantity:               12 Pcs.
+Page 4
