@@ -54,6 +54,7 @@ a{color:#C41E3A}
 .badge.voided{background:#eee;color:#444}
 .badge.remake{background:#fef3c7;color:#92400e}
 .badge.packed{background:#d4edda;color:#155724}
+.badge.legacy{background:#e0e7ff;color:#3730a3}
 .badge.partial{background:#fff4e5;color:#9a3412}
 .badge.not_invoiced{background:#fde8ec;color:#9f1239}
 .badge.ready{background:#e0f2fe;color:#075985}
@@ -226,6 +227,7 @@ function badge(order) {
   const status = order.status || 'approved';
   let html = '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
   if (order.remake) html += ' <span class="badge remake" id="remake-badge-' + esc(order.id) + '">Remake</span>';
+  if (order.legacy) html += ' <span class="badge legacy" id="legacy-badge-' + esc(order.id) + '">Legacy</span>';
   if (order.pack_status_label) html += ' <span class="badge ' + esc(order.pack_status || 'partial') + '" id="pack-badge-' + esc(order.id) + '">' + esc(order.pack_status_label) + '</span>';
   return html;
 }
@@ -483,17 +485,22 @@ function packingBlock(order) {
     const unmatched = STAFF && (list.unmatched || []).length
       ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
       : '';
+    const moveChoices = (order.reassign_orders || []).map(row => '<option value="' + esc(row.id) + '">' + esc(row.id) + ' ' + esc(row.project || '') + '</option>').join('');
+    const move = order.legacy && STAFF && moveChoices
+      ? '<div class="filters"><select data-move-list="' + esc(list.id) + '" aria-label="ERP order for ' + esc(list.number || list.id) + '"><option value="">Move to an ERP order</option>' + moveChoices + '</select><button type="button" class="btn small" data-move-packing="' + esc(list.id) + '">Move to this order</button></div>'
+      : '';
     const remove = STAFF ? ' <button type="button" class="btn small secondary" data-remove-packing="' + esc(list.id) + '">Remove / reassign</button>' : '';
     return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.rack || list.id) + remove + '</h4>'
       + '<p class="note">' + esc(list.date || '') + (list.rack ? ' · ' + esc(list.rack) : '') + file + '</p>'
       + unmatched
+      + move
       + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Pcs packed</th></tr></thead><tbody>' + (lines || '<tr><td colspan="5">No matched pieces</td></tr>') + '</tbody></table>';
   }).join('');
   const history = STAFF ? (order.packing_history || []).map(list => '<li>Replaced ' + esc(list.number || list.rack || list.filename) + ' · ' + esc(list.uploaded_at || '') + ' · ' + esc(list.uploaded_by || '') + '</li>').join('') : '';
   const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
   const shipPacked = STAFF && (order.packing_serials || []).some(row => Number(row.packed) > Number(row.shipped || 0))
     ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
-  const invoiceCustomer = STAFF && order.invoice_state === 'ready'
+  const invoiceCustomer = STAFF && !order.legacy && order.invoice_state === 'ready'
     ? '<button type="button" class="btn" id="invoice-customer">Create invoice</button>' : '';
   const prints = '<a class="btn secondary" id="print-packing-list" href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists.pdf">Print Packing List</a>'
     + '<a class="btn secondary" id="print-backorder" href="/api/orders/' + encodeURIComponent(order.id) + '/backorder.pdf">Print Back Ordered List</a>';
@@ -545,7 +552,7 @@ function renderDetail(order) {
   if (STAFF && order.excel_ready) primary.push('<a class="btn secondary" id="production-excel" href="/api/orders/' + encodeURIComponent(order.id) + '/production.xlsx">Production Excel</a>');
   if (order.can_unapprove) primary.push('<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>');
   if (order.can_void) primary.push('<button type="button" class="btn secondary" id="void-order">Void</button>');
-  if (CAN_EDIT && order.status !== 'voided' && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
+  if (CAN_EDIT && !order.legacy && order.status !== 'voided' && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
   if (order.can_release) secondary.push('<button type="button" class="btn" id="approve-production">Approve for production</button>');
   if (order.can_respond) {
     secondary.push('<button type="button" class="btn" id="approve-changes">Approve changes</button>');
@@ -557,7 +564,7 @@ function renderDetail(order) {
   let buttons = primary.join('');
   if (secondary.length > 1) buttons += '<details class="more"><summary class="btn secondary">More</summary><div class="more-menu">' + secondary.join('') + '</div></details>';
   else buttons += secondary.join('');
-  if (STAFF && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
+  if (STAFF && !order.legacy && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
   const voidNote = order.status === 'voided'
     ? '<p class="note" id="voided-note">Voided' + (order.voided_by ? ' by ' + esc(order.voided_by) : '') + (order.voided_at_display ? ' · ' + esc(order.voided_at_display) : '') + (order.void_reason ? '. ' + esc(order.void_reason) : '') + '</p>'
     : '';
@@ -599,11 +606,17 @@ function renderDetail(order) {
     ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
   const shipmentSection = sectionBlock('Shipments ' + '<span class="badge">' + esc((shipping.label || 'Not shipped')) + '</span>', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>' + shipTable + partial);
   const lineCount = (order.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation').length;
-  const lineSummary = lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
-  const linesTable = appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
+  const lineSummary = order.legacy
+    ? 'No ERP order lines and no price. The pieces are the packing list.'
+    : lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
+  const linesTable = order.legacy
+    ? ''
+    : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
   const when = order.approved_at_display || order.approved_at || '';
-  const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.tier_label || order.tier || '', (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
-  const headerSummary = headerBits.map(esc).join(' · ')
+  const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.legacy ? '' : (order.tier_label || order.tier || ''), (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
+  const headerSummary = order.legacy
+    ? headerBits.map(esc).join(' · ') + '.'
+    : headerBits.map(esc).join(' · ')
     + (PRICES ? ' · ' + money(order, order.total) : '')
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
@@ -613,7 +626,8 @@ function renderDetail(order) {
       + (order.charge_customer ? ' Charged to the customer.' : ' Not charged to the customer.')
       + '</p>'
     : '';
-  const headerExtra = remakeNote + ((order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
+  const legacyNote = order.legacy ? '<p class="note" id="legacy-note">Legacy job from before the ERP. The job name is the reference. There is no quote price, customer invoice, or intercompany invoice.</p>' : '';
+  const headerExtra = remakeNote + legacyNote + (!order.legacy && (order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
     + voidNote + voidPanel + notes + jobText + jobForm + tax;
   const invoiceRows = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
@@ -699,6 +713,22 @@ function renderDetail(order) {
       if (!res.ok) { alert(payload.error || 'Could not remove the packing list'); return; }
       renderDetail(payload);
       load();
+    });
+  });
+  document.querySelectorAll('[data-move-packing]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const listId = button.getAttribute('data-move-packing');
+      const select = document.querySelector('[data-move-list="' + listId + '"]');
+      const target = select && select.value;
+      if (!target) { alert('Choose the ERP order.'); return; }
+      const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(listId) + '/reassign', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order_id: Number(target)})
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(payload.error || 'Could not move the packing list'); return; }
+      if (payload.legacy_removed) window.location = '/orders/' + encodeURIComponent(payload.order_id);
+      else window.location = '/orders/' + encodeURIComponent(order.id);
     });
   });
   const shipPacked = document.getElementById('ship-packed');
@@ -1012,7 +1042,7 @@ function renderPackingReview(payload) {
   const saved = (payload.saved || []).map(row => '<p class="note">Saved on ' + esc(row.company) + ' / ' + esc(row.project) + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · BO ' + esc((row.totals || {}).bo) + ((row.unmatched || []).length ? ' · Unmatched serials: ' + (row.unmatched || []).map(item => esc(item.serial == null ? 'none' : item.serial)).join(', ') : '') + '</p>').join('');
   const review = (payload.review || []).map(row => {
     const orders = row.customer_locked ? (row.choices || []) : (row.orders || []);
-    const choices = orders.map(order => '<option value="' + esc(order.id) + '" data-customer="' + esc(order.customer_id) + '"' + (row.customer_locked ? '' : ' hidden') + '>' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
+    const choices = '<option value="">Choose an order</option><option value="legacy">Not an ERP order (made before the ERP)</option>' + orders.map(order => '<option value="' + esc(order.id) + '" data-customer="' + esc(order.customer_id) + '"' + (row.customer_locked ? '' : ' hidden') + '>' + esc(order.id) + ' ' + esc(order.company) + ' / ' + esc(order.project) + '</option>').join('');
     const customers = (row.customers || []).map(customer => '<option value="' + esc(customer.id) + '">' + esc(customer.name) + '</option>').join('');
     const customerPick = row.customer_locked ? '' : '<select data-customer="' + esc(row.id) + '" aria-label="Customer for ' + esc(row.filename || 'packing list') + '"><option value="">Choose a customer</option>' + customers + '</select>';
     return '<div class="note" style="margin-top:8px"><strong>' + esc(row.filename || 'Packing list') + '</strong> · ' + esc(row.message || '')
@@ -1112,7 +1142,7 @@ if (packingForm) {
     const select = document.querySelector('[data-inbox="' + customer.getAttribute('data-customer') + '"]');
     if (!select) return;
     Array.from(select.options).forEach(option => {
-      if (!option.value) return;
+      if (!option.value || option.value === 'legacy') { option.hidden = false; return; }
       option.hidden = option.getAttribute('data-customer') !== customer.value;
     });
     select.value = '';
@@ -1127,7 +1157,7 @@ if (packingForm) {
     if (!orderId) { alert('Choose the order this packing list belongs to.'); return; }
     const res = await fetch('/api/packing-inbox/' + inboxId + '/assign', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({order_id: Number(orderId), customer_id: customer ? customer.value : ''})
+      body: JSON.stringify({order_id: orderId === 'legacy' ? 'legacy' : Number(orderId), customer_id: customer ? customer.value : ''})
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) { alert(payload.error || 'Could not save the packing list'); return; }

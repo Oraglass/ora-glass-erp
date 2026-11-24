@@ -6324,6 +6324,8 @@ def _intercompany_invoiced_by_serial(order):
 
 def _customer_invoice_state(order):
     """Separate from packing status. Ready means the whole order can be billed to the customer."""
+    if (order or {}).get('legacy'):
+        return 'not_invoiced', 'Not invoiced'
     import packing
     import shipments as shipment_rules
     has_customer_invoice = any(
@@ -6484,6 +6486,7 @@ def order_for_viewer(order, user, with_coverage=False):
         'quote_id': order.get('quote_id'),
         'customer_id': order.get('customer_id'),
         'company': order.get('company') or '',
+        'legacy': bool(order.get('legacy')),
         'project': order.get('project') or '',
         'po': order.get('po') or order.get('customer_po') or '',
         'job_address': order.get('job_address') or '',
@@ -6526,6 +6529,13 @@ def order_for_viewer(order, user, with_coverage=False):
         'documents': [],
     }
     staff_view = user.get('role') != 'customer'
+    if staff_view and order.get('legacy'):
+        base['reassign_orders'] = [
+            {'id': row.get('id'), 'project': row.get('project') or '', 'company': row.get('company') or ''}
+            for row in load_orders()
+            if row.get('customer_id') == order.get('customer_id') and not row.get('legacy') and row.get('id') != order.get('id')
+            and str(row.get('status') or '').lower() != 'delivered'
+        ]
     if staff_view and order.get('fx_rate') not in (None, ''):
         base['fx_rate'] = order.get('fx_rate')
     documents = []
@@ -7411,7 +7421,7 @@ def _review_payload(order, user):
         'revision': order.get('revision') or 0,
         'revisions': revisions,
         'change_summary': latest if status == 'customer_review' else None,
-        'excel_ready': status in RELEASED_STATUSES,
+        'excel_ready': status in RELEASED_STATUSES and not order.get('legacy'),
         'can_release': staff and status in {'submitted', 'reapproved'},
         'can_unapprove': bool(staff and _can_unapprove(order)),
         'can_respond': bool(can_place_production_orders(user) and status == 'customer_review'),
@@ -7570,7 +7580,7 @@ def _can_void(user, order):
 
 def _can_unapprove(order):
     """Approved or sent orders can return to review until something has shipped or been invoiced."""
-    if order.get('remake'):
+    if order.get('remake') or order.get('legacy'):
         return False
     if _order_is_invoiced(order) or (order.get('shipments') or []):
         return False
@@ -8035,6 +8045,8 @@ def set_order_status(order_id):
         if target == 'delivered':
             if updated.get('remake') and not updated.get('charge_customer'):
                 changes.append({'field': 'invoice', 'action': 'kept', 'new': 'This remake is not charged to the customer.'})
+            elif updated.get('legacy'):
+                changes.append({'field': 'invoice', 'action': 'kept', 'new': 'Legacy jobs are not invoiced.'})
             elif updated.get('shipments'):
                 changes.append({'field': 'shipments', 'action': 'kept', 'new': 'Billing follows the shipments.'})
             elif updated.get('invoice_id'):
@@ -8137,14 +8149,15 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
         'created_by': user.get('email') or '',
     }
     mode = _billing_mode(order)
-    if mode != 'us_full':
+    if not order.get('legacy') and mode != 'us_full':
         _number, error = _issue_shipment_invoice(order, shipment, user, finishing)
         if error:
             return None, error
     order.setdefault('shipments', []).append(shipment)
-    error = _close_shipment_billing(order, user)
-    if error:
-        return None, error
+    if not order.get('legacy'):
+        error = _close_shipment_billing(order, user)
+        if error:
+            return None, error
     import racks as rack_book
     rack_book.receive_shipment(order, shipment, user)
     return order, None
@@ -8359,11 +8372,21 @@ def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
     }
     import packing
     recognized = packing.recognized_customer_ids(parsed, load_orders())
+    if len(recognized) != 1:
+        named = packing.match_customer_ids(parsed.get('customer'), load_customers())
+        if len(named) == 1:
+            recognized = named
     if len(recognized) == 1:
-        allowed = packing.orders_for_customer(recognized[0], load_orders())
-        company = next(
-            (order.get('company') for order in load_orders() if order.get('customer_id') == recognized[0] and order.get('company')),
-            parsed.get('customer') or '',
+        allowed = [
+            order for order in packing.orders_for_customer(recognized[0], load_orders())
+            if not order.get('legacy')
+        ]
+        company = (
+            (load_customers().get(recognized[0]) or {}).get('name')
+            or next(
+                (order.get('company') for order in load_orders() if order.get('customer_id') == recognized[0] and order.get('company')),
+                parsed.get('customer') or '',
+            )
         )
         record['customer_locked'] = True
         record['customer_id'] = recognized[0]
@@ -8389,7 +8412,7 @@ def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
             })
         record['orders'] = [
             _packing_order_choice(order) for order in load_orders()
-            if str(order.get('status') or '').lower() != 'delivered'
+            if str(order.get('status') or '').lower() != 'delivered' and not order.get('legacy')
         ]
         if parsed.get('rows') and not (parsed.get('customer') or '').strip():
             record['message'] = 'This packing list has no customer. Pick the customer, then one of their orders.'
@@ -8527,6 +8550,102 @@ def upload_packing_lists():
     return jsonify({'saved': saved, 'review': review})
 
 
+def _legacy_project(parsed):
+    return str((parsed or {}).get('project') or (parsed or {}).get('job') or '').strip()
+
+
+def _find_legacy_job(customer_id, project):
+    import packing
+    key = packing._fold_code(project)
+    if not customer_id or not key:
+        return None
+    for order in load_orders():
+        if order.get('legacy') and order.get('customer_id') == customer_id and packing._fold_code(order.get('project')) == key:
+            return order
+    return None
+
+
+def _new_legacy_order(customer_id, customer, project, user):
+    approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return append_order({
+        'legacy': True,
+        'customer_id': customer_id,
+        'company': (customer or {}).get('name') or '',
+        'project': project,
+        'po': '',
+        'status': 'approved',
+        'currency': _required_currency(customer) if customer else 'usd',
+        'items': [],
+        'total': 0,
+        'igu_subtotal': 0,
+        'igu_total': 0,
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'shipments': [],
+        'packing_lists': [],
+        'notes': 'Legacy job. Packed before this order was in the ERP. No quote price and no customer invoice.',
+        'date': date.today().isoformat(),
+        'approved_by': user.get('email') or '',
+        'approved_at': approved_at,
+        'changelog': [],
+        'quote_id': None,
+    })
+
+
+def _attach_inbox_to_order(record, order, user):
+    payload = _read_packing_file('inbox', record.get('stored'))
+    stored = _write_packing_file(order.get('id'), record.get('filename') or '', payload) if payload else ''
+
+    def mutator(current):
+        updated, _progress, _unmatched = _attach_packing_list(
+            current, record.get('parsed') or {}, user, record.get('filename') or '', stored,
+        )
+        return updated, None
+
+    return update_order(order.get('id'), mutator)
+
+
+def _assign_legacy_packing(inbox_id, user, data):
+    inbox = _load_packing_inbox()
+    record = next((row for row in inbox if row.get('id') == inbox_id), None)
+    if not record:
+        return json_error('Not found', 404)
+    parsed = record.get('parsed') or {}
+    if not parsed.get('rows'):
+        return json_error('This packing list has no glass rows to save.', 400)
+    customer_id = record.get('customer_id') or clean_text(data.get('customer_id'), 80)
+    if not customer_id:
+        return json_error('Pick the customer first, then choose Not an ERP order.', 400)
+    customer = load_customers().get(customer_id)
+    if not customer:
+        return json_error('Unknown customer.', 400)
+    project = _legacy_project(parsed)
+    if not project:
+        return json_error('This packing list has no job name to keep as the legacy reference.', 400)
+    existing = _find_legacy_job(customer_id, project)
+    created = existing is None
+    if created:
+        existing = _new_legacy_order(customer_id, customer, project, user)
+    saved, error = _attach_inbox_to_order(record, existing, user)
+    if error:
+        return json_error(error, 400)
+    _save_packing_inbox([row for row in inbox if row.get('id') != inbox_id])
+    import packing
+    progress = packing.packing_progress(saved)
+    return jsonify({
+        'order_id': saved.get('id'),
+        'legacy': True,
+        'created': created,
+        'company': saved.get('company') or '',
+        'project': saved.get('project') or '',
+        'pack_status': progress['status'],
+        'pack_status_label': progress['status_label'],
+        'totals': progress['totals'],
+        'unmatched': (saved.get('packing_lists') or [])[-1].get('unmatched') or [],
+    })
+
+
 @app.route('/api/packing-inbox/<int:inbox_id>/assign', methods=['POST'])
 @module_required('orders')
 def assign_packing_list(inbox_id):
@@ -8534,6 +8653,8 @@ def assign_packing_list(inbox_id):
     if not staff_can_order(user):
         return json_error('You do not have permission to upload packing lists.', 403)
     data = json_body() or {}
+    if str(data.get('order_id') or '') == 'legacy':
+        return _assign_legacy_packing(inbox_id, user, data)
     try:
         order_id = int(data.get('order_id'))
     except (TypeError, ValueError):
@@ -8583,6 +8704,89 @@ def assign_packing_list(inbox_id):
         'pack_status_label': progress['status_label'],
         'totals': progress['totals'],
         'unmatched': (saved.get('packing_lists') or [])[-1].get('unmatched') or [],
+    })
+
+
+@app.route('/api/orders/<int:order_id>/packing-lists/<int:list_id>/reassign', methods=['POST'])
+@module_required('orders')
+def reassign_legacy_packing(order_id, list_id):
+    """Move one packing list from a legacy job onto a real ERP order."""
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to change packing lists.', 403)
+    data = json_body() or {}
+    try:
+        target_id = int(data.get('order_id'))
+    except (TypeError, ValueError):
+        return json_error('Choose the ERP order.', 400)
+    legacy = next((row for row in load_orders() if row.get('id') == order_id), None)
+    target = next((row for row in load_orders() if row.get('id') == target_id), None)
+    if not legacy or not target:
+        return json_error('Not found', 404)
+    if not legacy.get('legacy'):
+        return json_error('Only a packing list on a legacy job can be moved to an ERP order.', 400)
+    if target.get('legacy'):
+        return json_error('Choose an ERP order, not another legacy job.', 400)
+    if target.get('customer_id') != legacy.get('customer_id'):
+        return json_error('That order belongs to a different customer.', 400)
+    if legacy.get('shipments'):
+        return json_error('Shipments are already recorded on this legacy job. The packing list stays with it.', 400)
+    entry = next((row for row in legacy.get('packing_lists') or [] if row.get('id') == list_id and row.get('current', True)), None)
+    if not entry:
+        return json_error('Not found', 404)
+    payload = _read_packing_file(order_id, entry.get('stored'))
+    stored = _write_packing_file(target_id, entry.get('filename') or '', payload) if payload else ''
+    parsed = {
+        'number': entry.get('number') or '',
+        'date': entry.get('date') or '',
+        'job': legacy.get('project') or '',
+        'customer': entry.get('customer') or legacy.get('company') or '',
+        'project': entry.get('project') or legacy.get('project') or '',
+        'po': entry.get('po') or '',
+        'rack': entry.get('rack') or '',
+        'rack_name': entry.get('rack_name') or '',
+        'rows': [{
+            'serial': line.get('serial'),
+            'qty': line.get('qty'),
+            'floor': line.get('floor') or '',
+            'description': line.get('description') or '',
+            'width_in': line.get('width_in'),
+            'height_in': line.get('height_in'),
+            'width_mm': line.get('width_mm'),
+            'height_mm': line.get('height_mm'),
+        } for line in entry.get('lines') or []],
+    }
+
+    def add_to_target(current):
+        updated, _progress, _unmatched = _attach_packing_list(
+            current, parsed, user, entry.get('filename') or '', stored,
+        )
+        return updated, None
+
+    saved, error = update_order(target_id, add_to_target)
+    if error:
+        return json_error(error, 400)
+
+    def take_off_legacy(current):
+        updated = dict(current)
+        updated['packing_lists'] = [
+            row for row in current.get('packing_lists') or [] if row.get('id') != list_id
+        ]
+        import packing
+        progress = packing.packing_progress(updated)
+        updated['pack_status'] = progress['status']
+        return updated, None
+
+    left, error = update_order(order_id, take_off_legacy)
+    if error:
+        return json_error(error, 400)
+    if not left.get('shipments') and not any(row.get('current', True) for row in left.get('packing_lists') or []):
+        save_orders([row for row in load_orders() if row.get('id') != order_id])
+        left = None
+    return jsonify({
+        'order_id': saved.get('id'),
+        'legacy_id': None if left is None else left.get('id'),
+        'legacy_removed': left is None,
     })
 
 
@@ -8840,12 +9044,16 @@ def invoice_completed_order(order_id):
         return json_error('This order is voided and cannot be invoiced.', 400)
     if visible.get('remake') and not visible.get('charge_customer'):
         return json_error('This remake is not charged to the customer.', 400)
+    if visible.get('legacy'):
+        return json_error('Legacy jobs are not invoiced in the ERP. There is no quote price to bill.', 400)
 
     def mutator(order):
         if order_status(order) == 'voided':
             return None, 'This order is voided and cannot be invoiced.'
         if order.get('remake') and not order.get('charge_customer'):
             return None, 'This remake is not charged to the customer.'
+        if order.get('legacy'):
+            return None, 'Legacy jobs are not invoiced in the ERP. There is no quote price to bill.'
         state, _label = _customer_invoice_state(order)
         if state == 'invoiced':
             return None, 'This order already has a customer invoice.'
