@@ -4044,6 +4044,22 @@ def _record_quote_edit(quote, user, old_items):
     quote['updated_by'] = email
 
 
+def _fill_open_sealants(spec):
+    """A spacer with no sealant, or a sealant that does not fit it, gets the quote-form auto-select."""
+    sealants = [item.get('name') for item in _live_materials()[2]]
+    for index in (1, 2):
+        spacer = spec.get(f'spacer{index}') or ''
+        if not spacer:
+            continue
+        current = spec.get(f'sealant{index}') or ''
+        suggestion = suggest_sealant(spacer, sealants)
+        options = list(suggestion.get('options') or [])
+        if current and current in options:
+            continue
+        spec[f'sealant{index}'] = suggestion.get('selected') or ''
+    return spec
+
+
 def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_factor=1, minimum_sqf=0, keep_identity=False):
     """Price a copy at the current tier. Surcharge lines and drawing files are left out."""
     rows = []
@@ -4053,6 +4069,8 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
         if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
             continue
         spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+        if spec:
+            spec = _fill_open_sealants(production.normalize_igu_spec(spec))
         if spec and spec.get('width') not in (None, '') and spec.get('height') not in (None, ''):
             stored_minimum = item.get('minimum_sqf') if 'minimum_sqf' in item else minimum_sqf
             priced = _reprice(spec, item.get('pcs'), tier, currency, tiers, fx_rate, price_factor, stored_minimum)
@@ -4061,11 +4079,10 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
                 'spec': spec,
                 'irregular_shape': bool(item.get('irregular_shape')),
             }
-            if keep_identity:
-                import documents
-                label = documents.igu_name_from_spec(spec)
-                if label:
-                    copied_line['name'] = label
+            import documents
+            label = documents.igu_name_from_spec(spec)
+            if label:
+                copied_line['name'] = label
             copied_line.update(_size_price_fields(priced))
             if item.get('remarks'):
                 remark = strip_copy_history(clean_text(item.get('remarks'), 500))
@@ -5147,10 +5164,11 @@ def _orgadata_refresh_warnings(mapped):
             warning for warning in (block.get('warnings') or [])
             if not str(warning).startswith('Choose an ERP') and not str(warning).startswith('Quantity ')
         ]
-        for lite in block.get('lites') or []:
+        active_lites, active_spacers = _orgadata_active(block)
+        for lite in active_lites:
             if not lite.get('product'):
                 block['warnings'].append(f'Choose an ERP glass for {lite.get("source") or "this lite"}.')
-        for spacer in block.get('spacers') or []:
+        for spacer in active_spacers:
             if not spacer.get('product') and (spacer.get('source') or spacer.get('gap_mm')):
                 block['warnings'].append(
                     f'Choose an ERP spacer for {spacer.get("source") or "the spacer"} {spacer.get("gap_mm")} mm.'
@@ -5172,14 +5190,10 @@ def _orgadata_refresh_warnings(mapped):
 
 
 def _orgadata_ready(block):
-    lites = block.get('lites') or []
+    lites, spacers = _orgadata_active(block)
     if not lites or any(not lite.get('product') for lite in lites):
         return False
-    needed = max(len(lites) - 1, 0)
-    spacers = (block.get('spacers') or [])[:needed]
-    if len(spacers) < needed or any(not spacer.get('product') for spacer in spacers):
-        return False
-    if any(not spacer.get('sealant') for spacer in spacers):
+    if any(not spacer.get('product') or not spacer.get('sealant') for spacer in spacers):
         return False
     return True
 
@@ -5210,7 +5224,67 @@ def _orgadata_spec(block, width_mm, height_mm):
         spec.setdefault(f'temper{index}', 'n/a')
         spec.setdefault(f'spacer{index}', '')
         spec.setdefault(f'sealant{index}', '')
-    return spec
+    return production.normalize_igu_spec(spec)
+
+
+def _blank_product(value):
+    return str(value or '').strip().lower() in {'', 'n/a'}
+
+
+def _orgadata_active(block):
+    """Lites and gaps that are still part of the unit. The first n/a lite ends it."""
+    lites = list(block.get('lites') or [])
+    spacers = list(block.get('spacers') or [])
+    cut = len(lites)
+    for index, lite in enumerate(lites):
+        if index > 0 and _blank_product(lite.get('product')):
+            cut = index
+            break
+    return lites[:cut], spacers[:max(cut - 1, 0)]
+
+
+def _clear_spacer(spacer):
+    spacer['product'] = ''
+    spacer['sealant'] = ''
+    spacer['matched'] = False
+    spacer['sealant_options'] = []
+    spacer['sealant_message'] = ''
+
+
+def _orgadata_drop_empty_gaps(mapped, edits):
+    """A lite set to n/a clears the gap in front of it. A spacer set to n/a clears its sealant.
+
+    The rows stay on the preview so the lite or spacer can be chosen again. Pricing and
+    the IGU name use only the lites that are still set.
+    """
+    incoming_blocks = edits.get('blocks') if isinstance(edits, dict) and isinstance(edits.get('blocks'), list) else []
+    for index, block in enumerate(mapped.get('blocks') or []):
+        lites = block.get('lites') or []
+        spacers = block.get('spacers') or []
+        posted = incoming_blocks[index] if index < len(incoming_blocks) and isinstance(incoming_blocks[index], dict) else {}
+        posted_lites = posted.get('lites') if isinstance(posted.get('lites'), list) else []
+        cut = len(lites)
+        for lite_index, lite_in in enumerate(posted_lites):
+            if lite_index == 0 or lite_index >= len(lites) or not isinstance(lite_in, dict) or 'product' not in lite_in:
+                continue
+            if _blank_product(lite_in.get('product')):
+                cut = lite_index
+                break
+        if cut < len(lites):
+            for lite in lites[cut:]:
+                lite['product'] = ''
+                lite['matched'] = False
+                if lite.get('temper') not in {'yes', 'n/a'}:
+                    lite['temper'] = 'n/a'
+            for spacer in spacers[max(cut - 1, 0):]:
+                _clear_spacer(spacer)
+        posted_spacers = posted.get('spacers') if isinstance(posted.get('spacers'), list) else []
+        for spacer_index, spacer_in in enumerate(posted_spacers):
+            if spacer_index >= len(spacers) or not isinstance(spacer_in, dict) or 'product' not in spacer_in:
+                continue
+            if _blank_product(spacer_in.get('product')):
+                _clear_spacer(spacers[spacer_index])
+    return mapped
 
 
 def _orgadata_fill_sealants(mapped):
@@ -5218,7 +5292,13 @@ def _orgadata_fill_sealants(mapped):
     sealants = _live_materials()[2]
     for block in mapped.get('blocks') or []:
         for spacer in block.get('spacers') or []:
-            suggestion = suggest_sealant(spacer.get('product') or '', sealants)
+            product = spacer.get('product') or ''
+            if not product or product == 'n/a':
+                spacer['sealant'] = ''
+                spacer['sealant_options'] = []
+                spacer['sealant_message'] = ''
+                continue
+            suggestion = suggest_sealant(product, sealants)
             options = list(suggestion.get('options') or [])
             posted = spacer.get('sealant') or ''
             if posted and posted in options:
@@ -5299,6 +5379,7 @@ def _orgadata_preview(record, user, edits=None, locked=None):
     aliases = orgadata_import.aliases_for(customer_id)
     mapped = orgadata_import.map_document(parsed, glass_names, spacer_names, aliases)
     mapped = _orgadata_apply_edits(mapped, edits or {}, glass_names, spacer_names)
+    mapped = _orgadata_drop_empty_gaps(mapped, edits or {})
     mapped = _orgadata_refresh_warnings(mapped)
     mapped = _orgadata_fill_sealants(mapped)
     if isinstance(edits, dict) and edits.get('remember') and customer_id:
@@ -5440,9 +5521,10 @@ def _orgadata_quote_items(preview):
     items = []
     blocked = False
     for block in preview.get('blocks') or []:
-        if any(not lite.get('matched') for lite in block.get('lites') or []):
+        active_lites, active_spacers = _orgadata_active(block)
+        if any(not lite.get('matched') for lite in active_lites):
             blocked = True
-        if any(not spacer.get('matched') for spacer in block.get('spacers') or []):
+        if any(not spacer.get('matched') for spacer in active_spacers):
             blocked = True
         for line in block.get('lines') or []:
             if line.get('warnings') or line.get('total') in (None, ''):

@@ -114,25 +114,32 @@
     return {lites: lites, spacers: spacers};
   }
   function generatedName(lites, spacers) {
-    if (!lites.length || lites.some(lite => !lite.product)) return '';
-    const needed = Math.max(lites.length - 1, 0);
-    if (spacers.slice(0, needed).some(spacer => !spacer.product || !spacer.sealant)) return '';
+    const used = lites.slice();
+    const gaps = spacers.slice();
+    const cut = used.findIndex((lite, index) => index > 0 && !lite.product);
+    if (cut > 0) {
+      used.length = cut;
+      gaps.length = Math.max(cut - 1, 0);
+    }
+    if (!used.length || used.some(lite => !lite.product)) return '';
+    const needed = Math.max(used.length - 1, 0);
+    if (gaps.slice(0, needed).some(spacer => !spacer.product || !spacer.sealant)) return '';
     const parts = [];
     let total = 0;
-    lites.forEach((lite, index) => {
+    used.forEach((lite, index) => {
       const glass = cleanGlass(lite.product, lite.temper);
       if (!glass) return;
       parts.push(glass);
       total += parseInt(lite.product.match(/(\d+)mm/)[1], 10);
       if (index < needed) {
-        const spacer = spacers[index];
+        const spacer = gaps[index];
         const token = cleanSpacer(spacer.product, spacer.sealant);
         if (!token) return;
         parts.push(token);
         total += parseInt(spacer.product.match(/(\d+)mm/)[1], 10);
       }
     });
-    if (parts.length !== lites.length + needed) return '';
+    if (parts.length !== used.length + needed) return '';
     return total + ' (' + quoteFraction(total) + '") - ' + parts.join('+');
   }
   function refreshBlock(section) {
@@ -154,9 +161,12 @@
       flag.hidden = !mismatch;
       flag.textContent = mismatch ? ('Computed thickness ' + total + ' mm does not match the PDF thickness (' + pdf + ' mm).') : '';
     }
-    const glassReady = specs.lites.length && specs.lites.every(lite => lite.product);
-    const spacerReady = specs.spacers.every(spacer => spacer.product);
-    const sealantReady = specs.spacers.every(spacer => spacer.sealant);
+    const cut = specs.lites.findIndex((lite, index) => index > 0 && !lite.product);
+    const activeLites = cut > 0 ? specs.lites.slice(0, cut) : specs.lites;
+    const activeSpacers = specs.spacers.slice(0, Math.max(activeLites.length - 1, 0));
+    const glassReady = activeLites.length && activeLites.every(lite => lite.product);
+    const spacerReady = activeSpacers.every(spacer => spacer.product);
+    const sealantReady = activeSpacers.every(spacer => spacer.sealant);
     section.querySelectorAll('.import-error li').forEach(item => {
       const text = item.textContent || '';
       if (text.indexOf('Choose an ERP glass') === 0) item.hidden = glassReady;
@@ -165,13 +175,26 @@
     });
   }
   function fillSealant(row, product, selected) {
+    const select = row.querySelector('[data-field="sealant"]');
+    const note = row.querySelector('[data-sealant-note]');
+    if (!product) {
+      select.innerHTML = '<option value="">n/a</option>';
+      select.value = '';
+      if (note) note.textContent = '';
+      return;
+    }
     const match = sealantMatch(product);
     const chosen = selected && (match.options || []).indexOf(selected) >= 0 ? selected : (match.selected || '');
-    const select = row.querySelector('[data-field="sealant"]');
     select.innerHTML = options(match.options || [], chosen);
     if (chosen) select.value = chosen;
-    const note = row.querySelector('[data-sealant-note]');
     if (note) note.textContent = match.message || '';
+  }
+  function clearOrgadataGap(section, spacerIndex) {
+    const row = section.querySelector('[data-spacer="' + spacerIndex + '"]');
+    if (!row) return;
+    const product = row.querySelector('[data-field="product"]');
+    if (product) product.value = '';
+    fillSealant(row, '', '');
   }
   function collect() {
     const blocks = [];
@@ -221,9 +244,9 @@
     root.innerHTML = (data.blocks || []).map((block, index) => {
       const lites = (block.lites || []).map((lite, liteIndex) => '<div class="map-row" data-lite="' + liteIndex + '"><label>ERP glass ' + (liteIndex + 1) + ' <span class="import-note">' + esc(lite.source) + ' · ' + esc(lite.thickness_mm) + ' mm</span></label><select data-field="product">' + options(DATA.glass, lite.product || '') + '</select><label>Tempered</label><select data-field="temper"><option value="n/a"' + (lite.temper !== 'yes' ? ' selected' : '') + '>Annealed</option><option value="yes"' + (lite.temper === 'yes' ? ' selected' : '') + '>Tempered</option></select></div>').join('');
       const spacers = (block.spacers || []).map((spacer, spacerIndex) => {
-        const match = sealantMatch(spacer.product || '');
-        const chosen = spacer.sealant || match.selected || '';
-        return '<div class="map-row" data-spacer="' + spacerIndex + '"><label>ERP spacer ' + (spacerIndex + 1) + ' <span class="import-note">' + esc(spacer.source) + ' · ' + esc(spacer.gap_mm) + ' mm</span></label><select data-field="product">' + options(DATA.spacers, spacer.product || '') + '</select><label>Sealant</label><select data-field="sealant">' + options(match.options || [], chosen) + '</select><p class="sealant-note" data-sealant-note>' + esc(spacer.sealant_message || match.message || '') + '</p></div>';
+        const match = spacer.product ? sealantMatch(spacer.product) : {options: [], selected: '', message: ''};
+        const chosen = spacer.product ? (spacer.sealant || match.selected || '') : '';
+        return '<div class="map-row" data-spacer="' + spacerIndex + '"><label>ERP spacer ' + (spacerIndex + 1) + ' <span class="import-note">' + esc(spacer.source) + ' · ' + esc(spacer.gap_mm) + ' mm</span></label><select data-field="product">' + options(DATA.spacers, spacer.product || '') + '</select><label>Sealant</label><select data-field="sealant">' + (spacer.product ? options(match.options || [], chosen) : '<option value="">n/a</option>') + '</select><p class="sealant-note" data-sealant-note>' + esc(spacer.sealant_message || match.message || '') + '</p></div>';
       }).join('');
       const idText = block.product_id ? esc(block.product_id) : (block.product_id_missing ? 'No production ID yet' : '');
       const idNote = block.product_id_missing ? '<p class="import-error">No production ID yet for this IGU. ' + (data.can_set_production_id ? '<a href="/production-settings?tab=ids&amp;filter=missing">Add it in Production settings</a>. ' : 'Ora Glass adds it in Production settings. ') + 'The import does not invent an ID.</p>' : '';
@@ -274,6 +297,24 @@
     const spacerRow = event.target.closest('[data-spacer]');
     if (spacerRow && event.target.getAttribute('data-field') === 'product') {
       fillSealant(spacerRow, event.target.value, '');
+    }
+    const liteRow = event.target.closest('[data-lite]');
+    if (liteRow && event.target.getAttribute('data-field') === 'product') {
+      const liteIndex = Number(liteRow.getAttribute('data-lite'));
+      if (!event.target.value) {
+        if (liteIndex > 0) clearOrgadataGap(section, liteIndex - 1);
+        if (liteIndex === 1) {
+          const inner = section.querySelector('[data-lite="2"] [data-field="product"]');
+          if (inner) inner.value = '';
+          const temper = section.querySelector('[data-lite="2"] [data-field="temper"]');
+          if (temper) temper.value = 'n/a';
+          clearOrgadataGap(section, 1);
+        }
+      } else if (liteIndex > 0) {
+        const gap = section.querySelector('[data-spacer="' + (liteIndex - 1) + '"]');
+        const product = gap && gap.querySelector('[data-field="product"]');
+        if (gap && product && product.value) fillSealant(gap, product.value, '');
+      }
     }
     refreshBlock(section);
   });

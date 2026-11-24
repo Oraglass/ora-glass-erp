@@ -311,3 +311,94 @@ def test_changing_a_line_to_silicone_rebuilds_the_name_and_the_price(client):
     expected = reprice_size_line(switched, 1, 'T2', 'usd', __import__('app').PRICING, load_tiers())
     assert line['total'] == expected['total']
     assert line['total'] != poly_line['total']
+
+
+def _save_spec(client, quote_id, spec):
+    saved = client.post('/api/quotes', json={
+        'id': quote_id,
+        'items': [{
+            'name': 'stale name with Sealant - 14mm Polyurethane',
+            'pcs': 1, 'spec': spec, 'floor': 'W12', 'remarks': 'Gap',
+            'line_number': 3, 'irregular_shape': False,
+        }],
+        'currency': 'usd', 'project': 'Gap', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    stored = next(row for row in load_quotes() if row['id'] == quote_id)
+    return next(row for row in stored['items'] if row.get('spec'))
+
+
+def test_clearing_a_lite_or_spacer_clears_that_gap_and_reprices(client):
+    """Lite 3 n/a makes a double. A spacer set to n/a drops its sealant. Choosing it again auto-selects."""
+    from production import normalize_igu_spec
+    from quoting import suggest_sealant
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    sealants = [item['name'] for item in __import__('app').SEALANTS]
+    spacers = [item['name'] for item in __import__('app').SPACERS]
+    spacer = next(name for name in spacers if 'super' in name.lower() and '14' in name)
+    poly = suggest_sealant(spacer, sealants)['selected']
+    assert 'poly' in poly.lower()
+    triple = {
+        'glass1': 'Clear Glass 6mm', 'temper1': 'n/a',
+        'spacer1': spacer, 'sealant1': poly,
+        'glass2': 'Clear Glass 6mm', 'temper2': 'n/a',
+        'spacer2': spacer, 'sealant2': poly,
+        'glass3': 'Clear Glass 4mm', 'temper3': 'n/a',
+        'width': 30, 'height': 20, 'unit': 'in',
+    }
+    quote_id = _draft(client, [_line(pcs=1, irregular=False)])['id']
+    pricing = __import__('app').PRICING
+    tiers = load_tiers()
+    triple_total = reprice_size_line(triple, 1, 'T2', 'usd', pricing, tiers)['total']
+
+    stale_lite = dict(triple)
+    stale_lite['glass3'] = 'n/a'
+    line = _save_spec(client, quote_id, stale_lite)
+    assert line['spec']['glass3'] == ''
+    assert line['spec']['spacer2'] == ''
+    assert line['spec']['sealant2'] == ''
+    assert line['spec']['sealant1'] == poly
+    assert line['name'].count('+') == 2
+    assert line['name'].count('14mm') == 1
+    assert 'Sealant' not in line['name']
+    double_total = reprice_size_line(normalize_igu_spec(stale_lite), 1, 'T2', 'usd', pricing, tiers)['total']
+    assert line['total'] == double_total
+    assert line['total'] != triple_total
+
+    stale_spacer = dict(triple)
+    stale_spacer['spacer2'] = 'n/a'
+    line = _save_spec(client, quote_id, stale_spacer)
+    assert line['spec']['glass3'] == 'Clear Glass 4mm'
+    assert line['spec']['spacer2'] == ''
+    assert line['spec']['sealant2'] == ''
+    assert line['name'].count('14mm') == 1
+    assert line['name'].endswith('+4mmClear Glass')
+    gap_total = reprice_size_line(normalize_igu_spec(stale_spacer), 1, 'T2', 'usd', pricing, tiers)['total']
+    assert line['total'] == gap_total
+    assert line['total'] != triple_total
+    assert line['total'] != double_total
+
+    single = dict(triple)
+    single['glass2'] = ''
+    line = _save_spec(client, quote_id, single)
+    assert line['spec']['glass2'] == ''
+    assert line['spec']['glass3'] == ''
+    assert line['spec']['spacer1'] == ''
+    assert line['spec']['sealant1'] == ''
+    assert line['spec']['spacer2'] == ''
+    assert line['spec']['sealant2'] == ''
+    assert '+' not in line['name']
+    assert '14mm' not in line['name']
+    single_total = reprice_size_line(normalize_igu_spec(single), 1, 'T2', 'usd', pricing, tiers)['total']
+    assert line['total'] == single_total
+    assert line['total'] != double_total
+
+    restored = dict(triple)
+    restored['sealant2'] = ''
+    line = _save_spec(client, quote_id, restored)
+    assert line['spec']['spacer2'] == spacer
+    assert line['spec']['sealant2'] == poly
+    assert line['name'].count('+') == 4
+    assert line['name'].count('14mm') == 2
+    assert line['total'] == triple_total

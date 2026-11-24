@@ -116,9 +116,44 @@ def spacer_token(name, sealant):
     return f'{match.group(1)}mm{kind} with Argon({seal})'
 
 
+def normalize_igu_spec(spec):
+    """Drop the gap in front of a lite that is n/a, and the sealant of a spacer that is n/a.
+
+    Lite 3 n/a makes a double: spacer 2 and sealant 2 are cleared. Lite 2 n/a makes a
+    single: spacer 1 and sealant 1 are cleared, and lite 3 goes with them.
+    """
+    spec = dict(spec or {})
+
+    def blank(value):
+        return str(value or '').strip().lower() in {'', 'n/a'}
+
+    if 'glass2' in spec and blank(spec.get('glass2')):
+        spec['glass2'] = ''
+        spec['temper2'] = 'n/a'
+        spec['spacer1'] = ''
+        spec['sealant1'] = ''
+        spec['glass3'] = ''
+        spec['temper3'] = 'n/a'
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+        return spec
+    if 'glass3' in spec and blank(spec.get('glass3')):
+        spec['glass3'] = ''
+        spec['temper3'] = 'n/a'
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+    if 'spacer1' in spec and blank(spec.get('spacer1')):
+        spec['spacer1'] = ''
+        spec['sealant1'] = ''
+    if 'spacer2' in spec and blank(spec.get('spacer2')):
+        spec['spacer2'] = ''
+        spec['sealant2'] = ''
+    return spec
+
+
 def makeup_from_spec(spec):
     """Canonical IGU makeup. Empty when the line is not a build-up we can name."""
-    spec = spec or {}
+    spec = normalize_igu_spec(spec)
     parts = []
     for index in (1, 2, 3):
         glass = spec.get(f'glass{index}') or ''

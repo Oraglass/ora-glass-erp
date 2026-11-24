@@ -230,6 +230,103 @@ def test_triple_preview_has_a_selector_for_every_lite_and_gap(client):
     assert items[4]['name'].count('+') == 2
 
 
+def test_clearing_lite_3_drops_spacer_2_and_restoring_it_picks_the_sealant(client):
+    """A lite set to n/a removes that gap. Choosing the spacer again auto-selects the sealant."""
+    from quoting import suggest_sealant
+    write_user('admin@test.com', 'admin')
+    _open_windows()
+    login(client, 'admin@test.com')
+    text = Path('tests/fixtures/orgadata_triple_name.txt').read_text()
+    uploaded = _upload(client, text)
+    assert uploaded.status_code == 200, uploaded.get_json()
+    import_id = uploaded.get_json()['id']
+    triple = {
+        'lites': [
+            {'product': CLEAR, 'temper': 'yes'},
+            {'product': 'Clear Glass 4mm', 'temper': 'yes'},
+            {'product': CLEAR, 'temper': 'yes'},
+        ],
+        'spacers': [{'product': SEEDED_SPACER}, {'product': SEEDED_SPACER}],
+    }
+    full = client.post(f'/api/orgadata-imports/{import_id}/preview', json={
+        'customer_id': 'open-windows', 'blocks': [triple, {
+            'lites': [{'product': COATED, 'temper': 'yes'}, {'product': CLEAR, 'temper': 'yes'}],
+            'spacers': [{'product': SPACER}],
+        }],
+    })
+    assert full.status_code == 200, full.get_json()
+    built = full.get_json()['blocks'][0]
+    poly = built['spacers'][1]['sealant']
+    assert poly == suggest_sealant(SEEDED_SPACER, built['spacers'][1]['sealant_options'])['selected']
+    assert built['igu_name'].count('+') == 4
+    assert built['computed_thickness_mm'] == 48
+    triple_total = full.get_json()['lines'][0]['total']
+
+    cleared = client.post(f'/api/orgadata-imports/{import_id}/preview', json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [
+                {'product': CLEAR, 'temper': 'yes'},
+                {'product': 'Clear Glass 4mm', 'temper': 'yes'},
+                {'product': '', 'temper': 'n/a'},
+            ],
+            'spacers': [
+                {'product': SEEDED_SPACER, 'sealant': poly},
+                {'product': SEEDED_SPACER, 'sealant': poly},
+            ],
+        }],
+    })
+    assert cleared.status_code == 200, cleared.get_json()
+    dropped = cleared.get_json()['blocks'][0]
+    assert len(dropped['lites']) == 3
+    assert dropped['lites'][2]['product'] == ''
+    assert dropped['spacers'][1]['product'] == ''
+    assert dropped['spacers'][1]['sealant'] == ''
+    assert dropped['spacers'][0]['sealant'] == poly
+    assert dropped['igu_name'].count('+') == 2
+    assert '48' not in dropped['igu_name'].split(' - ')[0]
+    assert dropped['computed_thickness_mm'] == 26
+    assert cleared.get_json()['lines'][0]['total'] != triple_total
+    assert poly not in dropped['igu_name'] or dropped['igu_name'].count('Polysulfide') == 1
+
+    no_sealant = client.post(f'/api/orgadata-imports/{import_id}/preview', json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [
+                {'product': CLEAR, 'temper': 'yes'},
+                {'product': 'Clear Glass 4mm', 'temper': 'yes'},
+                {'product': CLEAR, 'temper': 'yes'},
+            ],
+            'spacers': [
+                {'product': SEEDED_SPACER, 'sealant': poly},
+                {'product': '', 'sealant': poly},
+            ],
+        }],
+    })
+    assert no_sealant.status_code == 200, no_sealant.get_json()
+    gap = no_sealant.get_json()['blocks'][0]['spacers'][1]
+    assert gap['product'] == ''
+    assert gap['sealant'] == ''
+    assert no_sealant.get_json()['blocks'][0]['igu_name'] == ''
+
+    restored = client.post(f'/api/orgadata-imports/{import_id}/preview', json={
+        'customer_id': 'open-windows',
+        'blocks': [{
+            'lites': [
+                {'product': CLEAR, 'temper': 'yes'},
+                {'product': 'Clear Glass 4mm', 'temper': 'yes'},
+                {'product': CLEAR, 'temper': 'yes'},
+            ],
+            'spacers': [{'product': SEEDED_SPACER}, {'product': SEEDED_SPACER, 'sealant': ''}],
+        }],
+    })
+    assert restored.status_code == 200, restored.get_json()
+    again = restored.get_json()['blocks'][0]
+    assert again['spacers'][1]['sealant'] == poly
+    assert again['igu_name'].count('+') == 4
+    assert again['computed_thickness_mm'] == 48
+
+
 def test_multi_block_multi_page_and_a_quantity_mismatch():
     parsed = parse_text(two_block_text())
     assert len(parsed['blocks']) == 2
