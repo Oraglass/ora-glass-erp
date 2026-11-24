@@ -38,7 +38,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 <div class="filters">
 {% if staff_tools %}<select id="filter-customer"><option value="">All customers</option></select>{% endif %}
 <select id="filter-user"><option value="">All Users</option></select>
-<input type="text" id="filter-project" placeholder="Project name">
+<input type="text" id="filter-project" placeholder="Project name or quote #" aria-label="Project name or quote number">
 <input type="date" id="filter-from" aria-label="From date">
 <input type="date" id="filter-to" aria-label="To date">
 {% if staff_tools %}
@@ -52,11 +52,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 <table>
 <thead><tr>
-<th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th>
+<th>Quote #</th><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th>
 <th>{% if staff_tools %}<button type="button" id="sort-total" class="sort-btn">Total</button>{% else %}Total{% endif %}</th>
 <th>Type</th><th>Status</th><th></th>
 </tr></thead>
-<tbody id="quote-list"><tr><td colspan="11" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
+<tbody id="quote-list"><tr><td colspan="12" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
 <div id="quote-detail"></div>
 </div></div>
@@ -194,6 +194,11 @@ function appendDrawings(formData, root) {
   });
   return missing;
 }
+function quoteNumber(quote) {
+  if (!quote) return '';
+  if (quote.number != null && quote.number !== '') return quote.number;
+  return quote.id;
+}
 function productLabel(quote) {
   const items = quote.items || [];
   if (!items.length) return '-';
@@ -204,7 +209,7 @@ function productLabel(quote) {
 function renderQuotes(rows) {
   const tbody = document.getElementById('quote-list');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#666">No quotes found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#666">No quotes found</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(quote => {
@@ -231,7 +236,7 @@ function renderQuotes(rows) {
     const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
     const taxNote = (quote.tax_lines || []).map(line => '<div class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%</div>').join('')
       || (quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '');
-    return '<tr><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    return '<tr><td>' + esc(quoteNumber(quote)) + '</td><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -469,7 +474,7 @@ function showQuoteDetail(quote) {
   {% else %}
   const rateNote = '';
   {% endif %}
-  box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quote.id) + '</h3>'
+  box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quoteNumber(quote)) + '</h3>'
     + tax
     + (quote.source ? '<p class="note">Source: ' + esc(quote.source) + '</p>' : '')
     + (quote.po ? '<p class="note">PO / reference: ' + esc(quote.po) + '</p>' : '')
