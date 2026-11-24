@@ -123,3 +123,103 @@ def test_a_successful_packing_upload_clears_the_old_no_glass_note(client):
     assert all('could not be read' not in (row.get('message') or '') for row in cleared['inbox'])
     assert all('No glass rows' not in (row.get('message') or '') for row in cleared['inbox'])
     assert b'No glass rows were found' not in client.get('/orders').data
+
+
+def _stored_order(**extra):
+    order = {
+        'customer_id': 'open-windows',
+        'company': 'Open Windows',
+        'project': 'Older job',
+        'status': 'submitted',
+        'currency': 'cad',
+        'items': [],
+        'total': 0,
+        'revisions': [],
+        'changelog': [],
+        'date': '2026-11-01',
+    }
+    order.update(extra)
+    return order
+
+
+def test_an_unapprove_from_before_the_review_flag_names_the_customer(client):
+    """Order 3 was unapproved before review_for existed, so the list still said Ora Glass review."""
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'boss@openwindows.test', 'customer', customer_id='open-windows',
+        customer_name='Open Windows', customer_tier='T2', customer_subrole='management',
+    )
+    from storage import save_orders
+    save_orders([
+        _stored_order(
+            id=3, project='Order 3',
+            revisions=[{
+                'kind': 'staff_unapprove',
+                'note': 'Unapproved. Back to Ora Glass review.',
+                'at': '2026-11-01T00:00:00+00:00',
+                'user': 'admin@oraglass.us',
+                'lines': [],
+            }],
+            changelog=[{
+                'at': '2026-11-01T00:00:01+00:00',
+                'user': 'admin@oraglass.us',
+                'changes': [{
+                    'field': 'status',
+                    'old': 'Approved',
+                    'new': 'Submitted - awaiting Ora Glass review',
+                }],
+            }],
+        ),
+        _stored_order(id=4, project='Fresh submission'),
+        _stored_order(
+            id=5, project='Log only',
+            revisions=[],
+            changelog=[{
+                'at': '2026-10-01T00:00:00+00:00',
+                'user': 'admin@oraglass.us',
+                'changes': [{
+                    'field': 'status',
+                    'old': 'Sent to production',
+                    'new': 'Submitted - awaiting Ora Glass review',
+                }],
+            }],
+        ),
+        _stored_order(
+            id=6, project='Sent back by the customer',
+            revisions=[
+                {'kind': 'staff_unapprove', 'at': '2026-10-01T00:00:00+00:00', 'lines': []},
+                {'kind': 'customer_reject', 'at': '2026-10-02T00:00:00+00:00', 'lines': []},
+            ],
+        ),
+        _stored_order(
+            id=7, project='Already packed',
+            packing_lists=[{'id': 1, 'current': True, 'filename': 'rack.pdf', 'lines': []}],
+        ),
+    ])
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    page = client.get('/orders')
+    assert b'id="list-void-panel"' in page.data
+    assert b'data-list-void' in page.data
+    assert b'id="list-void-confirm"' in page.data
+    listed = {row['id']: row for row in client.get('/api/orders').get_json()}
+    assert listed[3]['status_label'] == 'Open Windows review'
+    assert listed[3]['can_void'] is True
+    assert listed[4]['status_label'] == 'Submitted - awaiting Ora Glass review'
+    assert listed[4]['can_void'] is True
+    assert listed[5]['status_label'] == 'Open Windows review'
+    assert listed[6]['status_label'] == 'Submitted - awaiting Ora Glass review'
+    assert listed[7]['can_void'] is False
+    stored = {row['id']: row for row in load_orders()}
+    assert stored[3]['review_for'] == 'customer'
+    assert stored[5]['review_for'] == 'customer'
+    assert stored[4].get('review_for') in {None, ''}
+    assert stored[6].get('review_for') in {None, ''}
+    client.post('/logout')
+    assert login(client, 'boss@openwindows.test').status_code == 302
+    own = client.get('/api/orders/3').get_json()
+    assert own['status_label'] == 'Open Windows review'
+    assert own['can_void'] is True
+    voided = client.post('/api/orders/3/void', json={'reason': 'No longer needed'})
+    assert voided.status_code == 200, voided.get_json()
+    assert voided.get_json()['status_label'] == 'Voided'
+    assert all(row['id'] != 3 for row in client.get('/api/orders').get_json())

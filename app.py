@@ -148,7 +148,7 @@ from storage import (
     append_payment,
     load_customers,
     load_invoices,
-    load_orders,
+    load_orders as _load_stored_orders,
     load_payments,
     load_punches,
     load_quotes,
@@ -7374,12 +7374,70 @@ def _order_is_invoiced(order):
     return bool(order.get('invoice_id')) or order_status(order) == 'delivered'
 
 
+def _log_is_staff_unapprove(entry):
+    """A changelog row written by unapprove before review_for existed.
+
+    The revision kind was already staff_unapprove. The log only recorded the
+    status falling back to Submitted from Approved or Sent to production.
+    A customer sending the order back uses a different previous status.
+    """
+    for change in (entry or {}).get('changes') or []:
+        if not isinstance(change, dict) or change.get('field') != 'status':
+            continue
+        new = str(change.get('new') or '')
+        old = str(change.get('old') or '')
+        if 'unapprov' in new.casefold():
+            return True
+        if new == STATUS_LABELS['submitted'] and old in {
+            STATUS_LABELS['approved'], STATUS_LABELS['sent'], 'Approved for production',
+        }:
+            return True
+    return False
+
+
+def _returned_to_customer(order):
+    """A submitted order staff unapproved, including ones saved before review_for existed."""
+    if order_status(order) != 'submitted':
+        return False
+    marker = (order or {}).get('review_for')
+    if marker == 'customer':
+        return True
+    if marker == 'staff':
+        return False
+    revisions = [row for row in (order or {}).get('revisions') or [] if isinstance(row, dict)]
+    if revisions:
+        return revisions[-1].get('kind') == 'staff_unapprove'
+    logs = [row for row in (order or {}).get('changelog') or [] if isinstance(row, dict)]
+    if not logs:
+        return False
+    return _log_is_staff_unapprove(logs[-1])
+
+
+def _stamp_unapproved_customer_review(orders):
+    """Remember the customer-review flag the first time an older unapprove is read."""
+    changed = False
+    for order in orders or []:
+        if not isinstance(order, dict) or order.get('review_for'):
+            continue
+        if _returned_to_customer(order):
+            order['review_for'] = 'customer'
+            changed = True
+    return changed
+
+
+def load_orders():
+    orders = _load_stored_orders()
+    if _stamp_unapproved_customer_review(orders):
+        save_orders(orders)
+    return orders
+
+
 def _order_review_label(order):
     """Name the company when the order is back with that customer. Ora Glass only when it is waiting here."""
     status = order_status(order)
     if status == 'voided':
         return 'Voided'
-    if status == 'submitted' and (order or {}).get('review_for') == 'customer':
+    if _returned_to_customer(order):
         company = str((order or {}).get('company') or '').strip() or 'Customer'
         return f'{company} review'
     return STATUS_LABELS.get(status, status)
