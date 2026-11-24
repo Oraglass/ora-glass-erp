@@ -2152,11 +2152,14 @@ def shipments_page():
 def _open_shipment_rows(user):
     rows = []
     for order in orders_visible_to(user, load_orders()):
-        if order_status(order) not in {'sent', 'made', 'delivered'} and not order.get('shipments'):
+        has_packing = bool(order.get('packing_lists'))
+        if not has_packing and order_status(order) not in {'sent', 'made', 'delivered'} and not order.get('shipments'):
             continue
         progress = shipments.shipment_progress(order)
-        if not progress['open']:
+        lines = shipments.open_order_lines(order)
+        if not lines:
             continue
+        ready = sum(int(line.get('ready_to_ship') or 0) for line in lines)
         rows.append({
             'id': order.get('id'),
             'company': order.get('company') or '',
@@ -2166,8 +2169,9 @@ def _open_shipment_rows(user):
             'remaining_pcs': progress['remaining_pcs'],
             'remaining_sqf': progress['remaining_sqf'],
             'remaining_value': progress['remaining_value'],
+            'ready_to_ship': ready,
             'currency': order.get('currency') or 'usd',
-            'lines': progress['lines'],
+            'lines': lines,
         })
     rows.sort(key=lambda row: row.get('id') or 0)
     return rows
@@ -7046,6 +7050,28 @@ def _attach_packing_list(order, parsed, user, filename, stored):
     return order, progress, unmatched
 
 
+def _packing_order_choice(order):
+    return {
+        'id': order.get('id'),
+        'customer_id': order.get('customer_id') or '',
+        'company': order.get('company') or '',
+        'project': order.get('project') or '',
+        'po': order.get('po') or '',
+    }
+
+
+def _drop_stale_packing_inbox(filename):
+    """A later successful read of the same file replaces the old 'no glass rows' note."""
+    inbox = [
+        row for row in _load_packing_inbox()
+        if not (
+            row.get('filename') == filename
+            and 'No glass rows were found' in (row.get('message') or '')
+        )
+    ]
+    _save_packing_inbox(inbox)
+
+
 def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
     rows = _load_packing_inbox()
     next_id = max([int(row.get('id') or 0) for row in rows] or [0]) + 1
@@ -7063,25 +7089,51 @@ def _queue_packing(parsed, filename, stored, user, reason, message, candidates):
         'po': parsed.get('po') or '',
         'number': parsed.get('number') or '',
         'rack': parsed.get('rack') or '',
-        'candidates': [
-            {
-                'id': order.get('id'),
-                'company': order.get('company') or '',
-                'project': order.get('project') or '',
-                'po': order.get('po') or '',
-            }
-            for order in candidates
-        ],
-        'choices': [
-            {
-                'id': order.get('id'),
-                'company': order.get('company') or '',
-                'project': order.get('project') or '',
-                'po': order.get('po') or '',
-            }
-            for order in (candidates or load_orders())
-        ],
+        'candidates': [_packing_order_choice(order) for order in candidates],
+        'customer_locked': False,
+        'customer_id': '',
+        'customer_name': '',
+        'choices': [],
+        'customers': [],
     }
+    import packing
+    recognized = packing.recognized_customer_ids(parsed, load_orders())
+    if len(recognized) == 1:
+        allowed = packing.orders_for_customer(recognized[0], load_orders())
+        company = next(
+            (order.get('company') for order in load_orders() if order.get('customer_id') == recognized[0] and order.get('company')),
+            parsed.get('customer') or '',
+        )
+        record['customer_locked'] = True
+        record['customer_id'] = recognized[0]
+        record['customer_name'] = company
+        record['choices'] = [_packing_order_choice(order) for order in allowed]
+        if reason == 'no_match':
+            record['message'] = (
+                f'{parsed.get("project") or parsed.get("job") or "This job"} does not match a '
+                f'{company} project. Choose one of that customer\'s orders.'
+            )
+    else:
+        seen = []
+        for order in load_orders():
+            customer_id = order.get('customer_id')
+            if not customer_id or customer_id in seen:
+                continue
+            if str(order.get('status') or '').lower() == 'delivered':
+                continue
+            seen.append(customer_id)
+            record['customers'].append({
+                'id': customer_id,
+                'name': order.get('company') or customer_id,
+            })
+        record['orders'] = [
+            _packing_order_choice(order) for order in load_orders()
+            if str(order.get('status') or '').lower() != 'delivered'
+        ]
+        if parsed.get('rows') and not (parsed.get('customer') or '').strip():
+            record['message'] = 'This packing list has no customer. Pick the customer, then one of their orders.'
+        elif parsed.get('rows') and reason == 'no_match':
+            record['message'] = 'The customer on this packing list was not recognized. Pick the customer, then one of their orders.'
     rows.append(record)
     _save_packing_inbox(rows)
     return record
@@ -7091,6 +7143,8 @@ def _place_parsed_packing(parsed, filename, stored, user):
     import packing
     rows = parsed.get('rows') or []
     warnings = list(parsed.get('warnings') or [])
+    if rows:
+        _drop_stale_packing_inbox(filename)
     if not rows:
         message = warnings[0] if warnings else 'No glass rows were found in that packing list.'
         queued = _queue_packing(parsed, filename, stored, user, 'no_match', message, [])
@@ -7228,6 +7282,22 @@ def assign_packing_list(inbox_id):
     visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
     if not visible:
         return json_error('Not found', 404)
+    import packing
+    recognized = packing.recognized_customer_ids(record.get('parsed') or {}, load_orders())
+    if len(recognized) == 1 and visible.get('customer_id') != recognized[0]:
+        company = record.get('customer_name') or (record.get('parsed') or {}).get('customer') or 'the packing list customer'
+        return json_error(
+            f'This packing list is for {company}. It cannot be saved on {visible.get("company") or "another customer"}.',
+            400,
+        )
+    if len(recognized) != 1:
+        customer_id = clean_text(data.get('customer_id'), 80)
+        if not customer_id:
+            return json_error('Pick the customer first, then one of that customer\'s orders.', 400)
+        if visible.get('customer_id') != customer_id:
+            return json_error('That order belongs to a different customer.', 400)
+    if str(visible.get('status') or '').lower() == 'delivered':
+        return json_error('That order is already delivered.', 400)
     payload = _read_packing_file('inbox', record.get('stored'))
     stored = _write_packing_file(order_id, record.get('filename'), payload) if payload else ''
 
@@ -7262,6 +7332,81 @@ def download_order_packing_list(order_id, list_id):
     if not order or not entry or not entry.get('stored') or not os.path.isfile(path):
         return json_error('Not found', 404)
     return send_file(path, as_attachment=True, download_name=entry.get('filename') or 'packing-list')
+
+
+@app.route('/api/orders/<int:order_id>/packing-lists/<int:list_id>', methods=['DELETE'])
+@module_required('orders')
+def remove_packing_list(order_id, list_id):
+    """Take one packing-list version off an order and recalculate packed quantity."""
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('You do not have permission to change packing lists.', 403)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    entry = next((row for row in visible.get('packing_lists') or [] if row.get('id') == list_id), None)
+    if not entry:
+        return json_error('Not found', 404)
+    if visible.get('shipments'):
+        return json_error(
+            'This packing list cannot be removed because the order already has a shipment. '
+            'Remove the shipment first.',
+            400,
+        )
+    if any(
+        row.get('order_id') == order_id and row.get('kind') == 'intercompany' and not row.get('voided')
+        for row in load_invoices()
+    ):
+        return json_error(
+            'This packing list cannot be removed because the order already has an intercompany invoice.',
+            400,
+        )
+
+    def mutator(order):
+        updated = dict(order)
+        label = entry.get('number') or entry.get('rack') or entry.get('filename') or 'Packing list'
+        updated['packing_lists'] = [row for row in order.get('packing_lists') or [] if row.get('id') != list_id]
+        import packing
+        progress = packing.packing_progress(updated)
+        updated['pack_status'] = progress['status']
+        _stamp_log(updated, user, [{
+            'field': 'packing list',
+            'action': 'removed',
+            'old': label,
+            'new': 'Removed. Packed quantity was recalculated.',
+        }, {
+            'field': 'pack status',
+            'old': _packing_status_label(order.get('pack_status')),
+            'new': progress['status_label'] or 'Not packed',
+        }])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error:
+        return json_error(error, 400)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/packing-lists.pdf', methods=['GET'])
+@module_required('orders')
+def download_order_packing_lists_pdf(order_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        return json_error('Not found', 404)
+    payload = shipments.packing_lists_pdf_bytes(order)
+    return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name=f'order-{order_id}-packing-list.pdf')
+
+
+@app.route('/api/orders/<int:order_id>/backorder.pdf', methods=['GET'])
+@module_required('orders')
+def download_order_backorder_pdf(order_id):
+    user = current_user()
+    order = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not order:
+        return json_error('Not found', 404)
+    payload = shipments.backorder_list_pdf_bytes(order)
+    return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name=f'order-{order_id}-backorder.pdf')
 
 
 @app.route('/api/orders/<int:order_id>/shipments/preview', methods=['POST'])

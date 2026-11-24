@@ -277,7 +277,7 @@ def shipment_progress(order):
 
 BACKORDER_HEADERS = ('Order', 'Customer') + tuple(
     'BO quantity' if name == 'Quantity' else name for name in production.PRODUCTION_HEADERS
-)
+) + ('Packed', 'Shipped', 'Not packed', 'Ready to ship', 'Size')
 
 
 def packed_quantities_to_ship(order):
@@ -349,6 +349,171 @@ def shipment_pdf_bytes(order, shipment):
     return buffer.getvalue()
 
 
+def _slip_bytes(title, order, sections, totals):
+    """A letter PDF in the same header style as the shipment packing slip."""
+    import io
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table
+    from xml.sax.saxutils import escape
+    from documents import _styles, header_address_block
+    styles = _styles()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.55 * inch, rightMargin=0.55 * inch,
+                            topMargin=0.5 * inch, bottomMargin=0.5 * inch)
+    story = [
+        Paragraph(escape(title) + '<br/>' + header_address_block({'issuer': 'us', 'kind': 'shipment', 'currency': 'usd'}), styles['title']),
+        Spacer(1, 8),
+        Paragraph(
+            f"<b>Customer:</b> {escape(order.get('company') or '')}"
+            f"&nbsp;&nbsp;<b>Project:</b> {escape(order.get('project') or '')}"
+            f"&nbsp;&nbsp;<b>PO:</b> {escape(order.get('po') or order.get('customer_po') or '')}",
+            styles['small'],
+        ),
+        Spacer(1, 8),
+    ]
+    story.extend(sections)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        f"<b>Total pcs:</b> {totals.get('pcs', 0)}"
+        f"&nbsp;&nbsp;<b>Total sqft:</b> {totals.get('sqft', 0):.2f}"
+        f"&nbsp;&nbsp;<b>Total weight:</b> Appx. {totals.get('weight', 0):.2f} LBS",
+        styles['small'],
+    ))
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _line_measures(order, index, qty):
+    from documents import line_weight, real_area
+    items = (order or {}).get('items') or []
+    item = dict(items[index]) if index < len(items) and isinstance(items[index], dict) else {}
+    item['pcs'] = qty
+    sqft = real_area(item) if qty else 0.0
+    weight = line_weight(item, 0.512) if qty else 0.0
+    return round(sqft, 2), round(weight, 2)
+
+
+def packing_lists_pdf_bytes(order):
+    """Latest packing lists for one order, in the packing-slip layout."""
+    import packing
+    from reportlab.platypus import Paragraph, Spacer, Table
+    from xml.sax.saxutils import escape
+    from documents import _styles
+    styles = _styles()
+    catalog = {row['serial']: row for row in packing.serial_catalog(order)}
+    sections = []
+    pcs = sqft = weight = 0.0
+    lists = [row for row in (order or {}).get('packing_lists') or [] if row.get('current', True)]
+    if not lists:
+        sections.append(Paragraph('No packing lists are on this order.', styles['small']))
+    for entry in lists:
+        sections.append(Paragraph(
+            f"<b>Packing list:</b> {escape(entry.get('number') or '')}"
+            f"&nbsp;&nbsp;<b>Date:</b> {escape(entry.get('date') or '')}"
+            f"&nbsp;&nbsp;<b>Rack:</b> {escape(entry.get('rack') or '')}",
+            styles['small'],
+        ))
+        data = [['Serial', 'Floor', 'Product', 'Size', 'Pcs packed']]
+        for line in entry.get('lines') or []:
+            info = catalog.get(int(line.get('serial'))) if str(line.get('serial') or '').isdigit() else None
+            if not info:
+                continue
+            qty = int(line.get('qty') or 0)
+            line_sqft, line_weight_lbs = _line_measures(order, info['index'], qty)
+            pcs += qty
+            sqft += line_sqft
+            weight += line_weight_lbs
+            data.append([
+                str(info['serial']), info.get('floor') or '', info.get('product') or '',
+                info.get('size') or '', str(qty),
+            ])
+        sections.append(Table(data, colWidths=[0.7 * 72, 0.8 * 72, 2.3 * 72, 2.5 * 72, 0.9 * 72]))
+        sections.append(Spacer(1, 8))
+    return _slip_bytes('Packing List', order, sections, {'pcs': int(pcs), 'sqft': sqft, 'weight': weight})
+
+
+def backorder_list_pdf_bytes(order):
+    """Back-ordered pieces only, in the packing-slip layout."""
+    import packing
+    from reportlab.platypus import Table
+    progress = packing.packing_progress(order)
+    data = [['Serial', 'Floor', 'Product', 'Size', 'Ordered', 'Packed', 'Shipped', 'BO']]
+    pcs = sqft = weight = 0.0
+    for row in progress['serials']:
+        if int(row.get('bo') or 0) <= 0:
+            continue
+        shipped = shipped_qty(order, row['index'])
+        line_sqft, line_weight_lbs = _line_measures(order, row['index'], int(row['bo']))
+        pcs += int(row['bo'])
+        sqft += line_sqft
+        weight += line_weight_lbs
+        data.append([
+            str(row['serial']), row.get('floor') or '', row.get('product') or '', row.get('size') or '',
+            str(row.get('ordered') or 0), str(row.get('packed') or 0), str(shipped), str(row.get('bo') or 0),
+        ])
+    if len(data) == 1:
+        data.append(['', '', 'No back ordered pieces', '', '', '', '', ''])
+    table = Table(data, colWidths=[0.6 * 72, 0.7 * 72, 1.8 * 72, 2.1 * 72, 0.7 * 72, 0.7 * 72, 0.7 * 72, 0.5 * 72])
+    return _slip_bytes('Back Ordered List', order, [table], {'pcs': int(pcs), 'sqft': sqft, 'weight': weight})
+
+
+def open_order_lines(order):
+    """Pieces still to pack or still to ship. Packed quantity never exceeds what the order has."""
+    import packing
+    catalog = packing.serial_catalog(order)
+    packed_rows = {}
+    if (order or {}).get('packing_lists'):
+        packed_rows = {row['serial']: row for row in packing.packing_progress(order)['serials']}
+    lines = []
+    items = (order or {}).get('items') or []
+    for info in catalog:
+        shipped = shipped_qty(order, info['index'])
+        ordered = info['ordered']
+        if packed_rows:
+            packed = int(packed_rows.get(info['serial'], {}).get('packed') or 0)
+            not_packed = int(packed_rows.get(info['serial'], {}).get('bo') or 0)
+        else:
+            packed = 0
+            not_packed = max(0, ordered - shipped)
+        ready = max(0, packed - shipped) if packed_rows else 0
+        remaining_ship = max(0, ordered - shipped)
+        if packed_rows:
+            if ready <= 0 and not_packed <= 0 and remaining_ship <= 0:
+                continue
+        elif remaining_ship <= 0:
+            continue
+        item = items[info['index']] if info['index'] < len(items) else {}
+        import currency_rules
+        rate, _effective = currency_rules.rate_on((order or {}).get('date'))
+        exported = production.line_export(
+            item, quantity=remaining_ship, serial=info['serial'],
+            currency=(order or {}).get('currency'), fx_rate=rate,
+        )
+        lines.append({
+            'index': info['index'],
+            'serial': info['serial'],
+            'floor_code': info['floor'],
+            'size': info['size'],
+            'product_id': exported['Product ID'],
+            'name': info['product'] or exported['Product Name'],
+            'width_mm': exported['Width(mm)'],
+            'height_mm': exported['Height(mm)'],
+            'width_in': exported['Width(In)'],
+            'height_in': exported['Height(In)'],
+            'ordered': ordered,
+            'packed': packed,
+            'shipped': shipped,
+            'not_packed': not_packed,
+            'ready_to_ship': ready,
+            'remaining': remaining_ship,
+            'bo_qty': remaining_ship,
+            'unit_price': exported['Unit Price'],
+            'remarks': exported['Remarks'],
+        })
+    return lines
+
+
 def backorder_table(orders):
     """One row per back-ordered line, kept together by order."""
     table = []
@@ -370,6 +535,11 @@ def backorder_table(orders):
                 line.get('height_in'),
                 line.get('bo_qty') if line.get('bo_qty') is not None else line.get('remaining'),
                 line.get('remarks') or '',
+                line.get('packed') or 0,
+                line.get('shipped') or 0,
+                line.get('not_packed') if line.get('not_packed') is not None else '',
+                line.get('ready_to_ship') or 0,
+                line.get('size') or '',
             ])
     return table
 

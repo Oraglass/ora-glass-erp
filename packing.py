@@ -490,6 +490,33 @@ def list_key(parsed):
     return number.casefold() or rack.casefold()
 
 
+def recognized_customer_ids(parsed, orders):
+    """Company ids the packing-list customer name matches. Empty when it matches nobody."""
+    name = (parsed or {}).get('customer') or ''
+    if not str(name).strip():
+        return []
+    found = []
+    for order in orders or []:
+        customer_id = order.get('customer_id')
+        if not customer_id or customer_id in found:
+            continue
+        if _names_match(name, order.get('company')):
+            found.append(customer_id)
+    return found
+
+
+def orders_for_customer(customer_id, orders):
+    """Orders staff may attach a packing list to. Delivered orders are closed."""
+    rows = []
+    for order in orders or []:
+        if order.get('customer_id') != customer_id:
+            continue
+        if str(order.get('status') or '').lower() == 'delivered':
+            continue
+        rows.append(order)
+    return rows
+
+
 def candidate_orders(parsed, orders):
     """Orders whose customer and project agree. PO is checked only when both sides have one."""
     project = _fold_code((parsed or {}).get('project') or (parsed or {}).get('job'))
@@ -574,7 +601,20 @@ def classify_rows(order, parsed):
     combined = {}
     for row in matched:
         combined[row['serial']] = combined.get(row['serial'], 0) + row['qty']
-    return [{'serial': serial, 'qty': qty} for serial, qty in combined.items()], unmatched
+    counted = []
+    for serial, qty in combined.items():
+        ordered = catalog[serial]['ordered']
+        kept = min(qty, ordered)
+        if kept > 0:
+            counted.append({'serial': serial, 'qty': kept})
+        if qty > ordered:
+            unmatched.append({
+                'serial': serial,
+                'qty': qty - ordered,
+                'description': '',
+                'reason': f'Serial {serial} only has {ordered} on this order. {qty - ordered} were not counted.',
+            })
+    return counted, unmatched
 
 
 def packing_progress(order):
@@ -595,7 +635,7 @@ def packing_progress(order):
     rows = []
     ordered_total = packed_total = bo_total = 0
     for item in catalog:
-        got = packed[item['serial']]
+        got = min(packed[item['serial']], item['ordered'])
         bo = max(0, item['ordered'] - got)
         rows.append(dict(item, packed=got, bo=bo))
         ordered_total += item['ordered']

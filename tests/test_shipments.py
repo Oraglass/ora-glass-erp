@@ -73,6 +73,7 @@ def test_us_order_invoices_once_when_fully_shipped_and_cannot_overship(client):
     assert headers == [
         'Order', 'Customer', 'Serial Number', 'Floor Code', 'Product ID', 'Product Name',
         'Unit Price', 'Width(mm)', 'Height(mm)', 'Width(In)', 'Height(In)', 'BO quantity', 'Remarks',
+        'Packed', 'Shipped', 'Not packed', 'Ready to ship', 'Size',
     ]
     assert 'Sq ft remaining' not in headers
     assert 'Remaining value' not in headers
