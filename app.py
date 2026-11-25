@@ -7907,6 +7907,9 @@ def _review_payload(order, user):
         'can_release': staff and status in {'submitted', 'reapproved'},
         'can_unapprove': bool(staff and _can_unapprove(order)),
         'can_respond': bool(can_place_production_orders(user) and status == 'customer_review'),
+        'can_approve_for_customer': user.get('role') == 'admin' and status == 'customer_review',
+        'behalf_note': order.get('behalf_note') or '',
+        'behalf_by': order.get('behalf_by') or '',
     }
     if staff:
         payload['internal_price_difference'] = order.get('internal_price_difference')
@@ -8434,6 +8437,52 @@ def customer_order_decision(order_id):
                 {'field': 'status', 'old': STATUS_LABELS['customer_review'], 'new': STATUS_LABELS['submitted']},
                 {'field': 'comment', 'new': comment},
             ])
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify(order_for_viewer(saved, user, with_coverage=True))
+
+
+@app.route('/api/orders/<int:order_id>/approve-for-customer', methods=['POST'])
+@module_required('orders')
+def approve_order_for_customer(order_id):
+    """An admin records a customer's approval when it was given outside the ERP."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can approve on behalf of the customer.', 403)
+    data = json_body() or {}
+    staff_note = strip_copy_history(clean_text(data.get('note'), 500))
+    if not staff_note:
+        return json_error('Write a short note, such as who approved by phone.', 400)
+    visible = next((row for row in orders_visible_to(user, load_orders()) if row.get('id') == order_id), None)
+    if not visible:
+        return json_error('Not found', 404)
+    who = user.get('email') or 'admin'
+    phrase = f'Approved on behalf of customer by {who}'
+
+    def mutator(order):
+        if order_status(order) != 'customer_review':
+            return None, 'This order is not waiting for customer approval.'
+        updated = dict(order)
+        updated['status'] = 'reapproved'
+        updated['behalf_note'] = staff_note
+        updated['behalf_by'] = who
+        _append_revision(
+            updated, user, 'admin_approve_for_customer', [],
+            note=phrase, comment=staff_note,
+        )
+        _stamp_log(updated, user, [
+            {
+                'field': 'status',
+                'old': STATUS_LABELS['customer_review'],
+                'new': STATUS_LABELS['reapproved'],
+            },
+            {'field': 'note', 'new': f'{phrase}. {staff_note}'},
+        ])
         return updated, None
 
     saved, error = update_order(order_id, mutator)

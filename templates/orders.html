@@ -152,6 +152,11 @@ details.section > summary h3{display:inline}
 <p class="note" id="list-invoice-note">The intercompany invoice, when this order needs one, is created for the packed pieces that are not on one yet.</p>
 <div class="actions"><button type="button" class="btn" id="list-invoice-now">Invoice the customer for these packed pieces now</button><button type="button" class="btn secondary" id="list-invoice-wait">Wait until the order is complete</button></div>
 </div>
+<div id="list-behalf-panel" hidden style="margin:12px 0">
+<p class="note" id="list-behalf-note">Approve this order on behalf of the customer. A short note is required.</p>
+<textarea id="list-behalf-reason" rows="2" placeholder="Approved by phone with Alex" aria-label="Note for approving on behalf of the customer"></textarea>
+<div class="actions"><button type="button" class="btn" id="list-behalf-confirm">Approve for customer</button><button type="button" class="btn secondary" id="list-behalf-cancel">Cancel</button></div>
+</div>
 <div id="list-void-panel" hidden style="margin:12px 0">
 <p class="note" id="list-void-note">Void this order? It leaves the open order list. A reason is optional.</p>
 <textarea id="list-void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea>
@@ -307,6 +312,10 @@ function orderOpenLink(order) {
   const cls = review ? 'btn small' : 'btn small secondary';
   return '<a class="' + cls + '" id="open-order-' + esc(order.id) + '" href="/orders/' + encodeURIComponent(order.id) + '">' + label + '</a>';
 }
+function orderBehalfLink(order) {
+  if (!order.can_approve_for_customer) return '';
+  return '<button type="button" class="btn small" id="list-behalf-' + esc(order.id) + '" data-list-behalf="' + esc(order.id) + '">Approve for customer</button>';
+}
 function orderVoidLink(order) {
   if (!order.can_void) return '';
   return '<button type="button" class="btn small secondary" id="list-void-' + esc(order.id) + '" data-list-void="' + esc(order.id) + '">Void</button>';
@@ -379,7 +388,7 @@ function render(orders) {
       : '';
     const when = order.approved_at_display || order.approved_at || '';
     const count = glassPieceCount(order.items);
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderBehalfLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -728,6 +737,7 @@ function renderDetail(order) {
   if (order.can_unapprove) primary.push('<button type="button" class="btn secondary" id="unapprove-order">Unapprove</button>');
   if (order.can_void) primary.push('<button type="button" class="btn secondary" id="void-order">Void</button>');
   if (CAN_EDIT && !order.legacy && order.status !== 'voided' && (order.status !== 'delivered' || IS_ADMIN)) primary.push('<button type="button" class="btn secondary" id="edit-order">Edit order</button>');
+  if (order.can_approve_for_customer) primary.push('<button type="button" class="btn" id="approve-for-customer">Approve for customer</button>');
   if (order.can_release) secondary.push('<button type="button" class="btn" id="approve-production">Approve for production</button>');
   if (order.can_respond) {
     secondary.push('<button type="button" class="btn" id="approve-changes">Approve changes</button>');
@@ -743,6 +753,9 @@ function renderDetail(order) {
   if (STAFF && !order.legacy && !order.excel_ready) buttons += '<span class="note" id="excel-waiting">Production Excel is available after this order is approved for production.</span>';
   const voidNote = order.status === 'voided'
     ? '<p class="note" id="voided-note">Voided' + (order.voided_by ? ' by ' + esc(order.voided_by) : '') + (order.voided_at_display ? ' · ' + esc(order.voided_at_display) : '') + (order.void_reason ? '. ' + esc(order.void_reason) : '') + '</p>'
+    : '';
+  const behalfPanel = order.can_approve_for_customer
+    ? '<div id="behalf-panel" hidden><p class="note">Approve these changes on behalf of the customer. A short note is required.</p><textarea id="behalf-note" rows="2" placeholder="Approved by phone with Alex" aria-label="Note for approving on behalf of the customer"></textarea><div class="actions"><button type="button" class="btn" id="behalf-confirm">Approve for customer</button><button type="button" class="btn secondary" id="behalf-cancel">Cancel</button></div></div>'
     : '';
   const voidPanel = order.can_void
     ? '<div id="void-panel" hidden><p class="note">Void this order? It leaves the open order list. A reason is optional.</p><textarea id="void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea><div class="actions"><button type="button" class="btn" id="void-confirm">Void order</button><button type="button" class="btn secondary" id="void-cancel">Cancel</button></div></div>'
@@ -804,7 +817,7 @@ function renderDetail(order) {
     : '';
   const legacyNote = order.legacy ? '<p class="note" id="legacy-note">Legacy job from before the ERP. The job name is the reference. There is no quote price, customer invoice, or intercompany invoice.</p>' : '';
   const headerExtra = remakeNote + legacyNote + (!order.legacy && (order.converted_by || order.approved_by) ? '<p class="note">Sent to production by ' + esc(order.converted_by || order.approved_by) + '.</p>' : '')
-    + voidNote + voidPanel + notes + jobText + jobForm + tax;
+    + voidNote + voidPanel + behalfPanel + notes + jobText + jobForm + tax;
   const invoiceRows = (order.documents || []).map(doc => {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
@@ -989,6 +1002,21 @@ function renderDetail(order) {
     const choice = document.getElementById('invoice-choice');
     if (choice) choice.hidden = false;
   }
+  const behalf = document.getElementById('approve-for-customer');
+  const behalfPanelEl = document.getElementById('behalf-panel');
+  if (behalf && behalfPanelEl) behalf.addEventListener('click', () => {
+    behalfPanelEl.hidden = false;
+    const note = document.getElementById('behalf-note');
+    if (note) note.focus();
+  });
+  const behalfCancel = document.getElementById('behalf-cancel');
+  if (behalfCancel && behalfPanelEl) behalfCancel.addEventListener('click', () => { behalfPanelEl.hidden = true; });
+  const behalfConfirm = document.getElementById('behalf-confirm');
+  if (behalfConfirm) behalfConfirm.addEventListener('click', () => {
+    const note = (document.getElementById('behalf-note') || {}).value || '';
+    if (!note.trim()) { alert('Write a short note, such as who approved by phone.'); return; }
+    postDecision('/approve-for-customer', {note: note.trim()}, '');
+  });
   const release = document.getElementById('approve-production');
   if (release) release.addEventListener('click', () => postDecision('/approve-production', {}, 'Approve this order for production? The production Excel can be downloaded after this.'));
   const accept = document.getElementById('approve-changes');
@@ -1444,6 +1472,19 @@ if (orderList) orderList.addEventListener('click', async event => {
     load();
     return;
   }
+  const behalfButton = event.target.closest('[data-list-behalf]');
+  if (behalfButton) {
+    const panel = document.getElementById('list-behalf-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    panel.dataset.orderId = behalfButton.getAttribute('data-list-behalf');
+    const note = document.getElementById('list-behalf-note');
+    if (note) note.textContent = 'Approve order ' + behalfButton.getAttribute('data-list-behalf') + ' on behalf of the customer. A short note is required.';
+    const reason = document.getElementById('list-behalf-reason');
+    if (reason) { reason.value = ''; reason.focus(); }
+    panel.scrollIntoView({block: 'nearest'});
+    return;
+  }
   const button = event.target.closest('[data-list-void]');
   if (!button) return;
   const panel = document.getElementById('list-void-panel');
@@ -1473,6 +1514,27 @@ const listInvoiceNow = document.getElementById('list-invoice-now');
 if (listInvoiceNow) listInvoiceNow.addEventListener('click', () => finishListInvoice(true));
 const listInvoiceWait = document.getElementById('list-invoice-wait');
 if (listInvoiceWait) listInvoiceWait.addEventListener('click', () => finishListInvoice(false));
+const listBehalfCancel = document.getElementById('list-behalf-cancel');
+if (listBehalfCancel) listBehalfCancel.addEventListener('click', () => {
+  const panel = document.getElementById('list-behalf-panel');
+  if (panel) panel.hidden = true;
+});
+const listBehalfConfirm = document.getElementById('list-behalf-confirm');
+if (listBehalfConfirm) listBehalfConfirm.addEventListener('click', async () => {
+  const panel = document.getElementById('list-behalf-panel');
+  const orderId = panel && panel.dataset.orderId;
+  if (!orderId) return;
+  const note = ((document.getElementById('list-behalf-reason') || {}).value || '').trim();
+  if (!note) { alert('Write a short note, such as who approved by phone.'); return; }
+  const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/approve-for-customer', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note: note})
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not approve for the customer'); return; }
+  panel.hidden = true;
+  load();
+});
 const listVoidCancel = document.getElementById('list-void-cancel');
 if (listVoidCancel) listVoidCancel.addEventListener('click', () => {
   const panel = document.getElementById('list-void-panel');
