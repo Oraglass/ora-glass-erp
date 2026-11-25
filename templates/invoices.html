@@ -218,7 +218,10 @@ function renderDetail(invoice) {
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
     + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + billGst + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? (invoice.tax_lines || []).map(line => ' · ' + esc(line.name) + ' ' + esc(line.rate) + '%').join('') : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
     + fxLine + fxForm + packingNote + customs
-    + (invoice.qbo_warning ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
+    + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
+    + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + esc(invoice.qbo_error) + '</p>' : '')
+    + (IS_ADMIN && !invoice.voided && invoice.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" id="send-qbo">Send to QuickBooks</button>' : '')
+    + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
@@ -226,6 +229,15 @@ function renderDetail(invoice) {
     + (IS_ADMIN && invoice.doc_type !== 'credit_note' && !invoice.voided && invoice.status === 'unpaid' ? '<button type="button" class="btn" id="regenerate-doc">Regenerate</button>' : '')
     + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')
     + (CAN_ISSUE && invoice.doc_type === 'credit_note' && !invoice.voided ? '<div class="row"><input id="apply-invoice" type="number" min="1" placeholder="Invoice id" aria-label="Invoice id"><input id="apply-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Amount"><button type="button" class="btn" id="apply-credit">Apply to invoice</button></div>' : '');
+  const sendQbo = document.getElementById('send-qbo');
+  if (sendQbo) sendQbo.addEventListener('click', async () => {
+    sendQbo.disabled = true;
+    const res = await fetch('/api/invoices/' + invoice.id + '/quickbooks', {method: 'POST'});
+    const body = await res.json().catch(() => ({}));
+    sendQbo.disabled = false;
+    if (!res.ok) { alert(body.error || 'Could not send this invoice to QuickBooks'); return; }
+    renderDetail(body);
+  });
   const regenerateButton = document.getElementById('regenerate-doc');
   if (regenerateButton) regenerateButton.addEventListener('click', async () => {
     if (!confirm('Regenerate this unpaid invoice? The current invoice is voided and replaced, including line add-ons. Pieces are not billed twice.')) return;

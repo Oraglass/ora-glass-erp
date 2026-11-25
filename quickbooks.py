@@ -50,6 +50,8 @@ RETRY_DELAYS = (1, 2, 4)
 US_REALM = '9341456057091137'
 CANADA_REALM = '123146408064299'
 CANADA_COMPANY_NAME = 'Ora Glass (Canada) Inc'
+# Customer id of Ora Glass (Canada) Inc inside the US QuickBooks company.
+INTERCOMPANY_QBO_CUSTOMER_ID = '100000001'
 CONNECTIONS = (
     ('us', 'Ora Glass Inc', 'usd'),
     ('ca', 'Ora Glass (Canada) Inc', 'cad'),
@@ -364,7 +366,7 @@ def match_intercompany_customer():
         found = query(f"select * from Customer where DisplayName = '{safe}'")
         if not found:
             log('error', 'Ora Glass (Canada) Inc is not a customer in the US QuickBooks company yet.')
-            return ''
+            return INTERCOMPANY_QBO_CUSTOMER_ID
         qbo_id = str(found[0].get('Id'))
         settings = load_settings()
         settings['intercompany_qbo_id'] = qbo_id
@@ -1347,6 +1349,33 @@ def _term_ref(label):
     return {'value': cache[label]}
 
 
+def _line_qty(qty, unit_price, amount):
+    """QuickBooks rejects a line when quantity times unit price is not the amount."""
+    try:
+        count = float(qty or 1)
+        unit = round(float(unit_price), 2)
+        total = round(float(amount), 2)
+    except (TypeError, ValueError):
+        return 1
+    if count <= 0:
+        return 1
+    if abs(round(count * unit, 2) - total) <= 0.009:
+        return count
+    return 1
+
+
+def _line_unit(qty, unit_price, amount):
+    try:
+        count = float(qty or 1)
+        unit = round(float(unit_price), 2)
+        total = round(float(amount), 2)
+    except (TypeError, ValueError):
+        return round(float(amount or 0), 2)
+    if _line_qty(qty, unit_price, amount) == 1 and abs(round(count * unit, 2) - total) > 0.009:
+        return total
+    return unit
+
+
 def _sales_line(description, qty, unit_price, amount, item_name, tax_code=None):
     settings = load_settings()
     return {
@@ -1355,8 +1384,8 @@ def _sales_line(description, qty, unit_price, amount, item_name, tax_code=None):
         'DetailType': 'SalesItemLineDetail',
         'SalesItemLineDetail': {
             'ItemRef': {'value': _item_id(item_name), 'name': item_name},
-            'Qty': float(qty or 1),
-            'UnitPrice': round(float(unit_price), 2),
+            'Qty': _line_qty(qty, unit_price, amount),
+            'UnitPrice': _line_unit(qty, unit_price, amount),
             'TaxCodeRef': {'value': tax_code or settings.get('tax_code') or DEFAULT_TAX},
         },
     }
@@ -1832,18 +1861,82 @@ def _canada_invoice_memo(invoice):
     return '\n'.join(lines)
 
 
+def _company_for_push():
+    key = _connection_key()
+    for item_key, label, _currency in CONNECTIONS:
+        if item_key == key:
+            realm = US_REALM if key == 'us' else CANADA_REALM
+            return label, realm
+    return 'QuickBooks', ''
+
+
+def _record_invoice_sync(invoice, status, error='', qbo_id='', doc_number='', realm_id=''):
+    """Save the QuickBooks result on the ERP invoice. A missing connection is not a silent skip."""
+    if not invoice or not invoice.get('id'):
+        return
+    invoices = load_invoices()
+    for row in invoices:
+        if row.get('id') != invoice.get('id'):
+            continue
+        row['qbo_sync'] = status
+        if qbo_id:
+            row['qbo_id'] = str(qbo_id)
+        if doc_number:
+            row['qbo_doc_number'] = str(doc_number)
+        if realm_id:
+            row['qbo_realm_id'] = str(realm_id)
+        if error:
+            row['qbo_error'] = error
+            row['qbo_warning'] = error
+        else:
+            row.pop('qbo_error', None)
+            row.pop('qbo_warning', None)
+        invoice['qbo_sync'] = status
+        if qbo_id:
+            invoice['qbo_id'] = str(qbo_id)
+        if doc_number:
+            invoice['qbo_doc_number'] = str(doc_number)
+        if realm_id:
+            invoice['qbo_realm_id'] = str(realm_id)
+        if error:
+            invoice['qbo_error'] = error
+            invoice['qbo_warning'] = error
+        else:
+            invoice.pop('qbo_error', None)
+            invoice.pop('qbo_warning', None)
+    save_invoices(invoices)
+
+
 def push_document(invoice):
     key = (invoice or {}).get('issuer') or 'us'
     if _connection_key() != key:
         with connection_scope(key):
             return push_document(invoice)
-    if not connected() or not invoice or invoice.get('qbo_origin') or invoice.get('source') == 'quickbooks':
+    if not invoice or invoice.get('qbo_origin') or invoice.get('source') == 'quickbooks':
+        return None
+    if invoice.get('voided'):
+        return void_document(invoice)
+    company, realm = _company_for_push()
+    if not connected():
+        message = (
+            f'QuickBooks is not connected for {company}'
+            + (f' (realm {realm})' if realm else '')
+            + '. Reconnect that company, then use Send to QuickBooks.'
+        )
+        _record_invoice_sync(invoice, 'not_connected', error=message, realm_id=realm)
+        log('error', message)
         return None
     kind = 'credit' if invoice.get('doc_type') == 'credit_note' else 'invoice'
     entity = 'creditmemo' if kind == 'credit' else 'invoice'
     response_key = 'CreditMemo' if kind == 'credit' else 'Invoice'
-    if find_link(kind, erp_id=invoice.get('id')):
-        return None
+    existing = find_link(kind, erp_id=invoice.get('id'))
+    if existing:
+        _record_invoice_sync(
+            invoice, 'synced', qbo_id=existing.get('qbo_id') or '',
+            doc_number=invoice.get('qbo_doc_number') or invoice.get('number') or '',
+            realm_id=existing.get('realm_id') or realm,
+        )
+        return {'Id': existing.get('qbo_id'), 'DocNumber': invoice.get('qbo_doc_number') or ''}
     tax_code = None
     ship_to = False
     selling = load_customers().get(invoice.get('customer_id') or '') or {}
@@ -1854,19 +1947,19 @@ def push_document(invoice):
             tax_code, warning = canada_tax_code(selling, invoice.get('ship_province'))
         if warning:
             _stamp_invoice_warning(invoice, warning)
+            _record_invoice_sync(invoice, 'error', error=warning, realm_id=realm)
             log('error', warning)
             return None
     elif _connection_key() == 'us':
         tax_code, warning, ship_to = us_invoice_tax(selling)
         if warning:
             _stamp_invoice_warning(invoice, warning)
+            _record_invoice_sync(invoice, 'error', error=warning, realm_id=realm)
             log('error', warning)
             return None
     books_customer = load_customers().get(invoice.get('customer_id') or '') or {}
-    if books_customer.get('books_entity') == 'ca':
-        qbo_id = match_intercompany_customer()
-        if not qbo_id:
-            return None
+    if books_customer.get('books_entity') == 'ca' or (invoice.get('kind') == 'intercompany'):
+        qbo_id = match_intercompany_customer() or INTERCOMPANY_QBO_CUSTOMER_ID
         customer_link = {'qbo_id': qbo_id}
     else:
         customer_link = find_link('customer', erp_id=invoice.get('customer_id'))
@@ -1874,7 +1967,10 @@ def push_document(invoice):
         push_customer(invoice.get('customer_id'))
         customer_link = find_link('customer', erp_id=invoice.get('customer_id'))
     if not customer_link:
-        log('error', f"Invoice {invoice.get('id')} was not sent because the customer is not in QuickBooks.")
+        name = books_customer.get('name') or invoice.get('company') or invoice.get('customer_id') or 'The customer'
+        message = f'{name} is not in {company}' + (f' (realm {realm})' if realm else '') + '.'
+        _record_invoice_sync(invoice, 'error', error=message, realm_id=realm)
+        log('error', f"Invoice {invoice.get('number') or invoice.get('id')} was not sent. {message}")
         return None
     invoice_currency = str(invoice.get('currency') or 'usd').upper()
     if _connection_key() == 'ca':
@@ -1883,6 +1979,7 @@ def push_document(invoice):
         'CustomerRef': {'value': customer_link['qbo_id']},
         'CurrencyRef': {'value': invoice_currency},
         'TxnDate': invoice.get('invoice_date') or _today(),
+        'DocNumber': str(invoice.get('number') or '')[:21],
         'Line': _document_lines(invoice, tax_code),
         'PrivateNote': invoice.get('reason') or invoice.get('project') or '',
     }
@@ -1909,40 +2006,69 @@ def push_document(invoice):
     try:
         data = _post_entity(entity, payload)
     except QuickBooksError as exc:
-        log('error', f"Document {invoice.get('number') or invoice.get('id')}: {exc}")
+        message = str(exc)
+        _record_invoice_sync(invoice, 'error', error=message, realm_id=realm)
+        log('error', f"Document {invoice.get('number') or invoice.get('id')}: {message}")
         return None
     remote = data.get(response_key) or {}
     if remote.get('Id'):
-        upsert_link(kind, invoice.get('id'), remote.get('Id'), remote.get('SyncToken'), 'erp')
-        _stamp_invoice_warning(invoice, '')
+        upsert_link(kind, invoice.get('id'), remote.get('Id'), remote.get('SyncToken'), 'erp', realm_id=realm)
+        _record_invoice_sync(
+            invoice, 'synced',
+            qbo_id=remote.get('Id'),
+            doc_number=remote.get('DocNumber') or invoice.get('number') or '',
+            realm_id=realm,
+        )
         log('info', f"Sent {invoice.get('number') or invoice.get('id')} to QuickBooks.")
     return remote
 
 
 def push_document_id(invoice_id):
     invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
-    return push_document(invoice)
+    try:
+        return push_document(invoice)
+    except QuickBooksError as exc:
+        _record_invoice_sync(invoice, 'error', error=str(exc))
+        log('error', f'Document {invoice_id}: {exc}')
+        return None
 
 
 def void_document(invoice):
+    """Void the QuickBooks copy. None means there is nothing to void; False means the void failed."""
     key = (invoice or {}).get('issuer') or 'us'
     if _connection_key() != key:
         with connection_scope(key):
             return void_document(invoice)
-    if not connected() or not invoice:
+    if not invoice:
         return None
     kind = 'credit' if invoice.get('doc_type') == 'credit_note' else 'invoice'
     entity = 'creditmemo' if kind == 'credit' else 'invoice'
     link = find_link(kind, erp_id=invoice.get('id'))
     if not link or link.get('origin') == 'qbo':
         return None
+    company, realm = _company_for_push()
+    if not connected():
+        message = (
+            f'QuickBooks is not connected for {company}'
+            + (f' (realm {realm})' if realm else '')
+            + f', so {invoice.get("number") or "the invoice"} was not voided there. Reconnect, then regenerate again.'
+        )
+        _record_invoice_sync(
+            invoice, 'error', error=message,
+            qbo_id=link.get('qbo_id') or '', realm_id=link.get('realm_id') or realm,
+        )
+        log('error', message)
+        return False
     try:
         realm = load_tokens()['realm_id']
         api_post(f"/v3/company/{realm}/{entity}?operation=void", {'Id': link['qbo_id'], 'SyncToken': link['sync_token']})
+        _record_invoice_sync(invoice, 'voided', qbo_id=link.get('qbo_id') or '', realm_id=realm)
         log('info', f"Voided QuickBooks {entity} {link['qbo_id']}.")
     except QuickBooksError as exc:
+        _record_invoice_sync(invoice, 'error', error=str(exc), realm_id=realm)
         log('error', f'Void {invoice.get("id")}: {exc}')
-    return None
+        return False
+    return True
 
 
 def push_payment(payment):

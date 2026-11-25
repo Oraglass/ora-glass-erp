@@ -10420,7 +10420,30 @@ def _present_invoice(invoice, payments):
     doc_number = str(invoice.get('qbo_doc_number') or '')
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
-    view['qbo_doc_number'] = doc_number
+    view['qbo_doc_number'] = doc_number or str(invoice.get('number') or '') if invoice.get('qbo_id') else doc_number
+    view['qbo_id'] = str(invoice.get('qbo_id') or '')
+    view['qbo_sync'] = invoice.get('qbo_sync') or ''
+    view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    if not view['qbo_id'] and not view['qbo_sync']:
+        import quickbooks
+        with quickbooks.connection_scope(invoice.get('issuer') or 'us'):
+            link = quickbooks.find_link(
+                'credit' if document_type(invoice) == 'credit_note' else 'invoice',
+                erp_id=invoice.get('id'),
+            )
+        if link and link.get('qbo_id'):
+            view['qbo_id'] = str(link.get('qbo_id'))
+            view['qbo_sync'] = 'synced'
+            if not view['qbo_doc_number']:
+                view['qbo_doc_number'] = str(invoice.get('number') or '')
+    if not view['qbo_sync']:
+        view['qbo_sync'] = 'synced' if view.get('qbo_id') else 'not_sent'
+    view['qbo_sync_label'] = {
+        'synced': 'Synced',
+        'error': 'Not sent',
+        'not_connected': 'Not connected',
+        'voided': 'Voided in QuickBooks',
+    }.get(view['qbo_sync'], 'Not sent')
     if view.get('fx_rate') not in (None, ''):
         view['fx_date'] = _shown_fx_date(invoice)
     if view['kind'] == 'intercompany':
@@ -10898,6 +10921,13 @@ def regenerate_invoice(invoice_id):
     if not quantities:
         return json_error('This invoice has no glass pieces to regenerate.', 400)
     reason = 'Regenerated to include line add-ons'
+    import quickbooks
+    qbo_void = quickbooks.void_document(document)
+    if qbo_void is False:
+        return json_error(
+            document.get('qbo_error') or 'QuickBooks did not void the previous invoice, so a new one was not created.',
+            400,
+        )
     _mark_invoice_void(document, user, reason)
     for index, row in enumerate(invoices):
         if row.get('id') == document.get('id'):
@@ -10996,6 +11026,25 @@ def void_document(invoice_id):
     _refresh_invoice_statuses(payments)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
     _qbo('void_document', fresh)
+    return jsonify(_present_invoice(fresh, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/quickbooks', methods=['POST'])
+@module_required('invoices')
+def send_invoice_to_quickbooks(invoice_id):
+    """Post one ERP invoice to the QuickBooks company that should hold it."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can send an invoice to QuickBooks.', 403)
+    invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
+    if not invoice:
+        return json_error('Not found', 404)
+    import quickbooks
+    if invoice.get('voided'):
+        quickbooks.void_document(invoice)
+    else:
+        quickbooks.push_document_id(invoice_id)
+    fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 
