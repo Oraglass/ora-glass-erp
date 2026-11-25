@@ -769,6 +769,80 @@ def header_address_block(document):
     return block
 
 
+def tax_line_label(line, document):
+    """Tax row in the invoice totals. GST and HST carry the seller's GST number."""
+    name = str((line or {}).get('name') or 'Tax').strip() or 'Tax'
+    rate = str((line or {}).get('rate') or '').strip()
+    label = f'{name} {rate}%'.strip()
+    kind = name.upper()
+    number = ''
+    if kind in {'GST', 'HST'}:
+        gst = str((document or {}).get('seller_gst_number') or '').strip()
+        if gst:
+            number = f'GST# {gst}'
+    elif kind in {'PST', 'RST'}:
+        pst = str((document or {}).get('pst_number') or '').strip()
+        if pst:
+            number = f'PST# {pst}'
+    elif kind == 'QST':
+        qst = str((document or {}).get('qst_number') or '').strip()
+        if qst:
+            number = f'QST# {qst}'
+    if number:
+        return f'{label} ({number})'
+    return label
+
+
+def invoice_summary(invoice):
+    """Totals shared by the invoice page and the PDF, tax sitting above the grand total."""
+    from billing import money
+
+    def amount(value):
+        return money(value)
+
+    discount = (invoice or {}).get('discount') or {}
+    if discount.get('type') == 'percent':
+        discount_label = f"{amount(discount.get('value')):.2f}%"
+    else:
+        discount_label = 'fixed'
+    subtotal_label = 'Tax-free subtotal' if (invoice or {}).get('tax_free') else 'IGU subtotal'
+    rows = [
+        {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('igu_subtotal'))},
+        {'label': f'Discount ({discount_label})', 'amount': -amount((invoice or {}).get('discount_amount'))},
+    ]
+    extra_discount = amount((invoice or {}).get('additional_discount_amount'))
+    if extra_discount:
+        try:
+            extra_percent = float((invoice or {}).get('additional_discount_percent') or 0)
+        except (TypeError, ValueError):
+            extra_percent = 0
+        rows.append({
+            'label': f'Additional discount ({extra_percent:g}%)',
+            'amount': -extra_discount,
+        })
+    igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
+    rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
+    for charge in (invoice or {}).get('extra_charges') or []:
+        if not isinstance(charge, dict):
+            continue
+        rows.append({'label': charge.get('label') or 'Extra', 'amount': amount(charge.get('amount'))})
+    for line in (invoice or {}).get('tax_lines') or []:
+        if not isinstance(line, dict):
+            continue
+        rows.append({
+            'label': line.get('label') or tax_line_label(line, invoice),
+            'amount': amount(line.get('amount')),
+        })
+    rows.append({'label': 'Grand total', 'amount': amount((invoice or {}).get('total'))})
+    if (invoice or {}).get('doc_type') == 'credit_note':
+        rows.append({'label': 'Applied to invoices', 'amount': amount((invoice or {}).get('applied'))})
+        rows.append({'label': 'Unapplied credit', 'amount': amount((invoice or {}).get('balance'))})
+    else:
+        rows.append({'label': 'Payments applied', 'amount': amount((invoice or {}).get('applied'))})
+        rows.append({'label': 'Balance due', 'amount': amount((invoice or {}).get('balance'))})
+    return rows
+
+
 def _customer_tax_id(document):
     """The customer's PST or QST, printed with Sold To on Canada bills only."""
     if not canada_bill(document):

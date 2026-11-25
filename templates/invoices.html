@@ -165,6 +165,15 @@ function qboErrorHtml(message, href) {
   if (!message) return '';
   return '<a class="error" href="' + esc(href || '/settings/quickbooks') + '">' + esc(message) + '</a>';
 }
+function summaryMoney(currency, amount) {
+  const negative = Number(amount) < 0;
+  return esc(String(currency || '').toUpperCase()) + ' ' + (negative ? '-' : '') + '$' + Math.abs(Number(amount) || 0).toFixed(2);
+}
+function invoiceSummary(invoice) {
+  const rows = invoice.summary || [];
+  if (!rows.length) return '';
+  return '<table class="totals" id="invoice-totals">' + rows.map(row => '<tr><td>' + esc(row.label) + '</td><td class="num">' + summaryMoney(invoice.currency, row.amount) + '</td></tr>').join('') + '</table>';
+}
 function money(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
 }
@@ -219,7 +228,7 @@ function renderDetail(invoice) {
   const headerGst = invoice.gst_place === 'header' && gst ? '<br><span id="invoice-header-gst">' + esc(gst) + '</span>' : '';
   const billGst = invoice.gst_place === 'customer' && gst ? '<br><span id="invoice-bill-gst">' + esc(gst) + '</span>' : '';
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
-    + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + billGst + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? (invoice.tax_lines || []).map(line => ' · ' + esc(line.name) + ' ' + esc(line.rate) + '%').join('') : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
+    + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + billGst + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? '' : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.pst_number ? ' · PST ' + esc(invoice.pst_number) : '') + (invoice.qst_number ? ' · QST ' + esc(invoice.qst_number) : '') + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
     + fxLine + fxForm + packingNote + customs
     + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
     + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + qboErrorHtml(invoice.qbo_error, invoice.qbo_settings_url) + '</p>' : '')
@@ -227,7 +236,7 @@ function renderDetail(invoice) {
     + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + qboErrorHtml(invoice.qbo_warning, invoice.qbo_warning_url || invoice.qbo_settings_url) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
-    + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
+    + invoiceSummary(invoice)
     + (invoice.reason ? '<p class="note">Reason: ' + esc(invoice.reason) + '</p>' : '')
     + (IS_ADMIN && invoice.doc_type !== 'credit_note' && !invoice.voided && invoice.status === 'unpaid' ? '<button type="button" class="btn" id="regenerate-doc">Regenerate</button>' : '')
     + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')

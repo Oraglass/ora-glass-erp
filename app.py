@@ -10424,6 +10424,7 @@ def _present_invoice(invoice, payments):
         view['status_label'] = invoice_status_label(view['status'])
         _attach_invoice_gst(view, invoice)
         _attach_invoice_customs(view)
+        _attach_invoice_summary(view)
         return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
@@ -10464,6 +10465,7 @@ def _present_invoice(invoice, payments):
         view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
     _attach_invoice_customs(view)
+    _attach_invoice_summary(view)
     if _invoice_shows_shipment(view) and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
@@ -10490,6 +10492,21 @@ def _attach_invoice_customs(view):
         return
     import packing
     view['customs'] = packing.intercompany_customs()
+
+
+def _attach_invoice_summary(view):
+    """Label Canada tax rows and build the totals the page and the PDF both print."""
+    import documents
+    labeled = []
+    for line in view.get('tax_lines') or []:
+        if not isinstance(line, dict):
+            continue
+        row = dict(line)
+        row['label'] = documents.tax_line_label(row, view)
+        labeled.append(row)
+    if view.get('tax_lines'):
+        view['tax_lines'] = labeled
+    view['summary'] = documents.invoice_summary(view)
 
 
 def _attach_invoice_gst(view, invoice):
@@ -11214,14 +11231,6 @@ def _render_invoice_pdf(invoice):
         elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
     elif documents.canada_bill(invoice) and invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
         elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
-    for line in invoice.get('tax_lines') or []:
-        if not isinstance(line, dict):
-            continue
-        elements.append(Paragraph(
-            f"<b>{escape(str(line.get('name') or 'Tax'))} {escape(str(line.get('rate') or ''))}%:</b> "
-            f"{currency} ${money(line.get('amount')):.2f}",
-            label_style,
-        ))
     if invoice.get('tax_label') and not invoice.get('tax_lines'):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     packing = invoice.get('packing') or {}
@@ -11270,32 +11279,11 @@ def _render_invoice_pdf(invoice):
     ]))
     elements.append(items_table)
     elements.append(Spacer(1, 10))
-    discount = invoice.get('discount') or {}
-    discount_label = f"{money(discount.get('value')):.2f}%" if discount.get('type') == 'percent' else 'fixed'
-    subtotal_label = 'Tax-free subtotal' if invoice.get('tax_free') else 'IGU subtotal'
-    summary_rows = [
-        [subtotal_label, f"${money(invoice.get('subtotal') or invoice.get('igu_subtotal')):.2f}"],
-        [f"Discount ({discount_label})", f"-${money(invoice.get('discount_amount')):.2f}"],
-    ]
-    extra_discount = money(invoice.get('additional_discount_amount'))
-    if extra_discount:
-        extra_percent = _percent(invoice.get('additional_discount_percent'))
-        summary_rows.append([
-            f"Additional discount ({extra_percent:g}%)",
-            f"-${extra_discount:.2f}",
-        ])
-    summary_rows.append(
-        ['Total before extras' if invoice.get('tax_free') else 'IGU total', f"${money(invoice.get('igu_total')):.2f}"],
-    )
-    for charge in invoice.get('extra_charges') or []:
-        summary_rows.append([charge.get('label') or 'Extra', f"${money(charge.get('amount')):.2f}"])
-    summary_rows.append(['Grand total', f"${money(invoice.get('total')):.2f}"])
-    if document_type(invoice) == 'credit_note':
-        summary_rows.append(['Applied to invoices', f"${money(invoice.get('applied')):.2f}"])
-        summary_rows.append(['Unapplied credit', f"${money(invoice.get('balance')):.2f}"])
-    else:
-        summary_rows.append(['Payments applied', f"${money(invoice.get('applied')):.2f}"])
-        summary_rows.append(['Balance due', f"${money(invoice.get('balance')):.2f}"])
+    summary_rows = []
+    for row in invoice.get('summary') or documents.invoice_summary(invoice):
+        value = money(row.get('amount'))
+        shown = f"-${abs(value):.2f}" if value < 0 else f"${value:.2f}"
+        summary_rows.append([row.get('label') or '', shown])
     summary = [[Paragraph(escape(label), cell_style), Paragraph(amount, cell_style)] for label, amount in summary_rows]
     summary_table = Table(summary, colWidths=[5.5 * inch, 1.8 * inch])
     summary_table.setStyle(TableStyle([
