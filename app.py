@@ -1333,6 +1333,16 @@ def inject_user():
             nav.extend(extras)
     if user and user.get('role') == 'customer':
         nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
+    if user and user.get('role') == 'admin':
+        link = {'id': 'quickbooks', 'label': 'QuickBooks', 'endpoint': 'quickbooks_settings'}
+        placed = False
+        for index, item in enumerate(nav):
+            if item['id'] == 'financial':
+                nav.insert(index + 1, link)
+                placed = True
+                break
+        if not placed:
+            nav.append(link)
     review_count = _orders_awaiting_staff(user)
     if review_count:
         nav = [
@@ -7038,6 +7048,7 @@ def order_for_viewer(order, user, with_coverage=False):
         ]
     if staff_view and order.get('fx_rate') not in (None, ''):
         base['fx_rate'] = order.get('fx_rate')
+    import quickbooks
     documents = []
     for row in load_invoices():
         if row.get('order_id') != order.get('id'):
@@ -7050,6 +7061,7 @@ def order_for_viewer(order, user, with_coverage=False):
             'kind': row.get('kind') or 'customer',
             'currency': row.get('currency') or 'usd',
             'qbo_warning': row.get('qbo_warning') or '',
+            'qbo_settings_url': quickbooks.settings_url(row.get('qbo_warning') or row.get('qbo_error') or '', row.get('issuer') or 'us') if (row.get('qbo_warning') or row.get('qbo_error')) else '',
             'total': money(row.get('total')),
             'voided': bool(row.get('voided')),
         }
@@ -10421,11 +10433,13 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number or str(invoice.get('number') or '') if invoice.get('qbo_id') else doc_number
+    import quickbooks
     view['qbo_id'] = str(invoice.get('qbo_id') or '')
     view['qbo_sync'] = invoice.get('qbo_sync') or ''
     view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], view.get('issuer') or 'us') if view['qbo_error'] else ''
+    view['qbo_warning_url'] = quickbooks.settings_url(invoice.get('qbo_warning') or '', view.get('issuer') or 'us') if invoice.get('qbo_warning') else ''
     if not view['qbo_id'] and not view['qbo_sync']:
-        import quickbooks
         with quickbooks.connection_scope(invoice.get('issuer') or 'us'):
             link = quickbooks.find_link(
                 'credit' if document_type(invoice) == 'credit_note' else 'invoice',
@@ -11320,6 +11334,9 @@ def _present_payment(payment):
         'not_connected': 'Not connected',
         'voided': 'Voided in QuickBooks',
     }.get(view['qbo_sync'], 'Not sent')
+    issuer = 'ca' if str(payment.get('currency') or '').lower() == 'cad' else 'us'
+    import quickbooks
+    view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], issuer) if view['qbo_error'] else ''
     return view
 
 

@@ -18,7 +18,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 .num{text-align:right}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:6px}
-.error{color:#9f1239}
+.error,a.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.unpaid{background:#fff3cd;color:#856404}
 .badge.partial{background:#e7f1ff;color:#1d4ed8}
@@ -161,6 +161,10 @@ const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function qboErrorHtml(message, href) {
+  if (!message) return '';
+  return '<a class="error" href="' + esc(href || '/settings/quickbooks') + '">' + esc(message) + '</a>';
+}
 function money(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
 }
@@ -218,9 +222,9 @@ function renderDetail(invoice) {
     + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + billGst + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? (invoice.tax_lines || []).map(line => ' · ' + esc(line.name) + ' ' + esc(line.rate) + '%').join('') : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
     + fxLine + fxForm + packingNote + customs
     + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
-    + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + esc(invoice.qbo_error) + '</p>' : '')
+    + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + qboErrorHtml(invoice.qbo_error, invoice.qbo_settings_url) + '</p>' : '')
     + (IS_ADMIN && !invoice.voided && invoice.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" id="send-qbo">Send to QuickBooks</button>' : '')
-    + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
+    + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + qboErrorHtml(invoice.qbo_warning, invoice.qbo_warning_url || invoice.qbo_settings_url) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
@@ -362,7 +366,7 @@ function renderPayments(rows) {
   }
   body.innerHTML = rows.map(row => {
     const status = row.voided ? '<span class="badge void">Void</span>' : '<span class="badge paid">Open</span>';
-    const qbo = esc(row.qbo_sync_label || 'Not sent') + (row.qbo_id ? ' · ' + esc(row.qbo_id) : '') + (row.qbo_error ? '<br><span class="error">' + esc(row.qbo_error) + '</span>' : '');
+    const qbo = esc(row.qbo_sync_label || 'Not sent') + (row.qbo_id ? ' · ' + esc(row.qbo_id) : '') + (row.qbo_error ? '<br>' + qboErrorHtml(row.qbo_error, row.qbo_settings_url) : '');
     const sendButton = IS_ADMIN && !row.voided && row.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" data-send-qbo="' + esc(row.id) + '">Send to QuickBooks</button>' : '';
     const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
     return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + qbo + '</td><td>' + sendButton + voidButton + '</td></tr>';
