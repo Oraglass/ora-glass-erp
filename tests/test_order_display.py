@@ -362,7 +362,7 @@ def test_orders_list_totals_skip_voids_and_invoice_waits_for_a_packing_list(clie
     waiting = client.post('/api/orders/1/customer-invoice', json={})
     assert waiting.status_code == 400
     assert b'packed' in waiting.data.lower() or b'packing' in waiting.data.lower()
-    billed = client.post('/api/orders/2/customer-invoice', json={})
+    billed = client.post('/api/orders/2/customer-invoice', json={'invoice_customer': True, 'create_intercompany': False})
     assert billed.status_code == 200, billed.get_json()
     assert billed.get_json()['invoice_state'] == 'invoiced'
     page = client.get('/orders').data
@@ -371,6 +371,10 @@ def test_orders_list_totals_skip_voids_and_invoice_waits_for_a_packing_list(clie
     assert b'>Sq ft<' in page
     assert b'Upload the packing list first' in page
     assert b'data-list-invoice' in page
+    assert b'id="list-invoice-now"' in page
+    assert b'id="list-invoice-wait"' in page
+    assert b'data-fully-packed' in page
+    assert b'create_intercompany: true' in page
     assert b'id="list-invoiced-' in page
     assert b"!== 'voided'" in page
 
