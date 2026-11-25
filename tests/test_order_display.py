@@ -315,3 +315,61 @@ def test_piece_totals_count_quantities_and_skip_surcharge_rows(client):
     history_page = client.get('/quote-history')
     assert b'id="quote-pcs-' in history_page.data
     assert b'id="quote-piece-summary"' in history_page.data
+
+
+def test_orders_list_totals_skip_voids_and_invoice_waits_for_a_packing_list(client):
+    """Workload is pieces and square feet of the filtered orders, and a void does not add to it."""
+    from storage import save_orders
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    open_line = dict(_size_item(), pcs=4, sqf=6, total=240)
+    packed_line = dict(_size_item(), pcs=10, sqf=6, total=600, spec=dict(SPEC, width=20, height=30))
+    void_line = dict(_size_item(), pcs=100, sqf=20, total=2000)
+    save_orders([
+        {
+            'id': 1, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Open',
+            'status': 'approved', 'currency': 'usd', 'items': [open_line],
+        },
+        {
+            'id': 2, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Packed',
+            'status': 'approved', 'currency': 'usd', 'items': [packed_line],
+            'packing_lists': [{
+                'id': 1, 'current': True, 'number': 'XF1', 'rack': 'R1', 'date': '2026-11-25',
+                'filename': 'xf1.csv', 'lines': [{'serial': 1, 'qty': 10}],
+            }],
+        },
+        {
+            'id': 3, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Void',
+            'status': 'voided', 'currency': 'usd', 'items': [void_line],
+        },
+    ])
+    listed = client.get('/api/orders').get_json()
+    by_id = {row['id']: row for row in listed}
+    assert set(by_id) == {1, 2}
+    assert by_id[1]['invoice_state'] != 'invoiced'
+    assert by_id[1]['packing_lists'] == []
+    assert by_id[2]['invoice_state'] == 'ready'
+    assert by_id[2]['packing_lists']
+    voided = client.get('/api/orders?status=voided').get_json()
+    assert [row['id'] for row in voided] == [3]
+    assert voided[0]['status'] == 'voided'
+    glass = [
+        item for row in listed
+        for item in row['items'] if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+    ]
+    assert sum(int(item['pcs']) for item in glass) == 14
+    assert sum(float(item['sqf']) * int(item['pcs']) for item in glass) == 84
+    waiting = client.post('/api/orders/1/customer-invoice', json={})
+    assert waiting.status_code == 400
+    assert b'packed' in waiting.data.lower() or b'packing' in waiting.data.lower()
+    billed = client.post('/api/orders/2/customer-invoice', json={})
+    assert billed.status_code == 200, billed.get_json()
+    assert billed.get_json()['invoice_state'] == 'invoiced'
+    page = client.get('/orders').data
+    assert b'id="order-workload"' in page
+    assert b'id="order-sqf-' in page
+    assert b'>Sq ft<' in page
+    assert b'Upload the packing list first' in page
+    assert b'data-list-invoice' in page
+    assert b'id="list-invoiced-' in page
+    assert b"!== 'voided'" in page

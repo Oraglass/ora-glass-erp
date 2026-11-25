@@ -39,6 +39,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
 .filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn:disabled{background:#e5e7eb;color:#6b7280;cursor:not-allowed}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
 .btn.small{padding:4px 8px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
@@ -141,6 +142,7 @@ a{color:#C41E3A}
 <textarea id="list-void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea>
 <div class="actions"><button type="button" class="btn" id="list-void-confirm">Void order</button><button type="button" class="btn secondary" id="list-void-cancel">Cancel</button></div>
 </div>
+<p class="note" id="order-workload"></p>
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
@@ -261,13 +263,49 @@ function orderVoidLink(order) {
   if (!order.can_void) return '';
   return '<button type="button" class="btn small secondary" id="list-void-' + esc(order.id) + '" data-list-void="' + esc(order.id) + '">Void</button>';
 }
+function orderInvoiceLink(order) {
+  if (!STAFF || order.legacy || order.status === 'voided') return '';
+  if (order.remake && !order.charge_customer) return '';
+  if (order.invoice_state === 'invoiced') {
+    return '<span class="badge invoiced" id="list-invoiced-' + esc(order.id) + '">Invoiced</span>';
+  }
+  if (!(order.packing_lists || []).length) {
+    return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" disabled title="Upload the packing list first">Invoice</button>';
+  }
+  return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" data-list-invoice="' + esc(order.id) + '">Invoice</button>';
+}
+function lineSqf(item) {
+  const each = Number(item && item.sqf);
+  if (!item || item.sqf == null || item.sqf === '' || !Number.isFinite(each)) return 0;
+  const qty = Number(item.pcs);
+  const pieces = Number.isFinite(qty) && qty > 0 ? qty : 1;
+  return Math.round(each * pieces * 100) / 100;
+}
+function formatSqf(value) {
+  const rounded = Math.round(Number(value || 0) * 100) / 100;
+  if (Math.abs(rounded - Math.round(rounded)) < 0.001) return String(Math.round(rounded));
+  return rounded.toFixed(2);
+}
 function glassPieceCount(items) {
   const glass = (items || []).filter(item => item && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
   const pieces = glass.reduce((sum, item) => {
     const qty = Number(item.pcs);
     return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
   }, 0);
-  return {lines: glass.length, pieces: pieces};
+  const sqf = glass.reduce((sum, item) => sum + lineSqf(item), 0);
+  return {lines: glass.length, pieces: pieces, sqf: sqf};
+}
+function workloadSummary(orders) {
+  const counted = (orders || []).filter(order => (order.status || '') !== 'voided');
+  let pieces = 0;
+  let sqf = 0;
+  counted.forEach(order => {
+    const count = glassPieceCount(order.items);
+    pieces += count.pieces;
+    sqf += count.sqf;
+  });
+  const ordersWord = counted.length === 1 ? 'order' : 'orders';
+  return counted.length + ' ' + ordersWord + ' · ' + pieces + ' pcs · ' + formatSqf(sqf) + ' sq ft';
 }
 function pieceSummary(items) {
   const count = glassPieceCount(items);
@@ -276,8 +314,10 @@ function pieceSummary(items) {
 }
 function render(orders) {
   const head = document.getElementById('order-head');
-  const columns = PRICES ? 11 : 9;
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th class="num">Pcs</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
+  const columns = PRICES ? 12 : 10;
+  const workload = document.getElementById('order-workload');
+  if (workload) workload.textContent = workloadSummary(orders);
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th class="num">Pcs</th><th class="num">Sq ft</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
   const body = document.getElementById('order-list');
   if (!orders.length) {
     body.innerHTML = '<tr><td colspan="' + columns + '" style="color:#666">No production orders</td></tr>';
@@ -288,8 +328,8 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    const pieces = glassPieceCount(order.items).pieces;
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(pieces) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    const count = glassPieceCount(order.items);
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -1266,7 +1306,23 @@ async function load() {
 const orderFilter = document.getElementById('order-filter');
 if (orderFilter) orderFilter.addEventListener('click', load);
 const orderList = document.getElementById('order-list');
-if (orderList) orderList.addEventListener('click', event => {
+if (orderList) orderList.addEventListener('click', async event => {
+  const invoice = event.target.closest('[data-list-invoice]');
+  if (invoice) {
+    const orderId = invoice.getAttribute('data-list-invoice');
+    invoice.disabled = true;
+    const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/customer-invoice', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      invoice.disabled = false;
+      alert(payload.error || 'Could not invoice the customer');
+      return;
+    }
+    load();
+    return;
+  }
   const button = event.target.closest('[data-list-void]');
   if (!button) return;
   const panel = document.getElementById('list-void-panel');
