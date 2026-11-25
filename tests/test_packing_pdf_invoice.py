@@ -98,6 +98,8 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     page = client.get('/orders')
     assert b'id="order-invoice"' in page.data
     assert b'Not invoiced to customer' in page.data
+    assert b'Invoice the customer for these packed pieces now' in page.data
+    assert b'Wait until the order is complete' in page.data
     invoices_page = client.get('/invoices')
     assert b'scrollIntoView' in invoices_page.data
     uploaded = client.post(
@@ -116,14 +118,18 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     assert assigned.get_json()['totals'] == {'ordered': 13, 'packed': 11, 'bo': 2}
     waiting = client.get('/api/orders?invoice=not_invoiced').get_json()
     assert [row['id'] for row in waiting] == [1]
-    assert waiting[0]['invoice_state'] == 'not_invoiced'
-    assert waiting[0]['invoice_state_label'] == 'Not invoiced'
-    blocked = client.post('/api/orders/1/customer-invoice', json={})
-    assert blocked.status_code == 400
+    assert waiting[0]['invoice_state'] == 'ready'
+    assert waiting[0]['invoice_state_label'] == 'Ready to invoice'
+    assert waiting[0]['can_invoice_packed'] is True
+    held = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': False})
+    assert held.status_code == 200, held.get_json()
+    assert held.get_json()['invoice_state'] == 'pending'
+    assert held.get_json()['invoice_state_label'] == 'Customer invoice pending'
+    assert held.get_json()['can_invoice_packed'] is True
     shipped = client.post('/api/orders/1/ship-packed', json={'number': 'XF261123001', 'date': '2026-11-23', 'rack': '1054'})
     assert shipped.status_code == 200, shipped.get_json()
     body = shipped.get_json()
-    assert body['invoice_state'] == 'not_invoiced'
+    assert body['invoice_state'] == 'pending'
     assert body['shipments'][0]['pcs'] == 11
     assert body['shipping']['label'] == 'Partially shipped'
     slip = client.get('/api/orders/1/shipments/1/pdf')
@@ -159,7 +165,7 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     ready = client.get('/api/orders/1').get_json()
     assert ready['invoice_state'] == 'ready'
     assert ready['packing_totals']['bo'] == 0
-    customer = client.post('/api/orders/1/customer-invoice', json={})
+    customer = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': True})
     assert customer.status_code == 200, customer.get_json()
     assert customer.get_json()['invoice_state'] == 'invoiced'
     bills = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
@@ -178,3 +184,139 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     assert client.get('/api/orders?invoice=not_invoiced').get_json() == []
     stored = next(row for row in load_orders() if row['id'] == 1)
     assert stored['pack_status'] == 'packed'
+
+
+def _highq_order(pieces):
+    from storage import load_customers, save_customers
+    write_user('admin@oraglass.us', 'admin')
+    customers = load_customers()
+    customers['highq'] = dict(customers.get('highq') or {'id': 'highq', 'name': 'HighQ Developments Inc'})
+    customers['highq'].update({'country': 'Canada', 'province': 'BC', 'credit_currency': 'cad', 'name': 'HighQ Developments Inc'})
+    save_customers(customers)
+    save_orders([{
+        'id': 1,
+        'customer_id': 'highq',
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc 11/15/2026',
+        'po': '',
+        'status': 'approved',
+        'currency': 'cad',
+        'items': [
+            {
+                'name': f'Unit {serial}', 'pcs': pcs, 'floor': f'W0{serial}',
+                'price_pc': 10, 'price_sqf': 10, 'sqf': 1, 'total': 10 * pcs,
+                'spec': _spec(),
+            }
+            for serial, pcs in enumerate(pieces, start=1)
+        ],
+    }])
+
+
+def test_a_backorder_does_not_block_invoicing_the_packed_pieces(client, monkeypatch):
+    import io
+    import quickbooks
+    monkeypatch.setattr(quickbooks, 'FX_FETCH', lambda url: {'observations': [{'d': '2026-11-23', 'FXUSDCAD': {'v': '1.4000'}}]})
+    currency_rules.record_rate(1.4, '2026-11-01', 'admin@oraglass.us')
+    _highq_order([4, 2])
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    uploaded = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(
+            b'Customer,Project,PO,Packing List,Date,Rack,Serial Number,Quantity\n'
+            b'HighQ Developments Inc,Misc 11/15/2026,,XF1,2026-11-23,1054,1,4\n'
+        ), 'first.csv')},
+        content_type='multipart/form-data',
+    )
+    assert uploaded.status_code == 200, uploaded.get_json()
+    assert uploaded.get_json()['saved'][0]['pack_status'] == 'partial'
+    ready = client.get('/api/orders/1').get_json()
+    assert ready['invoice_state'] == 'ready'
+    assert ready['can_invoice_packed'] is True
+    now = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': True})
+    assert now.status_code == 200, now.get_json()
+    billed = now.get_json()
+    assert billed['invoice_state'] == 'partial'
+    assert billed['invoice_state_label'] == 'Partially invoiced'
+    assert billed['can_invoice_packed'] is False
+    bills = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
+    customer_bills = [row for row in bills if row['kind'] == 'customer']
+    intercompany = [row for row in bills if row['kind'] == 'intercompany']
+    assert len(customer_bills) == 1
+    assert sum(line.get('pcs') or 0 for line in customer_bills[0]['items']) == 4
+    assert {line.get('serial') for line in customer_bills[0]['items']} == {1}
+    assert len(intercompany) == 1
+    assert sum(line.get('pcs') or 0 for line in intercompany[0]['items']) == 4
+    again = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': True})
+    assert again.status_code == 200, again.get_json()
+    still = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
+    assert len(still) == 2
+    rest = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(
+            b'Customer,Project,PO,Packing List,Date,Rack,Serial Number,Quantity\n'
+            b'HighQ Developments Inc,Misc 11/15/2026,,XF2,2026-11-24,1055,2,2\n'
+        ), 'rest.csv')},
+        content_type='multipart/form-data',
+    )
+    assert rest.status_code == 200, rest.get_json()
+    opened = client.get('/api/orders/1').get_json()
+    assert opened['invoice_state'] == 'ready'
+    assert opened['can_invoice_packed'] is True
+    finish = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': True})
+    assert finish.status_code == 200, finish.get_json()
+    assert finish.get_json()['invoice_state'] == 'invoiced'
+    final = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
+    customer_bills = [row for row in final if row['kind'] == 'customer']
+    intercompany = [row for row in final if row['kind'] == 'intercompany']
+    assert sorted(sum(line.get('pcs') or 0 for line in row['items']) for row in customer_bills) == [2, 4]
+    assert sorted(sum(line.get('pcs') or 0 for line in row['items']) for row in intercompany) == [2, 4]
+    assert {line.get('serial') for row in customer_bills for line in row['items']} == {1, 2}
+
+
+def test_us_packing_list_can_invoice_packed_pieces_without_the_partial_checkbox(client):
+    import io
+    from storage import load_customers, save_customers
+    write_user('admin@oraglass.us', 'admin')
+    customers = load_customers()
+    customers['harbor-glass'] = dict(customers.get('harbor-glass') or {'id': 'harbor-glass', 'name': 'Harbor Glass'})
+    customers['harbor-glass'].update({
+        'name': 'Harbor Glass', 'country': 'United States', 'credit_currency': 'usd',
+    })
+    save_customers(customers)
+    save_orders([{
+        'id': 1,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'project': 'Lobby',
+        'status': 'approved',
+        'currency': 'usd',
+        'partial_invoicing': False,
+        'items': [
+            {
+                'name': 'Unit 1', 'pcs': 4, 'floor': 'W01',
+                'price_pc': 10, 'price_sqf': 10, 'sqf': 1, 'total': 40,
+                'spec': _spec(),
+            },
+        ],
+    }])
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    uploaded = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(
+            b'Customer,Project,PO,Packing List,Date,Rack,Serial Number,Quantity\n'
+            b'Harbor Glass,Lobby,,XF9,2026-11-23,A1,1,2\n'
+        ), 'part.csv')},
+        content_type='multipart/form-data',
+    )
+    assert uploaded.status_code == 200, uploaded.get_json()
+    ready = client.get('/api/orders/1').get_json()
+    assert ready['needs_intercompany'] is False
+    assert ready['can_invoice_packed'] is True
+    now = client.post('/api/orders/1/customer-invoice', json={'invoice_customer': True, 'create_intercompany': False})
+    assert now.status_code == 200, now.get_json()
+    assert now.get_json()['invoice_state'] == 'partial'
+    bills = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
+    assert len(bills) == 1
+    assert bills[0]['kind'] == 'customer'
+    assert bills[0]['issuer'] == 'us'
+    assert sum(line.get('pcs') or 0 for line in bills[0]['items']) == 2

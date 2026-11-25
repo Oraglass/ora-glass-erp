@@ -6364,7 +6364,7 @@ def filter_order_rows(orders):
         invoice_state = clean_text(request.args.get('invoice'), 20).lower()
         if invoice_state == 'not_invoiced' and order.get('invoice_state') == 'invoiced':
             continue
-        if invoice_state in {'ready', 'invoiced'} and order.get('invoice_state') != invoice_state:
+        if invoice_state in {'ready', 'pending', 'partial', 'invoiced'} and order.get('invoice_state') != invoice_state:
             continue
         rows.append(order)
     if sort in {'total_asc', 'total_desc'}:
@@ -6587,36 +6587,162 @@ def _intercompany_invoiced_by_serial(order):
     return totals
 
 
+def _invoice_documents(order, kind):
+    rows = []
+    for row in load_invoices():
+        if row.get('order_id') != order.get('id') or row.get('voided'):
+            continue
+        if document_type(row) != 'invoice':
+            continue
+        row_kind = row.get('kind') or 'customer'
+        if kind == 'intercompany':
+            if row_kind == 'intercompany':
+                rows.append(row)
+        elif row_kind != 'intercompany':
+            rows.append(row)
+    return rows
+
+
+def _invoiced_qty_by_serial(order, kind):
+    """Pieces already on a live invoice of this kind, keyed by production serial."""
+    totals = {}
+    blanket = False
+    for row in _invoice_documents(order, kind):
+        glass = [
+            line for line in (row.get('items') or [])
+            if line.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+        ]
+        numbered = False
+        for line in glass:
+            try:
+                serial = int(line.get('serial'))
+                qty = int(line.get('pcs') or line.get('qty') or 0)
+            except (TypeError, ValueError):
+                continue
+            if qty > 0:
+                numbered = True
+                totals[serial] = totals.get(serial, 0) + qty
+        if glass and not numbered:
+            blanket = True
+    if blanket:
+        import packing
+        for row in packing.serial_catalog(order):
+            totals[row['serial']] = max(totals.get(row['serial'], 0), int(row.get('ordered') or 0))
+    if kind == 'intercompany':
+        for serial, qty in _intercompany_invoiced_by_serial(order).items():
+            totals[serial] = max(totals.get(serial, 0), qty)
+    return totals
+
+
+def _needs_intercompany(order):
+    import quickbooks
+    customer = _order_customer(order)
+    return bool(quickbooks.is_canadian(customer) or shipments.is_open_windows(customer))
+
+
+def _unbilled_packed(order, kind):
+    """Packed pieces that are not yet on an invoice of this kind. Index to quantity."""
+    import packing
+    if not (order or {}).get('packing_lists'):
+        return {}
+    billed = _invoiced_qty_by_serial(order, kind)
+    chosen = {}
+    for row in packing.packing_progress(order)['serials']:
+        left = max(0, int(row.get('packed') or 0) - int(billed.get(row['serial'], 0)))
+        if left > 0:
+            chosen[row['index']] = left
+    return chosen
+
+
+def _limit_to_unbilled(order, items, kind):
+    """Drop invoice lines whose serials are already billed, so a piece is never billed twice."""
+    import packing
+    billed = _invoiced_qty_by_serial(order, kind)
+    catalog = {row['serial']: row for row in packing.serial_catalog(order)}
+    kept = []
+    for item in items or []:
+        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            kept.append(item)
+            continue
+        try:
+            serial = int(item.get('serial'))
+            pcs = int(item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            kept.append(item)
+            continue
+        ordered = int((catalog.get(serial) or {}).get('ordered') or pcs)
+        left = max(0, ordered - int(billed.get(serial, 0)))
+        take = min(pcs, left)
+        if take <= 0:
+            continue
+        if take == pcs:
+            kept.append(item)
+            continue
+        scaled = dict(item)
+        ratio = take / pcs if pcs else 0
+        scaled['pcs'] = take
+        scaled['qty'] = take
+        scaled['total'] = round(money(item.get('total')) * ratio, 2)
+        scaled['sqf'] = round(float(item.get('sqf') or 0) * ratio, 2)
+        kept.append(scaled)
+    return kept
+
+
 def _customer_invoice_state(order):
-    """Separate from packing status. Ready means the whole order can be billed to the customer."""
+    """Ready as soon as packed pieces are not yet invoiced. Invoiced only when every piece is billed."""
     if (order or {}).get('legacy'):
         return 'not_invoiced', 'Not invoiced'
-    import packing
-    import shipments as shipment_rules
-    has_customer_invoice = any(
-        row.get('order_id') == order.get('id') and not row.get('voided')
-        and row.get('kind') != 'intercompany' and document_type(row) == 'invoice'
-        for row in load_invoices()
-    ) or bool(order.get('customer_invoice_id'))
-    if has_customer_invoice:
-        return 'invoiced', 'Invoiced'
     if order.get('remake') and not order.get('charge_customer'):
         return 'not_invoiced', 'Not charged'
-    if order.get('packing_lists'):
-        complete = packing.packing_progress(order)['status'] == 'packed'
-    else:
-        complete = shipment_rules.shipment_progress(order)['fully_shipped']
-    if complete:
+    if not order.get('packing_lists'):
+        has_customer_invoice = bool(_invoice_documents(order, 'customer')) or bool(order.get('customer_invoice_id'))
+        if has_customer_invoice:
+            return 'invoiced', 'Invoiced'
+        if shipments.shipment_progress(order)['fully_shipped']:
+            return 'ready', 'Ready to invoice'
+        return 'not_invoiced', 'Not invoiced'
+    import packing
+    progress = packing.packing_progress(order)
+    customer_billed = _invoiced_qty_by_serial(order, 'customer')
+    canada = _needs_intercompany(order)
+    intercompany_billed = _invoiced_qty_by_serial(order, 'intercompany') if canada else {}
+    fully_customer = all(int(customer_billed.get(row['serial'], 0)) >= int(row['ordered']) for row in progress['serials'])
+    fully_intercompany = (not canada) or all(
+        int(intercompany_billed.get(row['serial'], 0)) >= int(row['ordered']) for row in progress['serials']
+    )
+    if progress['serials'] and fully_customer and fully_intercompany:
+        return 'invoiced', 'Invoiced'
+    customer_waiting = any(int(row['packed']) > int(customer_billed.get(row['serial'], 0)) for row in progress['serials'])
+    intercompany_waiting = canada and any(
+        int(row['packed']) > int(intercompany_billed.get(row['serial'], 0)) for row in progress['serials']
+    )
+    if customer_waiting or intercompany_waiting:
+        if order.get('customer_invoice_deferred') and customer_waiting and not intercompany_waiting:
+            return 'pending', 'Customer invoice pending'
         return 'ready', 'Ready to invoice'
+    if int(progress['totals'].get('bo') or 0) > 0:
+        return 'partial', 'Partially invoiced'
     return 'not_invoiced', 'Not invoiced'
+
+
+def _can_invoice_packed(order):
+    if (order or {}).get('legacy') or not (order or {}).get('packing_lists'):
+        return False
+    if order.get('remake') and not order.get('charge_customer'):
+        return False
+    if _unbilled_packed(order, 'customer'):
+        return True
+    return bool(_needs_intercompany(order) and _unbilled_packed(order, 'intercompany'))
 
 
 def _packing_payload(order, staff):
     import packing
     progress = packing.packing_progress(order)
-    billed = _intercompany_invoiced_by_serial(order)
+    billed = _invoiced_qty_by_serial(order, 'intercompany')
+    customer_billed = _invoiced_qty_by_serial(order, 'customer')
     for row in progress['serials']:
         row['intercompany_invoiced'] = billed.get(row['serial'], 0)
+        row['customer_invoiced'] = customer_billed.get(row['serial'], 0)
         row['shipped'] = shipments.shipped_qty(order, row['index'])
     current = []
     history = []
@@ -6843,6 +6969,8 @@ def order_for_viewer(order, user, with_coverage=False):
     invoice_state, invoice_label = _customer_invoice_state(order)
     base['invoice_state'] = invoice_state
     base['invoice_state_label'] = invoice_label
+    base['needs_intercompany'] = _needs_intercompany(order)
+    base['can_invoice_packed'] = _can_invoice_packed(order)
     linked_quote = None
     if order.get('quote_id'):
         linked_quote = next((row for row in load_quotes() if row.get('id') == order.get('quote_id')), None)
@@ -9348,10 +9476,77 @@ def ship_packed_pieces(order_id):
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
+def _issue_packed_customer_invoice(order, user):
+    """Customer invoice for packed pieces that are not on a customer invoice yet."""
+    quantities = _unbilled_packed(order, 'customer')
+    if not quantities:
+        return None, None
+    items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+    import packing
+    progress = packing.packing_progress(order)
+    billed = _invoiced_qty_by_serial(order, 'customer')
+    finishing = all(
+        int(billed.get(row['serial'], 0)) + int(quantities.get(row['index'], 0)) >= int(row['ordered'])
+        for row in progress['serials']
+    )
+    full_value = shipments.shipment_progress(order)['ordered_value'] or money(order.get('total'))
+    portion = round(sum(
+        money(row.get('total')) for row in items
+        if row.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+    ), 2)
+    charges = (order.get('extra_charges') or []) if finishing else []
+    summary, error = price_summary(items, _scaled_discount(order, portion, full_value), charges)
+    if error:
+        return None, error
+    from billing import apply_additional_discount
+    summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
+    customer = _order_customer(order)
+    issuer = 'ca' if _needs_intercompany(order) else 'us'
+    shipment = {
+        'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '', 'notes': 'Packed pieces',
+    }
+    document = _invoice_for_items(order, user, customer, items, summary, issuer, 'customer', shipment)
+    stored = append_invoice(document)
+    _apply_prepayments_to_invoice(order.get('id'), stored['id'], user)
+    fresh = _finish_invoice(stored, user)
+    order['customer_invoice_deferred'] = False
+    if not order.get('customer_invoice_id'):
+        order['customer_invoice_id'] = fresh['id']
+        order['customer_invoice_number'] = fresh['number']
+    if not order.get('invoice_id'):
+        order['invoice_id'] = fresh['id']
+        order['invoice_number'] = fresh['number']
+    _qbo('push_document_id', fresh['id'])
+    return fresh['number'], None
+
+
+def _issue_packed_intercompany(order, user):
+    """Ora Glass Inc bills Ora Glass (Canada) Inc for packed pieces not yet on an intercompany invoice."""
+    quantities = _unbilled_packed(order, 'intercompany')
+    if not quantities:
+        return None, None
+    items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+    shipment = {
+        'id': None,
+        'number': '',
+        'date': datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat(),
+        'rack': '',
+        'truck_plate': '',
+        'notes': 'Packed pieces',
+        'items': items,
+        'lines': [
+            {'serial': item.get('serial'), 'qty': item.get('pcs'), 'index': item.get('source_index')}
+            for item in items if item.get('serial') not in (None, '')
+        ],
+        'invoiced': False,
+    }
+    return _issue_shipment_invoice(order, shipment, user, False)
+
+
 @app.route('/api/orders/<int:order_id>/customer-invoice', methods=['POST'])
 @module_required('orders')
 def invoice_completed_order(order_id):
-    """Bill the customer for the whole order once every serial is packed."""
+    """Bill packed pieces. A back order does not hold up what is already packed."""
     user = current_user()
     if not can_issue_invoices(user):
         return json_error('You do not have permission to issue invoices.', 403)
@@ -9364,6 +9559,7 @@ def invoice_completed_order(order_id):
         return json_error('This remake is not charged to the customer.', 400)
     if visible.get('legacy'):
         return json_error('Legacy jobs are not invoiced in the ERP. There is no quote price to bill.', 400)
+    data = json_body() or {}
 
     def mutator(order):
         if order_status(order) == 'voided':
@@ -9372,20 +9568,45 @@ def invoice_completed_order(order_id):
             return None, 'This remake is not charged to the customer.'
         if order.get('legacy'):
             return None, 'Legacy jobs are not invoiced in the ERP. There is no quote price to bill.'
-        state, _label = _customer_invoice_state(order)
-        if state == 'invoiced':
-            return None, 'This order already has a customer invoice.'
-        if state != 'ready':
-            return None, 'The customer invoice waits until every serial is packed.'
+        if not order.get('packing_lists'):
+            state, _label = _customer_invoice_state(order)
+            if state == 'invoiced':
+                return None, 'This order already has a customer invoice.'
+            if state != 'ready':
+                return None, 'Upload a packing list before invoicing packed pieces.'
+            updated = dict(order)
+            number, error = _issue_final_customer_invoice(updated, user)
+            if error:
+                return None, error
+            _stamp_log(updated, user, [{
+                'field': 'customer invoice',
+                'action': 'added',
+                'new': number or updated.get('customer_invoice_number') or updated.get('invoice_number') or '',
+            }])
+            return updated, None
         updated = dict(order)
-        number, error = _issue_final_customer_invoice(updated, user)
-        if error:
-            return None, error
-        _stamp_log(updated, user, [{
-            'field': 'customer invoice',
-            'action': 'added',
-            'new': number or updated.get('customer_invoice_number') or updated.get('invoice_number') or '',
-        }])
+        changes = []
+        if data.get('create_intercompany', True) and _needs_intercompany(updated):
+            number, error = _issue_packed_intercompany(updated, user)
+            if error:
+                return None, error
+            if number:
+                changes.append({'field': 'intercompany invoice', 'action': 'added', 'new': number})
+        if 'invoice_customer' not in data:
+            if changes:
+                _stamp_log(updated, user, changes)
+            return updated, None
+        if data.get('invoice_customer'):
+            number, error = _issue_packed_customer_invoice(updated, user)
+            if error:
+                return None, error
+            if number:
+                changes.append({'field': 'customer invoice', 'action': 'added', 'new': number})
+        else:
+            updated['customer_invoice_deferred'] = True
+            changes.append({'field': 'customer invoice', 'action': 'kept', 'new': 'Customer invoice pending'})
+        if changes:
+            _stamp_log(updated, user, changes)
         return updated, None
 
     saved, error = update_order(order_id, mutator)
@@ -9729,6 +9950,10 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
     if mode != 'canada' and order.get('remake') and not order.get('charge_customer'):
         return None, None
     items = json.loads(json.dumps(shipment.get('items') or []))
+    kind = 'intercompany' if mode == 'canada' else 'customer'
+    items = _limit_to_unbilled(order, items, kind)
+    if not any(row.get('kind') not in {'irregular_surcharge', 'dwg_creation'} for row in items):
+        return None, None
     full_value = shipments.shipment_progress(order)['ordered_value'] or money(order.get('total'))
     charges = order.get('extra_charges') or [] if include_extras else []
     summary, error = price_summary(
@@ -9827,6 +10052,8 @@ def _issue_final_customer_invoice(order, user):
     import quickbooks
     if order.get('remake') and not order.get('charge_customer'):
         return None, None
+    if order.get('packing_lists'):
+        return _issue_packed_customer_invoice(order, user)
     if any(
         row.get('order_id') == order.get('id') and row.get('kind') != 'intercompany' and not row.get('voided')
         and (row.get('issuer') or 'us') == ('ca' if quickbooks.is_canadian(_order_customer(order)) else 'us')
