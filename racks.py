@@ -2,7 +2,8 @@
 
 A packing list records the rack as packed at Ora Glass. It joins the customer's
 inventory when a shipment that contains it is marked delivered. It leaves that
-inventory when a driver scans the empty rack, or an admin marks it returned.
+inventory when a driver scans the empty rack, an admin marks it returned, or a
+new packing list reuses it. Reuse records an auto-return, then packs it again.
 """
 
 from datetime import date, datetime, timezone
@@ -210,11 +211,69 @@ def receive_shipment(order, shipment, user, moment=None):
     return deliver_order(probe, user, moment)
 
 
+def _reuse_note(label):
+    return f'Auto-returned (reused on packing list {label})'
+
+
+def _already_noted(row, note):
+    return any((item.get('note') or '') == note for item in (row or {}).get('history') or [])
+
+
+def _assign_packed(row, order, number, label, name, user, moment=None):
+    """Pack this rack for the order. A rack still at a customer is auto-returned first."""
+    if row.get('status') == AT_CUSTOMER and str(row.get('packing_number') or '') == str(label):
+        return row
+    if row.get('status') == AT_CUSTOMER and str(row.get('packing_number') or '') != str(label):
+        note = _reuse_note(label)
+        if not _already_noted(row, note):
+            previous_id = row.get('customer_id') or ''
+            previous_name = row.get('customer_name') or ''
+            row.setdefault('history', []).append(_event(
+                'returned', user, moment,
+                customer_id=previous_id,
+                customer_name=previous_name,
+                order_id=row.get('order_id'),
+                shipment_number=row.get('shipment_number') or '',
+                note=note,
+            ))
+        row['status'] = RETURNED
+        row['customer_id'] = ''
+        row['customer_name'] = ''
+        row['since'] = ''
+        row['truck_plate'] = ''
+    if name:
+        row['name'] = name
+    same = (
+        row.get('status') == PACKED
+        and row.get('order_id') == (order or {}).get('id')
+        and str(row.get('packing_number') or '') == str(label)
+    )
+    row['status'] = PACKED
+    row['number'] = number
+    row['customer_id'] = (order or {}).get('customer_id') or ''
+    row['customer_name'] = (order or {}).get('company') or ''
+    row['order_id'] = (order or {}).get('id')
+    row['packing_number'] = label
+    row['since'] = ''
+    row['shipment_id'] = None
+    row['shipment_number'] = ''
+    row['truck_plate'] = ''
+    if not same:
+        row.setdefault('history', []).append(_event(
+            'packed', user, moment,
+            customer_id=row['customer_id'],
+            customer_name=row['customer_name'],
+            order_id=row['order_id'],
+            note=f'Packed on {label}.',
+        ))
+    return row
+
+
 def record_packing(order, number, packing_number, name, user, moment=None):
     """A packing list records the rack as packed at Ora Glass.
 
-    A rack already in a customer's inventory stays there. It leaves only when a
-    driver scans the pickup or an admin marks it returned.
+    When the rack is still in a customer's inventory, record the return first,
+    then pack it for this order.
     """
     number = str(number or '').strip()
     if not number:
@@ -222,37 +281,9 @@ def record_packing(order, number, packing_number, name, user, moment=None):
     label = packing_number or number
 
     def change(racks):
-        existing = racks.get(number)
-        if existing and existing.get('status') == AT_CUSTOMER:
-            return existing.get('status')
-        row = existing or _blank(number, name)
-        if name:
-            row['name'] = name
-        same = (
-            existing is not None
-            and row.get('status') == PACKED
-            and row.get('order_id') == (order or {}).get('id')
-            and str(row.get('packing_number') or '') == str(label)
-        )
-        row['status'] = PACKED
-        row['customer_id'] = (order or {}).get('customer_id') or ''
-        row['customer_name'] = (order or {}).get('company') or ''
-        row['order_id'] = (order or {}).get('id')
-        row['packing_number'] = label
-        row['since'] = ''
-        row['shipment_id'] = None
-        row['shipment_number'] = ''
-        row['truck_plate'] = ''
-        if not same:
-            row.setdefault('history', []).append(_event(
-                'packed', user, moment,
-                customer_id=row['customer_id'],
-                customer_name=row['customer_name'],
-                order_id=row['order_id'],
-                note=f'Packed on {label}.',
-            ))
-        racks[number] = row
-        return row.get('status')
+        row = racks.get(number) or _blank(number, name)
+        racks[number] = _assign_packed(row, order, number, label, name, user, moment)
+        return racks[number].get('status')
 
     return _mutate(change)
 
@@ -288,87 +319,144 @@ def deliver_order(order, user, moment=None):
     return _mutate(change)
 
 
+def _clock(value, end=False):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if len(text) == 10:
+        return text + ('T23:59:59+00:00' if end else 'T00:00:00+00:00')
+    return text
+
+
+def _moment_from_clock(value):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _rack_timeline(orders):
+    """Packing lists, oldest first, with each delivered shipment placed on that day."""
+    events = []
+    for order in orders or []:
+        for entry in (order or {}).get('packing_lists') or []:
+            number = str(entry.get('rack') or '').strip()
+            if not number:
+                continue
+            events.append({
+                'kind': 'pack',
+                'time': _clock(entry.get('uploaded_at') or entry.get('date')),
+                'order_id': order.get('id') or 0,
+                'seq': entry.get('id') or 0,
+                'number': number,
+                'order': order,
+                'entry': entry,
+            })
+        for shipment in _delivered_shipments(order):
+            when = _clock(shipment.get('delivered_on') or _delivery_day(order, shipment), end=True)
+            for number, name in racks_for_shipment(order, shipment):
+                events.append({
+                    'kind': 'deliver',
+                    'time': when,
+                    'order_id': order.get('id') or 0,
+                    'seq': shipment.get('id') or 0,
+                    'number': number,
+                    'name': name,
+                    'order': order,
+                    'shipment': shipment,
+                })
+    events.sort(key=lambda item: (item.get('time') or '', 0 if item.get('kind') == 'pack' else 1, item.get('order_id') or 0, item.get('seq') or 0))
+    return events
+
+
+def _play(row, event, user):
+    moment = _moment_from_clock(event.get('time'))
+    actor = user or {}
+    if event['kind'] == 'pack':
+        entry = event['entry']
+        listed = entry.get('uploaded_by') or ''
+        if listed:
+            actor = {'email': listed}
+        label = entry.get('number') or event['number']
+        return _assign_packed(
+            row, event['order'], event['number'], label, entry.get('rack_name') or '', actor, moment,
+        )
+    shipment = event['shipment']
+    if (
+        row.get('status') == AT_CUSTOMER
+        and (
+            (shipment.get('id') and row.get('shipment_id') == shipment.get('id') and row.get('order_id') == event['order'].get('id'))
+            or (shipment.get('number') and row.get('shipment_number') == shipment.get('number') and row.get('order_id') == event['order'].get('id'))
+        )
+    ):
+        return row
+    when = _delivery_day(event['order'], shipment, moment)
+    return _apply_customer(row, event['order'], shipment, when, event.get('name') or '', actor, moment)
+
+
+def _events_after_delivery(row, events):
+    """Events after the delivery that put this rack in the customer's inventory."""
+    if row.get('status') != AT_CUSTOMER:
+        return []
+    later = []
+    passed = False
+    for event in events:
+        if event.get('number') != str(row.get('number') or ''):
+            continue
+        if not passed and event['kind'] == 'deliver':
+            shipment = event['shipment']
+            same_order = row.get('order_id') == event['order'].get('id')
+            same_shipment = (
+                (shipment.get('id') and row.get('shipment_id') == shipment.get('id'))
+                or (shipment.get('number') and row.get('shipment_number') == shipment.get('number'))
+            )
+            if same_order and same_shipment:
+                passed = True
+            continue
+        if passed:
+            later.append(event)
+    return later
+
+
 def backfill_from_orders(orders, user=None):
-    """Create rack rows from packing lists, and from shipments already delivered."""
+    """Replay packing lists in date order, then delivered shipments, without duplicating history."""
+    events = _rack_timeline(orders)
+    by_number = {}
+    for event in events:
+        by_number.setdefault(event['number'], []).append(event)
+
     def change(racks):
         created = []
-        for order in orders or []:
-            delivered = {}
-            for shipment in _delivered_shipments(order):
-                when = _delivery_day(order, shipment)
-                for number, name in racks_for_shipment(order, shipment):
-                    delivered[number] = (shipment, name, when)
-            seen = set()
-            for entry in (order or {}).get('packing_lists') or []:
-                if entry.get('current') is False:
-                    continue
-                number = str(entry.get('rack') or '').strip()
-                if not number or number in seen:
-                    continue
-                seen.add(number)
-                shipment = delivered.get(number)
-                existing = racks.get(number)
-                if existing:
-                    if shipment and existing.get('status') == PACKED:
-                        ship, name, when = shipment
-                        racks[number] = _apply_customer(
-                            existing, order, ship, when, name or entry.get('rack_name') or '', user or {}, None,
-                        )
-                    continue
-                row = _blank(number, entry.get('rack_name') or '')
-                row['order_id'] = order.get('id')
-                row['customer_id'] = order.get('customer_id') or ''
-                row['customer_name'] = order.get('company') or ''
-                row['packing_number'] = entry.get('number') or ''
-                if shipment:
-                    ship, name, when = shipment
-                    if name:
-                        row['name'] = name
-                    row['status'] = AT_CUSTOMER
-                    row['since'] = when
-                    row['shipment_id'] = ship.get('id')
-                    row['shipment_number'] = ship.get('number') or ''
-                    row['truck_plate'] = ship.get('truck_plate') or ''
-                    action = 'delivered'
-                    note = f"Delivered on {row['shipment_number'] or 'delivery'}."
-                else:
-                    row['status'] = PACKED
-                    action = 'packed'
-                    note = f"Packed on {row['packing_number'] or 'a packing list'}."
-                row['history'] = [_event(
-                    action, user or {}, None,
-                    customer_id=row['customer_id'],
-                    customer_name=row['customer_name'],
-                    order_id=row['order_id'],
-                    shipment_number=row.get('shipment_number') or '',
-                    truck_plate=row.get('truck_plate') or '',
-                    note=note,
-                )]
+        for number, rows in by_number.items():
+            existing = racks.get(number)
+            if existing is None:
+                row = _blank(number)
+                for event in rows:
+                    row = _play(row, event, user)
                 racks[number] = row
                 created.append(number)
-            for number, (ship, name, when) in delivered.items():
-                if number in racks:
-                    continue
-                row = _blank(number, name)
-                row['status'] = AT_CUSTOMER
-                row['customer_id'] = order.get('customer_id') or ''
-                row['customer_name'] = order.get('company') or ''
-                row['since'] = when
-                row['order_id'] = order.get('id')
-                row['shipment_id'] = ship.get('id')
-                row['shipment_number'] = ship.get('number') or ''
-                row['truck_plate'] = ship.get('truck_plate') or ''
-                row['history'] = [_event(
-                    'delivered', user or {}, None,
-                    customer_id=row['customer_id'],
-                    customer_name=row['customer_name'],
-                    order_id=row['order_id'],
-                    shipment_number=row['shipment_number'],
-                    truck_plate=row['truck_plate'],
-                    note=f"Delivered on {row['shipment_number'] or 'delivery'}.",
-                )]
-                racks[number] = row
-                created.append(number)
+                continue
+            if existing.get('status') == PACKED:
+                last_pack = None
+                trailing = None
+                for event in rows:
+                    if event['kind'] == 'pack':
+                        last_pack = event
+                        trailing = None
+                    elif event['kind'] == 'deliver':
+                        trailing = event
+                label = str((last_pack or {}).get('entry', {}).get('number') or '')
+                if trailing and (not label or str(existing.get('packing_number') or '') == label):
+                    existing = _play(existing, trailing, user)
+            for event in _events_after_delivery(existing, rows):
+                existing = _play(existing, event, user)
+            racks[number] = existing
         return created
 
     return _mutate(change)

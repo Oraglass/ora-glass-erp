@@ -2,7 +2,7 @@
 
 import io
 
-from storage import load_customers, load_racks, save_customers, save_orders
+from storage import load_customers, load_orders, load_racks, save_customers, save_orders
 from tests.conftest import login, write_user
 
 
@@ -264,26 +264,12 @@ def test_delivered_shipments_backfill_and_only_admin_can_mark_returned(client):
     assert delivered['days'] > 14
     assert delivered['overdue'] is True
     assert any(item.get('action') == 'delivered' for item in delivered['history'])
+    assert [item.get('action') for item in delivered['history']] == ['packed', 'delivered']
     assert waiting['status'] == 'packed'
     assert waiting['status_label'] == 'At Ora Glass / Packed'
     assert waiting['days'] is None
     again = client.get('/api/racks').get_json()
-    assert len(next(row for row in again if row['number'] == '1054')['history']) == 1
-    text = (
-        'Sold To: Harbor Glass\nJob Name: Lobby\n'
-        'Sales Delivery: XF9 Date: 11/24/2026\n'
-        '1054 A1900*1220*1800(THK:400*2)\n'
-        '(1) 2\n24 36\n609.6 mm 914.4 mm\n'
-    )
-    uploaded = client.post(
-        '/api/packing-lists',
-        data={'files': (io.BytesIO(text.encode()), 'XF9.txt')},
-        content_type='multipart/form-data',
-    )
-    assert uploaded.status_code == 200, uploaded.get_json()
-    stayed = load_racks()['1054']
-    assert stayed['status'] == 'at_customer'
-    assert stayed['since'] == '2026-11-01'
+    assert len(next(row for row in again if row['number'] == '1054')['history']) == 2
     refused = client.post('/api/racks/1054/return')
     assert refused.status_code == 200, refused.get_json()
     home = load_racks()['1054']
@@ -305,3 +291,178 @@ def test_delivered_shipments_backfill_and_only_admin_can_mark_returned(client):
     assert denied.status_code == 403
     assert 'administrator' in (denied.get_json().get('error') or '').lower()
     assert load_racks()['1055']['status'] == 'packed'
+
+
+def _delivered_harbor():
+    save_orders([{
+        'id': 4,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'project': 'Lobby',
+        'status': 'sent',
+        'currency': 'usd',
+        'items': [{
+            'name': 'Unit', 'pcs': 4, 'floor': 'W01', 'price_pc': 10, 'price_sqf': 10,
+            'sqf': 1, 'total': 40,
+            'spec': {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': 24, 'height': 36, 'unit': 'in'},
+        }],
+        'packing_lists': [{
+            'id': 1, 'current': True, 'rack': '1054', 'rack_name': 'A1900',
+            'number': 'XF261123001', 'date': '2026-11-01',
+            'uploaded_at': '2026-11-01T08:00:00+00:00',
+            'lines': [{'serial': 1, 'qty': 2}],
+        }],
+        'shipments': [{
+            'id': 1, 'number': 'S-OLD', 'date': '2026-11-01', 'status': 'delivered',
+            'delivered_on': '2026-11-01', 'rack': '1054',
+            'lines': [{'serial': 1, 'qty': 2, 'index': 0}],
+        }],
+    }])
+
+
+def _upload_list(client, number, rack='1054'):
+    text = (
+        'Sold To: Harbor Glass\nJob Name: Lobby\n'
+        f'Sales Delivery: {number} Date: 11/24/2026\n'
+        f'{rack} A1900*1220*1800(THK:400*2)\n'
+        '(1) 2\n24 36\n609.6 mm 914.4 mm\n'
+    )
+    uploaded = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(text.encode()), f'{number}.txt')},
+        content_type='multipart/form-data',
+    )
+    assert uploaded.status_code == 200, uploaded.get_json()
+    return uploaded
+
+
+def test_new_packing_list_auto_returns_a_rack_still_at_the_customer(client):
+    _users()
+    _delivered_harbor()
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    assert client.get('/api/racks').status_code == 200
+    _upload_list(client, 'XF261123001')
+    same = load_racks()['1054']
+    assert same['status'] == 'at_customer'
+    assert same['since'] == '2026-11-01'
+    assert not any('Auto-returned' in (item.get('note') or '') for item in same['history'])
+    _upload_list(client, 'XF9')
+    reused = load_racks()['1054']
+    assert reused['status'] == 'packed'
+    assert reused['packing_number'] == 'XF9'
+    assert reused['customer_id'] == 'harbor-glass'
+    assert reused['customer_name'] == 'Harbor Glass'
+    assert reused['order_id'] == 4
+    assert reused['since'] == ''
+    notes = [item.get('note') for item in reused['history']]
+    assert 'Auto-returned (reused on packing list XF9)' in notes
+    assert 'Packed on XF9.' in notes
+    auto = next(item for item in reused['history'] if item.get('note') == 'Auto-returned (reused on packing list XF9)')
+    packed = next(item for item in reused['history'] if item.get('note') == 'Packed on XF9.')
+    assert auto['action'] == 'returned'
+    assert auto['at']
+    assert auto['customer_name'] == 'Harbor Glass'
+    assert reused['history'].index(auto) < reused['history'].index(packed)
+    shown = next(row for row in client.get('/api/racks').get_json() if row['number'] == '1054')
+    assert shown['status_label'] == 'At Ora Glass / Packed'
+    assert shown['days'] is None
+    assert client.get('/api/racks?status=at_customer').get_json() == []
+
+
+def test_backfill_replays_reused_racks_in_packing_list_order(client):
+    _users()
+    glass = {
+        'name': 'Unit', 'pcs': 4, 'floor': 'W01', 'price_pc': 10, 'price_sqf': 10,
+        'sqf': 1, 'total': 40,
+        'spec': {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': 24, 'height': 36, 'unit': 'in'},
+    }
+    save_orders([{
+        'id': 9,
+        'customer_id': 'maple',
+        'company': 'Maple Glass',
+        'project': 'Annex',
+        'status': 'sent',
+        'currency': 'usd',
+        'items': [glass],
+        'packing_lists': [{
+            'id': 1, 'current': True, 'rack': '1054', 'rack_name': 'A1900',
+            'number': 'XF9', 'date': '2026-11-20',
+            'uploaded_at': '2026-11-20T15:00:00+00:00',
+            'lines': [{'serial': 1, 'qty': 2}],
+        }],
+    }, {
+        'id': 4,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'project': 'Lobby',
+        'status': 'sent',
+        'currency': 'usd',
+        'items': [glass],
+        'packing_lists': [{
+            'id': 1, 'current': True, 'rack': '1054', 'rack_name': 'A1900',
+            'number': 'XF261123001', 'date': '2026-11-01',
+            'uploaded_at': '2026-11-01T08:00:00+00:00',
+            'lines': [{'serial': 1, 'qty': 2}],
+        }],
+        'shipments': [{
+            'id': 1, 'number': 'S-OLD', 'date': '2026-11-02', 'status': 'delivered',
+            'delivered_on': '2026-11-02', 'rack': '1054',
+            'lines': [{'serial': 1, 'qty': 2, 'index': 0}],
+        }],
+    }])
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/racks').get_json()
+    rack = next(row for row in listed if row['number'] == '1054')
+    assert rack['status'] == 'packed'
+    assert rack['customer_id'] == 'maple'
+    assert rack['customer_name'] == 'Maple Glass'
+    assert rack['order_id'] == 9
+    assert rack['packing_number'] == 'XF9'
+    assert rack['days'] is None
+    assert [item.get('note') for item in rack['history']] == [
+        'Packed on XF261123001.',
+        'Delivered on S-OLD.',
+        'Auto-returned (reused on packing list XF9)',
+        'Packed on XF9.',
+    ]
+    assert all(item.get('at') for item in rack['history'])
+    again = client.get('/api/racks').get_json()
+    assert [item.get('note') for item in next(row for row in again if row['number'] == '1054')['history']] == [
+        item.get('note') for item in rack['history']
+    ]
+
+
+def test_backfill_auto_returns_a_rack_when_a_later_list_shows_up(client):
+    _users()
+    _delivered_harbor()
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    first = next(row for row in client.get('/api/racks').get_json() if row['number'] == '1054')
+    assert first['status'] == 'at_customer'
+    orders = load_orders()
+    orders.append({
+        'id': 9,
+        'customer_id': 'maple',
+        'company': 'Maple Glass',
+        'project': 'Annex',
+        'status': 'sent',
+        'currency': 'usd',
+        'items': [],
+        'packing_lists': [{
+            'id': 1, 'current': True, 'rack': '1054', 'number': 'XF9',
+            'date': '2026-11-20', 'uploaded_at': '2026-11-20T15:00:00+00:00',
+            'lines': [{'serial': 1, 'qty': 1}],
+        }],
+    })
+    save_orders(orders)
+    reused = next(row for row in client.get('/api/racks').get_json() if row['number'] == '1054')
+    assert reused['status'] == 'packed'
+    assert reused['customer_id'] == 'maple'
+    assert reused['order_id'] == 9
+    assert reused['packing_number'] == 'XF9'
+    assert [item.get('note') for item in reused['history']][-2:] == [
+        'Auto-returned (reused on packing list XF9)',
+        'Packed on XF9.',
+    ]
+    assert reused['history'][-2]['at']
+    quiet = client.get('/api/racks').get_json()
+    assert len(next(row for row in quiet if row['number'] == '1054')['history']) == len(reused['history'])
