@@ -126,9 +126,12 @@ h2,h3{color:#333}
 {% else %}
 <p class="note">Payments and allocations are read-only on this account.</p>
 {% endif %}
+{% if is_admin %}
+<p><button type="button" class="btn secondary" id="send-unsynced-qbo">Send unsynced payments to QuickBooks</button></p>
+{% endif %}
 <table>
-<thead><tr><th>Date</th><th>Customer</th><th>Method</th><th class="num">Amount</th><th class="num">Unallocated</th><th>Status</th><th></th></tr></thead>
-<tbody id="payment-list"><tr><td colspan="7" style="color:#666">No payments</td></tr></tbody>
+<thead><tr><th>Date</th><th>Customer</th><th>Method</th><th class="num">Amount</th><th class="num">Unallocated</th><th>Status</th><th>QuickBooks</th><th></th></tr></thead>
+<tbody id="payment-list"><tr><td colspan="8" style="color:#666">No payments</td></tr></tbody>
 </table>
 {% if can_record %}
 <div id="allocation-form">
@@ -350,7 +353,7 @@ function renderPayments(rows) {
   const body = document.getElementById('payment-list');
   const select = document.getElementById('alloc-payment');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="7" style="color:#666">No payments</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No payments</td></tr>';
     if (select) select.innerHTML = '';
     allocInvoices = [];
     allocIds = [];
@@ -359,8 +362,10 @@ function renderPayments(rows) {
   }
   body.innerHTML = rows.map(row => {
     const status = row.voided ? '<span class="badge void">Void</span>' : '<span class="badge paid">Open</span>';
+    const qbo = esc(row.qbo_sync_label || 'Not sent') + (row.qbo_id ? ' · ' + esc(row.qbo_id) : '') + (row.qbo_error ? '<br><span class="error">' + esc(row.qbo_error) + '</span>' : '');
+    const sendButton = IS_ADMIN && !row.voided && row.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" data-send-qbo="' + esc(row.id) + '">Send to QuickBooks</button>' : '';
     const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
-    return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + voidButton + '</td></tr>';
+    return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + qbo + '</td><td>' + sendButton + voidButton + '</td></tr>';
   }).join('');
   const previous = select ? select.value : '';
   if (select) {
@@ -569,6 +574,14 @@ document.getElementById('payment-screen').addEventListener('change', event => {
   togglePick(box.getAttribute('data-pick'), box.getAttribute('data-id'), box.checked);
 });
 document.getElementById('payment-list').addEventListener('click', async (event) => {
+  const send = event.target.closest('[data-send-qbo]');
+  if (send) {
+    const res = await fetch('/api/payments/' + send.getAttribute('data-send-qbo') + '/quickbooks', {method: 'POST'});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not send the payment'); return; }
+    loadPayments();
+    return;
+  }
   const button = event.target.closest('[data-void]');
   if (!button) return;
   const reason = prompt('Reason for voiding this payment');
@@ -582,6 +595,15 @@ document.getElementById('payment-list').addEventListener('click', async (event) 
   loadInvoices();
   loadCredit();
 });
+const sendUnsynced = document.getElementById('send-unsynced-qbo');
+if (sendUnsynced) {
+  sendUnsynced.addEventListener('click', async () => {
+    const res = await fetch('/api/payments/quickbooks', {method: 'POST'});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not send the payments'); return; }
+    loadPayments();
+  });
+}
 const form = document.getElementById('payment-form');
 if (form) {
   form.addEventListener('submit', async (event) => {

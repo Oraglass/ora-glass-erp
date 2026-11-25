@@ -69,7 +69,7 @@ async function load(customerId) {
     body.innerHTML = '<tr><td colspan="5" style="color:#666">No payments</td></tr>';
     return;
   }
-  body.innerHTML = rows.map(row => '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.method) + '</td><td>' + money(row.currency, row.amount) + '</td><td>' + money(row.currency, row.unallocated) + '</td><td>' + (row.voided ? 'Void' : 'Open') + '</td></tr>').join('');
+  body.innerHTML = rows.map(row => '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.method) + '</td><td>' + money(row.currency, row.amount) + '</td><td>' + money(row.currency, row.unallocated) + '</td><td>' + (row.voided ? 'Void' : 'Open') + (row.qbo_sync_label ? ' · ' + esc(row.qbo_sync_label) : '') + '</td></tr>').join('');
 }
 async function start() {
   if (!STAFF) { load(''); return; }

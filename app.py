@@ -11302,7 +11302,29 @@ def _present_payment(payment):
     view = dict(payment)
     view['unallocated'] = unallocated_amount(payment)
     view['allocated'] = round(money(payment.get('amount')) - view['unallocated'], 2) if not payment.get('voided') else 0
+    view['qbo_id'] = str(payment.get('qbo_id') or '')
+    view['qbo_sync'] = payment.get('qbo_sync') or ''
+    view['qbo_error'] = payment.get('qbo_error') or ''
+    if not view['qbo_id'] and not view['qbo_sync']:
+        import quickbooks
+        with quickbooks.connection_scope(quickbooks._payment_connection(payment)):
+            link = quickbooks.find_link('payment', erp_id=payment.get('id'))
+        if link and link.get('qbo_id'):
+            view['qbo_id'] = str(link.get('qbo_id'))
+            view['qbo_sync'] = 'synced'
+    if not view['qbo_sync']:
+        view['qbo_sync'] = 'synced' if view.get('qbo_id') else 'not_sent'
+    view['qbo_sync_label'] = {
+        'synced': 'Synced',
+        'error': 'Not sent',
+        'not_connected': 'Not connected',
+        'voided': 'Voided in QuickBooks',
+    }.get(view['qbo_sync'], 'Not sent')
     return view
+
+
+def _fresh_payment(payment_id):
+    return next(row for row in load_payments() if row.get('id') == payment_id)
 
 
 def _payment_issuer(currency):
@@ -11443,7 +11465,43 @@ def record_payment():
     if additions:
         _refresh_invoice_statuses(load_payments())
     _qbo('push_payment', stored)
-    return jsonify(_present_payment(stored))
+    return jsonify(_present_payment(_fresh_payment(stored.get('id'))))
+
+
+@app.route('/api/payments/quickbooks', methods=['POST'])
+@module_required('invoices')
+def send_unsynced_payments():
+    """Post every payment that has never reached QuickBooks."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can send payments to QuickBooks.', 403)
+    import quickbooks
+    ids = [
+        row.get('id') for row in load_payments()
+        if row.get('id') and not row.get('voided') and not row.get('qbo_origin')
+        and not row.get('qbo_id') and row.get('qbo_sync') != 'synced'
+    ]
+    for payment_id in ids:
+        quickbooks.push_payment(_fresh_payment(payment_id))
+    fresh = [_present_payment(row) for row in load_payments() if row.get('id') in ids]
+    return jsonify({'count': len(fresh), 'payments': fresh})
+
+
+@app.route('/api/payments/<int:payment_id>/quickbooks', methods=['POST'])
+@module_required('invoices')
+def send_payment_to_quickbooks(payment_id):
+    """Post one ERP payment to the QuickBooks company that should hold it."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can send payments to QuickBooks.', 403)
+    payment = next((row for row in load_payments() if row.get('id') == payment_id), None)
+    if not payment:
+        return json_error('Not found', 404)
+    if payment.get('voided'):
+        return json_error('A voided payment is not sent to QuickBooks.', 400)
+    import quickbooks
+    quickbooks.push_payment(payment)
+    return jsonify(_present_payment(_fresh_payment(payment_id)))
 
 
 @app.route('/api/payments/<int:payment_id>/allocations', methods=['POST'])
@@ -11493,8 +11551,8 @@ def allocate_payment(payment_id):
                 payments[index] = payment
         save_payments(payments)
         _refresh_invoice_statuses(payments)
-        _qbo('push_payment', payment)
-        return jsonify(_present_payment(payment))
+        _qbo('push_payment', payment, True)
+        return jsonify(_present_payment(_fresh_payment(payment_id)))
     additions = []
     for row in requested:
         if not isinstance(row, dict):
@@ -11556,8 +11614,8 @@ def allocate_payment(payment_id):
             payments[index] = payment
     save_payments(payments)
     _refresh_invoice_statuses(payments)
-    _qbo('push_payment', payment)
-    return jsonify(_present_payment(payment))
+    _qbo('push_payment', payment, True)
+    return jsonify(_present_payment(_fresh_payment(payment_id)))
 
 
 def _refresh_invoice_statuses(payments):
