@@ -149,3 +149,65 @@ def test_partial_invoices_prorate_addons_and_unpaid_intercompany_can_be_regenera
     assert abs(sum(line['total'] for line in customer['items'] if line.get('kind') == 'irregular_surcharge') - 100) < 0.02
     assert now.get_json()['invoice_state'] == 'partial'
     assert now.get_json()['can_invoice_packed'] is False
+
+
+def test_repeated_line_totals_are_replaced_and_the_seed_rate_date_is_hidden(client):
+    import quickbooks
+    from tests.test_quote_export import pdf_text
+    currency_rules.record_rate(1.4, '2026-11-01', 'admin@oraglass.us')
+    _highq(client)
+    from storage import save_orders
+    save_orders([{
+        'id': 1,
+        'customer_id': 'highq',
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc 11/15/2026',
+        'status': 'approved',
+        'currency': 'cad',
+        'items': [_glass(1, 140, pcs=1), _surcharge(1, 14), _glass(2, 140, pcs=1)],
+        'packing_lists': [{
+            'id': 1, 'current': True, 'number': 'XF1', 'rack': '1054', 'date': '2026-11-15',
+            'lines': [{'serial': 1, 'qty': 1}, {'serial': 2, 'qty': 1}],
+        }],
+    }])
+    save_invoices([{
+        'id': 53,
+        'number': 'INV-0053',
+        'order_id': 1,
+        'kind': 'intercompany',
+        'issuer': 'us',
+        'currency': 'usd',
+        'company': 'Ora Glass (Canada) Inc',
+        'fx_rate': 1.4,
+        'fx_date': '2000-01-01',
+        'cad_total': 280,
+        'total': 200,
+        'balance': 200,
+        'igu_subtotal': 200,
+        'igu_total': 200,
+        'invoice_date': '2026-11-15',
+        'items': [
+            {'name': 'Unit 1', 'serial': 1, 'pcs': 1, 'qty': 1, 'unit_price': 200, 'total': 200, 'spec': _spec()},
+            {'name': 'Unit 2', 'serial': 2, 'pcs': 1, 'qty': 1, 'unit_price': 200, 'total': 200, 'spec': _spec()},
+        ],
+    }])
+    shown = client.get('/api/invoices/53').get_json()
+    assert shown['fx_date'] == '2026-11-15'
+    assert shown['total'] == 200
+    amounts = [line['total'] for line in shown['items']]
+    assert 200 not in amounts
+    glass = [line for line in shown['items'] if line.get('kind') != 'irregular_surcharge']
+    surcharge = next(line for line in shown['items'] if line.get('kind') == 'irregular_surcharge')
+    assert [line.get('serial') for line in glass] == [1, 2]
+    assert glass[0]['total'] == quickbooks.cad_to_usd(140, 1.4)
+    assert surcharge['total'] == quickbooks.cad_to_usd(14, 1.4)
+    assert glass[1]['total'] == quickbooks.cad_to_usd(140, 1.4)
+    assert abs(sum(amounts) - quickbooks.cad_to_usd(294, 1.4)) < 0.02
+    pdf = pdf_text(client.get('/api/invoices/53/pdf').data)
+    assert b'$100.00' in pdf
+    assert b'$10.00' in pdf
+    changed = client.post('/api/invoices/53/exchange-rate', json={'rate': 2})
+    assert changed.status_code == 200, changed.get_json()
+    repaired = changed.get_json()['items']
+    assert len({line['total'] for line in repaired}) > 1
+    assert all(line['total'] != changed.get_json()['total'] for line in repaired)

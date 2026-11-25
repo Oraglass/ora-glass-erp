@@ -769,6 +769,15 @@ def _erp_fx(day):
     return currency_rules.rate_on(day)
 
 
+def _shown_fx_date(invoice):
+    """The seed rate has no real effective day, so the invoice date is the date to show."""
+    import currency_rules
+    stored = str((invoice or {}).get('fx_date') or '')[:10]
+    if stored and stored != currency_rules.SEED_EFFECTIVE:
+        return stored
+    return str((invoice or {}).get('invoice_date') or '')[:10] or stored
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -7046,7 +7055,7 @@ def order_for_viewer(order, user, with_coverage=False):
         }
         if staff_view:
             document['fx_rate'] = row.get('fx_rate')
-            document['fx_date'] = row.get('fx_date') or ''
+            document['fx_date'] = _shown_fx_date(row)
             document['fx_source'] = row.get('fx_source') or ''
         documents.append(document)
     base['documents'] = documents
@@ -10105,6 +10114,130 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
     return document
 
 
+def _items_repeat_invoice_total(items, total):
+    """True when every row was stored as the whole invoice total."""
+    rows = [row for row in items or [] if isinstance(row, dict)]
+    if len(rows) < 2:
+        return False
+    target = money(total)
+    if target <= 0:
+        return False
+    return all(abs(money(row.get('total')) - target) < 0.009 for row in rows)
+
+
+def _usd_intercompany_items(items, rate):
+    """Convert each CAD line, including a prorated surcharge, at this invoice rate."""
+    import quickbooks
+    usd_total = quickbooks.cad_to_usd(round(sum(money(row.get('total')) for row in items), 2), rate)
+    remaining = usd_total
+    built = []
+    for index, item in enumerate(items):
+        addon = item.get('kind') in _CHARGE_KINDS
+        try:
+            pcs = int(item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            pcs = 0
+        if index == len(items) - 1:
+            share = remaining
+        else:
+            share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
+        remaining = round(remaining - share, 2)
+        if addon:
+            built.append({
+                'kind': item.get('kind'),
+                'name': item.get('name') or 'Charge',
+                'description': item.get('description') or item.get('name') or 'Charge',
+                'serial': item.get('serial') or '',
+                'pcs': '',
+                'qty': '',
+                'sqf': 0,
+                'unit_price': share,
+                'price_pc': share,
+                'total': share,
+            })
+            continue
+        each = round(share / pcs, 2) if pcs else share
+        built.append({
+            'name': item.get('name') or 'Glass',
+            'description': item.get('description') or item.get('name') or 'Glass',
+            'serial': item.get('serial'),
+            'spec': item.get('spec'),
+            'pcs': pcs,
+            'qty': pcs,
+            'sqf': item.get('sqf') or 0,
+            'unit_price': each,
+            'price_pc': each,
+            'total': share,
+        })
+    return built, usd_total
+
+
+def _invoice_quantities(order, invoice):
+    import shipments
+    by_serial = {row['serial']: row['index'] for row in shipments.glass_rows(order)}
+    quantities = {}
+    for item in (invoice or {}).get('items') or []:
+        if not isinstance(item, dict) or item.get('kind') in _CHARGE_KINDS:
+            continue
+        try:
+            serial = int(item.get('serial'))
+            pcs = int(item.get('pcs') or item.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        index = by_serial.get(serial)
+        if index is None or pcs <= 0:
+            continue
+        quantities[index] = quantities.get(index, 0) + pcs
+    return quantities
+
+
+def _shown_intercompany_items(invoice):
+    """Replace rows that were all saved as the invoice total with each line's own amount."""
+    items = invoice.get('items') or []
+    if not _items_repeat_invoice_total(items, invoice.get('total')):
+        return items
+    order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
+    rate = invoice.get('fx_rate')
+    if not order or not rate:
+        return items
+    quantities = _invoice_quantities(order, invoice)
+    if not quantities:
+        return items
+    import shipments
+    built, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+    if not built:
+        return items
+    converted, _total = _usd_intercompany_items(built, rate)
+    return converted or items
+
+
+def _scale_invoice_lines(items, new_total):
+    """Keep each line's share when the invoice total changes."""
+    rows = [dict(row) if isinstance(row, dict) else row for row in items or []]
+    amounts = [money(row.get('total')) if isinstance(row, dict) else 0 for row in rows]
+    base = round(sum(amounts), 2)
+    if base <= 0:
+        return rows
+    remaining = money(new_total)
+    last = max((index for index, row in enumerate(rows) if isinstance(row, dict)), default=None)
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        if index == last:
+            share = remaining
+        else:
+            share = min(round(amounts[index] * money(new_total) / base, 2), remaining)
+        remaining = round(remaining - share, 2)
+        try:
+            pcs = int(row.get('pcs') or 0)
+        except (TypeError, ValueError):
+            pcs = 0
+        row['total'] = share
+        row['unit_price'] = round(share / pcs, 2) if pcs else share
+        row['price_pc'] = row['unit_price']
+    return rows
+
+
 def _issue_shipment_invoice(order, shipment, user, include_extras):
     """Invoice this shipment once. Returns the invoice number."""
     import quickbooks
@@ -10146,48 +10279,10 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
             usd_total = money(summary.get('total'))
         books = load_customers().get(_canada_books_customer()) or {}
         books['id'] = _canada_books_customer()
-        intercompany_items = []
-        remaining = usd_total
-        for index, item in enumerate(items):
-            addon = item.get('kind') in _CHARGE_KINDS
-            try:
-                pcs = int(item.get('pcs') or 0)
-            except (TypeError, ValueError):
-                pcs = 0
-            if index == len(items) - 1:
-                share = remaining
-            elif currency == 'cad':
-                share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
-            else:
-                share = min(money(item.get('total')), remaining)
-            remaining = round(remaining - share, 2)
-            if addon:
-                intercompany_items.append({
-                    'kind': item.get('kind'),
-                    'name': item.get('name') or 'Charge',
-                    'description': item.get('description') or item.get('name') or 'Charge',
-                    'serial': item.get('serial') or '',
-                    'pcs': '',
-                    'qty': '',
-                    'sqf': 0,
-                    'unit_price': share,
-                    'price_pc': share,
-                    'total': share,
-                })
-                continue
-            each = round(share / pcs, 2) if pcs else share
-            intercompany_items.append({
-                'name': item.get('name') or 'Glass',
-                'description': item.get('description') or item.get('name') or 'Glass',
-                'serial': item.get('serial'),
-                'spec': item.get('spec'),
-                'pcs': pcs,
-                'qty': pcs,
-                'sqf': item.get('sqf') or 0,
-                'unit_price': each,
-                'price_pc': each,
-                'total': share,
-            })
+        if currency == 'cad':
+            intercompany_items, usd_total = _usd_intercompany_items(items, rate)
+        else:
+            intercompany_items, usd_total = _usd_intercompany_items(items, 1)
         document = _invoice_for_items(
             order, user, books, intercompany_items,
             {'discount': {'type': 'percent', 'value': 0}, 'discount_amount': 0, 'extra_charges': [],
@@ -10326,6 +10421,10 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number
+    if view.get('fx_rate') not in (None, ''):
+        view['fx_date'] = _shown_fx_date(invoice)
+    if view['kind'] == 'intercompany':
+        view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
     _attach_invoice_customs(view)
     if view['kind'] == 'intercompany' and invoice.get('order_id'):
@@ -10651,16 +10750,22 @@ def override_exchange_rate(invoice_id):
     if invoice.get('cad_total') in (None, ''):
         return json_error('This invoice has no CAD amount to convert.', 400)
     usd_total = quickbooks.cad_to_usd(invoice.get('cad_total'), rate)
+    old_total = money(invoice.get('total'))
     invoice['fx_rate'] = rate
     invoice['fx_override'] = True
+    if _items_repeat_invoice_total(invoice.get('items'), old_total):
+        repaired = _shown_intercompany_items(invoice)
+        if not _items_repeat_invoice_total(repaired, old_total):
+            invoice['items'] = repaired
+            usd_total = round(sum(money(row.get('total')) for row in repaired if isinstance(row, dict)), 2)
+        else:
+            invoice['items'] = _scale_invoice_lines(invoice.get('items') or [], usd_total)
+    else:
+        invoice['items'] = _scale_invoice_lines(invoice.get('items') or [], usd_total)
     invoice['total'] = usd_total
     invoice['balance'] = usd_total
     invoice['igu_subtotal'] = usd_total
     invoice['igu_total'] = usd_total
-    for line in invoice.get('items') or []:
-        line['unit_price'] = usd_total
-        line['price_pc'] = usd_total
-        line['total'] = usd_total
     invoice.setdefault('audit', []).append(_audit(user, 'exchange-rate', f'FXUSDCAD {rate}'))
     save_invoices(invoices)
     return jsonify(_present_invoice(invoice, load_payments()))

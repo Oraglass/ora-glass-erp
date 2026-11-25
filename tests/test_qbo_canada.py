@@ -92,9 +92,10 @@ def test_canadian_order_issues_both_invoices_and_us_orders_stay_single(client, m
     assert intercompany['number'].startswith('INV-')
     assert intercompany['currency'] == 'usd'
     assert intercompany['fx_rate'] == 1.4
-    assert intercompany['fx_date'] == '2000-01-01'
     assert intercompany['fx_source'] == 'erp'
     stored = {row['id']: row for row in load_invoices()}
+    assert intercompany['fx_date'] == stored[intercompany['id']]['invoice_date']
+    assert intercompany['fx_date'] != '2000-01-01'
     cad_total = stored[customer_invoice['id']]['total']
     usd_total = stored[intercompany['id']]['total']
     assert cad_total == order['total']
