@@ -45,6 +45,35 @@ def _order():
     }])
 
 
+def test_packing_section_shows_rack_numbers_and_links_known_racks(client):
+    _users()
+    _order()
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    detail = client.get('/api/orders/4').get_json()
+    line = detail['packing_lists'][0]['lines'][0]
+    assert line['rack'] == '1054'
+    assert line['rack_known'] is False
+    assert detail['packing_serials'][0]['racks'] == [{'number': '1054', 'known': False}]
+    page = open('templates/orders.html', encoding='utf-8').read()
+    assert '>Rack<' in page
+    assert "href=\"/racks?number=" in page
+    assert 'Rack -' in page
+    shipped = client.post('/api/orders/4/ship-packed', json={
+        'number': 'S1', 'date': '2026-01-01', 'rack': '1054',
+    })
+    assert shipped.status_code == 200, shipped.get_json()
+    linked = client.get('/api/orders/4').get_json()
+    assert linked['packing_lists'][0]['rack_known'] is True
+    assert linked['packing_lists'][0]['lines'][0]['rack_known'] is True
+    assert linked['packing_serials'][0]['racks'] == [{'number': '1054', 'known': True}]
+    one = client.get('/api/racks?number=1054').get_json()
+    assert [row['number'] for row in one] == ['1054']
+    assert client.get('/api/racks?number=9999').get_json() == []
+    racks_page = client.get('/racks?number=1054')
+    assert b'id="rack-focus"' in racks_page.data
+    assert b"params.set('number', requested)" in racks_page.data
+
+
 def test_shipment_moves_the_rack_and_a_new_list_brings_it_back(client):
     _users()
     _order()

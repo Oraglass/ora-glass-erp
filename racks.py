@@ -296,12 +296,16 @@ def present(row, today=None):
     return shown
 
 
-def visible_rows(racks, user, status='', customer_id='', today=None):
+def visible_rows(racks, user, status='', customer_id='', number='', today=None):
     """Staff see every rack. A customer sees the racks their company is holding."""
     role = (user or {}).get('role') or ''
+    wanted = str(number or '').strip()
     rows = []
     for number, row in (racks or {}).items():
         if not isinstance(row, dict):
+            continue
+        shown_number = str(row.get('number') or number)
+        if wanted and shown_number != wanted:
             continue
         if role == 'customer':
             if row.get('status') != AT_CUSTOMER or row.get('customer_id') != user.get('customer_id'):
@@ -312,7 +316,7 @@ def visible_rows(racks, user, status='', customer_id='', today=None):
             if customer_id and row.get('customer_id') != customer_id:
                 continue
         shown = present(row, today)
-        shown['number'] = shown.get('number') or number
+        shown['number'] = shown_number
         rows.append(shown)
     rows.sort(key=lambda row: str(row.get('number')))
     return rows

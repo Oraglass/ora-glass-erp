@@ -28,6 +28,7 @@ a{color:#C41E3A}
 <div class="container"><div class="card">
 <h2 style="color:#333">Racks</h2>
 <p class="note">{% if staff %}Every rack, and how long it has been at a customer. More than 14 days is highlighted.{% else %}Racks your company is holding.{% endif %}</p>
+<p class="note" id="rack-focus" hidden></p>
 <div class="filters">
 {% if staff %}
 <select id="rack-status" aria-label="Status">
@@ -60,6 +61,13 @@ function render(rows) {
 }
 async function load() {
   const params = new URLSearchParams();
+  const requested = new URLSearchParams(location.search).get('number') || '';
+  const focus = document.getElementById('rack-focus');
+  if (focus) {
+    focus.hidden = !requested;
+    focus.textContent = requested ? 'Rack ' + requested : '';
+  }
+  if (requested) params.set('number', requested);
   if (STAFF) {
     const status = document.getElementById('rack-status').value;
     const customer = document.getElementById('rack-customer').value;

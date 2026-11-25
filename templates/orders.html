@@ -645,6 +645,30 @@ function remakesBlock(order) {
   const list = rows.map(row => '<li id="remake-status-' + esc(row.id) + '"><a id="remake-link-' + esc(row.id) + '" href="/orders/' + encodeURIComponent(row.id) + '">' + esc(row.number) + '</a> · ' + esc(row.status_label) + (row.charge_customer ? ' · Charged' : ' · Not charged') + (row.reason ? ' · ' + esc(row.reason) : '') + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · ' + esc(row.ship_status_label || 'Not shipped') + '</li>').join('');
   return '<details class="section" id="remakes" open><summary><h3>Remakes</h3></summary><p class="note">Service orders made from this order.</p><ul id="remake-list">' + list + '</ul></details>';
 }
+function rackMarkup(number, known) {
+  const text = String(number || '').trim();
+  if (!text) return '-';
+  if (known) return '<a class="rack-link" href="/racks?number=' + encodeURIComponent(text) + '">' + esc(text) + '</a>';
+  return esc(text);
+}
+function rackMarks(racks) {
+  const rows = racks || [];
+  if (!rows.length) return '-';
+  return rows.map(row => rackMarkup(row.number || row, row.known)).join(', ');
+}
+function listRackMarks(list) {
+  const seen = [];
+  (list.lines || []).forEach(line => {
+    const text = String(line.rack || '').trim();
+    if (!text || seen.some(row => row.number === text)) return;
+    seen.push({number: text, known: !!line.rack_known});
+  });
+  if (!seen.length && String(list.rack || '').trim()) {
+    seen.push({number: String(list.rack).trim(), known: !!list.rack_known});
+  }
+  if (!seen.length) return 'Rack -';
+  return (seen.length === 1 ? 'Rack ' : 'Racks ') + rackMarks(seen);
+}
 function packingBlock(order) {
   const serials = order.packing_serials || [];
   const lists = order.packing_lists || [];
@@ -652,9 +676,9 @@ function packingBlock(order) {
   const totals = order.packing_totals || {};
   const showShipped = (order.shipments || []).length > 0 || serials.some(row => Number(row.shipped) > 0);
   const shippedHead = showShipped ? '<th class="num">Shipped</th>' : '';
-  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
+  const serialRows = serials.map(row => '<tr><td>' + esc(row.serial) + (row.source_serial ? '<div class="note">Remake of #' + esc(row.source_serial) + '</div>' : '') + '</td><td>' + rackMarks(row.racks) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td>' + (showShipped ? '<td class="num">' + esc(row.shipped || 0) + '</td>' : '') + '<td class="num">' + esc(row.bo) + '</td></tr>').join('');
   const listBlocks = lists.map(list => {
-    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td class="size">' + displaySize(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
+    const lines = (list.lines || []).map(line => '<tr><td>' + esc(line.serial) + '</td><td>' + rackMarkup(line.rack, line.rack_known) + '</td><td>' + esc(line.floor || '') + '</td><td>' + esc(line.product || '') + '</td><td class="size">' + displaySize(line.size || '') + '</td><td class="num">' + esc(line.qty) + '</td></tr>').join('');
     const file = list.filename ? ' · <a href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists/' + encodeURIComponent(list.id) + '/file">' + esc(list.filename) + '</a>' : '';
     const unmatched = STAFF && (list.unmatched || []).length
       ? '<p class="error">Not matched: ' + (list.unmatched || []).map(row => esc(row.reason || row.serial)).join('; ') + '</p>'
@@ -664,11 +688,11 @@ function packingBlock(order) {
       ? '<div class="filters"><select data-move-list="' + esc(list.id) + '" aria-label="ERP order for ' + esc(list.number || list.id) + '"><option value="">Move to an ERP order</option>' + moveChoices + '</select><button type="button" class="btn small" data-move-packing="' + esc(list.id) + '">Move to this order</button></div>'
       : '';
     const remove = STAFF ? ' <button type="button" class="btn small secondary" data-remove-packing="' + esc(list.id) + '">Remove / reassign</button>' : '';
-    return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.rack || list.id) + remove + '</h4>'
-      + '<p class="note">' + esc(list.date || '') + (list.rack ? ' · ' + esc(list.rack) : '') + file + '</p>'
+    return '<h4 style="margin:14px 0 4px">Packing list ' + esc(list.number || list.id) + ' · ' + listRackMarks(list) + remove + '</h4>'
+      + '<p class="note">' + esc(list.date || '') + file + '</p>'
       + unmatched
       + move
-      + '<table><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Pcs packed</th></tr></thead><tbody>' + (lines || '<tr><td colspan="5">No matched pieces</td></tr>') + '</tbody></table>';
+      + '<table><thead><tr><th>Serial</th><th>Rack</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Pcs packed</th></tr></thead><tbody>' + (lines || '<tr><td colspan="6">No matched pieces</td></tr>') + '</tbody></table>';
   }).join('');
   const history = STAFF ? (order.packing_history || []).map(list => '<li>Replaced ' + esc(list.number || list.rack || list.filename) + ' · ' + esc(list.uploaded_at || '') + ' · ' + esc(list.uploaded_by || '') + '</li>').join('') : '';
   const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
@@ -685,8 +709,8 @@ function packingBlock(order) {
   const summary = 'Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + (showShipped ? ' · Shipped ' + esc(shippedTotal) : '') + ' · BO ' + esc(totals.bo || 0);
   const boRows = serials.filter(row => Number(row.bo) > 0);
   const boTable = boRows.length
-    ? '<h4 id="packing-bo" style="margin:14px 0 4px">Back order</h4><p class="note">Pieces ordered and not yet packed.</p><table id="backorder-lines"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>'
-      + boRows.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td><td class="num">' + esc(row.bo) + '</td></tr>').join('')
+    ? '<h4 id="packing-bo" style="margin:14px 0 4px">Back order</h4><p class="note">Pieces ordered and not yet packed.</p><table id="backorder-lines"><thead><tr><th>Serial</th><th>Rack</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>'
+      + boRows.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + rackMarks(row.racks) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td><td class="num">' + esc(row.bo) + '</td></tr>').join('')
       + '</tbody></table>'
     : '<p class="note" id="packing-bo">No back order.</p>';
   return '<details class="section" id="packing" open><summary><h3>Packing</h3></summary>'
@@ -695,7 +719,7 @@ function packingBlock(order) {
     + invoiceChoice
     + shipConfirmPanel(order)
     + '<p class="note" id="packing-totals">' + summary + '</p>'
-    + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th>' + shippedHead + '<th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
+    + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Rack</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th>' + shippedHead + '<th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
     + boTable
     + listBlocks + historyBlock + '</details>';
 }

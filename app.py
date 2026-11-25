@@ -2237,6 +2237,7 @@ def rack_list():
         rack_book.load_rows(), user,
         status=clean_text(request.args.get('status'), 40),
         customer_id=clean_text(request.args.get('customer_id'), 80),
+        number=clean_text(request.args.get('number'), 40),
     )
     return jsonify(rows)
 
@@ -2302,6 +2303,7 @@ def rack_labels():
         rack_book.load_rows(), user,
         status=clean_text(request.args.get('status'), 40),
         customer_id=clean_text(request.args.get('customer_id'), 80),
+        number=clean_text(request.args.get('number'), 40),
     )
     payload = rack_book.labels_pdf(rows)
     return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name='rack-labels.pdf')
@@ -6560,12 +6562,14 @@ def _packing_lines_for(order, entry):
         info = catalog.get(serial)
         if not info:
             continue
+        rack = str(line.get('rack') or (entry or {}).get('rack') or '').strip()
         lines.append({
             'serial': serial,
             'floor': info['floor'],
             'product': info['product'],
             'size': info['size'],
             'qty': line.get('qty') or 0,
+            'rack': rack,
         })
     return lines
 
@@ -6771,26 +6775,59 @@ def _can_invoice_packed(order):
     return bool(_needs_intercompany(order) and _unbilled_packed(order, 'intercompany'))
 
 
+def _known_rack_numbers():
+    import racks as rack_book
+    return {str(number) for number in (rack_book.load_rows() or {})}
+
+
+def _rack_ref(number, known):
+    text = str(number or '').strip()
+    if not text:
+        return None
+    return {'number': text, 'known': text in known}
+
+
 def _packing_payload(order, staff):
     import packing
     progress = packing.packing_progress(order)
+    known = _known_rack_numbers()
     billed = _invoiced_qty_by_serial(order, 'intercompany')
     customer_billed = _invoiced_qty_by_serial(order, 'customer')
+    racks_by_serial = {}
+    for entry in order.get('packing_lists') or []:
+        if not entry.get('current', True):
+            continue
+        for line in entry.get('lines') or []:
+            try:
+                serial = int(line.get('serial'))
+            except (TypeError, ValueError):
+                continue
+            ref = _rack_ref(line.get('rack') or entry.get('rack'), known)
+            if not ref:
+                continue
+            bucket = racks_by_serial.setdefault(serial, [])
+            if all(item['number'] != ref['number'] for item in bucket):
+                bucket.append(ref)
     for row in progress['serials']:
         row['intercompany_invoiced'] = billed.get(row['serial'], 0)
         row['customer_invoiced'] = customer_billed.get(row['serial'], 0)
         row['shipped'] = shipments.shipped_qty(order, row['index'])
+        row['racks'] = racks_by_serial.get(row['serial'], [])
     current = []
     history = []
     for entry in order.get('packing_lists') or []:
+        lines = _packing_lines_for(order, entry)
+        for line in lines:
+            line['rack_known'] = bool(line.get('rack')) and line['rack'] in known
         shown = {
             'id': entry.get('id'),
             'number': entry.get('number') or '',
             'rack': entry.get('rack') or '',
+            'rack_known': bool(str(entry.get('rack') or '').strip()) and str(entry.get('rack')).strip() in known,
             'date': entry.get('date') or '',
             'filename': entry.get('filename') or '',
             'uploaded_at': entry.get('uploaded_at') or '',
-            'lines': _packing_lines_for(order, entry),
+            'lines': lines,
         }
         if staff:
             shown['uploaded_by'] = entry.get('uploaded_by') or ''
