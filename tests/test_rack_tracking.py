@@ -173,24 +173,37 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     assert b'autofocus' in page.data
     assert b'cdn.jsdelivr.net/npm/html5-qrcode' in page.data
     assert b'>Scan rack<' in page.data
+    assert b'id="customer"' in page.data
+    sites = client.get('/api/racks/sites')
+    assert sites.status_code == 200
+    assert any(row['id'] == 'harbor-glass' for row in sites.get_json())
+    wrong = client.post('/api/racks/check', json={'text': '1054', 'customer_id': 'maple', 'already': []})
+    assert wrong.get_json()['result'] == 'wrong_customer'
+    assert wrong.get_json()['customer_name'] == 'Harbor Glass'
     client.post('/logout')
     assert login(client, 'dana@oraglass.us').status_code == 302
-    assert client.get('/racks/scan').status_code == 200
+    driver_page = client.get('/racks/scan')
+    assert driver_page.status_code == 200
+    assert b'id="customer"' not in driver_page.data
+    assert b'/api/racks/sites' not in driver_page.data
+    assert b'customer_name' in driver_page.data
     denied = client.get('/orders')
     assert denied.status_code == 302
     assert '/racks/scan' in denied.headers['Location']
     assert client.get('/api/racks').status_code == 403
     assert client.get('/api/customers').status_code == 403
-    unknown = client.post('/api/racks/check', json={'text': ' 9999\n', 'customer_id': 'harbor-glass', 'already': []})
+    assert client.get('/api/racks/sites').status_code == 403
+    unknown = client.post('/api/racks/check', json={'text': ' 9999\n', 'already': []})
     assert unknown.get_json()['result'] == 'unknown'
+    assert 'Not at a customer' in unknown.get_json()['message']
     assert '9999' not in load_racks()
     assert unknown.get_json()['raw'] == ' 9999\n'
-    ok = client.post('/api/racks/check', json={'text': '1054', 'customer_id': 'harbor-glass', 'already': []})
+    ok = client.post('/api/racks/check', json={'text': '1054', 'customer_id': 'maple', 'already': []})
     assert ok.get_json()['result'] == 'ok'
-    again = client.post('/api/racks/check', json={'text': '1054', 'customer_id': 'harbor-glass', 'already': ['1054']})
+    assert ok.get_json()['customer_name'] == 'Harbor Glass'
+    assert ok.get_json()['customer_id'] == 'harbor-glass'
+    again = client.post('/api/racks/check', json={'text': '1054', 'already': ['1054']})
     assert again.get_json()['result'] == 'already'
-    wrong = client.post('/api/racks/check', json={'text': '1054', 'customer_id': 'maple', 'already': []})
-    assert wrong.get_json()['result'] == 'wrong_customer'
     client.post('/logout')
     assert login(client, 'sales@harbor.example').status_code == 302
     held = client.get('/api/racks').get_json()
@@ -202,12 +215,17 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     client.post('/logout')
     assert login(client, 'dana@oraglass.us').status_code == 302
     picked = client.post('/api/racks/pickup', json={
-        'customer_id': 'harbor-glass', 'truck_plate': 'VAN-2', 'racks': ['1054'],
+        'customer_id': 'maple', 'truck_plate': 'VAN-2', 'racks': ['1054'],
     })
     assert picked.status_code == 200, picked.get_json()
+    flagged = client.post('/api/racks/check', json={'text': '1054', 'already': []})
+    assert flagged.get_json()['result'] == 'not_at_customer'
+    assert 'Not at a customer' in flagged.get_json()['message']
     home = load_racks()['1054']
     assert home['status'] == 'returned'
     assert home['history'][-1]['action'] == 'picked_up'
+    assert home['history'][-1]['customer_id'] == 'harbor-glass'
+    assert home['history'][-1]['customer_name'] == 'Harbor Glass'
     assert 'returned' in (home['history'][-1].get('note') or '').lower() or home['history'][-1]['note'] == 'Picked up and returned.'
     assert home['history'][-1]['user'] == 'dana@oraglass.us'
     assert home['history'][-1]['truck_plate'] == 'VAN-2'

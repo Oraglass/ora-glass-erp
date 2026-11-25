@@ -31,9 +31,11 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 <h2>Pick up racks</h2>
 <p class="note">Point the phone camera at the QR code. The code is the rack number. Type it if the camera is not available.</p>
 <div class="card">
+{% if not driver %}
 <label>Customer
 <select id="customer" aria-label="Customer"></select>
 </label>
+{% endif %}
 <label>Truck plate
 <input id="plate" aria-label="Truck plate" placeholder="Optional" autocomplete="off">
 </label>
@@ -55,6 +57,7 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+const DRIVER = {{ driver|tojson }};
 const scans = [];
 const input = document.getElementById('scan-input');
 const wedge = document.getElementById('wedge-rack');
@@ -76,10 +79,32 @@ function beep(ok) {
 }
 function render() {
   if (!scans.length) { list.innerHTML = '<p class="note">No racks scanned yet.</p>'; return; }
-  list.innerHTML = scans.map(row => {
-    const detail = row.result === 'unknown' && row.raw ? row.message + ' Scanned text: ' + row.raw : row.message;
-    return '<div class="row ' + (row.result === 'ok' ? 'ok' : 'warn') + '"><strong>' + esc(row.rack || row.raw) + '</strong><span>' + esc(detail) + '</span></div>';
+  const ready = scans.filter(row => row.result === 'ok');
+  const flagged = scans.filter(row => row.result !== 'ok');
+  const groups = [];
+  ready.forEach(row => {
+    const name = row.customer_name || 'Unknown customer';
+    let group = groups.find(item => item.name === name);
+    if (!group) {
+      group = {name: name, rows: []};
+      groups.push(group);
+    }
+    group.rows.push(row);
+  });
+  let html = groups.map(group => {
+    const heading = groups.length > 1 ? '<h3>' + esc(group.name) + '</h3>' : '';
+    const rows = group.rows.map(row => '<div class="row ok"><strong>' + esc(row.rack) + '</strong><span>' + esc(row.customer_name || group.name) + '</span></div>').join('');
+    return heading + rows;
   }).join('');
+  html += flagged.map(row => {
+    const detail = row.result === 'unknown' && row.raw ? row.message + ' Scanned text: ' + row.raw : row.message;
+    return '<div class="row warn"><strong>' + esc(row.rack || row.raw) + '</strong><span>' + esc(detail) + '</span></div>';
+  }).join('');
+  list.innerHTML = html;
+}
+function chosenCustomer() {
+  const select = document.getElementById('customer');
+  return select ? select.value : '';
 }
 async function addScan(raw) {
   const text = String(raw || '');
@@ -88,7 +113,7 @@ async function addScan(raw) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       text: text,
-      customer_id: document.getElementById('customer').value,
+      customer_id: DRIVER ? '' : chosenCustomer(),
       already: scans.filter(row => row.result === 'ok').map(row => row.rack)
     })
   });
@@ -141,7 +166,7 @@ document.getElementById('confirm').addEventListener('click', async () => {
   const res = await fetch('/api/racks/pickup', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      customer_id: document.getElementById('customer').value,
+      customer_id: DRIVER ? '' : chosenCustomer(),
       truck_plate: document.getElementById('plate').value,
       racks: racks
     })
@@ -154,9 +179,13 @@ document.getElementById('confirm').addEventListener('click', async () => {
   render();
   wedge.focus();
 });
+{% if not driver %}
 fetch('/api/racks/sites').then(res => res.json()).then(rows => {
-  document.getElementById('customer').innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  const select = document.getElementById('customer');
+  if (!select) return;
+  select.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
 });
+{% endif %}
 window.addEventListener('load', () => wedge.focus());
 </script>
 </body>

@@ -2242,7 +2242,7 @@ def rack_scan():
     user = current_user()
     if not _rack_user_ok(user, scan=True):
         return forbidden()
-    return render_template('rack_scan.html')
+    return render_template('rack_scan.html', driver=user.get('role') == 'driver')
 
 
 @app.route('/api/racks', methods=['GET'])
@@ -2266,7 +2266,7 @@ def rack_list():
 @login_required
 def rack_sites():
     user = current_user()
-    if not _rack_user_ok(user, scan=True):
+    if user.get('role') == 'driver' or not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
     rows = [
         {'id': customer_id, 'name': customer.get('name') or customer_id}
@@ -2285,9 +2285,9 @@ def rack_check():
         return json_error('Access denied', 403)
     data = json_body() or {}
     import racks as rack_book
+    customer_id = '' if user.get('role') == 'driver' else clean_text(data.get('customer_id'), 80)
     return jsonify(rack_book.check_scan(
-        rack_book.load_rows(), data.get('text'),
-        clean_text(data.get('customer_id'), 80), data.get('already') or [],
+        rack_book.load_rows(), data.get('text'), customer_id, data.get('already') or [],
     ))
 
 
@@ -2298,13 +2298,18 @@ def rack_pickup():
     if not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
     data = json_body() or {}
-    customer_id = clean_text(data.get('customer_id'), 80)
-    customer = load_customers().get(customer_id) if customer_id else None
-    if not customer:
-        return json_error('Choose the customer.', 400)
+    if user.get('role') == 'driver':
+        customer_id = ''
+        customer_name = ''
+    else:
+        customer_id = clean_text(data.get('customer_id'), 80)
+        customer = load_customers().get(customer_id) if customer_id else None
+        if not customer:
+            return json_error('Choose the customer.', 400)
+        customer_name = customer.get('name') or ''
     import racks as rack_book
     result = rack_book.confirm_pickup(
-        data.get('racks') or [], customer_id, customer.get('name') or '',
+        data.get('racks') or [], customer_id, customer_name,
         clean_text(data.get('truck_plate'), 40), user,
     )
     if not result['moved']:

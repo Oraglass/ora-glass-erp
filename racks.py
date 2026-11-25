@@ -462,36 +462,70 @@ def backfill_from_orders(orders, user=None):
     return _mutate(change)
 
 
-def check_scan(racks, raw, customer_id, already=None):
-    """Classify one scan before the driver confirms the pickup."""
+def check_scan(racks, raw, customer_id='', already=None):
+    """Classify one scan before pickup.
+
+    With no customer id, the rack's current customer is the answer. A chosen
+    customer still warns when the rack is somewhere else.
+    """
     rack = rack_number_from_scan(raw)
     raw_text = '' if raw is None else str(raw)
     seen = {str(item).strip() for item in (already or [])}
     if not rack:
-        return {'result': 'unknown', 'rack': '', 'raw': raw_text, 'message': 'That scan did not include a rack number.'}
+        return {'result': 'unknown', 'rack': '', 'raw': raw_text, 'message': 'That scan did not include a rack number.', 'customer_id': '', 'customer_name': ''}
     if rack in seen:
-        return {'result': 'already', 'rack': rack, 'raw': raw_text, 'message': 'Already scanned.'}
+        return {'result': 'already', 'rack': rack, 'raw': raw_text, 'message': 'Already scanned.', 'customer_id': '', 'customer_name': ''}
     row = (racks or {}).get(rack)
     if not row:
         return {
             'result': 'unknown',
             'rack': rack,
             'raw': raw_text,
-            'message': 'Unknown rack.',
+            'message': 'Unknown rack. Not at a customer.',
+            'customer_id': '',
+            'customer_name': '',
         }
-    if row.get('status') != AT_CUSTOMER or row.get('customer_id') != customer_id:
-        where = row.get('customer_name') or STATUS_LABELS.get(row.get('status'), 'Ora Glass')
+    holder_id = row.get('customer_id') or ''
+    holder_name = row.get('customer_name') or ''
+    at_customer = row.get('status') == AT_CUSTOMER and bool(holder_id)
+    if not at_customer:
+        where = STATUS_LABELS.get(row.get('status'), 'Ora Glass')
+        return {
+            'result': 'not_at_customer',
+            'rack': rack,
+            'raw': raw_text,
+            'message': f'Not at a customer. {where}.',
+            'customer_id': '',
+            'customer_name': '',
+            'name': row.get('name') or '',
+        }
+    if customer_id and holder_id != customer_id:
         return {
             'result': 'wrong_customer',
             'rack': rack,
             'raw': raw_text,
-            'message': f'This rack is not at this customer. It is at {where}.',
+            'message': f'This rack is not at this customer. It is at {holder_name or "another customer"}.',
+            'customer_id': holder_id,
+            'customer_name': holder_name,
+            'name': row.get('name') or '',
         }
-    return {'result': 'ok', 'rack': rack, 'raw': raw_text, 'message': 'OK', 'name': row.get('name') or ''}
+    return {
+        'result': 'ok',
+        'rack': rack,
+        'raw': raw_text,
+        'message': holder_name,
+        'customer_id': holder_id,
+        'customer_name': holder_name,
+        'name': row.get('name') or '',
+    }
 
 
 def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, moment=None):
-    """Bring the scanned racks back to Ora Glass."""
+    """Bring the scanned racks back to Ora Glass.
+
+    An empty customer id uses the customer each rack is at now. The pickup is
+    still written on that rack's history.
+    """
     wanted = []
     for number in numbers or []:
         cleaned = rack_number_from_scan(number)
@@ -507,6 +541,8 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
                 skipped.append(verdict)
                 continue
             row = racks[number]
+            held_id = row.get('customer_id') or customer_id
+            held_name = row.get('customer_name') or customer_name
             row['status'] = RETURNED
             row['customer_id'] = ''
             row['customer_name'] = ''
@@ -517,8 +553,8 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
             row['truck_plate'] = ''
             row.setdefault('history', []).append(_event(
                 'picked_up', user, moment,
-                customer_id=customer_id,
-                customer_name=customer_name,
+                customer_id=held_id,
+                customer_name=held_name,
                 truck_plate=truck_plate or '',
                 note='Picked up and returned.',
             ))
