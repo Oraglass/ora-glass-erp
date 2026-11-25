@@ -307,9 +307,9 @@ function syncRoleExtras() {
   const loginField = document.getElementById('u-email');
   const passwordHelp = document.getElementById('password-help');
   if (driver) {
-    loginLabel.textContent = 'Username';
-    loginField.type = 'text';
-    loginField.placeholder = 'Letters, digits, or a phone number';
+    loginLabel.textContent = 'Phone number';
+    loginField.type = 'tel';
+    loginField.placeholder = '360-555-0199';
     passwordHelp.textContent = 'Required for a new driver. They must change it at first sign-in. A setup link needs an email, so a driver cannot use one.';
   } else {
     loginLabel.textContent = 'Email';
@@ -381,7 +381,7 @@ function render() {
   tbody.innerHTML = rows.map(user => {
     const account = user.account || user.email;
     const key = esc(account);
-    const email = esc(user.username || user.email || user.employee_number || account);
+    const email = esc(user.phone || user.email || user.employee_number || account);
     const self = account === CURRENT_EMAIL;
     const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + key + '">Delete</button>';
     const actions = CAN_MANAGE
@@ -479,7 +479,7 @@ async function openEdit(user) {
   document.getElementById('user-modal-title').textContent = 'Edit User';
   document.getElementById('u-original').value = user.account || user.email;
   document.getElementById('u-name').value = user.name || '';
-  document.getElementById('u-email').value = user.role === 'driver' ? (user.username || user.email || '') : (user.email || '');
+  document.getElementById('u-email').value = user.role === 'driver' ? (user.phone || user.email || '') : (user.email || '');
   document.getElementById('u-email').disabled = user.role !== 'shop' && user.role !== 'driver';
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'none';
@@ -567,7 +567,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         name: document.getElementById('u-name').value,
-        username: role === 'driver' ? loginValue : '',
+        phone: role === 'driver' ? loginValue : '',
         role: role,
         customer_id: document.getElementById('u-company').value,
         tier_override: document.getElementById('u-tier').value,
@@ -596,7 +596,7 @@ document.getElementById('save-user').addEventListener('click', async () => {
       body: JSON.stringify({
         name: document.getElementById('u-name').value,
         email: role === 'driver' ? '' : loginValue,
-        username: role === 'driver' ? loginValue : '',
+        phone: role === 'driver' ? loginValue : '',
         password: document.getElementById('u-password').value,
         temporary: true,
         role: document.getElementById('u-role').value,

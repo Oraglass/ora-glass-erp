@@ -519,17 +519,17 @@ def shop_account_key(number):
     return 'shop:' + normalize_employee_number(number)
 
 
-def normalize_username(value):
-    """A driver login: letters, digits, dot, dash, underscore, or a phone number."""
-    text = str(value or '').strip()
-    compact = re.sub(r'[\s().-]', '', text)
-    if compact.startswith('+'):
-        compact = compact[1:]
-    if compact.isdigit() and 7 <= len(compact) <= 15:
-        return compact
-    lowered = text.lower()
-    if re.fullmatch(r'[a-z0-9._-]{1,64}', lowered) and re.search(r'[a-z0-9]', lowered):
-        return lowered
+def normalize_phone(value):
+    """Digits only. Spaces, dashes, and brackets are ignored, and a leading +1 is dropped."""
+    text = re.sub(r'[\s\-()\[\]]', '', str(value or '').strip())
+    if text.startswith('+1'):
+        text = text[2:]
+    elif text.startswith('+'):
+        return ''
+    if len(text) == 11 and text.startswith('1') and text.isdigit():
+        text = text[1:]
+    if text.isdigit() and 10 <= len(text) <= 15:
+        return text
     return ''
 
 
@@ -538,38 +538,39 @@ def _login_names(value):
     names = set()
     if text:
         names.add(text)
-    username = normalize_username(value)
-    if username:
-        names.add(username)
+    phone = normalize_phone(value)
+    if phone:
+        names.add(phone)
     return names
 
 
 def login_taken(value, users, except_key=None):
-    """True when this email or username is already a login, ignoring case."""
+    """True when this email or phone number is already a login."""
     wanted = _login_names(value)
     if not wanted:
         return False
     for key, user in (users or {}).items():
         if except_key is not None and key == except_key:
             continue
-        if wanted & _login_names(key) or wanted & _login_names((user or {}).get('email')) or wanted & _login_names((user or {}).get('username')):
+        row = user or {}
+        if wanted & _login_names(key) or wanted & _login_names(row.get('email')) or wanted & _login_names(row.get('phone')):
             return True
     return False
 
 
 def find_login(raw, users):
-    """Match an email or a driver username. The stored account key is returned."""
+    """Match an email or a driver phone number. The stored account key is returned."""
     text = str(raw or '').strip()
     email = normalize_email(text)
     if email and email in users:
         return email, users[email]
-    username = normalize_username(text)
-    if username and username in users:
-        return username, users[username]
-    if not username:
+    phone = normalize_phone(text)
+    if phone and phone in users:
+        return phone, users[phone]
+    if not phone:
         return None, None
     for key, user in users.items():
-        if normalize_username((user or {}).get('username')) == username:
+        if normalize_phone((user or {}).get('phone')) == phone:
             return key, user
     return None, None
 
@@ -909,7 +910,7 @@ def public_user(user, customers, tiers):
         'allow_phone_punch': bool(user.get('allow_phone_punch')),
         'pin_locked': bool(user.get('pin_locked')),
         'account': user.get('account') or user.get('email'),
-        'username': user.get('username') or '',
+        'phone': user.get('phone') or '',
     }
 
 
@@ -1449,7 +1450,7 @@ def login():
         password = request.form.get('password') or ''
         ip = request.remote_addr or ''
         next_url = safe_next(request.form.get('next') or request.args.get('next')) or ''
-        login_key = normalize_email(submitted) or normalize_username(submitted)
+        login_key = normalize_email(submitted) or normalize_phone(submitted)
         if login_limiter.is_limited(login_key, ip):
             flash('Too many login attempts. Try again in a few minutes.', 'error')
             return render_template('login.html', next_url=next_url), 429
@@ -3507,19 +3508,19 @@ def _add_shop_worker(data):
 
 
 def _add_driver(data):
-    """A driver signs in with a username and a temporary password. Setup links need an email."""
+    """A driver signs in with a phone number and a temporary password. Setup links need an email."""
     name = clean_text(data.get('name'), 120)
     if not name:
         return json_error('Name is required.', 400)
-    raw = data.get('username') if 'username' in data else data.get('email')
+    raw = data.get('phone') if 'phone' in data else data.get('username', data.get('email'))
     users = load_users()
     if login_taken(raw, users):
-        return json_error('That username is already in use.', 409)
-    username = normalize_username(raw)
-    if not username:
-        return json_error('Enter a username of letters, digits, dot, dash, or underscore, or a phone number.', 400)
-    if login_taken(username, users):
-        return json_error('That username is already in use.', 409)
+        return json_error('That phone number is already in use.', 409)
+    phone = normalize_phone(raw)
+    if not phone:
+        return json_error('Enter a phone number.', 400)
+    if login_taken(phone, users):
+        return json_error('That phone number is already in use.', 409)
     password = data.get('password') or ''
     if not str(password).strip():
         return json_error('A temporary password is required for a driver.', 400)
@@ -3530,13 +3531,13 @@ def _add_driver(data):
         email='', name=name, role='driver',
         password_hash=hash_password(password), must_change_password=True,
     )
-    record['username'] = username
-    record['account'] = username
+    record['phone'] = phone
+    record['account'] = phone
     record['modules'] = []
     record['customer_id'] = None
-    users[username] = record
+    users[phone] = record
     save_users(users)
-    return jsonify({'success': True, 'email': '', 'username': username, 'account': username})
+    return jsonify({'success': True, 'email': '', 'phone': phone, 'account': phone})
 
 
 @app.route('/api/users', methods=['POST'])
@@ -3667,23 +3668,23 @@ def update_user(email):
         pin_error = _apply_shop_fields(user, data, users, current_key=email)
         if pin_error:
             return json_error(pin_error, 400)
-    if user.get('role') == 'driver' and 'username' in data:
-        raw = str(data.get('username') or '').strip()
+    if user.get('role') == 'driver' and ('phone' in data or 'username' in data):
+        raw = str(data.get('phone') if 'phone' in data else data.get('username') or '').strip()
         if valid_email(raw) and normalize_email(raw) == normalize_email(user.get('email') or ''):
             pass
         elif raw:
             if login_taken(raw, users, except_key=email):
-                return json_error('That username is already in use.', 409)
-            username = normalize_username(raw)
-            if not username:
-                return json_error('Enter a username of letters, digits, dot, dash, or underscore, or a phone number.', 400)
-            if login_taken(username, users, except_key=email):
-                return json_error('That username is already in use.', 409)
-            user['username'] = username
-            if not valid_email(user.get('email')) and username != email:
-                user['account'] = username
+                return json_error('That phone number is already in use.', 409)
+            phone = normalize_phone(raw)
+            if not phone:
+                return json_error('Enter a phone number.', 400)
+            if login_taken(phone, users, except_key=email):
+                return json_error('That phone number is already in use.', 409)
+            user['phone'] = phone
+            if not valid_email(user.get('email')) and phone != email:
+                user['account'] = phone
                 users.pop(email, None)
-                email = username
+                email = phone
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -3725,7 +3726,7 @@ def invite_user(email):
     if user.get('role') == 'shop' and not valid_email(user.get('email')):
         return json_error('Add an email before sending a setup link.', 400)
     if user.get('role') == 'driver' and not valid_email(user.get('email')):
-        return json_error('Drivers sign in with a username and a temporary password.', 400)
+        return json_error('Drivers sign in with a phone number and a temporary password.', 400)
     token = attach_invite(user)
     users[email] = user
     save_users(users)
