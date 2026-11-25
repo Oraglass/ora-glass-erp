@@ -11711,25 +11711,6 @@ def get_credit():
     ))
 
 
-def _credit_books(customer, orders, invoices, payments):
-    """Open balances in each currency. Issuing company does not matter."""
-    books = []
-    for code in ('usd', 'cad'):
-        available, limit, receivables = available_credit(customer, code, orders, invoices, payments)
-        unallocated = unallocated_credit(payments, customer.get('id'), code)
-        credits = unapplied_credits(invoices, customer.get('id'), code)
-        books.append({
-            'currency': code,
-            'credit_limit': limit,
-            'open_receivables': receivables,
-            'available_credit': available,
-            'unallocated_payments': unallocated,
-            'unapplied_credits': credits,
-            'balance': round(receivables - credits, 2),
-        })
-    return books
-
-
 def _credit_body(customer, orders, invoices, payments, requested_currency='', user=None):
     customer_id = customer.get('id')
     preferred = str(customer.get('credit_currency') or 'usd').lower()
@@ -11759,8 +11740,6 @@ def _credit_body(customer, orders, invoices, payments, requested_currency='', us
         'unallocated_payments': unallocated_credit(payments, customer_id, currency),
         'unapplied_credits': unapplied_credits(invoices, customer_id, currency),
         'balance': round(receivables - unapplied_credits(invoices, customer_id, currency), 2),
-        'by_currency': _credit_books(customer, orders, invoices, payments),
-        'cards_all_time': True,
         'read_only': (user or {}).get('role') == 'customer' or not can_record_payments(user or {}),
     }
 

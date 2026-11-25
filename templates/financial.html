@@ -85,24 +85,14 @@ function presetRange(name) {
   if (name === 'year') return {from: today.getFullYear() + '-01-01', to: ymd(today)};
   return {from: '', to: ''};
 }
-function activeBooks(credit, field) {
-  const rows = credit.by_currency || [];
-  const hit = rows.filter(row => Math.abs(Number(row[field]) || 0) > 0.009);
-  if (hit.length) return hit;
-  const home = rows.find(row => row.currency === credit.credit_currency) || {currency: credit.credit_currency || credit.currency || 'usd', [field]: credit[field] || 0};
-  return [home];
-}
-function statAmount(credit, field) {
-  return activeBooks(credit, field).map(row => money(row.currency, row[field])).join('<br>');
-}
 function renderCards(credit) {
   const box = document.getElementById('credit-stats');
   box.innerHTML = '<div class="stat"><h3>' + money(credit.credit_currency, credit.credit_limit) + '</h3><p>Credit limit</p></div>'
-    + '<div class="stat"><h3>' + statAmount(credit, 'available_credit') + '</h3><p>Available credit</p></div>'
-    + '<div class="stat"><h3>' + statAmount(credit, 'open_receivables') + '</h3><p>Open receivables</p></div>'
-    + '<div class="stat"><h3>' + statAmount(credit, 'unallocated_payments') + '</h3><p>Unallocated payments</p></div>'
-    + '<div class="stat"><h3>' + statAmount(credit, 'unapplied_credits') + '</h3><p>Unapplied credits</p></div>'
-    + '<div class="stat"><h3>' + statAmount(credit, 'balance') + '</h3><p>Balance</p></div>';
+    + '<div class="stat"><h3>' + money(credit.currency, credit.available_credit) + '</h3><p>Available credit</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.open_receivables) + '</h3><p>Open receivables</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.unallocated_payments) + '</h3><p>Unallocated payments</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.unapplied_credits) + '</h3><p>Unapplied credits</p></div>'
+    + '<div class="stat"><h3>' + money(credit.currency, credit.balance) + '</h3><p>Balance</p></div>';
 }
 function renderPayments(rows) {
   const body = document.getElementById('fin-payments');
