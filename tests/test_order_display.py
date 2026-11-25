@@ -373,3 +373,25 @@ def test_orders_list_totals_skip_voids_and_invoice_waits_for_a_packing_list(clie
     assert b'data-list-invoice' in page
     assert b'id="list-invoiced-' in page
     assert b"!== 'voided'" in page
+
+
+def test_status_badges_open_the_matching_order_section():
+    orders = open('templates/orders.html', encoding='utf-8').read()
+    assert "if (kind === 'pack' || kind === 'legacy') return 'packing';" in orders
+    assert "if (kind === 'invoice') return 'invoices';" in orders
+    assert "if (kind === 'ship' || value === 'delivered') return 'shipments';" in orders
+    assert "if (value === 'customer_review') return 'changes';" in orders
+    assert "if (value === 'sent' || value === 'made') return 'production';" in orders
+    assert 'id="packing"' in orders
+    assert ", 'invoices')" in orders
+    assert ", 'production')" in orders
+    assert 'id="serials"' in orders
+    assert 'id="changes"' in orders
+    assert ", 'shipments')" in orders
+    assert 'id="backorder-lines"' in orders
+    assert 'Pieces ordered and not yet packed.' in orders
+    assert 'a.badge{cursor:pointer' in orders
+    assert 'a.badge:hover' in orders
+    assert 'function openHashedSection' in orders
+    assert "node.tagName === 'DETAILS'" in orders
+    assert 'node.open = true' in orders
