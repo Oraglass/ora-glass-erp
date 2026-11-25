@@ -14,7 +14,7 @@ def test_build_label_puts_overall_millimetres_and_inches_first():
         'glass2': 'Clear Glass 4mm', 'temper2': 'yes',
     }
     assert documents.build_label(spec) == (
-        '32 (1 1/4") - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)'
+        '32 (1 1/4") - 4mmSolarban60 VT Tempered +24mmSuperSpacer with Argon(Polysulfide)'
         '+4mmClear Glass Tempered'
     )
     assert documents.quote_form_fraction(28) == '1 1/8'

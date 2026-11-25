@@ -159,7 +159,7 @@
     if (parts.length !== used.length + needed) return '';
     total = Math.round(total * 100) / 100;
     if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
-    return total + ' (' + quoteFraction(total) + '") - ' + parts.join('+');
+    return total + ' (' + quoteFraction(total) + '") - ' + parts.join('+').replace(/Tempered\+/g, 'Tempered +');
   }
   function refreshBlock(section) {
     const specs = blockSpecs(section);

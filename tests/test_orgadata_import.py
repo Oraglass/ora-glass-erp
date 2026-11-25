@@ -151,7 +151,7 @@ def test_wrapped_name_keeps_the_triple_and_each_block_sum():
         'glass3': 'Clear Glass 6mm', 'temper3': 'yes',
     })
     assert name.count('+') == 4
-    assert name.startswith('6mmClear Glass Tempered+')
+    assert name.startswith('6mmClear Glass Tempered +')
     assert name.endswith('+6mmClear Glass Tempered')
     short = parse_text(Path('tests/fixtures/orgadata_triple_name.txt').read_text().replace(
         'Sum:                                     8', 'Sum:                                     9', 1,
@@ -219,7 +219,7 @@ def test_triple_preview_has_a_selector_for_every_lite_and_gap(client):
     from documents import build_label
     triple_name = items[0]['name']
     assert triple_name == build_label(items[0]['spec'])
-    assert triple_name.startswith('48 (1 7/8") - 6mmClear Glass Tempered+')
+    assert triple_name.startswith('48 (1 7/8") - 6mmClear Glass Tempered +')
     assert triple_name.count('+') == 4
     assert items[0]['spec']['glass1'] == CLEAR
     assert items[0]['spec']['glass2'] == 'Clear Glass 4mm'
@@ -444,7 +444,7 @@ def test_top_customer_is_sent_and_a_changed_lite_renames_the_igu(client):
     assert renamed['pdf_thickness_mm'] == 28
     assert renamed['thickness_mismatch'] is True
     assert any('27 mm does not match the PDF thickness (28 mm)' in warning for warning in renamed['warnings'])
-    assert renamed['igu_name'].startswith('27 (1 1/16") - 5mmClear Glass Tempered+')
+    assert renamed['igu_name'].startswith('27 (1 1/16") - 5mmClear Glass Tempered +')
     assert renamed['igu_name'].endswith('+6mmClear Glass Tempered')
     assert 'Silicone' in renamed['igu_name']
     assert changed.get_json()['lines'][0]['total'] != poly_total
@@ -543,13 +543,14 @@ def test_alias_prices_the_build_and_a_missing_production_id_is_not_invented(clie
     assert quote['items'][0]['floor'] == 'W01 / 1'
     assert 'id' not in quote['items'][0]
     makeup = makeup_from_spec(quote['items'][0]['spec'])
-    stored = production_catalog()[makeup.casefold()]
+    from production import igu_match_key
+    stored = production_catalog()[igu_match_key(makeup)]
     assert not str(stored.get('product_id') or '').strip()
     exported = line_export(quote['items'][0], serial=1, currency='cad', fx_rate=quote.get('fx_rate'))
     assert exported['Floor Code'] == 'W01 / 1'
     assert exported['Serial Number'] == 1
     assert exported['Product ID'] == ''
-    save_production_overrides({makeup.casefold(): {'product_id': 'IGU-48', 'product_name': makeup}})
+    save_production_overrides({igu_match_key(makeup): {'product_id': 'IGU-48', 'product_name': makeup}})
     again = client.post(f"/api/orgadata-imports/{uploaded['id']}/preview", json={
         'customer_id': 'open-windows',
         'blocks': [{

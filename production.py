@@ -116,6 +116,27 @@ def spacer_token(name, sealant):
     return f'{match.group(1)}mm{kind} with Argon({seal})'
 
 
+def igu_match_key(text):
+    """Identity of a build. Spaces around '+' do not make a different IGU."""
+    collapsed = re.sub(r'\s*\+\s*', '+', _collapse(text))
+    return collapsed.casefold()
+
+
+def with_tempered_spacer_space(text):
+    """MAC_IGU writes a tempered lite as 'Tempered +' when a spacer follows it."""
+    return re.sub(r'Tempered\s*\+', 'Tempered +', str(text or ''))
+
+
+def join_makeup(parts):
+    """Join lite and spacer tokens. A tempered lite keeps a space before the plus."""
+    if not parts:
+        return ''
+    built = parts[0]
+    for part in parts[1:]:
+        built += (' +' if built.endswith('Tempered') else '+') + part
+    return built
+
+
 def normalize_igu_spec(spec):
     """Drop the gap in front of a lite that is n/a, and the sealant of a spacer that is n/a.
 
@@ -169,7 +190,22 @@ def makeup_from_spec(spec):
             if not spacer_name:
                 return ''
             parts.append(spacer_name)
-    return '+'.join(parts)
+    built = join_makeup(parts)
+    exact = _sheet_makeup(igu_match_key(built))
+    return exact or built
+
+
+def _sheet_makeup(key):
+    """Makeup text from MAC_IGU, including its own spacing, when this build is listed."""
+    if not key:
+        return ''
+    seed = seed_products()[0].get(key) or {}
+    name = str(seed.get('product_name') or '').strip()
+    if not name:
+        return ''
+    text = strip_size_suffix(name)
+    text = strip_inch_overall(text)
+    return re.sub(r'^\d+(?:\.\d+)?\s*-\s*', '', text).strip()
 
 
 # Leading overall size from the quote calculator: 42 (1 5/8"), 22 (15/16"), 24 (2").
@@ -240,6 +276,7 @@ def canonical_build(name):
     makeup = makeup_from_product_name(text)
     if not makeup:
         return '', ''
+    key = makeup.casefold()
     match = re.match(r'^(\d+(?:\.\d+)?)\s*-\s+', text)
     if match:
         mm = match.group(1)
@@ -247,13 +284,18 @@ def canonical_build(name):
             mm = mm[:-2]
     else:
         mm = _overall_mm(makeup)
-    normalized = f'{mm} - {makeup}' if mm else makeup
-    return makeup.casefold(), normalized
+    seed = seed_products()[0].get(key) or {}
+    sheet_name = str(seed.get('product_name') or '').strip()
+    if sheet_name:
+        return key, sheet_name
+    spaced = with_tempered_spacer_space(makeup)
+    normalized = f'{mm} - {spaced}' if mm else spaced
+    return key, normalized
 
 
 def production_name_for_makeup(makeup, seeded=None):
     """Production-software name. A workbook row keeps that sheet's text."""
-    key = _collapse(makeup).casefold()
+    key = igu_match_key(makeup)
     if not key:
         return ''
     if seeded is None:
@@ -262,8 +304,9 @@ def production_name_for_makeup(makeup, seeded=None):
     sheet_name = str(seed.get('product_name') or '').strip()
     if sheet_name:
         return sheet_name
-    mm = _overall_mm(makeup)
-    return f'{mm} - {makeup}' if mm else makeup
+    spaced = with_tempered_spacer_space(re.sub(r'\s*\+\s*', '+', _collapse(makeup)))
+    mm = _overall_mm(key)
+    return f'{mm} - {spaced}' if mm else spaced
 
 
 def _filename_part(value):
@@ -532,7 +575,7 @@ def remember_configurations(items, used_on, order_id=None):
             makeup = makeup_from_spec(spec)
             if not makeup:
                 continue
-            key = makeup.casefold()
+            key = igu_match_key(makeup)
             row = dict(saved.get(key) or {})
             if used_on and not row.get('first_used'):
                 row['first_used'] = str(used_on)[:10]
@@ -720,7 +763,7 @@ def _registry_hit(record):
 
 def registry_for_makeup(makeup):
     """Exact registry row for one IGU makeup. The name is the sheet text, unchanged."""
-    key = _collapse(makeup).casefold()
+    key = igu_match_key(makeup)
     if not key:
         return None
     return _registry_hit(production_catalog().get(key))
@@ -735,7 +778,7 @@ def lookup_product(spec, fallback_name=''):
     """ID and name for one line at export time. A missing ID stays blank."""
     catalog = production_catalog()
     makeup = makeup_from_spec(spec)
-    record = catalog.get(makeup.casefold()) if makeup else None
+    record = catalog.get(igu_match_key(makeup)) if makeup else None
     name = ''
     product_id = ''
     if record:
@@ -1085,7 +1128,7 @@ def migrate_registry_names():
                 makeup = makeup_from_spec(spec) if spec else ''
                 if not makeup:
                     makeup = makeup_from_product_name(item.get('name') or '')
-                key = makeup.casefold()
+                key = igu_match_key(makeup)
                 if not key or key not in new_saved or key in conflict_keys or new_saved[key].get('id_conflict'):
                     continue
                 current = new_saved[key]

@@ -1022,7 +1022,7 @@ function orderIguName(spec) {
   if (!parts.length) return '';
   total = Math.round(total * 100) / 100;
   if (Math.abs(total - Math.round(total)) < 1e-9) total = Math.round(total);
-  return total + ' (' + fraction(total) + '") - ' + parts.join('+');
+  return total + ' (' + fraction(total) + '") - ' + parts.join('+').replace(/Tempered\+/g, 'Tempered +');
 }
 function blankSpec(glass, width, height, unit) {
   return {glass1: glass, temper1: 'n/a', spacer1: 'n/a', sealant1: 'n/a', glass2: 'n/a', temper2: 'n/a', spacer2: 'n/a', sealant2: 'n/a', glass3: 'n/a', temper3: 'n/a', width: Number(width), height: Number(height), unit: unit || 'in'};

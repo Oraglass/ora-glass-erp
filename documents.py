@@ -242,13 +242,27 @@ def overall_thickness_mm(spec):
 
 
 def build_label(spec):
-    """Full IGU name: 32 (1 1/4") - 4mmSolarban60 VT Tempered+24mm..."""
+    """Full IGU name: 32 (1 1/4") - 4mmSolarban60 VT Tempered +24mm..."""
     return _igu_label(spec)
 
 
 def igu_name_from_spec(spec):
     """IGU name the quote calculator builds: overall millimetres, inch fraction, then the lites."""
     return _igu_label(spec)
+
+
+def name_needs_igu_refresh(item):
+    """A stored name is stale when its thickness or its Tempered spacing disagrees with the spec."""
+    if name_thickness_mismatch(item):
+        return True
+    if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+        return False
+    spec = item.get('spec') if isinstance(item.get('spec'), dict) else None
+    label = igu_name_from_spec(spec) if spec else ''
+    if not label or item.get('name') == label:
+        return False
+    current = str(item.get('name') or '')
+    return 'Tempered+' in current or 'Tempered +' in current or 'Tempered+' in label or 'Tempered +' in label
 
 
 def name_thickness_mismatch(item):
@@ -296,7 +310,7 @@ def sync_item_names(items, only_mismatch=False):
             continue
         if item.get('kind') == 'dwg_creation':
             continue
-        if only_mismatch and not name_thickness_mismatch(item):
+        if only_mismatch and not name_needs_igu_refresh(item):
             previous = item
             continue
         if sync_line_name(item):
