@@ -769,6 +769,40 @@ def header_address_block(document):
     return block
 
 
+def invoice_party(invoice):
+    """Customer block shared by the invoice page and the PDF. Empty lines are left out."""
+    rows = []
+    name = str((invoice or {}).get('company') or '').strip()
+    if name:
+        rows.append({'key': 'customer', 'text': name})
+    for line in (invoice or {}).get('customer_address') or []:
+        text = str(line or '').strip()
+        if text:
+            rows.append({'key': 'address', 'text': text})
+    gst = str((invoice or {}).get('customer_gst_number') or '').strip()
+    if gst:
+        rows.append({'key': 'gst', 'text': f'GST# {gst}'})
+    pst = str((invoice or {}).get('pst_number') or '').strip()
+    if pst:
+        rows.append({'key': 'pst', 'text': f'PST: {pst}'})
+    qst = str((invoice or {}).get('qst_number') or '').strip()
+    if qst:
+        rows.append({'key': 'qst', 'text': f'QST: {qst}'})
+    project = str((invoice or {}).get('project') or '').strip()
+    if project and project != '-':
+        rows.append({'key': 'project', 'text': f'Project: {project}'})
+    bits = []
+    order_id = (invoice or {}).get('order_id')
+    quote_id = (invoice or {}).get('quote_id')
+    if order_id not in (None, ''):
+        bits.append(f'Order: {order_id}')
+    if quote_id not in (None, ''):
+        bits.append(f'Quote: {quote_id}')
+    if bits:
+        rows.append({'key': 'order', 'text': '   '.join(bits)})
+    return rows
+
+
 def tax_line_label(line, document):
     """Tax row in the invoice totals. GST and HST carry the seller's GST number."""
     name = str((line or {}).get('name') or 'Tax').strip() or 'Tax'

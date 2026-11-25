@@ -10423,6 +10423,7 @@ def _present_invoice(invoice, payments):
             view['status'] = 'open'
         view['status_label'] = invoice_status_label(view['status'])
         _attach_invoice_gst(view, invoice)
+        _attach_invoice_party(view)
         _attach_invoice_customs(view)
         _attach_invoice_summary(view)
         return view
@@ -10464,6 +10465,7 @@ def _present_invoice(invoice, payments):
     if view['kind'] == 'intercompany':
         view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
+    _attach_invoice_party(view)
     _attach_invoice_customs(view)
     _attach_invoice_summary(view)
     if _invoice_shows_shipment(view) and invoice.get('order_id'):
@@ -10492,6 +10494,23 @@ def _attach_invoice_customs(view):
         return
     import packing
     view['customs'] = packing.intercompany_customs()
+
+
+def _attach_invoice_party(view):
+    """Name, billing address, GST, PST, project, then order. Empty lines are omitted."""
+    import documents
+    customer = load_customers().get(view.get('customer_id') or '') or {}
+    if not view.get('customer_address'):
+        view['customer_address'] = _address_lines(customer)
+    gst = str(customer.get('gst_number') or view.get('customer_gst_number') or '').strip()
+    if not gst and view.get('gst_place') == 'customer':
+        gst = str(view.get('seller_gst_number') or '').strip()
+    view['customer_gst_number'] = gst
+    if not str(view.get('pst_number') or '').strip():
+        view['pst_number'] = str(customer.get('pst_number') or '').strip()
+    if not str(view.get('qst_number') or '').strip():
+        view['qst_number'] = str(customer.get('qst_number') or '').strip()
+    view['party'] = documents.invoice_party(view)
 
 
 def _attach_invoice_summary(view):
@@ -11206,37 +11225,31 @@ def _render_invoice_pdf(invoice):
     elements.append(Spacer(1, 8))
     elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
     elements.append(Spacer(1, 8))
-    customer_line = f"<b>Customer:</b> {escape(invoice.get('company') or '')}"
-    if invoice.get('gst_place') == 'customer' and invoice.get('seller_gst_number'):
-        customer_line += f"<br/>GST# {escape(invoice.get('seller_gst_number'))}"
-    elements.append(Paragraph(
-        customer_line + "<br/>"
-        f"<b>Project:</b> {escape(invoice.get('project') or '-')}<br/>"
-        f"<b>Order:</b> {escape(str(invoice.get('order_id') or ''))}"
-        f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
-        label_style,
-    ))
+    party = invoice.get('party') or documents.invoice_party(invoice)
+    if party:
+        party_html = []
+        for row in party:
+            text = escape(row.get('text') or '')
+            if row.get('key') == 'customer':
+                text = f'<b>Customer:</b> {text}'
+            elif row.get('key') == 'project':
+                text = f'<b>{text}</b>' if text.startswith('Project:') else f'<b>Project:</b> {text}'
+            party_html.append(text)
+        elements.append(Paragraph('<br/>'.join(party_html), label_style))
+    shipment_bits = []
     if invoice.get('shipment_number') or invoice.get('shipment_rack') or invoice.get('truck_plate'):
-        elements.append(Paragraph(
+        shipment_bits.append(
             f"<b>Shipment:</b> {escape(invoice.get('shipment_number') or '')}"
             f" &nbsp; <b>Ship date:</b> {escape(invoice.get('shipment_date') or '')}"
             f" &nbsp; <b>Rack:</b> {escape(invoice.get('shipment_rack') or '')}"
-            f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}",
-            label_style,
-        ))
-        if invoice.get('shipment_notes'):
-            elements.append(Paragraph(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}", label_style))
-    province = str(invoice.get('ship_province') or '').upper()
-    if documents.canada_bill(invoice) and province == 'QC' and invoice.get('qst_number'):
-        elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
-    elif documents.canada_bill(invoice) and invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
-        elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
-    if invoice.get('tax_label') and not invoice.get('tax_lines'):
-        elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
+            f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}"
+        )
+    if invoice.get('shipment_notes'):
+        shipment_bits.append(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}")
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}
     shipment = packing.get('shipment') or {}
-    lines = []
+    lines = list(shipment_bits)
     if shipment.get('rack_line'):
         lines.append(escape(shipment['rack_line']))
     for text in shipment.get('list_lines') or []:
@@ -11247,6 +11260,8 @@ def _render_invoice_pdf(invoice):
         lines.append(f"HTS {escape(customs.get('hts'))}")
     if customs.get('origin'):
         lines.append(f"Origin: {escape(customs.get('origin'))}")
+    if invoice.get('tax_label') and not invoice.get('tax_lines'):
+        lines.append(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}")
     if lines:
         elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
