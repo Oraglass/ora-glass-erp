@@ -391,7 +391,7 @@ def test_line_descriptions_collapse_to_the_build_and_existing_rows_are_migrated(
     }])
     report = production.migrate_registry_names()
     clear_name = (
-        '24 - 4mmClear Glass Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+        '24 - 4mmClear Glass Tempered +16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
     )
     assert clear_name in {row['product_name'] for row in report['merged']}
     saved = {row['product_name']: row for row in production.registry_rows()}
@@ -403,12 +403,12 @@ def test_line_descriptions_collapse_to_the_build_and_existing_rows_are_migrated(
     assert saved[seeded_name]['order_count'] == 1
     assert '615' not in clear_name and '"' not in clear_name
     expected = {
-        '32 - 4mmLoE Q-270 Tempered+24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
-        '32 - 4mmSolarban60 VT Tempered+24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
-        '42 - 4mmLoE Q-270 Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
-        '+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
-        '42 - 4mmSolarban60 VT Tempered+16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
-        '+14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '32 - 4mmLoE Q-270 Tempered +24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '32 - 4mmSolarban60 VT Tempered +24mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '42 - 4mmLoE Q-270 Tempered +16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+        ' +14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
+        '42 - 4mmSolarban60 VT Tempered +16mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered'
+        ' +14mmSuperSpacer with Argon(Polysulfide)+4mmClear Glass Tempered',
     }
     for name in expected:
         assert saved[name]['product_id'] == ''
@@ -436,11 +436,11 @@ def test_line_descriptions_collapse_to_the_build_and_existing_rows_are_migrated(
     ], '2026-11-18', order_id=20)
     created = [
         row for row in production.registry_rows()
-        if row['product_name'].startswith('26 - 4mmClear Glass Tempered+16mm')
+        if row['product_name'].startswith('26 - 4mmClear Glass Tempered +16mm')
     ]
     assert len(created) == 1
     assert created[0]['product_name'] == (
-        '26 - 4mmClear Glass Tempered+16mmSuperSpacer with Argon(Polysulfide)+6mmBronze'
+        '26 - 4mmClear Glass Tempered +16mmSuperSpacer with Argon(Polysulfide)+6mmBronze'
     )
     assert created[0]['order_count'] == 1
     assert ' x ' not in created[0]['product_name']
