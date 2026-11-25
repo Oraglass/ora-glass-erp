@@ -2071,37 +2071,154 @@ def void_document(invoice):
     return True
 
 
-def push_payment(payment):
+def _record_payment_sync(payment, status, error='', qbo_id='', realm_id='', sync_token=''):
+    """Save the QuickBooks result on the ERP payment. A missing connection is not a silent skip."""
+    if not payment or not payment.get('id'):
+        return
+    payments = load_payments()
+    for row in payments:
+        if row.get('id') != payment.get('id'):
+            continue
+        row['qbo_sync'] = status
+        if qbo_id:
+            row['qbo_id'] = str(qbo_id)
+        if realm_id:
+            row['qbo_realm_id'] = str(realm_id)
+        if sync_token:
+            row['qbo_sync_token'] = str(sync_token)
+        if error:
+            row['qbo_error'] = error
+        else:
+            row.pop('qbo_error', None)
+        payment['qbo_sync'] = status
+        if qbo_id:
+            payment['qbo_id'] = str(qbo_id)
+        if realm_id:
+            payment['qbo_realm_id'] = str(realm_id)
+        if sync_token:
+            payment['qbo_sync_token'] = str(sync_token)
+        if error:
+            payment['qbo_error'] = error
+        else:
+            payment.pop('qbo_error', None)
+    save_payments(payments)
+
+
+def _payment_invoice_lines(payment):
+    """Link each allocation to the QuickBooks invoice id already stored on that invoice."""
+    lines = []
+    missing = []
+    for allocation in payment.get('allocations') or []:
+        if allocation.get('voided') or allocation.get('target_type') != 'invoice':
+            continue
+        invoice_id = allocation.get('target_id')
+        invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
+        qbo_id = str((invoice or {}).get('qbo_id') or '').strip()
+        if not qbo_id:
+            link = find_link('invoice', erp_id=invoice_id)
+            qbo_id = str((link or {}).get('qbo_id') or '').strip()
+        if not qbo_id:
+            push_document_id(invoice_id)
+            invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
+            qbo_id = str((invoice or {}).get('qbo_id') or '').strip()
+            if not qbo_id:
+                link = find_link('invoice', erp_id=invoice_id)
+                qbo_id = str((link or {}).get('qbo_id') or '').strip()
+        if not qbo_id:
+            missing.append((invoice or {}).get('number') or invoice_id)
+            continue
+        lines.append({
+            'Amount': money(allocation.get('amount')),
+            'LinkedTxn': [{'TxnId': qbo_id, 'TxnType': 'Invoice'}],
+        })
+    return lines, missing
+
+
+def _find_remote_payment(customer_qbo_id, paid_on, amount):
+    """A QuickBooks payment already recorded for this customer, date, and amount."""
+    customer_qbo_id = str(customer_qbo_id or '').strip()
+    paid_on = str(paid_on or '')[:10]
+    if not customer_qbo_id or not paid_on:
+        return None
+    safe = customer_qbo_id.replace("'", '')
+    try:
+        rows = query(
+            f"select * from Payment where CustomerRef = '{safe}' and TxnDate = '{paid_on}'"
+        )
+    except QuickBooksError as exc:
+        log('error', f'Could not look for an existing QuickBooks payment: {exc}')
+        return None
+    target = money(amount)
+    for row in rows or []:
+        ref = str((row.get('CustomerRef') or {}).get('value') or '')
+        if ref and ref != customer_qbo_id:
+            continue
+        if str(row.get('TxnDate') or '')[:10] != paid_on:
+            continue
+        if money(row.get('TotalAmt')) == target:
+            return row
+    return None
+
+
+def push_payment(payment, force_update=False):
     key = _payment_connection(payment)
     if _connection_key() != key:
         with connection_scope(key):
-            return push_payment(payment)
-    if not connected() or not payment or payment.get('qbo_origin') or payment.get('voided'):
+            return push_payment(payment, force_update)
+    if not payment or payment.get('qbo_origin'):
+        return None
+    company, realm = _company_for_push()
+    if payment.get('voided'):
+        return None
+    if not connected():
+        message = (
+            f'QuickBooks is not connected for {company}'
+            + (f' (realm {realm})' if realm else '')
+            + '. Reconnect that company, then use Send to QuickBooks.'
+        )
+        status = 'error' if payment.get('qbo_id') else 'not_connected'
+        _record_payment_sync(payment, status, error=message, realm_id=realm)
+        log('error', message)
         return None
     if payment.get('method') == 'credit_note':
         return _push_credit_application(payment)
     existing = find_link('payment', erp_id=payment.get('id'))
+    already = str(payment.get('qbo_id') or (existing or {}).get('qbo_id') or '').strip()
+    if already and not force_update:
+        _record_payment_sync(
+            payment, 'synced', qbo_id=already,
+            realm_id=(existing or {}).get('realm_id') or realm,
+            sync_token=(existing or {}).get('sync_token') or payment.get('qbo_sync_token') or '',
+        )
+        return {'Id': already}
+    lines, missing = _payment_invoice_lines(payment)
+    missing_note = ''
+    if missing:
+        missing_note = 'Not applied to ' + ', '.join(str(item) for item in missing) + ' because that invoice is not in QuickBooks.'
     customer_link = find_link('customer', erp_id=payment.get('customer_id'))
     if not customer_link:
         push_customer(payment.get('customer_id'))
         customer_link = find_link('customer', erp_id=payment.get('customer_id'))
     if not customer_link:
-        log('error', f"Payment {payment.get('id')} was not sent because the customer is not in QuickBooks.")
+        message = f"Payment {payment.get('id')} was not sent because the customer is not in QuickBooks."
+        _record_payment_sync(payment, 'error', error=message, realm_id=realm)
+        log('error', message)
         return None
-    lines = []
-    for allocation in payment.get('allocations') or []:
-        if allocation.get('voided') or allocation.get('target_type') != 'invoice':
-            continue
-        invoice_link = find_link('invoice', erp_id=allocation.get('target_id'))
-        if not invoice_link:
-            push_document_id(allocation.get('target_id'))
-            invoice_link = find_link('invoice', erp_id=allocation.get('target_id'))
-        if not invoice_link:
-            continue
-        lines.append({
-            'Amount': money(allocation.get('amount')),
-            'LinkedTxn': [{'TxnId': invoice_link['qbo_id'], 'TxnType': 'Invoice'}],
-        })
+    adopted = None
+    if not already:
+        adopted = _find_remote_payment(customer_link['qbo_id'], payment.get('date'), payment.get('amount'))
+        if adopted and adopted.get('Id'):
+            already = str(adopted.get('Id'))
+            if not lines:
+                upsert_link(
+                    'payment', payment.get('id'), already, adopted.get('SyncToken'), 'erp', realm_id=realm,
+                )
+                _record_payment_sync(
+                    payment, 'synced', error=missing_note, qbo_id=already, realm_id=realm,
+                    sync_token=adopted.get('SyncToken') or '0',
+                )
+                log('info', f"Payment {payment.get('id')} matches QuickBooks payment {already}.")
+                return adopted
     payload = {
         'CustomerRef': {'value': customer_link['qbo_id']},
         'TotalAmt': money(payment.get('amount')),
@@ -2111,18 +2228,31 @@ def push_payment(payment):
     }
     if lines:
         payload['Line'] = lines
+    if already:
+        payload['Id'] = already
+        payload['SyncToken'] = (
+            (adopted or {}).get('SyncToken')
+            or (existing or {}).get('sync_token')
+            or payment.get('qbo_sync_token')
+            or '0'
+        )
+        payload['sparse'] = True
     try:
-        if existing:
-            payload['Id'] = existing['qbo_id']
-            payload['SyncToken'] = existing['sync_token']
-            payload['sparse'] = True
         data = _post_entity('payment', payload)
     except QuickBooksError as exc:
+        _record_payment_sync(payment, 'error', error=str(exc), qbo_id=already, realm_id=realm)
         log('error', f"Payment {payment.get('id')}: {exc}")
         return None
     remote = data.get('Payment') or {}
     if remote.get('Id'):
-        upsert_link('payment', payment.get('id'), remote.get('Id'), remote.get('SyncToken'), existing.get('origin') if existing else 'erp')
+        upsert_link(
+            'payment', payment.get('id'), remote.get('Id'), remote.get('SyncToken'),
+            (existing or {}).get('origin') or 'erp', realm_id=realm,
+        )
+        _record_payment_sync(
+            payment, 'synced', error=missing_note, qbo_id=remote.get('Id'), realm_id=realm,
+            sync_token=remote.get('SyncToken') or '',
+        )
         log('info', f"Sent payment {payment.get('id')} to QuickBooks.")
     return remote
 
@@ -2154,11 +2284,17 @@ def _push_credit_application(payment):
     try:
         data = _post_entity('payment', payload)
     except QuickBooksError as exc:
+        _record_payment_sync(payment, 'error', error=str(exc))
         log('error', f"Credit application {payment.get('id')}: {exc}")
         return None
     remote = data.get('Payment') or {}
     if remote.get('Id'):
-        upsert_link('payment', payment.get('id'), remote.get('Id'), remote.get('SyncToken'), 'erp')
+        upsert_link('payment', payment.get('id'), remote.get('Id'), remote.get('SyncToken'), 'erp', realm_id=load_tokens().get('realm_id'))
+        _record_payment_sync(
+            payment, 'synced', qbo_id=remote.get('Id'),
+            realm_id=load_tokens().get('realm_id') or '',
+            sync_token=remote.get('SyncToken') or '',
+        )
     return remote
 
 
