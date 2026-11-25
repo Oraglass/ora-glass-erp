@@ -45,6 +45,9 @@ def test_invoices_leave_the_top_nav_and_the_financial_tabs_split_the_work(client
     assert 'id="open-invoice-list"' in pay
     assert 'Order prepayment' in pay
     assert 'id="alloc-order"' in pay
+    assert 'No unallocated payments.' in pay
+    assert "esc(row.date) + ' · ' + esc(row.company) + ' · ' + money(row.currency, row.unallocated)" in pay
+    assert 'id="alloc-controls" hidden' in pay
     assert 'id="invoice-panel" hidden' in pay
     detail = client.get('/invoices/12')
     assert detail.status_code == 200

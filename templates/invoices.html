@@ -148,6 +148,8 @@ h2,h3{color:#333}
 </table>
 {% if can_record %}
 <div id="allocation-form">
+<p class="note" id="alloc-empty">No unallocated payments.</p>
+<div id="alloc-controls" hidden>
 <div class="row">
 <select id="alloc-payment" aria-label="Payment"></select>
 </div>
@@ -160,6 +162,7 @@ h2,h3{color:#333}
 <input id="alloc-target" type="number" min="1" placeholder="Order id" aria-label="Order id">
 <input id="alloc-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Allocation amount">
 <button type="button" class="btn secondary" id="alloc-order">Apply to order</button>
+</div>
 </div>
 </div>
 {% endif %}
@@ -390,16 +393,33 @@ function togglePick(group, id, checked) {
   else pickedIds = next;
   renderPickers();
 }
-function renderPayments(rows) {
-  paymentRows = rows;
-  const body = document.getElementById('payment-list');
+function setAllocChooser(openRows) {
+  const empty = document.getElementById('alloc-empty');
+  const controls = document.getElementById('alloc-controls');
   const select = document.getElementById('alloc-payment');
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="8" style="color:#666">No payments</td></tr>';
+  const has = openRows.length > 0;
+  if (empty) empty.hidden = has;
+  if (controls) controls.hidden = !has;
+  if (!has) {
     if (select) select.innerHTML = '';
     allocInvoices = [];
     allocIds = [];
     renderPickers();
+    return;
+  }
+  const previous = select ? select.value : '';
+  if (select) {
+    select.innerHTML = openRows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.date) + ' · ' + esc(row.company) + ' · ' + money(row.currency, row.unallocated) + '</option>').join('');
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+  }
+  loadAllocInvoices();
+}
+function renderPayments(rows) {
+  paymentRows = rows;
+  const body = document.getElementById('payment-list');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No payments</td></tr>';
+    setAllocChooser([]);
     return;
   }
   body.innerHTML = rows.map(row => {
@@ -409,12 +429,7 @@ function renderPayments(rows) {
     const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
     return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + qbo + '</td><td>' + sendButton + voidButton + '</td></tr>';
   }).join('');
-  const previous = select ? select.value : '';
-  if (select) {
-    select.innerHTML = rows.filter(row => !row.voided && Number(row.unallocated) > 0).map(row => '<option value="' + esc(row.id) + '">#' + esc(row.id) + ' ' + esc(row.company) + ' ' + money(row.currency, row.unallocated) + ' left</option>').join('');
-    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
-  }
-  loadAllocInvoices();
+  setAllocChooser(rows.filter(row => !row.voided && Number(row.unallocated) > 0));
 }
 async function loadOpenInvoices() {
   const box = document.getElementById('open-invoice-list');
