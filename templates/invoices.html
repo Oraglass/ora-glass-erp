@@ -206,8 +206,9 @@ function renderDetail(invoice) {
   const packing = invoice.kind === 'intercompany' ? invoice.packing : null;
   const packingLines = packing ? (packing.lists || []).map(row => {
     const racks = row.racks_label || (row.racks || []).map(number => 'Rack ' + number).join(', ') || '-';
-    const weight = row.weight == null || row.weight === '' ? '' : ' · ' + esc(row.weight) + (row.weight_unit ? ' ' + esc(row.weight_unit) : '');
-    return '<li>' + esc(row.number || 'Packing list') + ': ' + esc(racks) + weight + '</li>';
+    const weight = row.weight_text ? ' · ' + row.weight_text : (row.weight == null || row.weight === '' ? '' : ' · ' + row.weight + (row.weight_unit ? ' ' + row.weight_unit : ''));
+    const text = row.line || ((row.number || 'Packing list') + ': ' + racks + weight);
+    return '<li>' + esc(text) + '</li>';
   }).join('') : '';
   const packingNote = packing ? '<p class="note" id="invoice-racks"><b>Racks:</b> ' + esc(packing.rack_count) + '</p>' + (packingLines ? '<ul id="invoice-rack-lists">' + packingLines + '</ul>' : '') + (packing.weight_label ? '<p class="note" id="invoice-weight"><b>Total weight:</b> ' + esc(packing.weight_label) + '</p>' : '') : '';
   const customs = invoice.kind === 'intercompany' && invoice.customs ? '<p class="note" id="invoice-customs">HTS ' + esc(invoice.customs.hts) + '<br>Origin: ' + esc(invoice.customs.origin) + '</p>' : '';

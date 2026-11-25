@@ -10492,12 +10492,47 @@ def _invoice_gst_place(invoice):
 
 def _with_packing_measures(order):
     """Fill rack numbers and weight from the saved packing-list file when the order does not store them."""
-    copied = dict(order or {})
-    copied['packing_lists'] = [
+    measured = [
         _measured_packing_list(entry, (order or {}).get('id'))
         for entry in (order or {}).get('packing_lists') or []
     ]
+    if order and order.get('id') and _packing_measures_changed(order.get('packing_lists') or [], measured):
+        _store_packing_measures(order.get('id'), measured)
+    copied = dict(order or {})
+    copied['packing_lists'] = measured
     return copied
+
+
+def _packing_measures_changed(original, measured):
+    by_id = {row.get('id'): row for row in original or []}
+    for row in measured or []:
+        before = by_id.get(row.get('id')) or {}
+        if row.get('weight') not in (None, '') and before.get('weight') in (None, ''):
+            return True
+        if row.get('racks') and not (before.get('racks') or before.get('rack')):
+            return True
+    return False
+
+
+def _store_packing_measures(order_id, measured):
+    """Keep a weight read from an older packing-list file on the order."""
+    orders = load_orders()
+    order = next((row for row in orders if row.get('id') == order_id), None)
+    if not order:
+        return
+    by_id = {row.get('id'): row for row in measured or []}
+    for entry in order.get('packing_lists') or []:
+        fresh = by_id.get(entry.get('id'))
+        if not fresh:
+            continue
+        if entry.get('weight') in (None, '') and fresh.get('weight') not in (None, ''):
+            entry['weight'] = fresh.get('weight')
+            entry['weight_unit'] = fresh.get('weight_unit') or ''
+        if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
+            entry['racks'] = list(fresh.get('racks') or [])
+            if not entry.get('rack'):
+                entry['rack'] = fresh.get('rack') or (fresh.get('racks') or [''])[0]
+    save_orders(orders)
 
 
 def _measured_packing_list(entry, order_id):
@@ -10512,14 +10547,27 @@ def _measured_packing_list(entry, order_id):
     import packing
     try:
         if payload.startswith(b'%PDF'):
-            parsed = packing.parse_packing_pdf(payload)
+            text_lines = packing.pdf_lines(payload)
+            parsed = packing.parse_packing_lines(text_lines)
         else:
-            parsed = packing.parse_packing_lines(payload.decode('utf-8', errors='replace').splitlines())
+            text_lines = payload.decode('utf-8', errors='replace').splitlines()
+            parsed = packing.parse_packing_lines(text_lines)
+        measures = packing.weights_by_number(text_lines)
     except Exception:
         return row
-    if not has_weight and parsed.get('weight') is not None:
-        row['weight'] = parsed.get('weight')
-        row['weight_unit'] = parsed.get('weight_unit') or ''
+    if not has_weight:
+        number = str(row.get('number') or '')
+        chosen = measures.get(number)
+        if not chosen and len(measures) == 1:
+            only = next(iter(measures))
+            if not number or number == only:
+                chosen = measures[only]
+        if chosen:
+            row['weight'] = chosen.get('weight')
+            row['weight_unit'] = chosen.get('weight_unit') or ''
+        elif (not number or parsed.get('number') == number) and parsed.get('weight') is not None:
+            row['weight'] = parsed.get('weight')
+            row['weight_unit'] = parsed.get('weight_unit') or ''
     if not row.get('racks') and parsed.get('racks'):
         row['racks'] = list(parsed.get('racks') or [])
     if not row.get('rack') and parsed.get('rack'):
@@ -11162,12 +11210,9 @@ def _render_invoice_pdf(invoice):
             lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
             for listed in packing.get('lists') or []:
                 numbers = listed.get('racks_label') or packing.format_rack_numbers(listed.get('racks'))
-                weight = ''
-                if listed.get('weight') not in (None, ''):
-                    weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
-                lines.append(
-                    f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
-                )
+                weight = f" · {listed.get('weight_text')}" if listed.get('weight_text') else ''
+                text = listed.get('line') or f"{listed.get('number') or 'Packing list'}: {numbers}{weight}"
+                lines.append(escape(text))
             if packing.get('weight_label'):
                 lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
         if customs.get('hts'):
