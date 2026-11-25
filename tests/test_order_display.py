@@ -264,3 +264,54 @@ def test_on_screen_sizes_stack_inches_over_millimetres():
     assert 'dualSize(item.spec.width, item.spec.height, unit)' in quotes
     assert 'class="size-metric"' in history
     assert 'class="size-metric"' in shipments_page
+
+
+def test_piece_totals_count_quantities_and_skip_surcharge_rows(client):
+    """Two glass lines can be 14 pieces. A surcharge row is not another piece."""
+    from storage import save_orders
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    first = dict(_size_item(), pcs=4, total=400)
+    second = dict(_size_item(), name='Second - 20 x 30 in', pcs=10, total=1000, spec=dict(SPEC, width=20, height=30))
+    surcharge = {
+        'kind': 'irregular_surcharge', 'name': 'Irregular shape surcharge – Unit',
+        'pcs': 4, 'price_pc': 50, 'total': 200,
+    }
+    quote_pdf = pdf_text(documents.build_pdf({
+        'kind': 'quote', 'id': 9, 'type': 'size', 'currency': 'cad', 'project': 'Lobby',
+        'company': 'Harbor Glass', 'date': '2026-11-25',
+        'items': [first, surcharge, second],
+    }))
+    assert b'Total Pcs: 14' in quote_pdf
+    save_orders([{
+        'id': 5,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'project': 'Lobby',
+        'status': 'approved',
+        'currency': 'cad',
+        'total': 11444.14,
+        'items': [first, surcharge, second],
+    }])
+    order_pdf = pdf_text(client.get('/api/orders/5/confirmation.pdf').data)
+    assert b'Total Pcs: 14' in order_pdf
+    body = client.get('/api/orders/5').get_json()
+    glass = [item for item in body['items'] if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'}]
+    assert len(glass) == 2
+    assert sum(int(item['pcs']) for item in glass) == 14
+    assert any(item.get('kind') == 'irregular_surcharge' for item in body['items'])
+    orders = open('templates/orders.html', encoding='utf-8').read()
+    history = open('templates/quote_history.html', encoding='utf-8').read()
+    assert 'piece line' not in orders
+    assert "pieceSummary(order.items) + (PRICES ? ' · Grand total '" in orders
+    assert 'id="order-pcs-' in orders
+    assert '<th class="num">Pcs</th>' in orders
+    assert '<th class="num">Pcs</th>' in history
+    assert 'id="quote-pcs-' in history
+    assert 'id="quote-piece-summary"' in history
+    page = client.get('/orders')
+    assert b'piece line' not in page.data
+    assert b'id="order-pcs-' in page.data
+    history_page = client.get('/quote-history')
+    assert b'id="quote-pcs-' in history_page.data
+    assert b'id="quote-piece-summary"' in history_page.data

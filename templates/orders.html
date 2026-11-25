@@ -261,12 +261,26 @@ function orderVoidLink(order) {
   if (!order.can_void) return '';
   return '<button type="button" class="btn small secondary" id="list-void-' + esc(order.id) + '" data-list-void="' + esc(order.id) + '">Void</button>';
 }
+function glassPieceCount(items) {
+  const glass = (items || []).filter(item => item && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
+  const pieces = glass.reduce((sum, item) => {
+    const qty = Number(item.pcs);
+    return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
+  }, 0);
+  return {lines: glass.length, pieces: pieces};
+}
+function pieceSummary(items) {
+  const count = glassPieceCount(items);
+  return count.lines + ' line' + (count.lines === 1 ? '' : 's')
+    + ' · ' + count.pieces + ' piece' + (count.pieces === 1 ? '' : 's');
+}
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
+  const columns = PRICES ? 11 : 9;
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th class="num">Pcs</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
   const body = document.getElementById('order-list');
   if (!orders.length) {
-    body.innerHTML = '<tr><td colspan="9" style="color:#666">No production orders</td></tr>';
+    body.innerHTML = '<tr><td colspan="' + columns + '" style="color:#666">No production orders</td></tr>';
     return;
   }
   body.innerHTML = orders.map(order => {
@@ -274,7 +288,8 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    const pieces = glassPieceCount(order.items).pieces;
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(pieces) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -652,10 +667,9 @@ function renderDetail(order) {
   const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
     ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
   const shipmentSection = sectionBlock('Shipments ' + '<span class="badge">' + esc((shipping.label || 'Not shipped')) + '</span>', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>' + shipTable + partial);
-  const lineCount = (order.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation').length;
   const lineSummary = order.legacy
     ? 'No ERP order lines and no price. The pieces are the packing list.'
-    : lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
+    : pieceSummary(order.items) + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
   const linesTable = order.legacy
     ? ''
     : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th class="floor">Floor</th><th class="product">Product</th><th class="size">Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
