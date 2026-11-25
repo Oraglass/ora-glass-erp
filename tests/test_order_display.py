@@ -264,3 +264,134 @@ def test_on_screen_sizes_stack_inches_over_millimetres():
     assert 'dualSize(item.spec.width, item.spec.height, unit)' in quotes
     assert 'class="size-metric"' in history
     assert 'class="size-metric"' in shipments_page
+
+
+def test_piece_totals_count_quantities_and_skip_surcharge_rows(client):
+    """Two glass lines can be 14 pieces. A surcharge row is not another piece."""
+    from storage import save_orders
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    first = dict(_size_item(), pcs=4, total=400)
+    second = dict(_size_item(), name='Second - 20 x 30 in', pcs=10, total=1000, spec=dict(SPEC, width=20, height=30))
+    surcharge = {
+        'kind': 'irregular_surcharge', 'name': 'Irregular shape surcharge – Unit',
+        'pcs': 4, 'price_pc': 50, 'total': 200,
+    }
+    quote_pdf = pdf_text(documents.build_pdf({
+        'kind': 'quote', 'id': 9, 'type': 'size', 'currency': 'cad', 'project': 'Lobby',
+        'company': 'Harbor Glass', 'date': '2026-11-25',
+        'items': [first, surcharge, second],
+    }))
+    assert b'Total Pcs: 14' in quote_pdf
+    save_orders([{
+        'id': 5,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'project': 'Lobby',
+        'status': 'approved',
+        'currency': 'cad',
+        'total': 11444.14,
+        'items': [first, surcharge, second],
+    }])
+    order_pdf = pdf_text(client.get('/api/orders/5/confirmation.pdf').data)
+    assert b'Total Pcs: 14' in order_pdf
+    body = client.get('/api/orders/5').get_json()
+    glass = [item for item in body['items'] if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'}]
+    assert len(glass) == 2
+    assert sum(int(item['pcs']) for item in glass) == 14
+    assert any(item.get('kind') == 'irregular_surcharge' for item in body['items'])
+    orders = open('templates/orders.html', encoding='utf-8').read()
+    history = open('templates/quote_history.html', encoding='utf-8').read()
+    assert 'piece line' not in orders
+    assert "pieceSummary(order.items) + (PRICES ? ' · Grand total '" in orders
+    assert 'id="order-pcs-' in orders
+    assert '<th class="num">Pcs</th>' in orders
+    assert '<th class="num">Pcs</th>' in history
+    assert 'id="quote-pcs-' in history
+    assert 'id="quote-piece-summary"' in history
+    page = client.get('/orders')
+    assert b'piece line' not in page.data
+    assert b'id="order-pcs-' in page.data
+    history_page = client.get('/quote-history')
+    assert b'id="quote-pcs-' in history_page.data
+    assert b'id="quote-piece-summary"' in history_page.data
+
+
+def test_orders_list_totals_skip_voids_and_invoice_waits_for_a_packing_list(client):
+    """Workload is pieces and square feet of the filtered orders, and a void does not add to it."""
+    from storage import save_orders
+    _company_users(client)
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    open_line = dict(_size_item(), pcs=4, sqf=6, total=240)
+    packed_line = dict(_size_item(), pcs=10, sqf=6, total=600, spec=dict(SPEC, width=20, height=30))
+    void_line = dict(_size_item(), pcs=100, sqf=20, total=2000)
+    save_orders([
+        {
+            'id': 1, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Open',
+            'status': 'approved', 'currency': 'usd', 'items': [open_line],
+        },
+        {
+            'id': 2, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Packed',
+            'status': 'approved', 'currency': 'usd', 'items': [packed_line],
+            'packing_lists': [{
+                'id': 1, 'current': True, 'number': 'XF1', 'rack': 'R1', 'date': '2026-11-25',
+                'filename': 'xf1.csv', 'lines': [{'serial': 1, 'qty': 10}],
+            }],
+        },
+        {
+            'id': 3, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass', 'project': 'Void',
+            'status': 'voided', 'currency': 'usd', 'items': [void_line],
+        },
+    ])
+    listed = client.get('/api/orders').get_json()
+    by_id = {row['id']: row for row in listed}
+    assert set(by_id) == {1, 2}
+    assert by_id[1]['invoice_state'] != 'invoiced'
+    assert by_id[1]['packing_lists'] == []
+    assert by_id[2]['invoice_state'] == 'ready'
+    assert by_id[2]['packing_lists']
+    voided = client.get('/api/orders?status=voided').get_json()
+    assert [row['id'] for row in voided] == [3]
+    assert voided[0]['status'] == 'voided'
+    glass = [
+        item for row in listed
+        for item in row['items'] if item.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+    ]
+    assert sum(int(item['pcs']) for item in glass) == 14
+    assert sum(float(item['sqf']) * int(item['pcs']) for item in glass) == 84
+    waiting = client.post('/api/orders/1/customer-invoice', json={})
+    assert waiting.status_code == 400
+    assert b'packed' in waiting.data.lower() or b'packing' in waiting.data.lower()
+    billed = client.post('/api/orders/2/customer-invoice', json={})
+    assert billed.status_code == 200, billed.get_json()
+    assert billed.get_json()['invoice_state'] == 'invoiced'
+    page = client.get('/orders').data
+    assert b'id="order-workload"' in page
+    assert b'id="order-sqf-' in page
+    assert b'>Sq ft<' in page
+    assert b'Upload the packing list first' in page
+    assert b'data-list-invoice' in page
+    assert b'id="list-invoiced-' in page
+    assert b"!== 'voided'" in page
+
+
+def test_status_badges_open_the_matching_order_section():
+    orders = open('templates/orders.html', encoding='utf-8').read()
+    assert "if (kind === 'pack' || kind === 'legacy') return 'packing';" in orders
+    assert "if (kind === 'invoice') return 'invoices';" in orders
+    assert "if (kind === 'ship' || value === 'delivered') return 'shipments';" in orders
+    assert "if (value === 'customer_review') return 'changes';" in orders
+    assert "if (value === 'sent' || value === 'made') return 'production';" in orders
+    assert 'id="packing"' in orders
+    assert ", 'invoices')" in orders
+    assert ", 'production')" in orders
+    assert 'id="serials"' in orders
+    assert 'id="changes"' in orders
+    assert ", 'shipments')" in orders
+    assert 'id="backorder-lines"' in orders
+    assert 'Pieces ordered and not yet packed.' in orders
+    assert 'a.badge{cursor:pointer' in orders
+    assert 'a.badge:hover' in orders
+    assert 'function openHashedSection' in orders
+    assert "node.tagName === 'DETAILS'" in orders
+    assert 'node.open = true' in orders

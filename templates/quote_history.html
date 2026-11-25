@@ -54,11 +54,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 </div>
 <table>
 <thead><tr>
-<th>Quote #</th><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th>Currency</th>
+<th>Quote #</th><th>Date</th><th>Time</th><th>User</th><th>Customer</th><th>Project</th><th>Product</th><th class="num">Pcs</th><th>Currency</th>
 <th>{% if staff_tools %}<button type="button" id="sort-total" class="sort-btn">Total</button>{% else %}Total{% endif %}</th>
 <th>Type</th><th>Status</th><th></th>
 </tr></thead>
-<tbody id="quote-list"><tr><td colspan="12" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
+<tbody id="quote-list"><tr><td colspan="13" style="text-align:center;color:#666">No quotes found</td></tr></tbody>
 </table>
 <div id="quote-detail"></div>
 </div></div>
@@ -203,6 +203,19 @@ function quoteNumber(quote) {
   if (quote.number != null && quote.number !== '') return quote.number;
   return quote.id;
 }
+function glassPieceCount(items) {
+  const glass = (items || []).filter(item => item && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
+  const pieces = glass.reduce((sum, item) => {
+    const qty = Number(item.pcs);
+    return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
+  }, 0);
+  return {lines: glass.length, pieces: pieces};
+}
+function pieceSummary(items) {
+  const count = glassPieceCount(items);
+  return count.lines + ' line' + (count.lines === 1 ? '' : 's')
+    + ' · ' + count.pieces + ' piece' + (count.pieces === 1 ? '' : 's');
+}
 function productLabel(quote) {
   const items = quote.items || [];
   if (!items.length) return '-';
@@ -213,7 +226,7 @@ function productLabel(quote) {
 function renderQuotes(rows) {
   const tbody = document.getElementById('quote-list');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#666">No quotes found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#666">No quotes found</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(quote => {
@@ -243,7 +256,8 @@ function renderQuotes(rows) {
     const drawingNote = irregularLines(quote).length ? '<div class="drawing-note" style="margin-top:6px;color:#9f1239;font-weight:600">' + esc(DRAWING_NOTE) + '</div>' : '';
     const taxNote = (quote.tax_lines || []).map(line => '<div class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%</div>').join('')
       || (quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '');
-    return '<tr><td>' + esc(quoteNumber(quote)) + '</td><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    const pieces = glassPieceCount(quote.items).pieces;
+    return '<tr><td>' + esc(quoteNumber(quote)) + '</td><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td class="num" id="quote-pcs-' + esc(quote.id) + '">' + esc(pieces) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -500,6 +514,7 @@ function showQuoteDetail(quote) {
     + (quote.notes ? '<p class="help">' + esc(quote.notes) + '</p>' : '')
     + (quote.job_address ? '<p class="note">Job address<br>' + esc(quote.job_address).replace(/\n/g, '<br>') + '</p>' : '')
     + rateNote
+    + '<p class="note" id="quote-piece-summary">' + pieceSummary(quote.items) + '</p>'
     + '<table><thead><tr><th>#</th><th>Line</th><th>Floor</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>'
     + appendImportMarkup(quote)
     + (Number(quote.additional_discount_amount) ? '<p style="margin-top:8px;font-weight:600">Additional discount (' + esc(quote.additional_discount_percent) + '%)  -$' + Number(quote.additional_discount_amount).toFixed(2) + '</p>' : '')

@@ -39,6 +39,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .filters{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;align-items:center}
 .filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn:disabled{background:#e5e7eb;color:#6b7280;cursor:not-allowed}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
 .btn.small{padding:4px 8px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
@@ -46,6 +47,12 @@ th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee;vertical-align:top}
 .num{text-align:right;white-space:nowrap}
 a{color:#C41E3A}
+a.badge{cursor:pointer;text-decoration:none}
+a.badge:hover,a.badge:focus-visible{text-decoration:underline}
+details.section > summary{cursor:pointer;list-style:none}
+details.section > summary::-webkit-details-marker{display:none}
+details.section > summary h3{display:inline}
+.section-target{scroll-margin-top:16px;box-shadow:0 0 0 2px #C41E3A;border-radius:8px}
 .note{color:#666;font-size:13px;margin-top:8px}
 .error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
@@ -144,6 +151,7 @@ a{color:#C41E3A}
 <textarea id="list-void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea>
 <div class="actions"><button type="button" class="btn" id="list-void-confirm">Void order</button><button type="button" class="btn secondary" id="list-void-cancel">Cancel</button></div>
 </div>
+<p class="note" id="order-workload"></p>
 <table>
 <thead><tr id="order-head"></tr></thead>
 <tbody id="order-list"><tr><td style="color:#666">Loading...</td></tr></tbody>
@@ -234,19 +242,52 @@ function moneyText(currency, amount) {
 function orderNumber(order) {
   return order.number || order.id;
 }
+function badgeAnchor(kind, value) {
+  if (kind === 'pack' || kind === 'legacy') return 'packing';
+  if (kind === 'invoice') return 'invoices';
+  if (kind === 'ship' || value === 'delivered') return 'shipments';
+  if (kind === 'remake') return 'remake';
+  if (value === 'customer_review') return 'changes';
+  if (value === 'sent' || value === 'made') return 'production';
+  return 'production';
+}
+function badgeLink(order, kind, css, label, id, value) {
+  const anchor = badgeAnchor(kind, value || '');
+  const idAttr = id ? ' id="' + esc(id) + '"' : '';
+  return '<a class="badge ' + esc(css) + '"' + idAttr + ' href="/orders/' + encodeURIComponent(order.id) + '#' + anchor + '">' + esc(label) + '</a>';
+}
 function badge(order) {
   const status = order.status || 'approved';
-  let html = '<span class="badge ' + esc(status) + '">' + esc(order.status_label || status) + '</span>';
-  if (order.remake) html += ' <span class="badge remake" id="remake-badge-' + esc(order.id) + '">Remake</span>';
-  if (order.legacy) html += ' <span class="badge legacy" id="legacy-badge-' + esc(order.id) + '">Legacy</span>';
-  if (order.pack_status_label) html += ' <span class="badge ' + esc(order.pack_status || 'partial') + '" id="pack-badge-' + esc(order.id) + '">' + esc(order.pack_status_label) + '</span>';
+  let html = badgeLink(order, 'status', status, order.status_label || status, 'status-badge-' + order.id, status);
+  if (order.remake) html += ' ' + badgeLink(order, 'remake', 'remake', 'Remake', 'remake-badge-' + order.id);
+  if (order.legacy) html += ' ' + badgeLink(order, 'legacy', 'legacy', 'Legacy', 'legacy-badge-' + order.id);
+  if (order.pack_status_label) html += ' ' + badgeLink(order, 'pack', order.pack_status || 'partial', order.pack_status_label, 'pack-badge-' + order.id);
+  const shipLabel = (order.shipping || {}).label || '';
+  if (shipLabel && shipLabel !== 'Not shipped') {
+    html += ' ' + badgeLink(order, 'ship', shipLabel === 'Shipped' ? 'delivered' : 'partial', shipLabel, 'ship-badge-' + order.id);
+  }
   return html;
 }
-function invoiceBadge(order) {
+function invoiceBadge(order, named) {
   const state = order.invoice_state || 'not_invoiced';
   const label = order.invoice_state_label || 'Not invoiced';
-  return '<span class="badge ' + esc(state) + '" id="invoice-badge-' + esc(order.id) + '">' + esc(label) + '</span>';
+  return badgeLink(order, 'invoice', state, label, named === false ? '' : 'invoice-badge-' + order.id);
 }
+function openHashedSection() {
+  const id = (location.hash || '').replace(/^#/, '');
+  if (!id) return;
+  const target = document.getElementById(id);
+  if (!target) return;
+  let node = target;
+  while (node) {
+    if (node.tagName === 'DETAILS') node.open = true;
+    node = node.parentElement;
+  }
+  document.querySelectorAll('.section-target').forEach(el => el.classList.remove('section-target'));
+  target.classList.add('section-target');
+  target.scrollIntoView({block: 'start'});
+}
+window.addEventListener('hashchange', openHashedSection);
 function orderPdfLink(order) {
   return '<a class="btn small secondary" id="list-pdf-' + esc(order.id) + '" target="_blank" rel="noopener" href="/api/orders/' + encodeURIComponent(order.id) + '/confirmation.pdf">Print / Download PDF</a>';
 }
@@ -264,12 +305,64 @@ function orderVoidLink(order) {
   if (!order.can_void) return '';
   return '<button type="button" class="btn small secondary" id="list-void-' + esc(order.id) + '" data-list-void="' + esc(order.id) + '">Void</button>';
 }
+function orderInvoiceLink(order) {
+  if (!STAFF || order.legacy || order.status === 'voided') return '';
+  if (order.remake && !order.charge_customer) return '';
+  if (order.invoice_state === 'invoiced') {
+    return '<span class="badge invoiced" id="list-invoiced-' + esc(order.id) + '">Invoiced</span>';
+  }
+  if (!(order.packing_lists || []).length) {
+    return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" disabled title="Upload the packing list first">Invoice</button>';
+  }
+  return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" data-list-invoice="' + esc(order.id) + '">Invoice</button>';
+}
+function lineSqf(item) {
+  const each = Number(item && item.sqf);
+  if (!item || item.sqf == null || item.sqf === '' || !Number.isFinite(each)) return 0;
+  const qty = Number(item.pcs);
+  const pieces = Number.isFinite(qty) && qty > 0 ? qty : 1;
+  return Math.round(each * pieces * 100) / 100;
+}
+function formatSqf(value) {
+  const rounded = Math.round(Number(value || 0) * 100) / 100;
+  if (Math.abs(rounded - Math.round(rounded)) < 0.001) return String(Math.round(rounded));
+  return rounded.toFixed(2);
+}
+function glassPieceCount(items) {
+  const glass = (items || []).filter(item => item && item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation');
+  const pieces = glass.reduce((sum, item) => {
+    const qty = Number(item.pcs);
+    return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
+  }, 0);
+  const sqf = glass.reduce((sum, item) => sum + lineSqf(item), 0);
+  return {lines: glass.length, pieces: pieces, sqf: sqf};
+}
+function workloadSummary(orders) {
+  const counted = (orders || []).filter(order => (order.status || '') !== 'voided');
+  let pieces = 0;
+  let sqf = 0;
+  counted.forEach(order => {
+    const count = glassPieceCount(order.items);
+    pieces += count.pieces;
+    sqf += count.sqf;
+  });
+  const ordersWord = counted.length === 1 ? 'order' : 'orders';
+  return counted.length + ' ' + ordersWord + ' · ' + pieces + ' pcs · ' + formatSqf(sqf) + ' sq ft';
+}
+function pieceSummary(items) {
+  const count = glassPieceCount(items);
+  return count.lines + ' line' + (count.lines === 1 ? '' : 's')
+    + ' · ' + count.pieces + ' piece' + (count.pieces === 1 ? '' : 's');
+}
 function render(orders) {
   const head = document.getElementById('order-head');
-  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
+  const columns = PRICES ? 12 : 10;
+  const workload = document.getElementById('order-workload');
+  if (workload) workload.textContent = workloadSummary(orders);
+  head.innerHTML = '<th>Order</th><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th class="num">Pcs</th><th class="num">Sq ft</th><th>Invoice</th><th>Approved</th>' + (PRICES ? '<th>Tier</th><th class="num">Total</th>' : '') + '<th></th>';
   const body = document.getElementById('order-list');
   if (!orders.length) {
-    body.innerHTML = '<tr><td colspan="9" style="color:#666">No production orders</td></tr>';
+    body.innerHTML = '<tr><td colspan="' + columns + '" style="color:#666">No production orders</td></tr>';
     return;
   }
   body.innerHTML = orders.map(order => {
@@ -277,7 +370,8 @@ function render(orders) {
       ? '<td>' + esc(order.tier_label || order.tier || '') + '</td><td class="num">' + money(order, order.total) + '</td>'
       : '';
     const when = order.approved_at_display || order.approved_at || '';
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    const count = glassPieceCount(order.items);
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -462,12 +556,13 @@ function todayISO() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
-function sectionBlock(titleHtml, buttons, summary, body) {
-  return '<section class="section"><h3>' + titleHtml + '</h3>'
+function sectionBlock(titleHtml, buttons, summary, body, id) {
+  const anchor = id ? ' id="' + esc(id) + '"' : '';
+  return '<details class="section" open' + anchor + '><summary><h3>' + titleHtml + '</h3></summary>'
     + (buttons ? '<div class="actions">' + buttons + '</div>' : '')
     + (summary ? '<p class="note">' + summary + '</p>' : '')
     + (body || '')
-    + '</section>';
+    + '</details>';
 }
 function racksBeingShipped(order) {
   const ready = {};
@@ -531,7 +626,7 @@ function remakesBlock(order) {
   const rows = order.remakes || [];
   if (!rows.length) return '';
   const list = rows.map(row => '<li id="remake-status-' + esc(row.id) + '"><a id="remake-link-' + esc(row.id) + '" href="/orders/' + encodeURIComponent(row.id) + '">' + esc(row.number) + '</a> · ' + esc(row.status_label) + (row.charge_customer ? ' · Charged' : ' · Not charged') + (row.reason ? ' · ' + esc(row.reason) : '') + ' · ' + esc(row.pack_status_label || 'Not packed') + ' · ' + esc(row.ship_status_label || 'Not shipped') + '</li>').join('');
-  return '<section class="section" id="order-remakes"><h3>Remakes</h3><p class="note">Service orders made from this order.</p><ul id="remake-list">' + list + '</ul></section>';
+  return '<details class="section" id="remakes" open><summary><h3>Remakes</h3></summary><p class="note">Service orders made from this order.</p><ul id="remake-list">' + list + '</ul></details>';
 }
 function packingBlock(order) {
   const serials = order.packing_serials || [];
@@ -571,13 +666,21 @@ function packingBlock(order) {
     + '<a class="btn secondary" id="print-backorder" href="/api/orders/' + encodeURIComponent(order.id) + '/backorder.pdf">Print Back Ordered List</a>';
   const shippedTotal = serials.reduce((sum, row) => sum + Number(row.shipped || 0), 0);
   const summary = 'Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + (showShipped ? ' · Shipped ' + esc(shippedTotal) : '') + ' · BO ' + esc(totals.bo || 0);
-  return '<section class="section" id="order-packing"><h3>Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
+  const boRows = serials.filter(row => Number(row.bo) > 0);
+  const boTable = boRows.length
+    ? '<h4 id="packing-bo" style="margin:14px 0 4px">Back order</h4><p class="note">Pieces ordered and not yet packed.</p><table id="backorder-lines"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th><th class="num">BO</th></tr></thead><tbody>'
+      + boRows.map(row => '<tr><td>' + esc(row.serial) + '</td><td>' + esc(row.floor || '') + '</td><td>' + esc(row.product || '') + '</td><td class="size">' + displaySize(row.size || '') + '</td><td class="num">' + esc(row.ordered) + '</td><td class="num">' + esc(row.packed) + '</td><td class="num">' + esc(row.bo) + '</td></tr>').join('')
+      + '</tbody></table>'
+    : '<p class="note" id="packing-bo">No back order.</p>';
+  return '<details class="section" id="packing" open><summary><h3>Packing</h3></summary>'
+    + '<p>' + (order.pack_status_label ? badgeLink(order, 'pack', order.pack_status || 'partial', order.pack_status_label) : '') + ' ' + invoiceBadge(order, false) + '</p>'
     + '<div class="actions">' + prints + shipPacked + invoiceCustomer + '</div>'
     + invoiceChoice
     + shipConfirmPanel(order)
     + '<p class="note" id="packing-totals">' + summary + '</p>'
     + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th>' + shippedHead + '<th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
-    + listBlocks + historyBlock + '</section>';
+    + boTable
+    + listBlocks + historyBlock + '</details>';
 }
 function changelogBlock(order) {
   const entries = order.changelog || [];
@@ -670,11 +773,10 @@ function renderDetail(order) {
     : '<p class="note">No shipments recorded yet.</p>';
   const partial = (IS_ADMIN && (order.billing_mode === 'us_full' || order.billing_mode === 'us_partial') && !(order.shipments || []).length)
     ? '<label class="note"><input type="checkbox" id="partial-invoicing"' + (order.partial_invoicing ? ' checked' : '') + '> Invoice each shipment (US backorder)</label>' : '';
-  const shipmentSection = sectionBlock('Shipments ' + '<span class="badge">' + esc((shipping.label || 'Not shipped')) + '</span>', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + esc(shipping.label || 'Not shipped') + '</p>' + shipTable + partial);
-  const lineCount = (order.items || []).filter(item => item.kind !== 'irregular_surcharge' && item.kind !== 'dwg_creation').length;
+  const shipmentSection = sectionBlock('Shipments', '', 'Recorded shipments. Packed and back-order quantities stay in the Packing section.', '<p class="note" id="shipping-label">' + badgeLink(order, 'ship', (shipping.label === 'Shipped' ? 'delivered' : 'partial'), shipping.label || 'Not shipped') + '</p>' + shipTable + partial, 'shipments');
   const lineSummary = order.legacy
     ? 'No ERP order lines and no price. The pieces are the packing list.'
-    : lineCount + ' piece line' + (lineCount === 1 ? '' : 's') + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
+    : pieceSummary(order.items) + (PRICES ? ' · Grand total ' + moneyText(order.currency, order.total) : '');
   const linesTable = order.legacy
     ? ''
     : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th class="floor">Floor</th><th class="product">Product</th><th class="size">Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
@@ -687,7 +789,7 @@ function renderDetail(order) {
     + '. Prices were recalculated at ' + esc(order.tier_label || order.tier || 'the company tier')
     + {% if show_fx_rate %}(order.fx_rate ? '. USD/CAD ' + esc(order.fx_rate) : ''){% else %}''{% endif %} + '.';
   const remakeNote = order.remake
-    ? '<p class="note" id="remake-note">Remake of Order <a id="remake-of-order" href="/orders/' + encodeURIComponent(order.remake_of) + '">' + esc(order.remake_of_number || order.remake_of) + '</a>.'
+    ? '<p class="note" id="remake">Remake of Order <a id="remake-of-order" href="/orders/' + encodeURIComponent(order.remake_of) + '">' + esc(order.remake_of_number || order.remake_of) + '</a>.'
       + (order.remake_reason ? ' ' + esc(order.remake_reason) + '.' : '')
       + (order.charge_customer ? ' Charged to the customer.' : ' Not charged to the customer.')
       + '</p>'
@@ -712,11 +814,11 @@ function renderDetail(order) {
     + '<p class="note">' + headerSummary + '</p>'
     + headerExtra + '</section>'
     + changeSummary(order)
-    + sectionBlock('Order lines', '', lineSummary, linesTable)
+    + sectionBlock('Order lines', '', lineSummary, '<span id="serials"></span>' + linesTable, 'production')
     + remakesBlock(order)
     + packingBlock(order)
     + shipmentSection
-    + sectionBlock('Invoices ' + invoiceBadge(order), '', 'Customer and intercompany invoices for this order.', invoiceBody)
+    + sectionBlock('Invoices', '', 'Customer and intercompany invoices for this order.', invoiceBadge(order, false) + invoiceBody, 'invoices')
     + drawingBlock
     + coverageSection
     + changelogBlock(order);
@@ -913,6 +1015,10 @@ function renderDetail(order) {
       load();
     });
   });
+  box.querySelectorAll('summary a.badge').forEach(link => {
+    link.addEventListener('click', event => event.stopPropagation());
+  });
+  openHashedSection();
 }
 async function changeStatus(status, message) {
   if (!confirm(message)) return;
@@ -926,7 +1032,7 @@ async function changeStatus(status, message) {
 }
 function changeSummary(order) {
   const change = order.change_summary;
-  if (!change && !(order.revisions || []).length) return '';
+  if (!change && !(order.revisions || []).length && order.status !== 'customer_review') return '';
   let html = '';
   if (change) {
     const prices = change.price_choice === 'apply' && change.old_total != null
@@ -942,7 +1048,10 @@ function changeSummary(order) {
   }
   const history = (order.revisions || []).map(rev => '<li>Revision ' + esc(rev.number) + ' · ' + esc(rev.kind) + ' · ' + esc(rev.user) + ' · ' + esc(rev.note || rev.comment || '') + '</li>').join('');
   if (history) html += '<div class="log" id="revision-history"><h3 style="color:#333">Revision history</h3><ul>' + history + '</ul></div>';
-  return html;
+  if (!html) {
+    html = '<div class="change-summary" id="change-summary"><h3 style="color:#333;font-size:16px">Changes from Ora Glass</h3><p class="note">Waiting for customer re-approval.</p></div>';
+  }
+  return '<section id="changes">' + html + '</section>';
 }
 function optionList(names, current) {
   const values = [''].concat(names || []);
@@ -1290,7 +1399,23 @@ async function load() {
 const orderFilter = document.getElementById('order-filter');
 if (orderFilter) orderFilter.addEventListener('click', load);
 const orderList = document.getElementById('order-list');
-if (orderList) orderList.addEventListener('click', event => {
+if (orderList) orderList.addEventListener('click', async event => {
+  const invoice = event.target.closest('[data-list-invoice]');
+  if (invoice) {
+    const orderId = invoice.getAttribute('data-list-invoice');
+    invoice.disabled = true;
+    const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/customer-invoice', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      invoice.disabled = false;
+      alert(payload.error || 'Could not invoice the customer');
+      return;
+    }
+    load();
+    return;
+  }
   const button = event.target.closest('[data-list-void]');
   if (!button) return;
   const panel = document.getElementById('list-void-panel');
