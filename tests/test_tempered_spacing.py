@@ -63,6 +63,24 @@ def test_mac_igu_names_match_the_erp_and_excel_uses_the_sheet_text():
     assert documents.build_label(double).split(' - ', 1)[1].startswith('6mmSolarban60 VT Tempered +')
 
 
+def test_an_annealed_lite_keeps_no_space_before_the_spacer():
+    """Only Tempered gets a space. 4mmSolarCoat+20mm stays tight."""
+    annealed = _spec('SolarCoat 4mm', 'n/a', 'Superspacer 20mm / sqf', 'Clear Glass 4mm', 'n/a')
+    makeup = production.makeup_from_spec(annealed)
+    assert makeup.startswith('4mmSolarCoat+20mm')
+    assert ' +' not in makeup
+    label = documents.build_label(annealed)
+    assert '4mmSolarCoat+20mm' in label
+    assert ' +' not in label
+    listed = _spec('Solarban60 4mm', 'n/a', 'Superspacer 20mm / sqf', 'SolarCoat 4mm', 'n/a')
+    row = production.excel_identity({'name': 'annealed', 'spec': listed})
+    assert row['product_id'] == '12'
+    assert row['product_name'] == (
+        '28 - 4mmSolarban60+20mmSuperSpacer with Argon(Polysulfide)+4mmSolarCoat'
+    )
+    assert ' +' not in row['product_name']
+
+
 def test_opening_a_quote_rewrites_tempered_spacing_without_touching_price(client):
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
