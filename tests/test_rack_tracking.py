@@ -45,6 +45,51 @@ def _order():
     }])
 
 
+def test_packing_list_registers_a_rack_and_load_backfills_unshipped_lists(client):
+    _users()
+    _order()
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/racks').get_json()
+    packed = next(row for row in listed if row['number'] == '1054')
+    assert packed['status'] == 'packed'
+    assert packed['status_label'] == 'At Ora Glass / Packed'
+    assert packed['customer_id'] == 'harbor-glass'
+    assert packed['customer_name'] == 'Harbor Glass'
+    assert packed['order_id'] == 4
+    assert packed['packing_number'] == 'XF261123001'
+    assert packed['days'] is None
+    assert any(item.get('action') == 'packed' for item in packed['history'])
+    again = client.get('/api/racks').get_json()
+    assert len([row for row in again if row['number'] == '1054']) == 1
+    assert len(next(row for row in again if row['number'] == '1054')['history']) == 1
+    text = (
+        'Sold To: Harbor Glass\nJob Name: Lobby\n'
+        'Sales Delivery: XF261123002 Date: 11/24/2026\n'
+        '2002 A1900*1220*1800(THK:400*2)\n'
+        '(1) 4\n24 36\n609.6 mm 914.4 mm\n'
+    )
+    uploaded = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO(text.encode()), 'XF261123002.txt')},
+        content_type='multipart/form-data',
+    )
+    assert uploaded.status_code == 200, uploaded.get_json()
+    fresh = load_racks()['2002']
+    assert fresh['status'] == 'packed'
+    assert fresh['packing_number'] == 'XF261123002'
+    assert fresh['customer_id'] == 'harbor-glass'
+    shipped = client.post('/api/orders/4/ship-packed', json={'number': 'S9', 'date': '2026-11-01', 'rack': '2002'})
+    assert shipped.status_code == 200, shipped.get_json()
+    gone = load_racks()['2002']
+    assert gone['status'] == 'at_customer'
+    assert gone['since'] == '2026-11-01'
+    assert gone['customer_name'] == 'Harbor Glass'
+    shown = next(row for row in client.get('/api/racks').get_json() if row['number'] == '2002')
+    assert shown['status_label'] == 'At customer'
+    assert shown['days'] > 14
+    assert shown['overdue'] is True
+
+
 def test_packing_section_shows_rack_numbers_and_links_known_racks(client):
     _users()
     _order()
@@ -123,9 +168,11 @@ def test_shipment_moves_the_rack_and_a_new_list_brings_it_back(client):
     )
     assert uploaded.status_code == 200, uploaded.get_json()
     returned = load_racks()['1054']
-    assert returned['status'] == 'at_ora'
-    assert returned['customer_id'] == ''
+    assert returned['status'] == 'packed'
+    assert returned['status'] != 'at_customer'
+    assert returned['customer_id'] == 'harbor-glass'
     assert any('Returned, inferred from packing list XF9' in (item.get('note') or '') for item in returned['history'])
+    assert any('Packed on XF9' in (item.get('note') or '') for item in returned['history'])
 
 
 def test_driver_pickup_warns_and_returns_the_rack(client):
@@ -176,8 +223,9 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     })
     assert picked.status_code == 200, picked.get_json()
     home = load_racks()['1054']
-    assert home['status'] == 'at_ora'
+    assert home['status'] == 'returned'
     assert home['history'][-1]['action'] == 'picked_up'
+    assert 'returned' in (home['history'][-1].get('note') or '').lower() or home['history'][-1]['note'] == 'Picked up and returned.'
     assert home['history'][-1]['user'] == 'dana@oraglass.us'
     assert home['history'][-1]['truck_plate'] == 'VAN-2'
     client.post('/logout')

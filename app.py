@@ -2233,6 +2233,7 @@ def rack_list():
     if not _rack_user_ok(user):
         return json_error('Access denied', 403)
     import racks as rack_book
+    rack_book.backfill_from_orders(load_orders(), user)
     rows = rack_book.visible_rows(
         rack_book.load_rows(), user,
         status=clean_text(request.args.get('status'), 40),
@@ -8633,10 +8634,13 @@ def set_order_status(order_id):
     if error:
         status = 400
         return json_error(error, status)
-    if target == 'delivered' and saved and saved.get('invoice_id'):
-        _qbo('push_document_id', saved.get('invoice_id'))
-        if saved.get('intercompany_invoice_id'):
-            _qbo('push_document_id', saved.get('intercompany_invoice_id'))
+    if target == 'delivered' and saved:
+        import racks as rack_book
+        rack_book.deliver_order(saved, user)
+        if saved.get('invoice_id'):
+            _qbo('push_document_id', saved.get('invoice_id'))
+            if saved.get('intercompany_invoice_id'):
+                _qbo('push_document_id', saved.get('intercompany_invoice_id'))
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
@@ -8836,8 +8840,8 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         })
     _stamp_log(order, user, changes)
     import racks as rack_book
-    rack_book.note_packing_return(
-        parsed.get('rack') or '', parsed.get('number') or '', parsed.get('rack_name') or '', user,
+    rack_book.record_packing(
+        order, parsed.get('rack') or '', parsed.get('number') or '', parsed.get('rack_name') or '', user,
     )
     return order, progress, unmatched
 
