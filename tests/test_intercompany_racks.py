@@ -3,6 +3,7 @@
 import io
 
 from storage import load_orders, save_invoices, save_orders
+import tax_numbers
 from tests.conftest import login, write_user
 from tests.test_packing_pdf_invoice import HIGHQ_LIST
 from tests.test_quote_export import pdf_text
@@ -77,8 +78,12 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     page = client.get('/invoices/53').data
     assert b'id="invoice-racks"' in page
     assert b'id="invoice-weight"' in page
+    assert body['gst_place'] == 'customer'
+    assert body['seller_gst_number'] == tax_numbers.SELLER_GST_INITIAL
     pdf = pdf_text(client.get('/api/invoices/53/pdf').data)
     assert b'Racks: 3' in pdf
+    assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
+    assert b'Ora Glass Inc.' in pdf
     assert b'XF261123001: 1054' in pdf
     assert b'171 LBS' in pdf
     assert b'XF261123002: 2002, 2003' in pdf
@@ -115,6 +120,28 @@ def test_customer_invoice_does_not_list_racks(client):
     pdf = pdf_text(client.get('/api/invoices/60/pdf').data)
     assert b'Racks:' not in pdf
     assert b'Total weight:' not in pdf
+    assert b'GST#' not in pdf
+    assert body.get('gst_place') == ''
+
+
+def test_canada_customer_invoice_shows_gst_under_the_header(client):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    _order()
+    save_invoices([dict(
+        _invoice(61, 'INV-0061', [{'name': 'Glass', 'serial': 1, 'pcs': 4, 'total': 60}], kind='customer'),
+        issuer='ca', currency='cad', company='HighQ Developments Inc',
+    )])
+    body = client.get('/api/invoices/61').get_json()
+    assert body['issuer_label'] == 'Ora Glass (Canada) Inc'
+    assert body['gst_place'] == 'header'
+    assert body['seller_gst_number'] == tax_numbers.SELLER_GST_INITIAL
+    pdf = pdf_text(client.get('/api/invoices/61/pdf').data)
+    assert b'Ora Glass \\(Canada\\) Inc.' in pdf
+    assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
+    page = open('templates/invoices.html', encoding='utf-8').read()
+    assert 'id="invoice-header-gst"' in page
+    assert 'id="invoice-bill-gst"' in page
 
 
 def test_mixed_weight_units_stay_separate(client):

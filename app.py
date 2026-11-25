@@ -9925,6 +9925,7 @@ def _canada_books_customer():
 
 def _issue_delivery_invoices(order, user):
     import quickbooks
+    import tax_numbers
     customer = load_customers().get(order.get('customer_id') or '') or {}
     base = _invoice_from_order(order, user)
     if not quickbooks.is_canadian(customer):
@@ -9981,6 +9982,7 @@ def _issue_delivery_invoices(order, user):
         'cad_total': money(base.get('total')) if currency == 'cad' else None,
         'pst_number': order.get('pst_number') or '',
         'qst_number': order.get('qst_number') or '',
+        'seller_gst_number': tax_numbers.displayed_gst_number(),
     })
     fresh_intercompany = _finish_invoice(append_invoice(intercompany), user)
     order['invoice_id'] = fresh_customer['id']
@@ -10192,6 +10194,7 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
              'igu_subtotal': usd_total, 'igu_total': usd_total, 'extras_total': 0, 'total': usd_total},
             'us', 'intercompany', shipment,
         )
+        import tax_numbers
         document.update({
             'currency': 'usd',
             'fx_rate': rate,
@@ -10201,6 +10204,7 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
             'cad_total': money(summary.get('total')) if currency == 'cad' else None,
             'company': 'Ora Glass (Canada) Inc',
             'customer_id': books.get('id'),
+            'seller_gst_number': tax_numbers.displayed_gst_number(),
         })
         stored = _finish_invoice(append_invoice(document), user)
         shipment['invoice_id'] = stored['id']
@@ -10311,6 +10315,7 @@ def _present_invoice(invoice, payments):
         else:
             view['status'] = 'open'
         view['status_label'] = invoice_status_label(view['status'])
+        _attach_invoice_gst(view, invoice)
         return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
@@ -10320,6 +10325,7 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number
+    _attach_invoice_gst(view, invoice)
     if view['kind'] == 'intercompany' and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
@@ -10329,6 +10335,27 @@ def _present_invoice(invoice, payments):
             )
             view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _attach_invoice_gst(view, invoice):
+    place = _invoice_gst_place(view)
+    view['gst_place'] = place
+    if not place:
+        return
+    import tax_numbers
+    view['seller_gst_number'] = tax_numbers.displayed_gst_number(invoice.get('seller_gst_number'))
+
+
+def _invoice_gst_place(invoice):
+    """Where Ora Glass (Canada) Inc's GST number belongs on this invoice."""
+    kind = (invoice or {}).get('kind') or 'customer'
+    if kind == 'intercompany':
+        return 'customer'
+    issuer = (invoice or {}).get('issuer') or 'us'
+    currency = str((invoice or {}).get('currency') or 'usd').lower()
+    if issuer == 'ca' and currency == 'cad':
+        return 'header'
+    return ''
 
 
 def _with_packing_measures(order):
@@ -10927,8 +10954,11 @@ def _render_invoice_pdf(invoice):
     elements.append(Spacer(1, 8))
     elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
     elements.append(Spacer(1, 8))
+    customer_line = f"<b>Customer:</b> {escape(invoice.get('company') or '')}"
+    if invoice.get('gst_place') == 'customer' and invoice.get('seller_gst_number'):
+        customer_line += f"<br/>GST# {escape(invoice.get('seller_gst_number'))}"
     elements.append(Paragraph(
-        f"<b>Customer:</b> {escape(invoice.get('company') or '')}<br/>"
+        customer_line + "<br/>"
         f"<b>Project:</b> {escape(invoice.get('project') or '-')}<br/>"
         f"<b>Order:</b> {escape(str(invoice.get('order_id') or ''))}"
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",

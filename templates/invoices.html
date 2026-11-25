@@ -211,8 +211,11 @@ function renderDetail(invoice) {
   }).join('') : '';
   const packingNote = packing ? '<p class="note" id="invoice-racks"><b>Racks:</b> ' + esc(packing.rack_count) + '</p>' + (packingLines ? '<ul id="invoice-rack-lists">' + packingLines + '</ul>' : '') + (packing.weight_label ? '<p class="note" id="invoice-weight"><b>Total weight:</b> ' + esc(packing.weight_label) + '</p>' : '') : '';
   const fxForm = CAN_ISSUE && invoice.kind === 'intercompany' && !invoice.voided ? '<div class="row"><input id="fx-rate" type="number" min="0.0001" step="0.0001" value="' + esc(invoice.fx_rate || '') + '" aria-label="Exchange rate"><button type="button" class="btn" id="save-fx">Save exchange rate</button></div>' : '';
+  const gst = invoice.seller_gst_number ? 'GST# ' + invoice.seller_gst_number : '';
+  const headerGst = invoice.gst_place === 'header' && gst ? '<br><span id="invoice-header-gst">' + esc(gst) + '</span>' : '';
+  const billGst = invoice.gst_place === 'customer' && gst ? '<br><span id="invoice-bill-gst">' + esc(gst) + '</span>' : '';
   box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
-    + '<p class="note">' + esc(invoice.issuer_label || '') + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? (invoice.tax_lines || []).map(line => ' · ' + esc(line.name) + ' ' + esc(line.rate) + '%').join('') : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
+    + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ' · ' + esc(invoice.company) + billGst + ' · ' + esc(invoice.project || '') + ' · Order ' + esc(invoice.order_id) + ' · Quote ' + esc(invoice.quote_id) + ((invoice.tax_lines || []).length ? (invoice.tax_lines || []).map(line => ' · ' + esc(line.name) + ' ' + esc(line.rate) + '%').join('') : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + (invoice.shipment_number ? ' · Shipment ' + esc(invoice.shipment_number) : '') + '</p>'
     + fxLine + fxForm + packingNote
     + (invoice.qbo_warning ? '<p class="error">' + esc(invoice.qbo_warning) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
