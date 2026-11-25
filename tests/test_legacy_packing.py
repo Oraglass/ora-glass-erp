@@ -103,8 +103,9 @@ def test_legacy_job_ships_without_an_invoice_and_a_later_file_joins_it(client):
     assert 'not invoiced' in refused.get_json()['error']
     assert [row for row in load_invoices() if row.get('order_id') == legacy_id] == []
     rack = load_rows()['1054']
-    assert rack['status'] == 'at_customer'
+    assert rack['status'] == 'packed'
     assert rack['customer_id'] == 'open-windows'
+    assert shipment['status'] == 'shipped'
 
     client.post('/logout')
     assert login(client, 'boss@openwindows.test').status_code == 302

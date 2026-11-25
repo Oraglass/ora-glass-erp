@@ -50,6 +50,7 @@ a{color:#C41E3A}
 </div></div>
 <script>
 const STAFF = {{ staff|tojson }};
+const ADMIN = {{ admin|tojson }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -58,7 +59,10 @@ function render(rows) {
   if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="note">No racks.</td></tr>'; return; }
   body.innerHTML = rows.map(row => {
     const history = (row.history || []).map(item => '<li>' + esc(item.note || item.action) + ' · ' + esc(item.user || '') + ' · ' + esc(item.at || '') + '</li>').join('');
-    return '<tr class="' + (row.overdue ? 'overdue' : '') + '"><td>' + esc(row.number) + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + '</td><td>' + esc(row.customer_name || '') + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td><td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td><td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td></tr>';
+    const returning = (ADMIN && row.status === 'at_customer')
+      ? '<div><button type="button" class="btn secondary" data-return="' + esc(row.number) + '">Mark returned</button></div>'
+      : '';
+    return '<tr class="' + (row.overdue ? 'overdue' : '') + '"><td>' + esc(row.number) + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + returning + '</td><td>' + esc(row.customer_name || '') + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td><td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td><td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td></tr>';
   }).join('');
 }
 async function load() {
@@ -89,6 +93,21 @@ if (STAFF) {
   });
   document.getElementById('rack-filter').addEventListener('click', load);
 }
+document.getElementById('rack-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-return]');
+  if (!button || !ADMIN) return;
+  const number = button.getAttribute('data-return');
+  if (!window.confirm('Mark rack ' + number + ' as returned?')) return;
+  button.disabled = true;
+  const res = await fetch('/api/racks/' + encodeURIComponent(number) + '/return', {method: 'POST'});
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    button.disabled = false;
+    alert(payload.error || 'Could not mark this rack returned');
+    return;
+  }
+  load();
+});
 load();
 </script>
 </body>

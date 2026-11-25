@@ -2214,7 +2214,7 @@ def racks_page():
     user = current_user()
     if not _rack_user_ok(user):
         return forbidden()
-    return render_template('racks.html', staff=staff_can_order(user))
+    return render_template('racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin')
 
 
 @app.route('/racks/scan')
@@ -2291,6 +2291,19 @@ def rack_pickup():
     if not result['moved']:
         return json_error('None of those racks are at this customer.', 400)
     return jsonify(result)
+
+
+@app.route('/api/racks/<rack_number>/return', methods=['POST'])
+@login_required
+def mark_rack_returned(rack_number):
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can mark a rack returned.', 403)
+    import racks as rack_book
+    row = rack_book.mark_returned(rack_number, user)
+    if not row:
+        return json_error('That rack is not in a customer inventory.', 400)
+    return jsonify(rack_book.present(row))
 
 
 @app.route('/api/racks/labels.pdf', methods=['GET'])
@@ -8612,6 +8625,15 @@ def set_order_status(order_id):
             'new': STATUS_LABELS[target],
         }]
         if target == 'delivered':
+            delivered_on = date.today().isoformat()
+            stamped = []
+            for shipment in updated.get('shipments') or []:
+                recorded = dict(shipment) if isinstance(shipment, dict) else {}
+                if str(recorded.get('status') or '').lower() != 'delivered':
+                    recorded['status'] = 'delivered'
+                    recorded['delivered_on'] = recorded.get('delivered_on') or delivered_on
+                stamped.append(recorded)
+            updated['shipments'] = stamped
             if updated.get('remake') and not updated.get('charge_customer'):
                 changes.append({'field': 'invoice', 'action': 'kept', 'new': 'This remake is not charged to the customer.'})
             elif updated.get('legacy'):
@@ -8719,7 +8741,10 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
         'invoiced': False,
         'packing_list': stored_name,
         'created_by': user.get('email') or '',
+        'status': 'delivered' if str(order.get('status') or '').lower() == 'delivered' else 'shipped',
     }
+    if shipment['status'] == 'delivered':
+        shipment['delivered_on'] = shipped_on
     mode = _billing_mode(order)
     if not order.get('legacy') and mode != 'us_full':
         _number, error = _issue_shipment_invoice(order, shipment, user, finishing)
@@ -8730,8 +8755,9 @@ def _record_shipment(order, user, data, packing_name='', packing_bytes=b''):
         error = _close_shipment_billing(order, user)
         if error:
             return None, error
-    import racks as rack_book
-    rack_book.receive_shipment(order, shipment, user)
+    if shipment.get('status') == 'delivered':
+        import racks as rack_book
+        rack_book.deliver_order(order, user)
     return order, None
 
 
@@ -10012,6 +10038,8 @@ def _public_shipments(order):
             'invoice_id': shipment.get('invoice_id'),
             'invoice_number': shipment.get('invoice_number') or '',
             'packing_list': shipment.get('packing_list') or '',
+            'status': shipment.get('status') or '',
+            'delivered_on': shipment.get('delivered_on') or '',
         })
     return rows
 
