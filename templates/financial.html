@@ -36,8 +36,12 @@ a{color:#9f1830}
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 {% if staff_view %}
 <p class="note">Choose a customer to see their credit, payments, invoices, and orders. Record a payment on the Record payment tab.</p>
-<select id="fin-customer" aria-label="Customer"></select>
+<select id="fin-customer" aria-label="Customer"><option value="">Choose a customer</option></select>
+<p class="note" id="fin-empty">Choose a customer to see their overview.</p>
+{% else %}
+<p class="note" id="fin-company">{{ customer_name }}</p>
 {% endif %}
+<div id="fin-body"{% if staff_view %} hidden{% endif %}>
 <p class="note" id="cards-scope">Summary cards are all-time. Each currency is shown on its own and includes every open invoice in that currency. The date range filters the payments, invoices, and orders below.</p>
 {% if is_admin %}
 <p><button type="button" class="btn" id="import-open-invoices">Import open invoices from QuickBooks</button></p>
@@ -67,6 +71,7 @@ a{color:#9f1830}
 <thead><tr><th>Order</th><th>Date</th><th>Project</th><th>Status</th><th>Total</th><th>Invoiced</th><th>Not invoiced</th></tr></thead>
 <tbody id="fin-orders"><tr><td colspan="7" style="color:#666">No orders</td></tr></tbody>
 </table>
+</div>
 </div></div>
 <script>
 const STAFF = {{ staff_view|tojson }};
@@ -128,6 +133,16 @@ function renderInvoices(rows) {
   }
   body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.due_date) + '</td><td>' + esc(row.project) + '</td><td>' + money(row.currency, row.total) + '</td><td>' + money(row.currency, row.balance) + '</td><td>' + esc(row.status_label || row.status) + '</td><td>' + esc(row.qbo_sync_label || 'Not sent') + '</td></tr>').join('');
 }
+function showOverview(show) {
+  const body = document.getElementById('fin-body');
+  const empty = document.getElementById('fin-empty');
+  if (body) body.hidden = !show;
+  if (empty) empty.hidden = show;
+}
+function chosenCustomer() {
+  const select = document.getElementById('fin-customer');
+  return select ? select.value : '';
+}
 function renderOrders(rows) {
   const body = document.getElementById('fin-orders');
   if (!rows.length) {
@@ -137,6 +152,11 @@ function renderOrders(rows) {
   body.innerHTML = rows.map(row => '<tr><td><a href="/orders/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.date) + '</td><td>' + esc(row.project) + '</td><td>' + esc(row.status_label || row.status) + '</td><td>' + money(row.currency, row.total) + '</td><td>' + money(row.currency, row.invoiced) + '</td><td>' + money(row.currency, row.not_invoiced) + '</td></tr>').join('');
 }
 async function load(customerId) {
+  if (STAFF && !customerId) {
+    showOverview(false);
+    return;
+  }
+  showOverview(true);
   const params = new URLSearchParams();
   if (customerId) params.set('customer_id', customerId);
   const from = document.getElementById('fin-from').value;
@@ -160,22 +180,15 @@ document.getElementById('fin-range').addEventListener('click', event => {
   const range = presetRange(button.getAttribute('data-preset'));
   document.getElementById('fin-from').value = range.from;
   document.getElementById('fin-to').value = range.to;
-  const select = document.getElementById('fin-customer');
-  load(select ? select.value : '');
+  load(chosenCustomer());
 });
-document.getElementById('fin-from').addEventListener('change', () => {
-  const select = document.getElementById('fin-customer');
-  load(select ? select.value : '');
-});
-document.getElementById('fin-to').addEventListener('change', () => {
-  const select = document.getElementById('fin-customer');
-  load(select ? select.value : '');
-});
+document.getElementById('fin-from').addEventListener('change', () => load(chosenCustomer()));
+document.getElementById('fin-to').addEventListener('change', () => load(chosenCustomer()));
 const importButton = document.getElementById('import-open-invoices');
 if (importButton) {
   importButton.addEventListener('click', async () => {
-    const select = document.getElementById('fin-customer');
-    const customerId = select ? select.value : '';
+    const customerId = chosenCustomer();
+    if (!customerId) return;
     const note = document.getElementById('import-open-result');
     importButton.disabled = true;
     try {
@@ -201,9 +214,9 @@ async function start() {
   if (!res.ok) return;
   const rows = await res.json();
   const select = document.getElementById('fin-customer');
-  select.innerHTML = rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  select.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
   select.addEventListener('change', () => load(select.value));
-  if (rows.length) load(rows[0].id);
+  showOverview(false);
 }
 start();
 </script>

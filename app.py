@@ -1313,13 +1313,11 @@ def inject_user():
     allowed = set(effective_module_ids(user)) if user else set()
     nav = []
     for item in MODULES:
-        if item['id'] == 'invoices':
+        if item['id'] not in allowed:
             continue
-        if item['id'] == 'financial' and 'financial' not in allowed and 'invoices' in allowed:
-            nav.append({'id': 'financial', 'label': 'Financials', 'endpoint': 'invoices'})
+        if item['id'] == 'invoices' and 'financial' in allowed:
             continue
-        if item['id'] in allowed:
-            nav.append(item)
+        nav.append(item)
     extras = []
     if user and _is_ora_staff(user):
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
@@ -3222,7 +3220,14 @@ def financial_payments():
 @app.route('/financial')
 @module_required('financial')
 def financial():
-    return render_template('financial.html', fin_tab='overview', **_book_page_flags(current_user()))
+    user = current_user()
+    customer_name = ''
+    if user.get('role') == 'customer':
+        customer = load_customers().get(user.get('customer_id') or '') or {}
+        customer_name = customer.get('name') or ''
+    return render_template(
+        'financial.html', fin_tab='overview', customer_name=customer_name, **_book_page_flags(user),
+    )
 
 
 @app.route('/api/customers', methods=['GET'])
@@ -11840,7 +11845,10 @@ def financial_overview():
     """All-time credit cards, plus payments, invoices, and orders in the requested dates."""
     user = current_user()
     if user.get('role') == 'customer':
-        customer_id = user.get('customer_id')
+        customer_id = user.get('customer_id') or ''
+        requested = clean_text(request.args.get('customer_id'), 80)
+        if not customer_id or (requested and requested != customer_id):
+            return json_error('Access denied', 403)
     else:
         customer_id = clean_text(request.args.get('customer_id'), 80)
         if not customer_id:

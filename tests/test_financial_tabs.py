@@ -54,8 +54,9 @@ def test_invoices_leave_the_top_nav_and_the_financial_tabs_split_the_work(client
     assert login(client, 'pat@oraglass.us').status_code == 302
     sales = client.get('/invoices')
     sales_nav = _nav(sales)
-    assert '>Invoices<' not in sales_nav
-    assert 'href="/invoices"' in sales_nav
+    assert '>Financials<' not in sales_nav
+    assert 'href="/financial"' not in sales_nav
+    assert '>Invoices<' in sales_nav
     sales_body = sales.get_data(as_text=True)
     assert '>Overview<' not in sales_body
     assert '>Invoices<' in sales_body
