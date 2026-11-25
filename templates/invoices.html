@@ -153,6 +153,7 @@ h2,h3{color:#333}
 const STAFF = {{ staff_view|tojson }};
 const CAN_RECORD = {{ can_record|tojson }};
 const CAN_ISSUE = {{ can_issue|tojson }};
+const IS_ADMIN = {{ is_admin|tojson }};
 const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -211,8 +212,18 @@ function renderDetail(invoice) {
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + '<p class="note">' + (invoice.tax_free ? 'Tax-free subtotal ' : 'IGU subtotal ') + money(invoice.currency, invoice.subtotal || invoice.igu_subtotal) + ' · Total ' + money(invoice.currency, invoice.total) + ' · Balance ' + money(invoice.currency, invoice.balance) + '</p>'
     + (invoice.reason ? '<p class="note">Reason: ' + esc(invoice.reason) + '</p>' : '')
+    + (IS_ADMIN && invoice.doc_type !== 'credit_note' && !invoice.voided && invoice.status === 'unpaid' ? '<button type="button" class="btn" id="regenerate-doc">Regenerate</button>' : '')
     + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')
     + (CAN_ISSUE && invoice.doc_type === 'credit_note' && !invoice.voided ? '<div class="row"><input id="apply-invoice" type="number" min="1" placeholder="Invoice id" aria-label="Invoice id"><input id="apply-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Amount"><button type="button" class="btn" id="apply-credit">Apply to invoice</button></div>' : '');
+  const regenerateButton = document.getElementById('regenerate-doc');
+  if (regenerateButton) regenerateButton.addEventListener('click', async () => {
+    if (!confirm('Regenerate this unpaid invoice? The current invoice is voided and replaced, including line add-ons. Pieces are not billed twice.')) return;
+    const res = await fetch('/api/invoices/' + invoice.id + '/regenerate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { alert(body.error || 'Could not regenerate the invoice'); return; }
+    loadInvoices();
+    renderDetail(body);
+  });
   const voidButton = document.getElementById('void-doc');
   if (voidButton) voidButton.addEventListener('click', async () => {
     const reason = prompt('Why void this document?');

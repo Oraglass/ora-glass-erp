@@ -3121,6 +3121,7 @@ def invoices():
         staff_view=user.get('role') != 'customer',
         can_record=can_record_payments(user),
         can_issue=can_issue_invoices(user),
+        is_admin=user.get('role') == 'admin',
         focus_id=None,
     )
 
@@ -3135,6 +3136,7 @@ def invoice_detail(invoice_id):
         staff_view=user.get('role') != 'customer',
         can_record=can_record_payments(user),
         can_issue=can_issue_invoices(user),
+        is_admin=user.get('role') == 'admin',
         focus_id=invoice_id,
     )
 
@@ -6654,37 +6656,68 @@ def _unbilled_packed(order, kind):
     return chosen
 
 
+def _scale_addon(item, ratio):
+    """A line add-on follows its glass quantity, so a partial invoice takes the same share."""
+    if ratio <= 0:
+        return None
+    scaled = dict(item)
+    amount = round(money(item.get('total')) * ratio, 2)
+    if amount <= 0:
+        return None
+    scaled['total'] = amount
+    scaled['price_pc'] = amount
+    scaled['unit_price'] = amount
+    return scaled
+
+
 def _limit_to_unbilled(order, items, kind):
     """Drop invoice lines whose serials are already billed, so a piece is never billed twice."""
     import packing
     billed = _invoiced_qty_by_serial(order, kind)
     catalog = {row['serial']: row for row in packing.serial_catalog(order)}
     kept = []
+    pending = []
+    last_ratio = None
+
+    def flush(ratio):
+        for charge in pending:
+            scaled = _scale_addon(charge, ratio)
+            if scaled:
+                kept.append(scaled)
+        pending.clear()
+
     for item in items or []:
-        if item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
-            kept.append(item)
+        if item.get('kind') in _CHARGE_KINDS:
+            pending.append(item)
             continue
+        if pending:
+            flush(0 if last_ratio is None else last_ratio)
         try:
             serial = int(item.get('serial'))
             pcs = int(item.get('pcs') or 0)
         except (TypeError, ValueError):
             kept.append(item)
+            last_ratio = 1
             continue
         ordered = int((catalog.get(serial) or {}).get('ordered') or pcs)
         left = max(0, ordered - int(billed.get(serial, 0)))
         take = min(pcs, left)
         if take <= 0:
+            last_ratio = 0
             continue
+        ratio = take / pcs if pcs else 0
         if take == pcs:
             kept.append(item)
-            continue
-        scaled = dict(item)
-        ratio = take / pcs if pcs else 0
-        scaled['pcs'] = take
-        scaled['qty'] = take
-        scaled['total'] = round(money(item.get('total')) * ratio, 2)
-        scaled['sqf'] = round(float(item.get('sqf') or 0) * ratio, 2)
-        kept.append(scaled)
+        else:
+            scaled = dict(item)
+            scaled['pcs'] = take
+            scaled['qty'] = take
+            scaled['total'] = round(money(item.get('total')) * ratio, 2)
+            scaled['sqf'] = round(float(item.get('sqf') or 0) * ratio, 2)
+            kept.append(scaled)
+        last_ratio = ratio
+    if pending:
+        flush(0 if last_ratio is None else last_ratio)
     return kept
 
 
@@ -6717,7 +6750,10 @@ def _customer_invoice_state(order):
         int(row['packed']) > int(intercompany_billed.get(row['serial'], 0)) for row in progress['serials']
     )
     if customer_waiting or intercompany_waiting:
-        if order.get('customer_invoice_deferred') and customer_waiting and not intercompany_waiting:
+        ic_caught_up = customer_waiting and not intercompany_waiting
+        if ic_caught_up and (
+            order.get('customer_invoice_deferred') or _invoice_documents(order, 'intercompany')
+        ):
             return 'pending', 'Customer invoice pending'
         return 'ready', 'Ready to invoice'
     if int(progress['totals'].get('bo') or 0) > 0:
@@ -9476,9 +9512,10 @@ def ship_packed_pieces(order_id):
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
 
 
-def _issue_packed_customer_invoice(order, user):
+def _issue_packed_customer_invoice(order, user, quantities=None):
     """Customer invoice for packed pieces that are not on a customer invoice yet."""
-    quantities = _unbilled_packed(order, 'customer')
+    if quantities is None:
+        quantities = _unbilled_packed(order, 'customer')
     if not quantities:
         return None, None
     items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
@@ -9966,38 +10003,52 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
     from billing import apply_additional_discount
     summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     if mode == 'canada':
-        glass = [row for row in items if row.get('kind') not in {'irregular_surcharge', 'dwg_creation'}]
-        glass_value = round(sum(money(row.get('total')) for row in glass), 2)
-        glass_summary, error = price_summary(
-            glass, _scaled_discount(order, glass_value, full_value), [],
+        portion = round(sum(money(row.get('total')) for row in items), 2)
+        summary, error = price_summary(
+            items, _scaled_discount(order, portion, full_value), [],
         )
         if error:
             return None, error
-        glass_summary = apply_additional_discount(glass_summary, order.get('additional_discount_percent'))
+        summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
         invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
         currency = str(order.get('currency') or 'usd').lower()
         if currency == 'cad':
             rate, fx_date = _erp_fx(invoice_day)
-            usd_total = quickbooks.cad_to_usd(glass_summary.get('total'), rate)
+            usd_total = quickbooks.cad_to_usd(summary.get('total'), rate)
         else:
             rate, fx_date = 1.0, invoice_day.isoformat()
-            usd_total = money(glass_summary.get('total'))
+            usd_total = money(summary.get('total'))
         books = load_customers().get(_canada_books_customer()) or {}
         books['id'] = _canada_books_customer()
         intercompany_items = []
         remaining = usd_total
-        for index, item in enumerate(glass):
+        for index, item in enumerate(items):
+            addon = item.get('kind') in _CHARGE_KINDS
             try:
                 pcs = int(item.get('pcs') or 0)
             except (TypeError, ValueError):
                 pcs = 0
-            if index == len(glass) - 1:
+            if index == len(items) - 1:
                 share = remaining
             elif currency == 'cad':
                 share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
             else:
                 share = min(money(item.get('total')), remaining)
             remaining = round(remaining - share, 2)
+            if addon:
+                intercompany_items.append({
+                    'kind': item.get('kind'),
+                    'name': item.get('name') or 'Charge',
+                    'description': item.get('description') or item.get('name') or 'Charge',
+                    'serial': item.get('serial') or '',
+                    'pcs': '',
+                    'qty': '',
+                    'sqf': 0,
+                    'unit_price': share,
+                    'price_pc': share,
+                    'total': share,
+                })
+                continue
             each = round(share / pcs, 2) if pcs else share
             intercompany_items.append({
                 'name': item.get('name') or 'Glass',
@@ -10011,7 +10062,6 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
                 'price_pc': each,
                 'total': share,
             })
-        summary = glass_summary
         document = _invoice_for_items(
             order, user, books, intercompany_items,
             {'discount': {'type': 'percent', 'value': 0}, 'discount_amount': 0, 'extra_charges': [],
@@ -10478,6 +10528,106 @@ def apply_credit_note(note_id):
     fresh = next(row for row in load_invoices() if row.get('id') == note.get('id'))
     _qbo('push_payment', payment)
     return jsonify(_present_invoice(fresh, load_payments()))
+
+
+def _quantities_on_invoice(order, invoice):
+    """Glass quantities already on one invoice, keyed by order line index."""
+    import packing
+    catalog = {int(row['serial']): row['index'] for row in packing.serial_catalog(order)}
+    quantities = {}
+    for line in (invoice or {}).get('items') or []:
+        if line.get('kind') in _CHARGE_KINDS:
+            continue
+        try:
+            serial = int(line.get('serial'))
+            pcs = int(line.get('pcs') or 0)
+        except (TypeError, ValueError):
+            continue
+        index = catalog.get(serial)
+        if index is None or pcs <= 0:
+            continue
+        quantities[index] = quantities.get(index, 0) + pcs
+    return quantities
+
+
+def _mark_invoice_void(document, user, reason):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    document['voided'] = True
+    document['void_reason'] = reason
+    document['voided_by'] = user.get('email') or ''
+    document['voided_at'] = now
+    audit = list(document.get('audit') or [])
+    audit.append(_audit(user, 'voided', reason))
+    document['audit'] = audit
+
+
+@app.route('/api/invoices/<int:invoice_id>/regenerate', methods=['POST'])
+@module_required('invoices')
+def regenerate_invoice(invoice_id):
+    """Rebuild an unpaid invoice so line add-ons are included, without billing the pieces twice."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can regenerate an invoice.', 403)
+    invoices = load_invoices()
+    document = next((row for row in invoices if row.get('id') == invoice_id), None)
+    if not document:
+        return json_error('Not found', 404)
+    if document_type(document) != 'invoice':
+        return json_error('Only an invoice can be regenerated.', 400)
+    if document.get('voided'):
+        return json_error('This document is already void.', 400)
+    from billing import invoice_status
+    payments = load_payments()
+    if invoice_status(document, payments) != 'unpaid':
+        return json_error('Only an unpaid invoice can be regenerated.', 400)
+    order = next((row for row in load_orders() if row.get('id') == document.get('order_id')), None)
+    if not order:
+        return json_error('The order for this invoice was not found.', 404)
+    quantities = _quantities_on_invoice(order, document)
+    if not quantities:
+        return json_error('This invoice has no glass pieces to regenerate.', 400)
+    reason = 'Regenerated to include line add-ons'
+    _mark_invoice_void(document, user, reason)
+    for index, row in enumerate(invoices):
+        if row.get('id') == document.get('id'):
+            invoices[index] = document
+    save_invoices(invoices)
+    kind = document.get('kind') or 'customer'
+    if kind == 'intercompany':
+        items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+        shipment = {
+            'id': None,
+            'number': document.get('shipment_number') or '',
+            'date': document.get('shipment_date') or datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat(),
+            'rack': document.get('shipment_rack') or '',
+            'truck_plate': document.get('truck_plate') or '',
+            'notes': 'Regenerated invoice',
+            'items': items,
+            'lines': [
+                {'serial': item.get('serial'), 'qty': item.get('pcs'), 'index': item.get('source_index')}
+                for item in items if item.get('serial') not in (None, '')
+            ],
+            'invoiced': False,
+        }
+        number, error = _issue_shipment_invoice(order, shipment, user, False)
+    else:
+        number, error = _issue_packed_customer_invoice(order, user, quantities)
+    if error or not number:
+        document['voided'] = False
+        document.pop('void_reason', None)
+        document.pop('voided_by', None)
+        document.pop('voided_at', None)
+        fresh_rows = load_invoices()
+        for index, row in enumerate(fresh_rows):
+            if row.get('id') == document.get('id'):
+                fresh_rows[index] = document
+        save_invoices(fresh_rows)
+        return json_error(error or 'Could not regenerate this invoice.', 400)
+    replacement = next(
+        (row for row in load_invoices() if row.get('number') == number and not row.get('voided')),
+        None,
+    )
+    return jsonify(_present_invoice(replacement or document, load_payments()))
 
 
 @app.route('/api/invoices/<int:invoice_id>/void', methods=['POST'])

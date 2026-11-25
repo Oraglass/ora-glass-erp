@@ -40,6 +40,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 .filters select,.filters input,.edit-grid input,.edit-grid select,textarea{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 .btn{background:#C41E3A;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;text-decoration:none;display:inline-block}
 .btn:disabled{background:#e5e7eb;color:#6b7280;cursor:not-allowed}
+#list-invoice-panel{border:1px solid #fecdd3;border-radius:8px;padding:12px 14px;background:#fff}
+#list-invoice-now.list-invoice-default{box-shadow:0 0 0 3px #fb7185}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
 .btn.small{padding:4px 8px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
@@ -146,6 +148,10 @@ details.section > summary h3{display:inline}
 <div id="packing-projects"></div>
 </form>
 {% endif %}
+<div id="list-invoice-panel" hidden style="margin:12px 0">
+<p class="note" id="list-invoice-note">The intercompany invoice, when this order needs one, is created for the packed pieces that are not on one yet.</p>
+<div class="actions"><button type="button" class="btn" id="list-invoice-now">Invoice the customer for these packed pieces now</button><button type="button" class="btn secondary" id="list-invoice-wait">Wait until the order is complete</button></div>
+</div>
 <div id="list-void-panel" hidden style="margin:12px 0">
 <p class="note" id="list-void-note">Void this order? It leaves the open order list. A reason is optional.</p>
 <textarea id="list-void-reason" rows="2" placeholder="Optional reason" aria-label="Void reason"></textarea>
@@ -314,7 +320,9 @@ function orderInvoiceLink(order) {
   if (!(order.packing_lists || []).length) {
     return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" disabled title="Upload the packing list first">Invoice</button>';
   }
-  return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" data-list-invoice="' + esc(order.id) + '">Invoice</button>';
+  if (order.can_invoice_packed === false) return '';
+  const fullyPacked = order.pack_status === 'packed' ? '1' : '0';
+  return '<button type="button" class="btn small" id="list-invoice-' + esc(order.id) + '" data-list-invoice="' + esc(order.id) + '" data-needs-intercompany="' + (order.needs_intercompany ? '1' : '0') + '" data-fully-packed="' + fullyPacked + '">Invoice</button>';
 }
 function lineSqf(item) {
   const each = Number(item && item.sqf);
@@ -1403,16 +1411,36 @@ if (orderList) orderList.addEventListener('click', async event => {
   const invoice = event.target.closest('[data-list-invoice]');
   if (invoice) {
     const orderId = invoice.getAttribute('data-list-invoice');
+    const needsIntercompany = invoice.getAttribute('data-needs-intercompany') === '1';
+    const fullyPacked = invoice.getAttribute('data-fully-packed') === '1';
     invoice.disabled = true;
-    const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/customer-invoice', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      invoice.disabled = false;
-      alert(payload.error || 'Could not invoice the customer');
-      return;
+    if (needsIntercompany) {
+      const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/customer-invoice', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({create_intercompany: true})
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        invoice.disabled = false;
+        alert(payload.error || 'Could not create the intercompany invoice');
+        return;
+      }
     }
+    const panel = document.getElementById('list-invoice-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    panel.dataset.orderId = orderId;
+    const now = document.getElementById('list-invoice-now');
+    if (now) {
+      now.classList.toggle('list-invoice-default', fullyPacked);
+      if (fullyPacked) now.focus();
+    }
+    const note = document.getElementById('list-invoice-note');
+    if (note) {
+      note.textContent = (fullyPacked ? 'Every piece is packed. ' : '')
+        + 'The intercompany invoice, when this order needs one, is created for the packed pieces that are not on one yet.';
+    }
+    panel.scrollIntoView({block: 'nearest'});
     load();
     return;
   }
@@ -1428,6 +1456,23 @@ if (orderList) orderList.addEventListener('click', async event => {
   if (reason) reason.value = '';
   panel.scrollIntoView({block: 'nearest'});
 });
+async function finishListInvoice(invoiceCustomerNow) {
+  const panel = document.getElementById('list-invoice-panel');
+  const orderId = panel && panel.dataset.orderId;
+  if (!orderId) return;
+  const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/customer-invoice', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({create_intercompany: false, invoice_customer: invoiceCustomerNow})
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not invoice the customer'); return; }
+  panel.hidden = true;
+  load();
+}
+const listInvoiceNow = document.getElementById('list-invoice-now');
+if (listInvoiceNow) listInvoiceNow.addEventListener('click', () => finishListInvoice(true));
+const listInvoiceWait = document.getElementById('list-invoice-wait');
+if (listInvoiceWait) listInvoiceWait.addEventListener('click', () => finishListInvoice(false));
 const listVoidCancel = document.getElementById('list-void-cancel');
 if (listVoidCancel) listVoidCancel.addEventListener('click', () => {
   const panel = document.getElementById('list-void-panel');
