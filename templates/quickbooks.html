@@ -188,7 +188,7 @@ function render(status) {
     + '</div>';
   const cards = (status.connections || []).map(card => {
     const hidden = card.key === selected ? '' : ' hidden';
-    return '<div class="qbo-panel" data-panel="' + esc(card.key) + '"' + hidden + '>' + cardBody(card, status) + '</div>';
+    return '<div class="qbo-panel" id="' + esc(card.key) + '" data-panel="' + esc(card.key) + '"' + hidden + '>' + cardBody(card, status) + '</div>';
   }).join('');
   document.getElementById('connections').innerHTML = tabs + cards;
 }

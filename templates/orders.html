@@ -789,7 +789,7 @@ function renderDetail(order) {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
     const fx = {% if show_fx_rate %}(doc.fx_rate ? ' · FXUSDCAD ' + esc(doc.fx_rate) + ' on ' + esc(doc.fx_date || '') : ''){% else %}''{% endif %};
-    const warning = doc.qbo_warning ? '<br><span class="error">' + esc(doc.qbo_warning) + '</span>' : '';
+    const warning = doc.qbo_warning ? '<br><a class="error" href="' + esc(doc.qbo_settings_url || '/settings/quickbooks') + '">' + esc(doc.qbo_warning) + '</a>' : '';
     return '<a href="/invoices/' + esc(doc.id) + '">' + esc(kind) + ' ' + esc(doc.number) + '</a> · ' + esc(company) + ' · ' + esc(String(doc.currency || '').toUpperCase()) + fx + (doc.voided ? ' (void)' : '') + warning;
   }).join('<br>');
   const documentNote = documents ? '<p class="note">' + documents + '</p>' : '';
@@ -846,7 +846,7 @@ function renderDetail(order) {
     const company = doc.issuer === 'ca' ? 'Ora Glass (Canada) Inc' : 'Ora Glass Inc';
     const kind = doc.kind === 'intercompany' ? 'Intercompany' : (doc.doc_type === 'credit_note' ? 'Credit note' : 'Invoice');
     const fx = {% if show_fx_rate %}(doc.fx_rate ? 'FXUSDCAD ' + esc(doc.fx_rate) : ''){% else %}''{% endif %};
-    return '<tr><td><a href="/invoices/' + esc(doc.id) + '">' + esc(doc.number) + '</a></td><td>' + esc(kind) + '</td><td>' + esc(company) + '</td><td>' + esc(String(doc.currency || '').toUpperCase()) + '</td><td>' + fx + '</td><td>' + (doc.voided ? 'Void' : '') + (doc.qbo_warning ? ' <span class="error">' + esc(doc.qbo_warning) + '</span>' : '') + '</td></tr>';
+    return '<tr><td><a href="/invoices/' + esc(doc.id) + '">' + esc(doc.number) + '</a></td><td>' + esc(kind) + '</td><td>' + esc(company) + '</td><td>' + esc(String(doc.currency || '').toUpperCase()) + '</td><td>' + fx + '</td><td>' + (doc.voided ? 'Void' : '') + (doc.qbo_warning ? ' <a class="error" href="' + esc(doc.qbo_settings_url || '/settings/quickbooks') + '">' + esc(doc.qbo_warning) + '</a>' : '') + '</td></tr>';
   }).join('');
   const invoiceBody = invoiceRows
     ? '<table><thead><tr><th>Number</th><th>Kind</th><th>Company</th><th>Currency</th><th>FX</th><th></th></tr></thead><tbody>' + invoiceRows + '</tbody></table>'

@@ -1333,6 +1333,16 @@ def inject_user():
             nav.extend(extras)
     if user and user.get('role') == 'customer':
         nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
+    if user and user.get('role') == 'admin':
+        link = {'id': 'quickbooks', 'label': 'QuickBooks', 'endpoint': 'quickbooks_settings'}
+        placed = False
+        for index, item in enumerate(nav):
+            if item['id'] == 'financial':
+                nav.insert(index + 1, link)
+                placed = True
+                break
+        if not placed:
+            nav.append(link)
     review_count = _orders_awaiting_staff(user)
     if review_count:
         nav = [
@@ -7038,6 +7048,7 @@ def order_for_viewer(order, user, with_coverage=False):
         ]
     if staff_view and order.get('fx_rate') not in (None, ''):
         base['fx_rate'] = order.get('fx_rate')
+    import quickbooks
     documents = []
     for row in load_invoices():
         if row.get('order_id') != order.get('id'):
@@ -7050,6 +7061,7 @@ def order_for_viewer(order, user, with_coverage=False):
             'kind': row.get('kind') or 'customer',
             'currency': row.get('currency') or 'usd',
             'qbo_warning': row.get('qbo_warning') or '',
+            'qbo_settings_url': quickbooks.settings_url(row.get('qbo_warning') or row.get('qbo_error') or '', row.get('issuer') or 'us') if (row.get('qbo_warning') or row.get('qbo_error')) else '',
             'total': money(row.get('total')),
             'voided': bool(row.get('voided')),
         }
@@ -10411,7 +10423,9 @@ def _present_invoice(invoice, payments):
             view['status'] = 'open'
         view['status_label'] = invoice_status_label(view['status'])
         _attach_invoice_gst(view, invoice)
+        _attach_invoice_party(view)
         _attach_invoice_customs(view)
+        _attach_invoice_summary(view)
         return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
@@ -10421,11 +10435,13 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number or str(invoice.get('number') or '') if invoice.get('qbo_id') else doc_number
+    import quickbooks
     view['qbo_id'] = str(invoice.get('qbo_id') or '')
     view['qbo_sync'] = invoice.get('qbo_sync') or ''
     view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], view.get('issuer') or 'us') if view['qbo_error'] else ''
+    view['qbo_warning_url'] = quickbooks.settings_url(invoice.get('qbo_warning') or '', view.get('issuer') or 'us') if invoice.get('qbo_warning') else ''
     if not view['qbo_id'] and not view['qbo_sync']:
-        import quickbooks
         with quickbooks.connection_scope(invoice.get('issuer') or 'us'):
             link = quickbooks.find_link(
                 'credit' if document_type(invoice) == 'credit_note' else 'invoice',
@@ -10449,7 +10465,9 @@ def _present_invoice(invoice, payments):
     if view['kind'] == 'intercompany':
         view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
+    _attach_invoice_party(view)
     _attach_invoice_customs(view)
+    _attach_invoice_summary(view)
     if _invoice_shows_shipment(view) and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
@@ -10476,6 +10494,38 @@ def _attach_invoice_customs(view):
         return
     import packing
     view['customs'] = packing.intercompany_customs()
+
+
+def _attach_invoice_party(view):
+    """Name, billing address, GST, PST, project, then order. Empty lines are omitted."""
+    import documents
+    customer = load_customers().get(view.get('customer_id') or '') or {}
+    if not view.get('customer_address'):
+        view['customer_address'] = _address_lines(customer)
+    gst = str(customer.get('gst_number') or view.get('customer_gst_number') or '').strip()
+    if not gst and view.get('gst_place') == 'customer':
+        gst = str(view.get('seller_gst_number') or '').strip()
+    view['customer_gst_number'] = gst
+    if not str(view.get('pst_number') or '').strip():
+        view['pst_number'] = str(customer.get('pst_number') or '').strip()
+    if not str(view.get('qst_number') or '').strip():
+        view['qst_number'] = str(customer.get('qst_number') or '').strip()
+    view['party'] = documents.invoice_party(view)
+
+
+def _attach_invoice_summary(view):
+    """Label Canada tax rows and build the totals the page and the PDF both print."""
+    import documents
+    labeled = []
+    for line in view.get('tax_lines') or []:
+        if not isinstance(line, dict):
+            continue
+        row = dict(line)
+        row['label'] = documents.tax_line_label(row, view)
+        labeled.append(row)
+    if view.get('tax_lines'):
+        view['tax_lines'] = labeled
+    view['summary'] = documents.invoice_summary(view)
 
 
 def _attach_invoice_gst(view, invoice):
@@ -11157,6 +11207,7 @@ def _render_invoice_pdf(invoice):
                 'kind': invoice.get('kind'),
                 'currency': invoice.get('currency'),
                 'seller_gst_number': invoice.get('seller_gst_number') or '',
+                'omit_issuer_address': True,
             }) + '</font>',
             title_style,
         ),
@@ -11175,45 +11226,31 @@ def _render_invoice_pdf(invoice):
     elements.append(Spacer(1, 8))
     elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
     elements.append(Spacer(1, 8))
-    customer_line = f"<b>Customer:</b> {escape(invoice.get('company') or '')}"
-    if invoice.get('gst_place') == 'customer' and invoice.get('seller_gst_number'):
-        customer_line += f"<br/>GST# {escape(invoice.get('seller_gst_number'))}"
-    elements.append(Paragraph(
-        customer_line + "<br/>"
-        f"<b>Project:</b> {escape(invoice.get('project') or '-')}<br/>"
-        f"<b>Order:</b> {escape(str(invoice.get('order_id') or ''))}"
-        f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
-        label_style,
-    ))
+    party = invoice.get('party') or documents.invoice_party(invoice)
+    if party:
+        party_html = []
+        for row in party:
+            text = escape(row.get('text') or '')
+            if row.get('key') == 'customer':
+                text = f'<b>Customer:</b> {text}'
+            elif row.get('key') == 'project':
+                text = f'<b>{text}</b>' if text.startswith('Project:') else f'<b>Project:</b> {text}'
+            party_html.append(text)
+        elements.append(Paragraph('<br/>'.join(party_html), label_style))
+    shipment_bits = []
     if invoice.get('shipment_number') or invoice.get('shipment_rack') or invoice.get('truck_plate'):
-        elements.append(Paragraph(
+        shipment_bits.append(
             f"<b>Shipment:</b> {escape(invoice.get('shipment_number') or '')}"
             f" &nbsp; <b>Ship date:</b> {escape(invoice.get('shipment_date') or '')}"
             f" &nbsp; <b>Rack:</b> {escape(invoice.get('shipment_rack') or '')}"
-            f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}",
-            label_style,
-        ))
-        if invoice.get('shipment_notes'):
-            elements.append(Paragraph(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}", label_style))
-    province = str(invoice.get('ship_province') or '').upper()
-    if documents.canada_bill(invoice) and province == 'QC' and invoice.get('qst_number'):
-        elements.append(Paragraph(f"<b>QST:</b> {escape(invoice.get('qst_number'))}", label_style))
-    elif documents.canada_bill(invoice) and invoice.get('pst_number') and province in {'BC', 'SK', 'MB'}:
-        elements.append(Paragraph(f"<b>PST:</b> {escape(invoice.get('pst_number'))}", label_style))
-    for line in invoice.get('tax_lines') or []:
-        if not isinstance(line, dict):
-            continue
-        elements.append(Paragraph(
-            f"<b>{escape(str(line.get('name') or 'Tax'))} {escape(str(line.get('rate') or ''))}%:</b> "
-            f"{currency} ${money(line.get('amount')):.2f}",
-            label_style,
-        ))
-    if invoice.get('tax_label') and not invoice.get('tax_lines'):
-        elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
+            f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}"
+        )
+    if invoice.get('shipment_notes'):
+        shipment_bits.append(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}")
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}
     shipment = packing.get('shipment') or {}
-    lines = []
+    lines = list(shipment_bits)
     if shipment.get('rack_line'):
         lines.append(escape(shipment['rack_line']))
     for text in shipment.get('list_lines') or []:
@@ -11224,6 +11261,8 @@ def _render_invoice_pdf(invoice):
         lines.append(f"HTS {escape(customs.get('hts'))}")
     if customs.get('origin'):
         lines.append(f"Origin: {escape(customs.get('origin'))}")
+    if invoice.get('tax_label') and not invoice.get('tax_lines'):
+        lines.append(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}")
     if lines:
         elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
@@ -11256,32 +11295,11 @@ def _render_invoice_pdf(invoice):
     ]))
     elements.append(items_table)
     elements.append(Spacer(1, 10))
-    discount = invoice.get('discount') or {}
-    discount_label = f"{money(discount.get('value')):.2f}%" if discount.get('type') == 'percent' else 'fixed'
-    subtotal_label = 'Tax-free subtotal' if invoice.get('tax_free') else 'IGU subtotal'
-    summary_rows = [
-        [subtotal_label, f"${money(invoice.get('subtotal') or invoice.get('igu_subtotal')):.2f}"],
-        [f"Discount ({discount_label})", f"-${money(invoice.get('discount_amount')):.2f}"],
-    ]
-    extra_discount = money(invoice.get('additional_discount_amount'))
-    if extra_discount:
-        extra_percent = _percent(invoice.get('additional_discount_percent'))
-        summary_rows.append([
-            f"Additional discount ({extra_percent:g}%)",
-            f"-${extra_discount:.2f}",
-        ])
-    summary_rows.append(
-        ['Total before extras' if invoice.get('tax_free') else 'IGU total', f"${money(invoice.get('igu_total')):.2f}"],
-    )
-    for charge in invoice.get('extra_charges') or []:
-        summary_rows.append([charge.get('label') or 'Extra', f"${money(charge.get('amount')):.2f}"])
-    summary_rows.append(['Grand total', f"${money(invoice.get('total')):.2f}"])
-    if document_type(invoice) == 'credit_note':
-        summary_rows.append(['Applied to invoices', f"${money(invoice.get('applied')):.2f}"])
-        summary_rows.append(['Unapplied credit', f"${money(invoice.get('balance')):.2f}"])
-    else:
-        summary_rows.append(['Payments applied', f"${money(invoice.get('applied')):.2f}"])
-        summary_rows.append(['Balance due', f"${money(invoice.get('balance')):.2f}"])
+    summary_rows = []
+    for row in invoice.get('summary') or documents.invoice_summary(invoice):
+        value = money(row.get('amount'))
+        shown = f"-${abs(value):.2f}" if value < 0 else f"${value:.2f}"
+        summary_rows.append([row.get('label') or '', shown])
     summary = [[Paragraph(escape(label), cell_style), Paragraph(amount, cell_style)] for label, amount in summary_rows]
     summary_table = Table(summary, colWidths=[5.5 * inch, 1.8 * inch])
     summary_table.setStyle(TableStyle([
@@ -11320,6 +11338,9 @@ def _present_payment(payment):
         'not_connected': 'Not connected',
         'voided': 'Voided in QuickBooks',
     }.get(view['qbo_sync'], 'Not sent')
+    issuer = 'ca' if str(payment.get('currency') or '').lower() == 'cad' else 'us'
+    import quickbooks
+    view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], issuer) if view['qbo_error'] else ''
     return view
 
 

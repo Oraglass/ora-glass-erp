@@ -1861,6 +1861,22 @@ def _canada_invoice_memo(invoice):
     return '\n'.join(lines)
 
 
+def settings_url(message='', issuer=''):
+    """Where an error should send an admin: the QuickBooks card it names, when it names one."""
+    text = str(message or '')
+    lowered = text.lower()
+    company = ''
+    if 'canada quickbooks' in lowered or '123146408064299' in text or '(canada)' in lowered:
+        company = 'ca'
+    elif '9341456057091137' in text or 'Ora Glass Inc' in text:
+        company = 'us'
+    elif issuer in {'us', 'ca'}:
+        company = issuer
+    if not company:
+        return '/settings/quickbooks'
+    return f'/settings/quickbooks?company={company}#{company}'
+
+
 def _company_for_push():
     key = _connection_key()
     for item_key, label, _currency in CONNECTIONS:

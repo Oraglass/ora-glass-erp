@@ -759,14 +759,128 @@ def canada_bill(document):
 
 
 def header_address_block(document):
-    """Company name above the Lynden address. The GST number sits under the address on Canada bills only."""
+    """Company name, then the Lynden address, then the GST number on Canada bills.
+
+    Canada invoices set omit_issuer_address so the header is only the company name and GST number.
+    US invoices, quotes, and order confirmations keep the Lynden address.
+    """
     name = 'Ora Glass (Canada) Inc.' if canada_bill(document) else 'Ora Glass Inc.'
-    block = escape(name) + '<br/>' + COMPANY_ADDRESS
+    block = escape(name)
+    if not (canada_bill(document) and (document or {}).get('omit_issuer_address')):
+        block += '<br/>' + COMPANY_ADDRESS
     if canada_bill(document):
         gst = str((document or {}).get('seller_gst_number') or '').strip()
         if gst:
             block += f'<br/>GST# {escape(gst)}'
     return block
+
+
+def invoice_party(invoice):
+    """Customer block shared by the invoice page and the PDF. Empty lines are left out."""
+    rows = []
+    name = str((invoice or {}).get('company') or '').strip()
+    if name:
+        rows.append({'key': 'customer', 'text': name})
+    for line in (invoice or {}).get('customer_address') or []:
+        text = str(line or '').strip()
+        if text:
+            rows.append({'key': 'address', 'text': text})
+    gst = str((invoice or {}).get('customer_gst_number') or '').strip()
+    if gst:
+        rows.append({'key': 'gst', 'text': f'GST# {gst}'})
+    pst = str((invoice or {}).get('pst_number') or '').strip()
+    if pst:
+        rows.append({'key': 'pst', 'text': f'PST: {pst}'})
+    qst = str((invoice or {}).get('qst_number') or '').strip()
+    if qst:
+        rows.append({'key': 'qst', 'text': f'QST: {qst}'})
+    project = str((invoice or {}).get('project') or '').strip()
+    if project and project != '-':
+        rows.append({'key': 'project', 'text': f'Project: {project}'})
+    bits = []
+    order_id = (invoice or {}).get('order_id')
+    quote_id = (invoice or {}).get('quote_id')
+    if order_id not in (None, ''):
+        bits.append(f'Order: {order_id}')
+    if quote_id not in (None, ''):
+        bits.append(f'Quote: {quote_id}')
+    if bits:
+        rows.append({'key': 'order', 'text': '   '.join(bits)})
+    return rows
+
+
+def tax_line_label(line, document):
+    """Tax row in the invoice totals. GST and HST carry the seller's GST number."""
+    name = str((line or {}).get('name') or 'Tax').strip() or 'Tax'
+    rate = str((line or {}).get('rate') or '').strip()
+    label = f'{name} {rate}%'.strip()
+    kind = name.upper()
+    number = ''
+    if kind in {'GST', 'HST'}:
+        gst = str((document or {}).get('seller_gst_number') or '').strip()
+        if gst:
+            number = f'GST# {gst}'
+    elif kind in {'PST', 'RST'}:
+        pst = str((document or {}).get('pst_number') or '').strip()
+        if pst:
+            number = f'PST# {pst}'
+    elif kind == 'QST':
+        qst = str((document or {}).get('qst_number') or '').strip()
+        if qst:
+            number = f'QST# {qst}'
+    if number:
+        return f'{label} ({number})'
+    return label
+
+
+def invoice_summary(invoice):
+    """Totals shared by the invoice page and the PDF, tax sitting above the grand total."""
+    from billing import money
+
+    def amount(value):
+        return money(value)
+
+    discount = (invoice or {}).get('discount') or {}
+    if discount.get('type') == 'percent':
+        discount_label = f"{amount(discount.get('value')):.2f}%"
+    else:
+        discount_label = 'fixed'
+    subtotal_label = 'Tax-free subtotal' if (invoice or {}).get('tax_free') else 'IGU subtotal'
+    rows = [
+        {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('igu_subtotal'))},
+        {'label': f'Discount ({discount_label})', 'amount': -amount((invoice or {}).get('discount_amount'))},
+    ]
+    extra_discount = amount((invoice or {}).get('additional_discount_amount'))
+    if extra_discount:
+        try:
+            extra_percent = float((invoice or {}).get('additional_discount_percent') or 0)
+        except (TypeError, ValueError):
+            extra_percent = 0
+        rows.append({
+            'label': f'Additional discount ({extra_percent:g}%)',
+            'amount': -extra_discount,
+        })
+    igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
+    rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
+    for charge in (invoice or {}).get('extra_charges') or []:
+        if not isinstance(charge, dict):
+            continue
+        rows.append({'label': charge.get('label') or 'Extra', 'amount': amount(charge.get('amount'))})
+    for line in (invoice or {}).get('tax_lines') or []:
+        if not isinstance(line, dict):
+            continue
+        rows.append({
+            'label': line.get('label') or tax_line_label(line, invoice),
+            'amount': amount(line.get('amount')),
+        })
+    rows.append({'label': 'Grand total', 'amount': amount((invoice or {}).get('total'))})
+    if (invoice or {}).get('doc_type') == 'credit_note':
+        rows.append({'label': 'Applied to invoices', 'amount': amount((invoice or {}).get('applied'))})
+        rows.append({'label': 'Unapplied credit', 'amount': amount((invoice or {}).get('balance'))})
+    else:
+        rows.append({'label': 'Payments applied', 'amount': amount((invoice or {}).get('applied'))})
+        rows.append({'label': 'Balance due', 'amount': amount((invoice or {}).get('balance'))})
+    return rows
 
 
 def _customer_tax_id(document):
