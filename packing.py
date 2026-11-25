@@ -1163,7 +1163,79 @@ def _serial_qty(rows):
     return totals
 
 
-def summarize_packing(entries):
+def _weight_factor():
+    """Pounds per square foot per millimetre. 0.512 is about 2.5 kg/m² per mm."""
+    try:
+        from pricing_catalog import formula_number
+        return float(formula_number('glass_lb_per_sqf_mm', 0.512) or 0.512)
+    except Exception:
+        return 0.512
+
+
+def _items_by_serial(order):
+    """Glass lines keyed by the production serial printed on a packing list."""
+    found = {}
+    serial = 1
+    for item in (order or {}).get('items') or []:
+        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        sized = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
+        if not sized and item.get('sqf') in (None, '', 0, '0'):
+            continue
+        found[serial] = item
+        serial += 1
+    return found
+
+
+def estimated_weight_lb(order, entry):
+    """Weight of the packed pieces when the list has no printed weight.
+
+    Area times glass thickness, at about 2.5 kg per square metre per millimetre,
+    converted to pounds with the same factor the quote and order PDFs use.
+    """
+    from documents import area_sqf, component_thickness_mm, line_weight
+    factor = _weight_factor()
+    items = _items_by_serial(order)
+    total = 0.0
+    counted = False
+    for line in (entry or {}).get('lines') or []:
+        if not isinstance(line, dict):
+            continue
+        try:
+            qty = int(line.get('qty') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        try:
+            serial = int(line.get('serial'))
+        except (TypeError, ValueError):
+            serial = None
+        item = items.get(serial) if serial is not None else None
+        if item:
+            one = dict(item)
+            one['pcs'] = 1
+            piece = line_weight(one, factor)
+            if piece > 0:
+                total += piece * qty
+                counted = True
+                continue
+        thickness = component_thickness_mm(line.get('description') or '')
+        area = 0.0
+        if line.get('width_mm') not in (None, '') and line.get('height_mm') not in (None, ''):
+            area = area_sqf(line.get('width_mm'), line.get('height_mm'), 'mm')
+        elif line.get('width_in') not in (None, '') and line.get('height_in') not in (None, ''):
+            area = area_sqf(line.get('width_in'), line.get('height_in'), 'in')
+        if area > 0 and thickness > 0 and factor > 0:
+            total += area * thickness * factor * qty
+            counted = True
+    if not counted or total <= 0:
+        return None
+    return total
+
+
+def summarize_packing(entries, order=None):
     """Rack count, racks on each list, and weight summed in each list's units."""
     racks = []
     lists = []
@@ -1180,6 +1252,11 @@ def summarize_packing(entries):
                 amount = float(entry.get('weight'))
             except (TypeError, ValueError):
                 amount = None
+        if amount is None and order is not None:
+            estimated = estimated_weight_lb(order, entry)
+            if estimated is not None:
+                amount = estimated
+                unit = unit or 'LBS'
         if amount is not None:
             key = unit or 'LBS'
             totals[key] = round(totals.get(key, 0.0) + amount, 2)
@@ -1271,7 +1348,7 @@ def packing_for_intercompany(order, invoice, invoices):
         if document.get('id') == target:
             chosen = used
             break
-    return summarize_packing(chosen)
+    return summarize_packing(chosen, order)
 
 
 def parse_packing_upload(filename, payload):

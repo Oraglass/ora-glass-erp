@@ -343,3 +343,72 @@ def test_existing_invoice_backfills_weight_from_the_highq_pdf(client, data_dir):
     pdf = pdf_text(client.get('/api/invoices/54/pdf').data)
     assert b'XF261123002: Rack 5016 \\267 1200 lb' in pdf
     assert b'Total weight: 1200 lb' in pdf
+
+
+def test_regenerated_invoice_computes_weight_when_the_list_has_none(client):
+    """INV-0055 and CA-INV-0001: racks are stored, weight is not, so the pieces supply it.
+
+    48 x 36 in is 12 sq ft. Two pieces of 4 mm glass are 12 x 4 x 0.512 x 2 = 49.152 lb.
+    One 24 x 36 in piece of 6 mm glass is 6 x 6 x 0.512 = 18.432 lb.
+    0.512 lb/sq ft/mm is about 2.5 kg/m² per mm.
+    """
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    first = _glass()
+    first['spec'] = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': 48, 'height': 36, 'unit': 'in'}
+    first['pcs'] = 2
+    second = _glass()
+    second['spec'] = {'glass1': 'Clear Glass 6mm', 'temper1': 'n/a', 'width': 24, 'height': 36, 'unit': 'in'}
+    second['pcs'] = 1
+    save_orders([{
+        'id': 1,
+        'quote_id': 18,
+        'customer_id': 'highq',
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'currency': 'cad',
+        'items': [first, second],
+        'packing_lists': [
+            {
+                'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+                'racks': ['5016'],
+                'lines': [{'serial': 1, 'qty': 2}],
+            },
+            {
+                'id': 1, 'current': True, 'number': 'XF261123001', 'rack': '1054',
+                'racks': ['1054'],
+                'lines': [{'serial': 2, 'qty': 1}],
+            },
+        ],
+    }])
+    items = [
+        {'name': 'Glass', 'serial': 1, 'pcs': 2, 'total': 40},
+        {'name': 'Glass', 'serial': 2, 'pcs': 1, 'total': 20},
+    ]
+    save_invoices([
+        _invoice(55, 'INV-0055', items),
+        dict(
+            _invoice(1, 'CA-INV-0001', items, kind='customer'),
+            issuer='ca', currency='cad', company='HighQ Developments Inc',
+        ),
+    ])
+    expected_lines = [
+        'XF261123002: Rack 5016 · 49.15 lb',
+        'XF261123001: Rack 1054 · 18.43 lb',
+    ]
+    intercompany = client.get('/api/invoices/55').get_json()
+    customer = client.get('/api/invoices/1').get_json()
+    for body in (intercompany, customer):
+        shipment = body['packing']['shipment']
+        assert shipment['rack_line'] == 'Racks: 2'
+        assert shipment['list_lines'] == expected_lines
+        assert shipment['weight_line'] == 'Total weight: 67.58 lb'
+        assert all('lb' in line and '·' in line for line in shipment['list_lines'])
+        assert '  lb' not in shipment['weight_line']
+    for invoice_id in (55, 1):
+        pdf = pdf_text(client.get(f'/api/invoices/{invoice_id}/pdf').data)
+        assert b'Racks: 2' in pdf
+        assert b'XF261123002: Rack 5016 \\267 49.15 lb' in pdf
+        assert b'XF261123001: Rack 1054 \\267 18.43 lb' in pdf
+        assert b'Total weight: 67.58 lb' in pdf
