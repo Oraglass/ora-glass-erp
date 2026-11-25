@@ -8821,6 +8821,12 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         'number': parsed.get('number') or '',
         'rack': parsed.get('rack') or '',
         'rack_name': parsed.get('rack_name') or '',
+        'racks': [
+            str(number).strip() for number in (parsed.get('racks') or [])
+            if str(number or '').strip()
+        ] or ([str(parsed.get('rack')).strip()] if str(parsed.get('rack') or '').strip() else []),
+        'weight': parsed.get('weight'),
+        'weight_unit': parsed.get('weight_unit') or '',
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -10314,7 +10320,52 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number
+    if view['kind'] == 'intercompany' and invoice.get('order_id'):
+        order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
+        if order:
+            import packing
+            summary = packing.packing_for_intercompany(
+                _with_packing_measures(order), invoice, load_invoices(),
+            )
+            view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _with_packing_measures(order):
+    """Fill rack numbers and weight from the saved packing-list file when the order does not store them."""
+    copied = dict(order or {})
+    copied['packing_lists'] = [
+        _measured_packing_list(entry, (order or {}).get('id'))
+        for entry in (order or {}).get('packing_lists') or []
+    ]
+    return copied
+
+
+def _measured_packing_list(entry, order_id):
+    row = dict(entry or {})
+    has_weight = row.get('weight') not in (None, '')
+    has_racks = bool(row.get('racks') or row.get('rack'))
+    if has_weight and has_racks:
+        return row
+    payload = _read_packing_file(order_id, row.get('stored'))
+    if not payload:
+        return row
+    import packing
+    try:
+        if payload.startswith(b'%PDF'):
+            parsed = packing.parse_packing_pdf(payload)
+        else:
+            parsed = packing.parse_packing_lines(payload.decode('utf-8', errors='replace').splitlines())
+    except Exception:
+        return row
+    if not has_weight and parsed.get('weight') is not None:
+        row['weight'] = parsed.get('weight')
+        row['weight_unit'] = parsed.get('weight_unit') or ''
+    if not row.get('racks') and parsed.get('racks'):
+        row['racks'] = list(parsed.get('racks') or [])
+    if not row.get('rack') and parsed.get('rack'):
+        row['rack'] = parsed.get('rack')
+    return row
 
 
 def _can_view_books(user):
@@ -10908,6 +10959,20 @@ def _render_invoice_pdf(invoice):
         ))
     if invoice.get('tax_label') and not invoice.get('tax_lines'):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
+    packing = invoice.get('packing') or {}
+    if invoice.get('kind') == 'intercompany' and packing.get('lists'):
+        lines = [f"Racks: {int(packing.get('rack_count') or 0)}"]
+        for listed in packing.get('lists') or []:
+            numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
+            weight = ''
+            if listed.get('weight') not in (None, ''):
+                weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
+            lines.append(
+                f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
+            )
+        if packing.get('weight_label'):
+            lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
+        elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):
