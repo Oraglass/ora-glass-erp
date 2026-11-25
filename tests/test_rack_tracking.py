@@ -169,8 +169,10 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     assert created.status_code == 200, created.get_json()
     page = client.get('/racks/scan')
     assert b'id="scan-input"' in page.data
-    assert b'id="wedge-rack"' in page.data
     assert b'autofocus' in page.data
+    assert b'id="add-rack"' in page.data
+    assert b'id="wedge-rack"' not in page.data
+    assert b'Keyboard scanner' not in page.data
     assert b'cdn.jsdelivr.net/npm/html5-qrcode' in page.data
     assert b'>Scan rack<' in page.data
     assert b'id="customer"' in page.data

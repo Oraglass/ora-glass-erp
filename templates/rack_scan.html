@@ -16,8 +16,6 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 #scan-input{font-size:32px;padding:18px}
 .btn{display:block;width:100%;background:#C41E3A;color:#fff;border:0;border-radius:12px;font-size:22px;font-weight:700;padding:18px 16px;margin-top:12px;cursor:pointer}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
-.wedge{margin-top:16px;color:#777;font-size:14px}
-.wedge input{font-size:16px;padding:10px}
 .row{display:flex;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid #eee;font-size:20px}
 .ok{color:#166534}
 .warn{color:#9f1239}
@@ -42,11 +40,9 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 <button type="button" class="btn" id="camera">Scan rack</button>
 <div id="reader" hidden></div>
 <label>Rack number
-<input id="scan-input" autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
+<input id="scan-input" autofocus autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
 </label>
-<label class="wedge">Keyboard scanner
-<input id="wedge-rack" autofocus autocomplete="off" aria-label="Keyboard scanner">
-</label>
+<button type="button" class="btn secondary" id="add-rack">Add</button>
 </div>
 <div class="card" id="list"><p class="note">No racks scanned yet.</p></div>
 <button type="button" class="btn" id="confirm">Confirm pickup</button>
@@ -60,7 +56,6 @@ function esc(value) {
 const DRIVER = {{ driver|tojson }};
 const scans = [];
 const input = document.getElementById('scan-input');
-const wedge = document.getElementById('wedge-rack');
 const list = document.getElementById('list');
 let camera = null;
 
@@ -122,8 +117,7 @@ async function addScan(raw) {
   beep(body.result === 'ok');
   render();
   input.value = '';
-  wedge.value = '';
-  wedge.focus();
+  input.focus();
 }
 input.addEventListener('keydown', event => {
   if (event.key === 'Enter') {
@@ -131,12 +125,7 @@ input.addEventListener('keydown', event => {
     addScan(input.value);
   }
 });
-wedge.addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    addScan(wedge.value);
-  }
-});
+document.getElementById('add-rack').addEventListener('click', () => addScan(input.value));
 document.getElementById('camera').addEventListener('click', async () => {
   const box = document.getElementById('reader');
   if (camera) {
@@ -144,7 +133,7 @@ document.getElementById('camera').addEventListener('click', async () => {
     camera = null;
     box.hidden = true;
     document.getElementById('camera').textContent = 'Scan rack';
-    wedge.focus();
+    input.focus();
     return;
   }
   if (!window.Html5Qrcode) { document.getElementById('message').textContent = 'The camera scanner did not load.'; return; }
@@ -177,7 +166,7 @@ document.getElementById('confirm').addEventListener('click', async () => {
   message.textContent = 'Picked up ' + (body.moved || []).join(', ');
   scans.length = 0;
   render();
-  wedge.focus();
+  input.focus();
 });
 {% if not driver %}
 fetch('/api/racks/sites').then(res => res.json()).then(rows => {
@@ -186,7 +175,7 @@ fetch('/api/racks/sites').then(res => res.json()).then(rows => {
   select.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
 });
 {% endif %}
-window.addEventListener('load', () => wedge.focus());
+window.addEventListener('load', () => input.focus());
 </script>
 </body>
 </html>
