@@ -1958,6 +1958,41 @@ def quickbooks_unlink_customer():
     return jsonify(body)
 
 
+@app.route('/api/quickbooks/import/open-invoices', methods=['POST'])
+@admin_required
+def quickbooks_import_open_invoices():
+    """Copy open QuickBooks invoices into the ERP. This request never writes to QuickBooks."""
+    import quickbooks
+    data = json_body() or {}
+    key = data.get('connection') if data.get('connection') in {'us', 'ca'} else 'us'
+    customer_id = clean_text(data.get('customer_id'), 80)
+    try:
+        with quickbooks.connection_scope(key):
+            result = quickbooks.import_open_invoices(customer_id or None)
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    body = quickbooks.status_view()
+    body['result'] = result
+    body['message'] = result['message']
+    return jsonify(body)
+
+
+@app.route('/api/financial/import-open-invoices', methods=['POST'])
+@admin_required
+def financial_import_open_invoices():
+    """Import one customer's open QuickBooks invoices from the company they are linked on."""
+    import quickbooks
+    data = json_body() or {}
+    customer_id = clean_text(data.get('customer_id'), 80)
+    if not customer_id:
+        return json_error('Choose a customer.', 400)
+    try:
+        result = quickbooks.import_open_invoices_for_customer(customer_id)
+    except quickbooks.QuickBooksError as exc:
+        return json_error(str(exc), 400)
+    return jsonify(result)
+
+
 @app.route('/api/quickbooks/import/history', methods=['POST'])
 @admin_required
 def quickbooks_import_history():
@@ -3185,6 +3220,7 @@ def financial():
         note=scope_note(),
         staff_view=user.get('role') != 'customer',
         can_record=can_record_payments(user),
+        is_admin=user.get('role') == 'admin',
     )
 
 
@@ -11740,8 +11776,29 @@ def _credit_body(customer, orders, invoices, payments, requested_currency='', us
         'unallocated_payments': unallocated_credit(payments, customer_id, currency),
         'unapplied_credits': unapplied_credits(invoices, customer_id, currency),
         'balance': round(receivables - unapplied_credits(invoices, customer_id, currency), 2),
+        'by_currency': _credit_books(customer, orders, invoices, payments),
+        'cards_all_time': True,
         'read_only': (user or {}).get('role') == 'customer' or not can_record_payments(user or {}),
     }
+
+
+def _credit_books(customer, orders, invoices, payments):
+    """Open balances in each currency. The issuing company does not matter."""
+    books = []
+    for code in ('usd', 'cad'):
+        available, limit, receivables = available_credit(customer, code, orders, invoices, payments)
+        unallocated = unallocated_credit(payments, customer.get('id'), code)
+        credits = unapplied_credits(invoices, customer.get('id'), code)
+        books.append({
+            'currency': code,
+            'credit_limit': limit,
+            'open_receivables': receivables,
+            'available_credit': available,
+            'unallocated_payments': unallocated,
+            'unapplied_credits': credits,
+            'balance': round(receivables - credits, 2),
+        })
+    return books
 
 
 def _in_date_range(day, date_from, date_to):

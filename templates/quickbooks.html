@@ -174,7 +174,8 @@ function cardBody(card, status) {
     + '<label>ERP company<select data-field="link-erp">' + erpOptions(card.erp_customers, '') + '</select></label>'
     + '<button type="button" data-action="link-customer">Link customer</button>'
     + '<button type="button" class="secondary" data-action="unlink-customer">Unlink customer</button></div>'
-    + '<p><button type="button" data-action="import-history">Import existing invoices & payments</button></p>'
+    + '<p><button type="button" data-action="import-open">Import open invoices from QuickBooks</button> <button type="button" class="secondary" data-action="import-history">Import existing invoices & payments</button></p>'
+    + '<p class="note">Import open invoices reads the linked customer on this company and copies each open invoice. It does not send anything to QuickBooks. Open Windows Inc is customer 2 on the Ora Glass Inc card.</p>'
     + '<p class="note" data-history-result></p>'
     + '<h2>Sync log</h2><p class="note">Activity for realm ' + esc(realm) + ' only.</p><div class="note">' + logHtml + '</div></div>';
 }
@@ -320,6 +321,12 @@ document.getElementById('connections').addEventListener('click', async (event) =
       render(unlinked);
       const note = document.querySelector('.card[data-connection="' + connection + '"] [data-history-result]');
       if (note) note.textContent = unlinked.message || 'Unlinked.';
+    }
+    if (action === 'import-open') {
+      const imported = await post('/api/quickbooks/import/open-invoices', {connection});
+      render(imported);
+      const note = document.querySelector('.card[data-connection="' + connection + '"] [data-history-result]');
+      if (note) note.textContent = imported.message || '';
     }
     if (action === 'import-history') {
       const imported = await post('/api/quickbooks/import/history', {connection});
