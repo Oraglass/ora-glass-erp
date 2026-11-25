@@ -71,15 +71,32 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     packing = body['packing']
     assert packing['rack_count'] == 3
     assert packing['racks'] == ['1054', '2002', '2003']
-    assert packing['weight_label'] == '261 LBS'
+    assert packing['weight_label'] == '261 lb'
+    assert packing['shipment'] == {
+        'rack_line': 'Racks: 3',
+        'list_lines': [
+            'XF261123001: Rack 1054 · 171 lb',
+            'XF261123002: Rack 2002, Rack 2003 · 90 lb',
+        ],
+        'weight_line': 'Total weight: 261 lb',
+    }
     assert packing['lists'] == [
-        {'id': 1, 'number': 'XF261123001', 'racks': ['1054'], 'weight': 171, 'weight_unit': 'LBS'},
-        {'id': 2, 'number': 'XF261123002', 'racks': ['2002', '2003'], 'weight': 90, 'weight_unit': 'LBS'},
+        {
+            'id': 1, 'number': 'XF261123001', 'racks': ['1054'], 'racks_label': 'Rack 1054',
+            'weight': 171, 'weight_unit': 'LBS', 'weight_text': '171 lb',
+            'line': 'XF261123001: Rack 1054 · 171 lb',
+        },
+        {
+            'id': 2, 'number': 'XF261123002', 'racks': ['2002', '2003'], 'racks_label': 'Rack 2002, Rack 2003',
+            'weight': 90, 'weight_unit': 'LBS', 'weight_text': '90 lb',
+            'line': 'XF261123002: Rack 2002, Rack 2003 · 90 lb',
+        },
     ]
     page = client.get('/invoices/53').data
     assert b'id="invoice-racks"' in page
     assert b'id="invoice-weight"' in page
     assert b'id="invoice-customs"' in page
+    assert b'shipment.list_lines' in page
     assert body['customs'] == {'hts': packing_book.INTERCOMPANY_HTS, 'origin': packing_book.INTERCOMPANY_ORIGIN}
     assert body['gst_place'] == 'customer'
     assert body['seller_gst_number'] == tax_numbers.SELLER_GST_INITIAL
@@ -87,10 +104,9 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     assert b'Racks: 3' in pdf
     assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
     assert b'Ora Glass Inc.' in pdf
-    assert b'XF261123001: 1054' in pdf
-    assert b'171 LBS' in pdf
-    assert b'XF261123002: 2002, 2003' in pdf
-    assert b'Total weight: 261 LBS' in pdf
+    assert b'XF261123001: Rack 1054 \\267 171 lb' in pdf
+    assert b'XF261123002: Rack 2002, Rack 2003 \\267 90 lb' in pdf
+    assert b'Total weight: 261 lb' in pdf
     assert f'HTS {packing_book.INTERCOMPANY_HTS}'.encode() in pdf
     assert f'Origin: {packing_book.INTERCOMPANY_ORIGIN}'.encode() in pdf
 
@@ -107,10 +123,39 @@ def test_a_later_invoice_does_not_repeat_an_earlier_list(client):
     second = client.get('/api/invoices/54').get_json()['packing']
     assert [row['number'] for row in first['lists']] == ['XF261123001']
     assert first['rack_count'] == 1
-    assert first['weight_label'] == '171 LBS'
+    assert first['weight_label'] == '171 lb'
     assert [row['number'] for row in second['lists']] == ['XF261123002']
     assert second['racks'] == ['2002', '2003']
-    assert second['weight_label'] == '90 LBS'
+    assert second['weight_label'] == '90 lb'
+
+
+def test_canada_customer_invoice_matches_the_intercompany_shipment(client):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    _order()
+    items = [
+        {'name': 'Glass', 'serial': 1, 'pcs': 4, 'total': 60},
+        {'name': 'Glass', 'serial': 2, 'pcs': 2, 'total': 40},
+    ]
+    save_invoices([
+        _invoice(53, 'INV-0053', items),
+        dict(
+            _invoice(1, 'CA-INV-0001', items, kind='customer'),
+            issuer='ca', currency='cad', company='HighQ Developments Inc',
+        ),
+    ])
+    intercompany = client.get('/api/invoices/53').get_json()
+    customer = client.get('/api/invoices/1').get_json()
+    assert customer['packing']['shipment'] == intercompany['packing']['shipment']
+    assert customer.get('customs') is None
+    assert intercompany['customs']['hts']
+    customer_pdf = pdf_text(client.get('/api/invoices/1/pdf').data)
+    intercompany_pdf = pdf_text(client.get('/api/invoices/53/pdf').data)
+    for line in (b'Racks: 3', b'XF261123001: Rack 1054 \\267 171 lb', b'XF261123002: Rack 2002, Rack 2003 \\267 90 lb', b'Total weight: 261 lb'):
+        assert line in customer_pdf
+        assert line in intercompany_pdf
+    assert b'HTS' not in customer_pdf
+    assert b'HTS' in intercompany_pdf
 
 
 def test_customer_invoice_does_not_list_racks(client):
@@ -148,7 +193,16 @@ def test_canada_customer_invoice_shows_gst_under_the_header(client):
     assert b'Ora Glass \\(Canada\\) Inc.' in pdf
     assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
     assert b'HTS' not in pdf
+    assert b'Origin:' not in pdf
     assert body.get('customs') is None
+    assert body['packing']['shipment'] == {
+        'rack_line': 'Racks: 1',
+        'list_lines': ['XF261123001: Rack 1054 · 171 lb'],
+        'weight_line': 'Total weight: 171 lb',
+    }
+    assert b'Racks: 1' in pdf
+    assert b'XF261123001: Rack 1054 \\267 171 lb' in pdf
+    assert b'Total weight: 171 lb' in pdf
     page = open('templates/invoices.html', encoding='utf-8').read()
     assert 'id="invoice-header-gst"' in page
     assert 'id="invoice-bill-gst"' in page
@@ -167,7 +221,7 @@ def test_mixed_weight_units_stay_separate(client):
         {'name': 'Glass', 'serial': 2, 'pcs': 2, 'total': 40},
     ])])
     packing = client.get('/api/invoices/53').get_json()['packing']
-    assert packing['weight_label'] == '171 LBS + 40 KG'
+    assert packing['weight_label'] == '171 lb + 40 kg'
 
 
 def test_saved_packing_file_supplies_weight_for_an_older_invoice(client, data_dir):
@@ -195,7 +249,8 @@ def test_saved_packing_file_supplies_weight_for_an_older_invoice(client, data_di
     assert packing['lists'][0]['racks'] == ['1054']
     assert packing['lists'][0]['weight'] == 171
     assert packing['lists'][0]['weight_unit'] == 'LBS'
-    assert packing['weight_label'] == '171 LBS'
+    assert packing['lists'][0]['line'] == 'XF261123001: Rack 1054 · 171 lb'
+    assert packing['weight_label'] == '171 lb'
 
 
 def test_upload_stores_the_packing_list_weight_and_racks(client):
@@ -240,4 +295,51 @@ def test_upload_stores_the_packing_list_weight_and_racks(client):
     packing = client.get('/api/invoices/7').get_json()['packing']
     assert packing['rack_count'] == 2
     assert packing['lists'][0]['racks'] == ['1054', '2002']
-    assert packing['weight_label'] == '48.5 KG'
+    assert packing['weight_label'] == '48.5 kg'
+
+
+def test_existing_invoice_backfills_weight_from_the_highq_pdf(client, data_dir):
+    """INV-0054 style: the order stored the rack and not the weight, so the saved PDF supplies it."""
+    import io
+    from reportlab.pdfgen import canvas
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    buffer = io.BytesIO()
+    sheet = canvas.Canvas(buffer, pagesize=(792, 612))
+    sheet.setFont('Courier', 9)
+    sheet.drawString(360, 560, 'Sales Delivery: XF261123002         Date:   11/24/2026')
+    sheet.drawString(40, 520, 'Sold To: HighQ')
+    sheet.drawString(360, 500, 'Total Weight :')
+    sheet.drawString(470, 486, 'Appx. 1200 lb')
+    sheet.drawString(40, 470, '5016 A1900*1220*1800(THK:400*2)')
+    sheet.drawString(40, 430, '(1)    2')
+    sheet.drawString(120, 444, '24 36')
+    sheet.drawString(120, 416, '609.6 mm 914.4 mm')
+    sheet.save()
+    folder = data_dir / 'packing_files' / '1'
+    folder.mkdir(parents=True)
+    (folder / 'xf2.pdf').write_bytes(buffer.getvalue())
+    save_orders([{
+        'id': 1,
+        'company': 'HighQ Developments Inc',
+        'project': 'PO1',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'], 'stored': 'xf2.pdf',
+            'lines': [{'serial': 1, 'qty': 2}],
+        }],
+    }])
+    save_invoices([_invoice(54, 'INV-0054', [
+        {'name': 'Glass', 'serial': 1, 'pcs': 2, 'total': 40},
+    ])])
+    packing = client.get('/api/invoices/54').get_json()['packing']
+    assert packing['lists'][0]['line'] == 'XF261123002: Rack 5016 · 1200 lb'
+    assert packing['weight_label'] == '1200 lb'
+    stored = load_orders()[0]['packing_lists'][0]
+    assert stored['weight'] == 1200
+    assert stored['weight_unit'] == 'LBS'
+    pdf = pdf_text(client.get('/api/invoices/54/pdf').data)
+    assert b'XF261123002: Rack 5016 \\267 1200 lb' in pdf
+    assert b'Total weight: 1200 lb' in pdf

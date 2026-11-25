@@ -27,8 +27,17 @@ _PO = re.compile(r'(?:P\.?\s*O\.?|Purchase Order)\s*#?\s*:\s*(.+)', re.I)
 _SERIAL_LINE = re.compile(r'(?:serial|s/?n|sn)\s*[:#]?\s*(\d+)\s*$', re.I)
 _PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
 _SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
+_WEIGHT_WORD = r'(?:Approx(?:imate)?|Appx|Appr)'
 _WEIGHT = re.compile(
-    r'Total\s+Weight\s*:\s*(?:Approx\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    rf'(?:Total\s*)?Weight\b[^:\n]{{0,24}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    re.I,
+)
+_WEIGHT_OPEN = re.compile(
+    rf'(?:Total\s*)?Weight\b[^:\n]{{0,24}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?$',
+    re.I,
+)
+_WEIGHT_ONLY = re.compile(
+    rf'^(?:(?P<approx>{_WEIGHT_WORD})\.?\s*)?(?P<amount>[\d,]+(?:\.\d+)?)(?:\s*(?P<unit>[A-Za-z]+))?$',
     re.I,
 )
 _INCHES = re.compile(
@@ -115,12 +124,83 @@ def _weight_unit(text):
     return unit
 
 
+def _display_weight_unit(unit):
+    """Pounds print as lb, matching the packing-list customs line."""
+    normalized = _weight_unit(unit)
+    if normalized == 'LBS':
+        return 'lb'
+    if normalized == 'KG':
+        return 'kg'
+    return str(unit or '').strip().lower()
+
+
+def _normalize_measure_line(line):
+    return (
+        str(line or '')
+        .replace('\u00a0', ' ')
+        .replace('\u3000', ' ')
+        .replace('：', ':')
+        .replace('，', ',')
+    )
+
+
+def _store_weight(header, amount, unit):
+    header['weight'] = float(str(amount).replace(',', ''))
+    header['weight_unit'] = _weight_unit(unit or 'LBS')
+
+
+def _feed_weight(line, header, pending):
+    """Read Total Weight from this line, or from the value printed on the next line.
+
+    The HighQ packing list puts 'Total Weight :' in the totals column and
+    'Approx. 171 LBS' (or 'Appx. 1200 lb') beside or just under it. A PDF
+    extract often gives those as two lines. Returns (consumed, still_pending).
+    """
+    if header.get('weight') is not None:
+        return False, False
+    text = _normalize_measure_line(line).strip()
+    if pending:
+        value = _WEIGHT_ONLY.fullmatch(text)
+        unit = value.group('unit') if value else ''
+        known = _weight_unit(unit) in {'LBS', 'KG'} if unit else False
+        if value and (known or value.group('approx') or pending == 'approx'):
+            _store_weight(header, value.group('amount'), unit)
+            return True, False
+        pending = False
+    found = _WEIGHT.search(text)
+    if found:
+        _store_weight(header, found.group(1), found.group(2))
+        return False, False
+    if _WEIGHT_OPEN.search(text):
+        said_approx = 'approx' if re.search(_WEIGHT_WORD, text, re.I) else True
+        return False, said_approx
+    return False, False
+
+
+def weights_by_number(lines):
+    """Weight printed on each Sales Delivery in one packing-list file."""
+    found = {}
+    current = ''
+    pending = False
+    for raw in lines or []:
+        line = str(raw or '').strip()
+        if not line:
+            continue
+        delivery = _DELIVERY.search(line)
+        if delivery:
+            current = delivery.group(1)
+            pending = False
+        header = found.setdefault(current, {'weight': None, 'weight_unit': ''})
+        _consumed, pending = _feed_weight(line, header, pending)
+    return {
+        number: {'weight': row['weight'], 'weight_unit': row.get('weight_unit') or ''}
+        for number, row in found.items()
+        if number and row.get('weight') is not None
+    }
+
+
 def _note_list_header(line, header):
-    """Rack numbers and the printed total weight, in the list's own units."""
-    weight = _WEIGHT.search(line)
-    if weight and header.get('weight') is None:
-        header['weight'] = float(weight.group(1).replace(',', ''))
-        header['weight_unit'] = _weight_unit(weight.group(2) or 'LBS')
+    """Rack numbers printed on the packing list."""
     rack_value = _RACK_VALUE.match(line.strip())
     if not rack_value:
         return
@@ -152,7 +232,9 @@ def _parse_id_qty_lines(cleaned):
         'rack': '', 'rack_name': '', 'racks': [], 'weight': None, 'weight_unit': '',
         'total_pcs': None, 'total_sqft': None,
     }
+    pending_weight = False
     for line in cleaned:
+        _consumed, pending_weight = _feed_weight(line, header, pending_weight)
         _note_list_header(line, header)
         delivery = _DELIVERY.search(line)
         if delivery and not header['number']:
@@ -268,8 +350,13 @@ def parse_packing_lines(lines):
     index = 0
     serial_mode = False
     pending_serial = None
+    pending_weight = False
     while index < len(cleaned):
         line = cleaned[index]
+        consumed, pending_weight = _feed_weight(line, header, pending_weight)
+        if consumed:
+            index += 1
+            continue
         if _HEADER.search(line):
             serial_mode = 'serial' in line.casefold()
             index += 1
@@ -1034,6 +1121,14 @@ def racks_on_list(entry):
     return found
 
 
+def format_rack_numbers(numbers):
+    """Label each rack so a packing-list line reads 'Rack 5016' rather than a bare number."""
+    labels = [str(number).strip() for number in (numbers or []) if str(number or '').strip()]
+    if not labels:
+        return '-'
+    return ', '.join(f'Rack {number}' for number in labels)
+
+
 def format_weight(amount, unit=''):
     try:
         number = float(amount)
@@ -1043,7 +1138,7 @@ def format_weight(amount, unit=''):
         shown = str(int(round(number)))
     else:
         shown = f'{number:.2f}'.rstrip('0').rstrip('.')
-    label = str(unit or '').strip()
+    label = _display_weight_unit(unit)
     return f'{shown} {label}'.strip()
 
 
@@ -1091,14 +1186,23 @@ def summarize_packing(entries):
         shown_weight = None
         if amount is not None:
             shown_weight = int(round(amount)) if abs(amount - round(amount)) < 0.005 else round(amount, 2)
+        weight_text = format_weight(shown_weight, unit) if shown_weight is not None else ''
+        racks_label = format_rack_numbers(numbers)
+        number = entry.get('number') or 'Packing list'
+        line = f'{number}: {racks_label}'
+        if weight_text:
+            line = f'{line} · {weight_text}'
         lists.append({
             'id': entry.get('id'),
             'number': entry.get('number') or '',
             'racks': numbers,
+            'racks_label': racks_label,
             'weight': shown_weight,
             'weight_unit': unit,
+            'weight_text': weight_text,
+            'line': line,
         })
-    return {
+    summary = {
         'rack_count': len(racks),
         'racks': racks,
         'lists': lists,
@@ -1106,23 +1210,39 @@ def summarize_packing(entries):
             text for text in (format_weight(amount, unit) for unit, amount in totals.items()) if text
         ),
     }
+    summary['shipment'] = shipment_lines(summary)
+    return summary
+
+
+def shipment_lines(summary):
+    """The rack and weight lines printed on an invoice. Page and PDF both use this."""
+    if not summary or not summary.get('lists'):
+        return {'rack_line': '', 'list_lines': [], 'weight_line': ''}
+    return {
+        'rack_line': f"Racks: {int(summary.get('rack_count') or 0)}",
+        'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
+        'weight_line': f"Total weight: {summary['weight_label']}" if summary.get('weight_label') else '',
+    }
 
 
 def packing_for_intercompany(order, invoice, invoices):
-    """Packing lists whose pieces this intercompany invoice billed.
+    """Packing lists whose pieces this invoice billed.
 
-    Earlier intercompany invoices on the order take their pieces first, so a
-    later invoice does not repeat those lists.
+    Earlier invoices of the same kind on the order take their pieces first, so
+    a later invoice does not repeat those lists. A Canada customer invoice and
+    the intercompany invoice are allocated separately, so the same pieces show
+    the same lists on both.
     """
     pool = []
     for entry in (order or {}).get('packing_lists') or []:
         if entry.get('current') is False:
             continue
         pool.append({'entry': entry, 'left': _serial_qty(entry.get('lines'))})
+    kind = (invoice or {}).get('kind') or 'intercompany'
     ordered = [
         row for row in (invoices or [])
         if row.get('order_id') == (order or {}).get('id')
-        and row.get('kind') == 'intercompany'
+        and (row.get('kind') or 'customer') == kind
         and not row.get('voided')
     ]
     ordered.sort(key=lambda row: (str(row.get('invoice_date') or ''), row.get('id') or 0))

@@ -43,6 +43,32 @@ def _spec(width=24, height=36):
     return {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': width, 'height': height, 'unit': 'in'}
 
 
+def test_highq_weight_is_read_when_the_amount_is_on_the_next_line():
+    import packing
+    split = packing.parse_packing_lines([
+        'Sales Delivery: XF261123002 Date: 11/24/2026',
+        'Total Weight :',
+        'Appx. 1200 lb',
+        '5016 A1900*1220*1800(THK:400*2)',
+        '(1) 2',
+        '24 36',
+        '609.6 mm 914.4 mm',
+    ])
+    assert split['number'] == 'XF261123002'
+    assert split['weight'] == 1200
+    assert split['weight_unit'] == 'LBS'
+    assert split['rack'] == '5016'
+    both = packing.weights_by_number([
+        'Sales Delivery: XF261123001 Date: 11/23/2026',
+        'Total Weight : Approx. 171 LBS',
+        'Sales Delivery: XF261123002 Date: 11/24/2026',
+        'Total Weight :',
+        'Appx. 1,200 lb',
+    ])
+    assert both['XF261123001']['weight'] == 171
+    assert both['XF261123002']['weight'] == 1200
+
+
 def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description():
     import packing
     parsed = packing.parse_packing_lines(HIGHQ_LIST.splitlines())

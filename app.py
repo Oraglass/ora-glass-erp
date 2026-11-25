@@ -10420,14 +10420,37 @@ def _present_invoice(invoice, payments):
     doc_number = str(invoice.get('qbo_doc_number') or '')
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
-    view['qbo_doc_number'] = doc_number
+    view['qbo_doc_number'] = doc_number or str(invoice.get('number') or '') if invoice.get('qbo_id') else doc_number
+    view['qbo_id'] = str(invoice.get('qbo_id') or '')
+    view['qbo_sync'] = invoice.get('qbo_sync') or ''
+    view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    if not view['qbo_id'] and not view['qbo_sync']:
+        import quickbooks
+        with quickbooks.connection_scope(invoice.get('issuer') or 'us'):
+            link = quickbooks.find_link(
+                'credit' if document_type(invoice) == 'credit_note' else 'invoice',
+                erp_id=invoice.get('id'),
+            )
+        if link and link.get('qbo_id'):
+            view['qbo_id'] = str(link.get('qbo_id'))
+            view['qbo_sync'] = 'synced'
+            if not view['qbo_doc_number']:
+                view['qbo_doc_number'] = str(invoice.get('number') or '')
+    if not view['qbo_sync']:
+        view['qbo_sync'] = 'synced' if view.get('qbo_id') else 'not_sent'
+    view['qbo_sync_label'] = {
+        'synced': 'Synced',
+        'error': 'Not sent',
+        'not_connected': 'Not connected',
+        'voided': 'Voided in QuickBooks',
+    }.get(view['qbo_sync'], 'Not sent')
     if view.get('fx_rate') not in (None, ''):
         view['fx_date'] = _shown_fx_date(invoice)
     if view['kind'] == 'intercompany':
         view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
     _attach_invoice_customs(view)
-    if view['kind'] == 'intercompany' and invoice.get('order_id'):
+    if _invoice_shows_shipment(view) and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
             import packing
@@ -10436,6 +10459,15 @@ def _present_invoice(invoice, payments):
             )
             view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _invoice_shows_shipment(invoice):
+    """Intercompany invoices and Canada CAD customer invoices list the same racks and weight."""
+    if (invoice or {}).get('doc_type') == 'credit_note':
+        return False
+    if (invoice or {}).get('kind') == 'intercompany':
+        return True
+    return (invoice or {}).get('issuer') == 'ca' and str((invoice or {}).get('currency') or '').lower() == 'cad'
 
 
 def _attach_invoice_customs(view):
@@ -10469,12 +10501,47 @@ def _invoice_gst_place(invoice):
 
 def _with_packing_measures(order):
     """Fill rack numbers and weight from the saved packing-list file when the order does not store them."""
-    copied = dict(order or {})
-    copied['packing_lists'] = [
+    measured = [
         _measured_packing_list(entry, (order or {}).get('id'))
         for entry in (order or {}).get('packing_lists') or []
     ]
+    if order and order.get('id') and _packing_measures_changed(order.get('packing_lists') or [], measured):
+        _store_packing_measures(order.get('id'), measured)
+    copied = dict(order or {})
+    copied['packing_lists'] = measured
     return copied
+
+
+def _packing_measures_changed(original, measured):
+    by_id = {row.get('id'): row for row in original or []}
+    for row in measured or []:
+        before = by_id.get(row.get('id')) or {}
+        if row.get('weight') not in (None, '') and before.get('weight') in (None, ''):
+            return True
+        if row.get('racks') and not (before.get('racks') or before.get('rack')):
+            return True
+    return False
+
+
+def _store_packing_measures(order_id, measured):
+    """Keep a weight read from an older packing-list file on the order."""
+    orders = load_orders()
+    order = next((row for row in orders if row.get('id') == order_id), None)
+    if not order:
+        return
+    by_id = {row.get('id'): row for row in measured or []}
+    for entry in order.get('packing_lists') or []:
+        fresh = by_id.get(entry.get('id'))
+        if not fresh:
+            continue
+        if entry.get('weight') in (None, '') and fresh.get('weight') not in (None, ''):
+            entry['weight'] = fresh.get('weight')
+            entry['weight_unit'] = fresh.get('weight_unit') or ''
+        if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
+            entry['racks'] = list(fresh.get('racks') or [])
+            if not entry.get('rack'):
+                entry['rack'] = fresh.get('rack') or (fresh.get('racks') or [''])[0]
+    save_orders(orders)
 
 
 def _measured_packing_list(entry, order_id):
@@ -10489,14 +10556,27 @@ def _measured_packing_list(entry, order_id):
     import packing
     try:
         if payload.startswith(b'%PDF'):
-            parsed = packing.parse_packing_pdf(payload)
+            text_lines = packing.pdf_lines(payload)
+            parsed = packing.parse_packing_lines(text_lines)
         else:
-            parsed = packing.parse_packing_lines(payload.decode('utf-8', errors='replace').splitlines())
+            text_lines = payload.decode('utf-8', errors='replace').splitlines()
+            parsed = packing.parse_packing_lines(text_lines)
+        measures = packing.weights_by_number(text_lines)
     except Exception:
         return row
-    if not has_weight and parsed.get('weight') is not None:
-        row['weight'] = parsed.get('weight')
-        row['weight_unit'] = parsed.get('weight_unit') or ''
+    if not has_weight:
+        number = str(row.get('number') or '')
+        chosen = measures.get(number)
+        if not chosen and len(measures) == 1:
+            only = next(iter(measures))
+            if not number or number == only:
+                chosen = measures[only]
+        if chosen:
+            row['weight'] = chosen.get('weight')
+            row['weight_unit'] = chosen.get('weight_unit') or ''
+        elif (not number or parsed.get('number') == number) and parsed.get('weight') is not None:
+            row['weight'] = parsed.get('weight')
+            row['weight_unit'] = parsed.get('weight_unit') or ''
     if not row.get('racks') and parsed.get('racks'):
         row['racks'] = list(parsed.get('racks') or [])
     if not row.get('rack') and parsed.get('rack'):
@@ -10898,6 +10978,13 @@ def regenerate_invoice(invoice_id):
     if not quantities:
         return json_error('This invoice has no glass pieces to regenerate.', 400)
     reason = 'Regenerated to include line add-ons'
+    import quickbooks
+    qbo_void = quickbooks.void_document(document)
+    if qbo_void is False:
+        return json_error(
+            document.get('qbo_error') or 'QuickBooks did not void the previous invoice, so a new one was not created.',
+            400,
+        )
     _mark_invoice_void(document, user, reason)
     for index, row in enumerate(invoices):
         if row.get('id') == document.get('id'):
@@ -10996,6 +11083,25 @@ def void_document(invoice_id):
     _refresh_invoice_statuses(payments)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
     _qbo('void_document', fresh)
+    return jsonify(_present_invoice(fresh, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/quickbooks', methods=['POST'])
+@module_required('invoices')
+def send_invoice_to_quickbooks(invoice_id):
+    """Post one ERP invoice to the QuickBooks company that should hold it."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can send an invoice to QuickBooks.', 403)
+    invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
+    if not invoice:
+        return json_error('Not found', 404)
+    import quickbooks
+    if invoice.get('voided'):
+        quickbooks.void_document(invoice)
+    else:
+        quickbooks.push_document_id(invoice_id)
+    fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 
@@ -11106,26 +11212,20 @@ def _render_invoice_pdf(invoice):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}
-    if invoice.get('kind') == 'intercompany':
-        lines = []
-        if packing.get('lists'):
-            lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
-            for listed in packing.get('lists') or []:
-                numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
-                weight = ''
-                if listed.get('weight') not in (None, ''):
-                    weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
-                lines.append(
-                    f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
-                )
-            if packing.get('weight_label'):
-                lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
-        if customs.get('hts'):
-            lines.append(f"HTS {escape(customs.get('hts'))}")
-        if customs.get('origin'):
-            lines.append(f"Origin: {escape(customs.get('origin'))}")
-        if lines:
-            elements.append(Paragraph('<br/>'.join(lines), label_style))
+    shipment = packing.get('shipment') or {}
+    lines = []
+    if shipment.get('rack_line'):
+        lines.append(escape(shipment['rack_line']))
+    for text in shipment.get('list_lines') or []:
+        lines.append(escape(text))
+    if shipment.get('weight_line'):
+        lines.append(escape(shipment['weight_line']))
+    if customs.get('hts'):
+        lines.append(f"HTS {escape(customs.get('hts'))}")
+    if customs.get('origin'):
+        lines.append(f"Origin: {escape(customs.get('origin'))}")
+    if lines:
+        elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):
