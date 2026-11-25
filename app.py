@@ -11077,6 +11077,7 @@ def _render_invoice_pdf(invoice):
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     import documents
+    import packing
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
@@ -11160,7 +11161,7 @@ def _render_invoice_pdf(invoice):
         if packing.get('lists'):
             lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
             for listed in packing.get('lists') or []:
-                numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
+                numbers = listed.get('racks_label') or packing.format_rack_numbers(listed.get('racks'))
                 weight = ''
                 if listed.get('weight') not in (None, ''):
                     weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()

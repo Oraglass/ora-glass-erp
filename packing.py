@@ -1034,6 +1034,14 @@ def racks_on_list(entry):
     return found
 
 
+def format_rack_numbers(numbers):
+    """Label each rack so a packing-list line reads 'Rack 5016' rather than a bare number."""
+    labels = [str(number).strip() for number in (numbers or []) if str(number or '').strip()]
+    if not labels:
+        return '-'
+    return ', '.join(f'Rack {number}' for number in labels)
+
+
 def format_weight(amount, unit=''):
     try:
         number = float(amount)
@@ -1095,6 +1103,7 @@ def summarize_packing(entries):
             'id': entry.get('id'),
             'number': entry.get('number') or '',
             'racks': numbers,
+            'racks_label': format_rack_numbers(numbers),
             'weight': shown_weight,
             'weight_unit': unit,
         })

@@ -205,7 +205,7 @@ function renderDetail(invoice) {
   const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
   const packing = invoice.kind === 'intercompany' ? invoice.packing : null;
   const packingLines = packing ? (packing.lists || []).map(row => {
-    const racks = (row.racks || []).join(', ') || '-';
+    const racks = row.racks_label || (row.racks || []).map(number => 'Rack ' + number).join(', ') || '-';
     const weight = row.weight == null || row.weight === '' ? '' : ' · ' + esc(row.weight) + (row.weight_unit ? ' ' + esc(row.weight_unit) : '');
     return '<li>' + esc(row.number || 'Packing list') + ': ' + esc(racks) + weight + '</li>';
   }).join('') : '';

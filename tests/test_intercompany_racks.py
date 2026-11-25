@@ -73,13 +73,14 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     assert packing['racks'] == ['1054', '2002', '2003']
     assert packing['weight_label'] == '261 LBS'
     assert packing['lists'] == [
-        {'id': 1, 'number': 'XF261123001', 'racks': ['1054'], 'weight': 171, 'weight_unit': 'LBS'},
-        {'id': 2, 'number': 'XF261123002', 'racks': ['2002', '2003'], 'weight': 90, 'weight_unit': 'LBS'},
+        {'id': 1, 'number': 'XF261123001', 'racks': ['1054'], 'racks_label': 'Rack 1054', 'weight': 171, 'weight_unit': 'LBS'},
+        {'id': 2, 'number': 'XF261123002', 'racks': ['2002', '2003'], 'racks_label': 'Rack 2002, Rack 2003', 'weight': 90, 'weight_unit': 'LBS'},
     ]
     page = client.get('/invoices/53').data
     assert b'id="invoice-racks"' in page
     assert b'id="invoice-weight"' in page
     assert b'id="invoice-customs"' in page
+    assert b'row.racks_label' in page
     assert body['customs'] == {'hts': packing_book.INTERCOMPANY_HTS, 'origin': packing_book.INTERCOMPANY_ORIGIN}
     assert body['gst_place'] == 'customer'
     assert body['seller_gst_number'] == tax_numbers.SELLER_GST_INITIAL
@@ -87,9 +88,9 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     assert b'Racks: 3' in pdf
     assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
     assert b'Ora Glass Inc.' in pdf
-    assert b'XF261123001: 1054' in pdf
+    assert b'XF261123001: Rack 1054' in pdf
     assert b'171 LBS' in pdf
-    assert b'XF261123002: 2002, 2003' in pdf
+    assert b'XF261123002: Rack 2002, Rack 2003' in pdf
     assert b'Total weight: 261 LBS' in pdf
     assert f'HTS {packing_book.INTERCOMPANY_HTS}'.encode() in pdf
     assert f'Origin: {packing_book.INTERCOMPANY_ORIGIN}'.encode() in pdf
