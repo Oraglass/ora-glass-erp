@@ -67,6 +67,7 @@ a{color:#C41E3A}
 .badge.not_invoiced{background:#fde8ec;color:#9f1239}
 .badge.ready{background:#e0f2fe;color:#075985}
 .badge.invoiced{background:#d4edda;color:#155724}
+.badge.pending{background:#fff7ed;color:#9a3412}
 .actions,.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .row-actions{margin:0}
 #ship-lines{margin-top:8px}
@@ -122,6 +123,8 @@ a{color:#C41E3A}
 <option value="">All invoice states</option>
 <option value="not_invoiced">Not invoiced to customer</option>
 <option value="ready">Ready to invoice</option>
+<option value="pending">Customer invoice pending</option>
+<option value="partial">Partially invoiced</option>
 <option value="invoiced">Invoiced</option>
 </select>
 <button type="button" class="btn" id="order-filter">Filter</button>
@@ -306,6 +309,18 @@ function coverageBlock(order) {
     + '<p class="note">Covered by credit ' + esc(moneyText(cover.currency, cover.covered_by_credit))
     + ', by prepayment ' + esc(moneyText(cover.currency, cover.covered_by_prepayment))
     + '. Shortfall ' + esc(moneyText(cover.currency, cover.shortfall)) + '.</p></div>';
+}
+let openInvoiceChoice = false;
+async function postInvoiceChoice(order, invoiceCustomerNow) {
+  openInvoiceChoice = false;
+  const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/customer-invoice', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({create_intercompany: false, invoice_customer: invoiceCustomerNow})
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(payload.error || 'Could not invoice the customer'); return; }
+  renderDetail(payload);
+  load();
 }
 function describeChange(change) {
   const action = change.action;
@@ -547,14 +562,18 @@ function packingBlock(order) {
   const historyBlock = history ? '<div class="log"><h4 style="color:#333">Previous packing lists</h4><ul>' + history + '</ul></div>' : '';
   const shipPacked = STAFF && (order.packing_serials || []).some(row => Number(row.packed) > Number(row.shipped || 0))
     ? '<button type="button" class="btn" id="ship-packed">Ship packed pieces</button>' : '';
-  const invoiceCustomer = STAFF && !order.legacy && order.invoice_state === 'ready'
-    ? '<button type="button" class="btn" id="invoice-customer">Create invoice</button>' : '';
+  const invoiceCustomer = STAFF && order.can_invoice_packed
+    ? '<button type="button" class="btn" id="invoice-customer">Invoice</button>' : '';
+  const invoiceChoice = STAFF && order.can_invoice_packed
+    ? '<div id="invoice-choice" hidden><p class="note">The intercompany invoice, when this order needs one, is created for the packed pieces that are not on one yet.</p><div class="actions"><button type="button" class="btn" id="invoice-now">Invoice the customer for these packed pieces now</button><button type="button" class="btn secondary" id="invoice-wait">Wait until the order is complete</button></div></div>'
+    : '';
   const prints = '<a class="btn secondary" id="print-packing-list" href="/api/orders/' + encodeURIComponent(order.id) + '/packing-lists.pdf">Print Packing List</a>'
     + '<a class="btn secondary" id="print-backorder" href="/api/orders/' + encodeURIComponent(order.id) + '/backorder.pdf">Print Back Ordered List</a>';
   const shippedTotal = serials.reduce((sum, row) => sum + Number(row.shipped || 0), 0);
   const summary = 'Ordered ' + esc(totals.ordered || 0) + ' · Packed ' + esc(totals.packed || 0) + (showShipped ? ' · Shipped ' + esc(shippedTotal) : '') + ' · BO ' + esc(totals.bo || 0);
   return '<section class="section" id="order-packing"><h3>Packing ' + (order.pack_status_label ? '<span class="badge ' + esc(order.pack_status) + '">' + esc(order.pack_status_label) + '</span>' : '') + ' ' + invoiceBadge(order) + '</h3>'
     + '<div class="actions">' + prints + shipPacked + invoiceCustomer + '</div>'
+    + invoiceChoice
     + shipConfirmPanel(order)
     + '<p class="note" id="packing-totals">' + summary + '</p>'
     + '<table id="packing-serials"><thead><tr><th>Serial</th><th>Floor</th><th>Product</th><th>Size</th><th class="num">Ordered</th><th class="num">Packed</th>' + shippedHead + '<th class="num">BO</th></tr></thead><tbody>' + serialRows + '</tbody></table>'
@@ -833,14 +852,33 @@ function renderDetail(order) {
   });
   const invoiceCustomer = document.getElementById('invoice-customer');
   if (invoiceCustomer) invoiceCustomer.addEventListener('click', async () => {
-    const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/customer-invoice', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) { alert(payload.error || 'Could not invoice the customer'); return; }
-    renderDetail(payload);
-    load();
+    openInvoiceChoice = true;
+    if (order.needs_intercompany) {
+      const res = await fetch('/api/orders/' + encodeURIComponent(order.id) + '/customer-invoice', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({create_intercompany: true})
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        openInvoiceChoice = false;
+        alert(payload.error || 'Could not create the intercompany invoice');
+        return;
+      }
+      renderDetail(payload);
+      load();
+      return;
+    }
+    const choice = document.getElementById('invoice-choice');
+    if (choice) choice.hidden = false;
   });
+  const invoiceNow = document.getElementById('invoice-now');
+  if (invoiceNow) invoiceNow.addEventListener('click', () => postInvoiceChoice(order, true));
+  const invoiceWait = document.getElementById('invoice-wait');
+  if (invoiceWait) invoiceWait.addEventListener('click', () => postInvoiceChoice(order, false));
+  if (openInvoiceChoice) {
+    const choice = document.getElementById('invoice-choice');
+    if (choice) choice.hidden = false;
+  }
   const release = document.getElementById('approve-production');
   if (release) release.addEventListener('click', () => postDecision('/approve-production', {}, 'Approve this order for production? The production Excel can be downloaded after this.'));
   const accept = document.getElementById('approve-changes');
