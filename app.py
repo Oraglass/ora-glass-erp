@@ -13651,5 +13651,13 @@ def seed_command(links, base_url):
         click.echo(f'{email}  {base}/setup-password/{token}')
 
 
+def _start_background_jobs():
+    import quickbooks
+    quickbooks.start_weekly_open_import()
+
+
+_start_background_jobs()
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')), debug=os.environ.get('FLASK_DEBUG') == '1')

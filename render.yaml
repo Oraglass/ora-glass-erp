@@ -4,6 +4,9 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     # One worker so the in-process login limiter and JSON locks stay in one process.
+    # That same process imports open QuickBooks invoices every Monday at 6:00 AM
+    # Pacific. The data disk is mounted only on this service, so a separate cron
+    # job could not read the tokens or write the invoices.
     startCommand: gunicorn app:app --workers 1 --timeout 120
     # A 1 GB disk is already mounted at /data on this service. Do not declare
     # another disk here; a blueprint sync would try to attach a second one.

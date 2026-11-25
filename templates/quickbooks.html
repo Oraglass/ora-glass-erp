@@ -44,6 +44,7 @@ select{padding:6px;border:1px solid #ddd;border-radius:4px}
 <p><a class="btn" href="{{ url_for('quickbooks_connect') }}">Reconnect</a></p>
 </div>
 {% endif %}
+<p class="note" id="weekly-import"></p>
 <div id="connections"></div>
 </div>
 </div>
@@ -180,8 +181,20 @@ function cardBody(card, status) {
     + '<h2>Sync log</h2><p class="note">Activity for realm ' + esc(realm) + ' only.</p><div class="note">' + logHtml + '</div></div>';
 }
 let STATUS = INITIAL;
+function renderWeekly(status) {
+  const job = (status && status.weekly_import) || {};
+  const box = document.getElementById('weekly-import');
+  if (!box) return;
+  const schedule = 'Open invoices import automatically every Monday at 6:00 AM Pacific for every linked customer in both companies.';
+  if (job.at_label || job.at) {
+    box.textContent = schedule + ' Last run ' + (job.at_label || job.at) + '. ' + (job.message || '');
+  } else {
+    box.textContent = schedule + ' It has not run yet.';
+  }
+}
 function render(status) {
   STATUS = status;
+  renderWeekly(status);
   const selected = companyKey();
   const tabs = '<div class="qbo-tabs" role="tablist">'
     + '<button type="button" class="qbo-tab' + (selected === 'us' ? ' active' : '') + '" role="tab" data-tab="us" aria-selected="' + (selected === 'us') + '">Ora Glass Inc (US)</button>'

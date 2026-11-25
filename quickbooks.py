@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -13,8 +14,9 @@ import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from billing import TERM_DAYS, invoice_balance, invoice_status, money
+from billing import TERM_DAYS, invoice_applied, invoice_balance, invoice_status, money
 from storage import (
     append_invoice,
     append_payment,
@@ -534,6 +536,7 @@ def status_view():
         'missing': missing,
         'connections': cards,
         'connection_expired': any(card['connection_expired'] for card in cards),
+        'weekly_import': weekly_import_view(),
     })
     return view
 
@@ -1071,7 +1074,7 @@ def import_open_invoices_for_customer(customer_id):
             keys.append(key)
     if not keys:
         raise QuickBooksError('Link this customer to QuickBooks before importing open invoices.')
-    combined = {'customers': 0, 'invoices': 0, 'skipped': 0, 'message': ''}
+    combined = {'customers': 0, 'invoices': 0, 'skipped': 0, 'refreshed': 0, 'message': ''}
     messages = []
     for key in keys:
         with connection_scope(key):
@@ -1079,6 +1082,7 @@ def import_open_invoices_for_customer(customer_id):
         combined['customers'] += part['customers']
         combined['invoices'] += part['invoices']
         combined['skipped'] += part['skipped']
+        combined['refreshed'] += part.get('refreshed') or 0
         messages.append(part['message'])
     combined['message'] = ' '.join(messages)
     return combined
@@ -1113,11 +1117,12 @@ def import_open_invoices(customer_id=None):
             continue
         if erp_id not in targets:
             targets.append(erp_id)
-    created = skipped = 0
+    created = skipped = refreshed = 0
     for erp_id in targets:
         counts = _import_open_invoices(erp_id)
         created += counts['invoices']
         skipped += counts['skipped']
+        refreshed += counts['refreshed']
     if wanted and not targets:
         message = (
             'That customer is not linked on this QuickBooks company. '
@@ -1128,10 +1133,17 @@ def import_open_invoices(customer_id=None):
     else:
         message = (
             f'Imported {created} open invoice{"s" if created != 1 else ""} from QuickBooks. '
+            f'Updated {refreshed} existing balance{"s" if refreshed != 1 else ""}. '
             f'Skipped {skipped} that were already in the ERP. Nothing was sent to QuickBooks.'
         )
     log('info', message)
-    return {'customers': len(targets), 'invoices': created, 'skipped': skipped, 'message': message}
+    return {
+        'customers': len(targets),
+        'invoices': created,
+        'skipped': skipped,
+        'refreshed': refreshed,
+        'message': message,
+    }
 
 
 def _is_open_windows(customer):
@@ -1157,19 +1169,82 @@ def _import_open_invoices(customer_id):
     link = find_link('customer', erp_id=customer_id)
     qbo_id = str((link or {}).get('qbo_id') or '')
     if not qbo_id.isdigit():
-        return {'invoices': 0, 'skipped': 0}
+        return {'invoices': 0, 'skipped': 0, 'refreshed': 0}
     _customer_record(qbo_id)
     rows = query_all(f"select * from Invoice where CustomerRef = '{qbo_id}'")
-    counts = {'invoices': 0, 'skipped': 0}
+    counts = {'invoices': 0, 'skipped': 0, 'refreshed': 0}
     for row in rows:
-        if money(row.get('Balance')) <= 0.009:
-            continue
-        outcome = _store_open_invoice(row, customer_id)
+        outcome = _import_one_open_invoice(row, customer_id)
         if outcome == 'created':
             counts['invoices'] += 1
         elif outcome == 'skipped':
             counts['skipped'] += 1
+        elif outcome == 'refreshed':
+            counts['refreshed'] += 1
     return counts
+
+
+def _is_imported_invoice(invoice):
+    if not isinstance(invoice, dict):
+        return False
+    if invoice.get('imported'):
+        return True
+    return bool(invoice.get('qbo_origin') and invoice.get('source') == 'quickbooks')
+
+
+def _imported_invoice_for(row, customer_id):
+    """An invoice this import already copied for this customer. Native ERP invoices are left alone."""
+    qbo_id = str(row.get('Id') or '')
+    doc_number = str(row.get('DocNumber') or '').strip()
+    realm = _active_realm()
+    for invoice in load_invoices():
+        if not _is_imported_invoice(invoice) or invoice.get('customer_id') != customer_id:
+            continue
+        if invoice.get('issuer') not in (None, '', _connection_key()):
+            continue
+        same_id = qbo_id and str(invoice.get('qbo_id') or '') == qbo_id
+        same_number = doc_number and str(invoice.get('number') or '').strip() == doc_number
+        same_doc = doc_number and str(invoice.get('qbo_doc_number') or '').strip() == doc_number
+        if not (same_id or same_number or same_doc):
+            continue
+        stored_realm = str(invoice.get('qbo_realm_id') or '')
+        if stored_realm and stored_realm != realm:
+            continue
+        return invoice
+    return None
+
+
+def _apply_qbo_balance(invoice, row):
+    """Make an imported invoice show the balance QuickBooks currently reports. Does not write to QuickBooks."""
+    total = money(row.get('TotalAmt'))
+    balance = money(row.get('Balance') if row.get('Balance') is not None else total)
+    payments = load_payments()
+    applied = invoice_applied(invoice, payments)
+    invoice['total'] = total
+    invoice['subtotal'] = total
+    invoice['opening_applied'] = round(max(0.0, total - balance - applied), 2)
+    invoice['balance'] = invoice_balance(invoice, payments)
+    invoice['status'] = invoice_status(invoice, payments)
+    if row.get('DueDate'):
+        invoice['due_date'] = row.get('DueDate')
+    invoices = load_invoices()
+    for index, item in enumerate(invoices):
+        if item.get('id') == invoice.get('id'):
+            invoices[index] = invoice
+    save_invoices(invoices)
+
+
+def _import_one_open_invoice(row, customer_id):
+    existing = _imported_invoice_for(row, customer_id)
+    balance = money(row.get('Balance') if row.get('Balance') is not None else row.get('TotalAmt'))
+    if existing:
+        _apply_qbo_balance(existing, row)
+        return 'refreshed'
+    if balance <= 0.009:
+        return 'ignored'
+    if _invoice_already_known(row):
+        return 'skipped'
+    return _store_open_invoice(row, customer_id)
 
 
 def _invoice_already_known(row):
@@ -1196,8 +1271,6 @@ def _invoice_already_known(row):
 
 def _store_open_invoice(row, customer_id):
     """One ERP invoice whose number, dates, amount, and balance match QuickBooks."""
-    if _invoice_already_known(row):
-        return 'skipped'
     doc_number = str(row.get('DocNumber') or '').strip()
     if not doc_number:
         doc_number = str(row.get('Id') or '').strip()
@@ -1260,6 +1333,126 @@ def _store_open_invoice(row, customer_id):
         realm_id=_active_realm(),
     )
     return 'created'
+
+
+PACIFIC = ZoneInfo('America/Los_Angeles')
+WEEKLY_IMPORT_HOUR = 6
+_WEEKLY_STARTED = False
+
+
+def _pacific(now=None):
+    if now is None:
+        return datetime.now(PACIFIC)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=PACIFIC)
+    return now.astimezone(PACIFIC)
+
+
+def weekly_open_import_due(now=None):
+    """True after 6:00 AM Pacific on Monday, until this week's import is stored."""
+    now = _pacific(now)
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=WEEKLY_IMPORT_HOUR, minute=0, second=0, microsecond=0,
+    )
+    week = monday.date().isoformat()
+    if now < monday:
+        return False, week
+    guard = _load('qbo_weekly_open_import.json', {})
+    if not isinstance(guard, dict):
+        guard = {}
+    return guard.get('week') != week, week
+
+
+def run_weekly_open_import_if_due(now=None):
+    """Import open invoices for every linked customer in both companies, at most once each week.
+
+    The read uses the same rules as the manual import and then refreshes balances already copied in.
+    Nothing is posted to QuickBooks.
+    """
+    due, week = weekly_open_import_due(now)
+    if not due:
+        return None
+    companies = []
+    for key, label, _currency in CONNECTIONS:
+        with connection_scope(key):
+            if not connected():
+                part = {
+                    'connection': key,
+                    'invoices': 0,
+                    'skipped': 0,
+                    'refreshed': 0,
+                    'message': f'{label} is not connected.',
+                }
+            else:
+                try:
+                    part = import_open_invoices()
+                except QuickBooksError as exc:
+                    part = {
+                        'invoices': 0,
+                        'skipped': 0,
+                        'refreshed': 0,
+                        'message': str(exc),
+                    }
+                part['connection'] = key
+            companies.append(part)
+    message = ' '.join(part.get('message') or '' for part in companies).strip()
+    record = {
+        'week': week,
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'message': message,
+        'companies': [
+            {
+                'connection': part.get('connection'),
+                'invoices': part.get('invoices') or 0,
+                'skipped': part.get('skipped') or 0,
+                'refreshed': part.get('refreshed') or 0,
+                'message': part.get('message') or '',
+            }
+            for part in companies
+        ],
+    }
+    _save('qbo_weekly_open_import.json', record)
+    logger.info('Weekly QuickBooks open-invoice import: %s', message)
+    return record
+
+
+def weekly_import_view():
+    record = _load('qbo_weekly_open_import.json', {})
+    if not isinstance(record, dict):
+        record = {}
+    at = str(record.get('at') or '')
+    label = ''
+    if at:
+        try:
+            label = _pacific(datetime.fromisoformat(at)).strftime('%Y-%m-%d %H:%M') + ' Pacific'
+        except ValueError:
+            label = at
+    return {
+        'at': at,
+        'at_label': label,
+        'week': record.get('week') or '',
+        'message': record.get('message') or '',
+        'companies': record.get('companies') or [],
+        'schedule': 'Monday at 6:00 AM Pacific',
+    }
+
+
+def _weekly_open_import_loop():
+    while True:
+        try:
+            run_weekly_open_import_if_due()
+        except Exception:
+            logger.exception('Weekly QuickBooks open-invoice import failed.')
+        time.sleep(CDC_INTERVAL)
+
+
+def start_weekly_open_import():
+    """Start the in-process Monday import. Production only, and only in the one gunicorn worker."""
+    global _WEEKLY_STARTED
+    if _WEEKLY_STARTED or os.environ.get('APP_ENV') != 'production':
+        return
+    _WEEKLY_STARTED = True
+    threading.Thread(target=_weekly_open_import_loop, name='qbo-weekly-open-import', daemon=True).start()
 
 
 def apply_import(decisions):

@@ -4,6 +4,9 @@ import json
 import urllib.parse
 
 import quickbooks
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from billing import invoice_balance, money
 from quickbooks import CANADA_REALM, US_REALM
 from storage import (
@@ -167,7 +170,8 @@ def test_open_invoice_import_copies_balances_and_does_not_write_to_quickbooks(cl
         again = client.post('/api/quickbooks/import/open-invoices', json={'connection': 'us', 'customer_id': 'open-windows'})
         assert again.status_code == 200, again.get_json()
         assert again.get_json()['result']['invoices'] == 0
-        assert again.get_json()['result']['skipped'] == 4
+        assert again.get_json()['result']['skipped'] == 2
+        assert again.get_json()['result']['refreshed'] == 2
         assert len([row for row in load_invoices() if row.get('customer_id') == 'open-windows']) == 4
         client.post('/logout')
         write_user('lee@oraglass.us', 'employee')
@@ -179,5 +183,130 @@ def test_open_invoice_import_copies_balances_and_does_not_write_to_quickbooks(cl
         assert b'Import open invoices from QuickBooks' not in page.data
         refused = client.post('/api/financial/import-open-invoices', json={'customer_id': 'open-windows'})
         assert refused.status_code == 403
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+class WeeklyQBO:
+    def __init__(self):
+        self.calls = []
+        self.customers = {
+            US_REALM: {'2': {'Id': '2', 'SyncToken': '1', 'DisplayName': 'Open Windows Inc', 'CurrencyRef': {'value': 'USD'}}},
+            CANADA_REALM: {'8': {'Id': '8', 'SyncToken': '1', 'DisplayName': 'Harbor Glass', 'CurrencyRef': {'value': 'CAD'}}},
+        }
+        self.invoices = {
+            US_REALM: [
+                _invoice('502', '5002', 4000, 0, '2026-04-02', '2026-05-02'),
+                _invoice('506', '5006', 900, 900, '2026-11-20', '2026-12-20'),
+                _invoice('504', '5004', 50, 50, '2026-02-01', '2026-03-01'),
+            ],
+            CANADA_REALM: [
+                _invoice('20', 'CA-20', 80, 80, '2026-11-02', '2026-12-02', 'CAD'),
+            ],
+        }
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, body))
+        parsed = urllib.parse.urlparse(url)
+        parts = [part for part in parsed.path.split('/') if part]
+        realm = parts[parts.index('company') + 1] if 'company' in parts else ''
+        if method != 'GET':
+            return 500, {}, b'{"Fault":{"Error":[{"Message":"writes are not allowed"}]}}'
+        if parsed.path.rstrip('/').endswith('/query'):
+            statement = urllib.parse.parse_qs(parsed.query).get('query', [''])[0]
+            if 'from Customer' in statement:
+                wanted = '8' if "Id = '8'" in statement else '2'
+                row = self.customers.get(realm, {}).get(wanted)
+                payload = {'Customer': [row] if row else []}
+            elif 'from Invoice' in statement:
+                payload = {'Invoice': self.invoices.get(realm, [])}
+            else:
+                payload = {}
+            return 200, {}, json.dumps({'QueryResponse': payload}).encode()
+        if '/customer/' in parsed.path:
+            row = self.customers.get(realm, {}).get(parts[-1])
+            if not row:
+                return 404, {}, b'{}'
+            return 200, {}, json.dumps({'Customer': row}).encode()
+        return 404, {}, b'{}'
+
+
+def test_weekly_import_runs_monday_morning_pacific_and_refreshes_balances(client, monkeypatch):
+    _configure(monkeypatch)
+    _open_windows(limit=15000)
+    write_user('ap@harbor.example', 'customer', customer_id='harbor-glass', customer_name='Harbor Glass')
+    customers = load_customers()
+    customers['harbor-glass'].update({'country': 'Canada', 'credit_currency': 'cad', 'credit_limit': 800, 'credit_approved': True})
+    save_customers(customers)
+    append_invoice({
+        'number': '5002', 'doc_type': 'invoice', 'kind': 'customer', 'issuer': 'us', 'source': 'quickbooks',
+        'imported': True, 'legacy': True, 'qbo_origin': True, 'qbo_id': '502', 'qbo_sync': 'synced',
+        'qbo_realm_id': US_REALM, 'customer_id': 'open-windows', 'company': 'Open Windows Inc',
+        'currency': 'usd', 'total': 4000, 'balance': 1000, 'opening_applied': 3000, 'status': 'partial',
+        'invoice_date': '2026-04-02', 'due_date': '2026-05-02', 'voided': False,
+        'items': [{'name': 'Glass', 'pcs': 1, 'total': 4000}],
+    })
+    append_invoice({
+        'number': '5004', 'doc_type': 'invoice', 'kind': 'customer', 'issuer': 'us',
+        'customer_id': 'open-windows', 'company': 'Open Windows Inc', 'currency': 'usd',
+        'total': 50, 'balance': 50, 'invoice_date': '2026-02-01', 'voided': False,
+        'items': [{'name': 'Glass', 'pcs': 1, 'total': 50}],
+    })
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    before = client.get('/settings/quickbooks')
+    assert b'Monday at 6:00 AM Pacific' in before.data
+    assert b'It has not run yet' in before.data
+    assert b'2026-11-23' not in before.data
+    pacific = ZoneInfo('America/Los_Angeles')
+    fake = WeeklyQBO()
+    quickbooks.TRANSPORT = fake
+    try:
+        _save_connection('us', US_REALM, 'Ora Glass Inc')
+        _save_connection('ca', CANADA_REALM, 'Ora Glass (Canada) Inc')
+        with quickbooks.connection_scope('us'):
+            quickbooks.upsert_link('customer', 'open-windows', '2', '0', 'qbo', realm_id=US_REALM)
+        with quickbooks.connection_scope('ca'):
+            quickbooks.upsert_link('customer', 'harbor-glass', '8', '0', 'qbo', realm_id=CANADA_REALM)
+        early = datetime(2026, 11, 23, 5, 59, tzinfo=pacific)
+        assert quickbooks.run_weekly_open_import_if_due(early) is None
+        assert fake.calls == []
+        assert '5006' not in {row.get('number') for row in load_invoices()}
+        monday = datetime(2026, 11, 23, 6, 0, tzinfo=pacific)
+        record = quickbooks.run_weekly_open_import_if_due(monday)
+        assert record['week'] == '2026-11-23'
+        by_company = {row['connection']: row for row in record['companies']}
+        assert by_company['us']['invoices'] == 1
+        assert by_company['us']['refreshed'] == 1
+        assert by_company['ca']['invoices'] == 1
+        assert all(method == 'GET' for method, _url, _body in fake.calls)
+        assert any(US_REALM in url for _method, url, _body in fake.calls)
+        assert any(CANADA_REALM in url for _method, url, _body in fake.calls)
+        assert not any(urllib.parse.urlparse(url).path.rstrip('/').endswith('/invoice') for _method, url, _body in fake.calls)
+        stored = {row.get('number'): row for row in load_invoices()}
+        assert stored['5006']['imported'] is True
+        assert stored['5006']['qbo_id'] == '506'
+        assert invoice_balance(stored['5006'], load_payments()) == 900
+        paid = stored['5002']
+        assert invoice_balance(paid, load_payments()) == 0
+        assert paid['status'] == 'paid'
+        assert stored['5004']['balance'] == 50
+        assert len([row for row in load_invoices() if row.get('number') == '5004']) == 1
+        canada = stored['CA-20']
+        assert canada['customer_id'] == 'harbor-glass'
+        assert canada['currency'] == 'cad'
+        assert canada['issuer'] == 'ca'
+        assert load_customers()['open-windows']['credit_limit'] == 15000
+        assert load_customers()['harbor-glass']['credit_limit'] == 800
+        calls = len(fake.calls)
+        assert quickbooks.run_weekly_open_import_if_due(datetime(2026, 11, 23, 18, 0, tzinfo=pacific)) is None
+        assert len(fake.calls) == calls
+        page = client.get('/settings/quickbooks')
+        assert b'2026-11-23' in page.data
+        assert b'Updated 1 existing balance' in page.data
+        assert b'Pacific' in page.data
+        next_week = quickbooks.run_weekly_open_import_if_due(datetime(2026, 11, 30, 6, 0, tzinfo=pacific))
+        assert next_week['week'] == '2026-11-30'
+        assert len(fake.calls) > calls
+        assert quickbooks.start_weekly_open_import() is None
     finally:
         quickbooks.TRANSPORT = None
