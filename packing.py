@@ -11,6 +11,10 @@ from datetime import date
 
 import production
 
+# Customs description for glass Ora Glass Inc bills to Ora Glass (Canada) Inc.
+INTERCOMPANY_HTS = '7008.00.00.00'
+INTERCOMPANY_ORIGIN = 'USA'
+
 _HEADER = re.compile(r'QTY\s+WIDTH\s+HEIGHT\s+FLOOR', re.I)
 _DELIVERY = re.compile(
     r'Sales Delivery:\s*(\S+)\s+Date:\s*(\d{1,2})/(\d{1,2})/(\d{4})',
@@ -23,6 +27,10 @@ _PO = re.compile(r'(?:P\.?\s*O\.?|Purchase Order)\s*#?\s*:\s*(.+)', re.I)
 _SERIAL_LINE = re.compile(r'(?:serial|s/?n|sn)\s*[:#]?\s*(\d+)\s*$', re.I)
 _PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
 _SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
+_WEIGHT = re.compile(
+    r'Total\s+Weight\s*:\s*(?:Approx\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    re.I,
+)
 _INCHES = re.compile(
     r'^(\d+)(?:\s+(\d+)\s*/\s*(\d+))?\s+(\d+)(?:\s+(\d+)\s*/\s*(\d+))?$'
 )
@@ -98,6 +106,34 @@ _RACK_VALUE = re.compile(r'^(\d{3,})\s+[A-Za-z]\d')
 _FRACTION = re.compile(r'^(\d+)(?:\s+(\d+)\s*/\s*(\d+))?$')
 
 
+def _weight_unit(text):
+    unit = re.sub(r'[^A-Za-z]', '', str(text or '')).upper()
+    if unit in {'LB', 'LBS', 'POUND', 'POUNDS'}:
+        return 'LBS'
+    if unit in {'KG', 'KGS', 'KILO', 'KILOS', 'KILOGRAM', 'KILOGRAMS'}:
+        return 'KG'
+    return unit
+
+
+def _note_list_header(line, header):
+    """Rack numbers and the printed total weight, in the list's own units."""
+    weight = _WEIGHT.search(line)
+    if weight and header.get('weight') is None:
+        header['weight'] = float(weight.group(1).replace(',', ''))
+        header['weight_unit'] = _weight_unit(weight.group(2) or 'LBS')
+    rack_value = _RACK_VALUE.match(line.strip())
+    if not rack_value:
+        return
+    number = rack_value.group(1)
+    racks = header.setdefault('racks', [])
+    if number not in racks:
+        racks.append(number)
+    if not header.get('rack'):
+        header['rack'] = number
+        parts = line.strip().split(None, 1)
+        header['rack_name'] = parts[1].strip() if len(parts) > 1 else ''
+
+
 def _fraction_inches(text):
     match = _FRACTION.fullmatch(str(text or '').strip())
     if not match:
@@ -113,9 +149,11 @@ def _parse_id_qty_lines(cleaned):
     """
     header = {
         'number': '', 'date': '', 'job': '', 'customer': '', 'project': '', 'po': '',
-        'rack': '', 'rack_name': '', 'total_pcs': None, 'total_sqft': None,
+        'rack': '', 'rack_name': '', 'racks': [], 'weight': None, 'weight_unit': '',
+        'total_pcs': None, 'total_sqft': None,
     }
     for line in cleaned:
+        _note_list_header(line, header)
         delivery = _DELIVERY.search(line)
         if delivery and not header['number']:
             month, day, year = int(delivery.group(2)), int(delivery.group(3)), int(delivery.group(4))
@@ -139,11 +177,6 @@ def _parse_id_qty_lines(cleaned):
         sqft = _SQFT.search(line)
         if sqft:
             header['total_sqft'] = float(sqft.group(1))
-        rack_value = _RACK_VALUE.match(line)
-        if rack_value and not header['rack']:
-            header['rack'] = rack_value.group(1)
-            parts = line.split(None, 1)
-            header['rack_name'] = parts[1].strip() if len(parts) > 1 else ''
     anchors = [(index, int(match.group(1)), int(match.group(2)))
                for index, line in enumerate(cleaned)
                for match in [_ID_QTY.match(line)] if match]
@@ -199,6 +232,9 @@ def _parse_id_qty_lines(cleaned):
         'po': header['po'],
         'rack': header['rack'],
         'rack_name': header.get('rack_name') or '',
+        'racks': list(header.get('racks') or []),
+        'weight': header.get('weight'),
+        'weight_unit': header.get('weight_unit') or '',
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,
@@ -222,6 +258,9 @@ def parse_packing_lines(lines):
         'po': '',
         'rack': '',
         'rack_name': '',
+        'racks': [],
+        'weight': None,
+        'weight_unit': '',
         'total_pcs': None,
         'total_sqft': None,
     }
@@ -275,6 +314,11 @@ def parse_packing_lines(lines):
         sqft = _SQFT.search(line)
         if sqft:
             header['total_sqft'] = float(sqft.group(1))
+            index += 1
+            continue
+        before = (header.get('rack'), header.get('weight'), list(header.get('racks') or []))
+        _note_list_header(line, header)
+        if (header.get('rack'), header.get('weight'), list(header.get('racks') or [])) != before:
             index += 1
             continue
         if 'rackcode' in line.casefold():
@@ -352,6 +396,9 @@ def parse_packing_lines(lines):
         'po': header['po'],
         'rack': header['rack'],
         'rack_name': header.get('rack_name') or '',
+        'racks': list(header.get('racks') or []),
+        'weight': header.get('weight'),
+        'weight_unit': header.get('weight_unit') or '',
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,
@@ -961,6 +1008,150 @@ def parse_packing_table(filename, payload):
         document['parsed_pcs'] = sum(row['qty'] for row in document['rows'])
         documents.append(document)
     return documents or [empty]
+
+
+def intercompany_customs():
+    """HTS code and country of origin printed on every intercompany invoice."""
+    return {'hts': INTERCOMPANY_HTS, 'origin': INTERCOMPANY_ORIGIN}
+
+
+def racks_on_list(entry):
+    """Rack numbers printed on one packing list."""
+    found = []
+    for number in (entry or {}).get('racks') or []:
+        text = str(number or '').strip()
+        if text and text not in found:
+            found.append(text)
+    single = str((entry or {}).get('rack') or '').strip()
+    if single and single not in found:
+        found.insert(0, single)
+    for line in (entry or {}).get('lines') or []:
+        if not isinstance(line, dict):
+            continue
+        text = str(line.get('rack') or '').strip()
+        if text and text not in found:
+            found.append(text)
+    return found
+
+
+def format_weight(amount, unit=''):
+    try:
+        number = float(amount)
+    except (TypeError, ValueError):
+        return ''
+    if abs(number - round(number)) < 0.005:
+        shown = str(int(round(number)))
+    else:
+        shown = f'{number:.2f}'.rstrip('0').rstrip('.')
+    label = str(unit or '').strip()
+    return f'{shown} {label}'.strip()
+
+
+def _serial_qty(rows):
+    totals = {}
+    for line in rows or []:
+        if not isinstance(line, dict) or line.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
+            continue
+        try:
+            serial = int(line.get('serial'))
+        except (TypeError, ValueError):
+            continue
+        raw = line.get('qty')
+        if raw in (None, ''):
+            raw = line.get('pcs')
+        try:
+            qty = int(raw or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty > 0:
+            totals[serial] = totals.get(serial, 0) + qty
+    return totals
+
+
+def summarize_packing(entries):
+    """Rack count, racks on each list, and weight summed in each list's units."""
+    racks = []
+    lists = []
+    totals = {}
+    for entry in entries or []:
+        numbers = racks_on_list(entry)
+        for number in numbers:
+            if number not in racks:
+                racks.append(number)
+        unit = str(entry.get('weight_unit') or '').strip()
+        amount = None
+        if entry.get('weight') not in (None, ''):
+            try:
+                amount = float(entry.get('weight'))
+            except (TypeError, ValueError):
+                amount = None
+        if amount is not None:
+            key = unit or 'LBS'
+            totals[key] = round(totals.get(key, 0.0) + amount, 2)
+        shown_weight = None
+        if amount is not None:
+            shown_weight = int(round(amount)) if abs(amount - round(amount)) < 0.005 else round(amount, 2)
+        lists.append({
+            'id': entry.get('id'),
+            'number': entry.get('number') or '',
+            'racks': numbers,
+            'weight': shown_weight,
+            'weight_unit': unit,
+        })
+    return {
+        'rack_count': len(racks),
+        'racks': racks,
+        'lists': lists,
+        'weight_label': ' + '.join(
+            text for text in (format_weight(amount, unit) for unit, amount in totals.items()) if text
+        ),
+    }
+
+
+def packing_for_intercompany(order, invoice, invoices):
+    """Packing lists whose pieces this intercompany invoice billed.
+
+    Earlier intercompany invoices on the order take their pieces first, so a
+    later invoice does not repeat those lists.
+    """
+    pool = []
+    for entry in (order or {}).get('packing_lists') or []:
+        if entry.get('current') is False:
+            continue
+        pool.append({'entry': entry, 'left': _serial_qty(entry.get('lines'))})
+    ordered = [
+        row for row in (invoices or [])
+        if row.get('order_id') == (order or {}).get('id')
+        and row.get('kind') == 'intercompany'
+        and not row.get('voided')
+    ]
+    ordered.sort(key=lambda row: (str(row.get('invoice_date') or ''), row.get('id') or 0))
+    if invoice and all(row.get('id') != invoice.get('id') for row in ordered):
+        ordered.append(invoice)
+    chosen = []
+    target = (invoice or {}).get('id')
+    for document in ordered:
+        need = _serial_qty(document.get('items'))
+        if not need:
+            used = [slot['entry'] for slot in pool] if document.get('id') == target else []
+        else:
+            used = []
+            for slot in pool:
+                took = False
+                for serial, left in list(slot['left'].items()):
+                    want = need.get(serial, 0)
+                    if want <= 0 or left <= 0:
+                        continue
+                    take = min(want, left)
+                    slot['left'][serial] = left - take
+                    need[serial] = want - take
+                    took = True
+                if took:
+                    used.append(slot['entry'])
+        if document.get('id') == target:
+            chosen = used
+            break
+    return summarize_packing(chosen)
 
 
 def parse_packing_upload(filename, payload):

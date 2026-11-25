@@ -13,6 +13,7 @@ import os
 logger = logging.getLogger('ora_glass.currency')
 
 DEFAULT_RATE = 1.4
+SEED_EFFECTIVE = '2000-01-01'
 COUNTRIES = ('Canada', 'United States')
 
 
@@ -25,7 +26,7 @@ def _blank():
         'countries': {'Canada': 'cad', 'United States': 'usd'},
         'history': [{
             'rate': DEFAULT_RATE,
-            'effective': '2000-01-01',
+            'effective': SEED_EFFECTIVE,
             'at': '2000-01-01T00:00:00+00:00',
             'user': 'system',
         }],

@@ -769,6 +769,15 @@ def _erp_fx(day):
     return currency_rules.rate_on(day)
 
 
+def _shown_fx_date(invoice):
+    """The seed rate has no real effective day, so the invoice date is the date to show."""
+    import currency_rules
+    stored = str((invoice or {}).get('fx_date') or '')[:10]
+    if stored and stored != currency_rules.SEED_EFFECTIVE:
+        return stored
+    return str((invoice or {}).get('invoice_date') or '')[:10] or stored
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -7046,7 +7055,7 @@ def order_for_viewer(order, user, with_coverage=False):
         }
         if staff_view:
             document['fx_rate'] = row.get('fx_rate')
-            document['fx_date'] = row.get('fx_date') or ''
+            document['fx_date'] = _shown_fx_date(row)
             document['fx_source'] = row.get('fx_source') or ''
         documents.append(document)
     base['documents'] = documents
@@ -8821,6 +8830,12 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         'number': parsed.get('number') or '',
         'rack': parsed.get('rack') or '',
         'rack_name': parsed.get('rack_name') or '',
+        'racks': [
+            str(number).strip() for number in (parsed.get('racks') or [])
+            if str(number or '').strip()
+        ] or ([str(parsed.get('rack')).strip()] if str(parsed.get('rack') or '').strip() else []),
+        'weight': parsed.get('weight'),
+        'weight_unit': parsed.get('weight_unit') or '',
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -9919,6 +9934,7 @@ def _canada_books_customer():
 
 def _issue_delivery_invoices(order, user):
     import quickbooks
+    import tax_numbers
     customer = load_customers().get(order.get('customer_id') or '') or {}
     base = _invoice_from_order(order, user)
     if not quickbooks.is_canadian(customer):
@@ -9975,6 +9991,7 @@ def _issue_delivery_invoices(order, user):
         'cad_total': money(base.get('total')) if currency == 'cad' else None,
         'pst_number': order.get('pst_number') or '',
         'qst_number': order.get('qst_number') or '',
+        'seller_gst_number': tax_numbers.displayed_gst_number(),
     })
     fresh_intercompany = _finish_invoice(append_invoice(intercompany), user)
     order['invoice_id'] = fresh_customer['id']
@@ -10097,6 +10114,130 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
     return document
 
 
+def _items_repeat_invoice_total(items, total):
+    """True when every row was stored as the whole invoice total."""
+    rows = [row for row in items or [] if isinstance(row, dict)]
+    if len(rows) < 2:
+        return False
+    target = money(total)
+    if target <= 0:
+        return False
+    return all(abs(money(row.get('total')) - target) < 0.009 for row in rows)
+
+
+def _usd_intercompany_items(items, rate):
+    """Convert each CAD line, including a prorated surcharge, at this invoice rate."""
+    import quickbooks
+    usd_total = quickbooks.cad_to_usd(round(sum(money(row.get('total')) for row in items), 2), rate)
+    remaining = usd_total
+    built = []
+    for index, item in enumerate(items):
+        addon = item.get('kind') in _CHARGE_KINDS
+        try:
+            pcs = int(item.get('pcs') or 0)
+        except (TypeError, ValueError):
+            pcs = 0
+        if index == len(items) - 1:
+            share = remaining
+        else:
+            share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
+        remaining = round(remaining - share, 2)
+        if addon:
+            built.append({
+                'kind': item.get('kind'),
+                'name': item.get('name') or 'Charge',
+                'description': item.get('description') or item.get('name') or 'Charge',
+                'serial': item.get('serial') or '',
+                'pcs': '',
+                'qty': '',
+                'sqf': 0,
+                'unit_price': share,
+                'price_pc': share,
+                'total': share,
+            })
+            continue
+        each = round(share / pcs, 2) if pcs else share
+        built.append({
+            'name': item.get('name') or 'Glass',
+            'description': item.get('description') or item.get('name') or 'Glass',
+            'serial': item.get('serial'),
+            'spec': item.get('spec'),
+            'pcs': pcs,
+            'qty': pcs,
+            'sqf': item.get('sqf') or 0,
+            'unit_price': each,
+            'price_pc': each,
+            'total': share,
+        })
+    return built, usd_total
+
+
+def _invoice_quantities(order, invoice):
+    import shipments
+    by_serial = {row['serial']: row['index'] for row in shipments.glass_rows(order)}
+    quantities = {}
+    for item in (invoice or {}).get('items') or []:
+        if not isinstance(item, dict) or item.get('kind') in _CHARGE_KINDS:
+            continue
+        try:
+            serial = int(item.get('serial'))
+            pcs = int(item.get('pcs') or item.get('qty') or 0)
+        except (TypeError, ValueError):
+            continue
+        index = by_serial.get(serial)
+        if index is None or pcs <= 0:
+            continue
+        quantities[index] = quantities.get(index, 0) + pcs
+    return quantities
+
+
+def _shown_intercompany_items(invoice):
+    """Replace rows that were all saved as the invoice total with each line's own amount."""
+    items = invoice.get('items') or []
+    if not _items_repeat_invoice_total(items, invoice.get('total')):
+        return items
+    order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
+    rate = invoice.get('fx_rate')
+    if not order or not rate:
+        return items
+    quantities = _invoice_quantities(order, invoice)
+    if not quantities:
+        return items
+    import shipments
+    built, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+    if not built:
+        return items
+    converted, _total = _usd_intercompany_items(built, rate)
+    return converted or items
+
+
+def _scale_invoice_lines(items, new_total):
+    """Keep each line's share when the invoice total changes."""
+    rows = [dict(row) if isinstance(row, dict) else row for row in items or []]
+    amounts = [money(row.get('total')) if isinstance(row, dict) else 0 for row in rows]
+    base = round(sum(amounts), 2)
+    if base <= 0:
+        return rows
+    remaining = money(new_total)
+    last = max((index for index, row in enumerate(rows) if isinstance(row, dict)), default=None)
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        if index == last:
+            share = remaining
+        else:
+            share = min(round(amounts[index] * money(new_total) / base, 2), remaining)
+        remaining = round(remaining - share, 2)
+        try:
+            pcs = int(row.get('pcs') or 0)
+        except (TypeError, ValueError):
+            pcs = 0
+        row['total'] = share
+        row['unit_price'] = round(share / pcs, 2) if pcs else share
+        row['price_pc'] = row['unit_price']
+    return rows
+
+
 def _issue_shipment_invoice(order, shipment, user, include_extras):
     """Invoice this shipment once. Returns the invoice number."""
     import quickbooks
@@ -10138,54 +10279,17 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
             usd_total = money(summary.get('total'))
         books = load_customers().get(_canada_books_customer()) or {}
         books['id'] = _canada_books_customer()
-        intercompany_items = []
-        remaining = usd_total
-        for index, item in enumerate(items):
-            addon = item.get('kind') in _CHARGE_KINDS
-            try:
-                pcs = int(item.get('pcs') or 0)
-            except (TypeError, ValueError):
-                pcs = 0
-            if index == len(items) - 1:
-                share = remaining
-            elif currency == 'cad':
-                share = min(quickbooks.cad_to_usd(item.get('total'), rate), remaining)
-            else:
-                share = min(money(item.get('total')), remaining)
-            remaining = round(remaining - share, 2)
-            if addon:
-                intercompany_items.append({
-                    'kind': item.get('kind'),
-                    'name': item.get('name') or 'Charge',
-                    'description': item.get('description') or item.get('name') or 'Charge',
-                    'serial': item.get('serial') or '',
-                    'pcs': '',
-                    'qty': '',
-                    'sqf': 0,
-                    'unit_price': share,
-                    'price_pc': share,
-                    'total': share,
-                })
-                continue
-            each = round(share / pcs, 2) if pcs else share
-            intercompany_items.append({
-                'name': item.get('name') or 'Glass',
-                'description': item.get('description') or item.get('name') or 'Glass',
-                'serial': item.get('serial'),
-                'spec': item.get('spec'),
-                'pcs': pcs,
-                'qty': pcs,
-                'sqf': item.get('sqf') or 0,
-                'unit_price': each,
-                'price_pc': each,
-                'total': share,
-            })
+        if currency == 'cad':
+            intercompany_items, usd_total = _usd_intercompany_items(items, rate)
+        else:
+            intercompany_items, usd_total = _usd_intercompany_items(items, 1)
         document = _invoice_for_items(
             order, user, books, intercompany_items,
             {'discount': {'type': 'percent', 'value': 0}, 'discount_amount': 0, 'extra_charges': [],
              'igu_subtotal': usd_total, 'igu_total': usd_total, 'extras_total': 0, 'total': usd_total},
             'us', 'intercompany', shipment,
         )
+        import tax_numbers
         document.update({
             'currency': 'usd',
             'fx_rate': rate,
@@ -10195,6 +10299,7 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
             'cad_total': money(summary.get('total')) if currency == 'cad' else None,
             'company': 'Ora Glass (Canada) Inc',
             'customer_id': books.get('id'),
+            'seller_gst_number': tax_numbers.displayed_gst_number(),
         })
         stored = _finish_invoice(append_invoice(document), user)
         shipment['invoice_id'] = stored['id']
@@ -10305,6 +10410,8 @@ def _present_invoice(invoice, payments):
         else:
             view['status'] = 'open'
         view['status_label'] = invoice_status_label(view['status'])
+        _attach_invoice_gst(view, invoice)
+        _attach_invoice_customs(view)
         return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
@@ -10314,7 +10421,87 @@ def _present_invoice(invoice, payments):
     if not doc_number and invoice.get('source') == 'quickbooks':
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number
+    if view.get('fx_rate') not in (None, ''):
+        view['fx_date'] = _shown_fx_date(invoice)
+    if view['kind'] == 'intercompany':
+        view['items'] = _shown_intercompany_items(invoice)
+    _attach_invoice_gst(view, invoice)
+    _attach_invoice_customs(view)
+    if view['kind'] == 'intercompany' and invoice.get('order_id'):
+        order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
+        if order:
+            import packing
+            summary = packing.packing_for_intercompany(
+                _with_packing_measures(order), invoice, load_invoices(),
+            )
+            view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _attach_invoice_customs(view):
+    if (view or {}).get('kind') != 'intercompany':
+        view['customs'] = None
+        return
+    import packing
+    view['customs'] = packing.intercompany_customs()
+
+
+def _attach_invoice_gst(view, invoice):
+    place = _invoice_gst_place(view)
+    view['gst_place'] = place
+    if not place:
+        return
+    import tax_numbers
+    view['seller_gst_number'] = tax_numbers.displayed_gst_number(invoice.get('seller_gst_number'))
+
+
+def _invoice_gst_place(invoice):
+    """Where Ora Glass (Canada) Inc's GST number belongs on this invoice."""
+    kind = (invoice or {}).get('kind') or 'customer'
+    if kind == 'intercompany':
+        return 'customer'
+    issuer = (invoice or {}).get('issuer') or 'us'
+    currency = str((invoice or {}).get('currency') or 'usd').lower()
+    if issuer == 'ca' and currency == 'cad':
+        return 'header'
+    return ''
+
+
+def _with_packing_measures(order):
+    """Fill rack numbers and weight from the saved packing-list file when the order does not store them."""
+    copied = dict(order or {})
+    copied['packing_lists'] = [
+        _measured_packing_list(entry, (order or {}).get('id'))
+        for entry in (order or {}).get('packing_lists') or []
+    ]
+    return copied
+
+
+def _measured_packing_list(entry, order_id):
+    row = dict(entry or {})
+    has_weight = row.get('weight') not in (None, '')
+    has_racks = bool(row.get('racks') or row.get('rack'))
+    if has_weight and has_racks:
+        return row
+    payload = _read_packing_file(order_id, row.get('stored'))
+    if not payload:
+        return row
+    import packing
+    try:
+        if payload.startswith(b'%PDF'):
+            parsed = packing.parse_packing_pdf(payload)
+        else:
+            parsed = packing.parse_packing_lines(payload.decode('utf-8', errors='replace').splitlines())
+    except Exception:
+        return row
+    if not has_weight and parsed.get('weight') is not None:
+        row['weight'] = parsed.get('weight')
+        row['weight_unit'] = parsed.get('weight_unit') or ''
+    if not row.get('racks') and parsed.get('racks'):
+        row['racks'] = list(parsed.get('racks') or [])
+    if not row.get('rack') and parsed.get('rack'):
+        row['rack'] = parsed.get('rack')
+    return row
 
 
 def _can_view_books(user):
@@ -10563,16 +10750,22 @@ def override_exchange_rate(invoice_id):
     if invoice.get('cad_total') in (None, ''):
         return json_error('This invoice has no CAD amount to convert.', 400)
     usd_total = quickbooks.cad_to_usd(invoice.get('cad_total'), rate)
+    old_total = money(invoice.get('total'))
     invoice['fx_rate'] = rate
     invoice['fx_override'] = True
+    if _items_repeat_invoice_total(invoice.get('items'), old_total):
+        repaired = _shown_intercompany_items(invoice)
+        if not _items_repeat_invoice_total(repaired, old_total):
+            invoice['items'] = repaired
+            usd_total = round(sum(money(row.get('total')) for row in repaired if isinstance(row, dict)), 2)
+        else:
+            invoice['items'] = _scale_invoice_lines(invoice.get('items') or [], usd_total)
+    else:
+        invoice['items'] = _scale_invoice_lines(invoice.get('items') or [], usd_total)
     invoice['total'] = usd_total
     invoice['balance'] = usd_total
     invoice['igu_subtotal'] = usd_total
     invoice['igu_total'] = usd_total
-    for line in invoice.get('items') or []:
-        line['unit_price'] = usd_total
-        line['price_pc'] = usd_total
-        line['total'] = usd_total
     invoice.setdefault('audit', []).append(_audit(user, 'exchange-rate', f'FXUSDCAD {rate}'))
     save_invoices(invoices)
     return jsonify(_present_invoice(invoice, load_payments()))
@@ -10876,8 +11069,11 @@ def _render_invoice_pdf(invoice):
     elements.append(Spacer(1, 8))
     elements.append(HRFlowable(width='100%', thickness=1, color=colors.black))
     elements.append(Spacer(1, 8))
+    customer_line = f"<b>Customer:</b> {escape(invoice.get('company') or '')}"
+    if invoice.get('gst_place') == 'customer' and invoice.get('seller_gst_number'):
+        customer_line += f"<br/>GST# {escape(invoice.get('seller_gst_number'))}"
     elements.append(Paragraph(
-        f"<b>Customer:</b> {escape(invoice.get('company') or '')}<br/>"
+        customer_line + "<br/>"
         f"<b>Project:</b> {escape(invoice.get('project') or '-')}<br/>"
         f"<b>Order:</b> {escape(str(invoice.get('order_id') or ''))}"
         f" &nbsp; <b>Quote:</b> {escape(str(invoice.get('quote_id') or ''))}",
@@ -10908,6 +11104,28 @@ def _render_invoice_pdf(invoice):
         ))
     if invoice.get('tax_label') and not invoice.get('tax_lines'):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
+    packing = invoice.get('packing') or {}
+    customs = invoice.get('customs') or {}
+    if invoice.get('kind') == 'intercompany':
+        lines = []
+        if packing.get('lists'):
+            lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
+            for listed in packing.get('lists') or []:
+                numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
+                weight = ''
+                if listed.get('weight') not in (None, ''):
+                    weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
+                lines.append(
+                    f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
+                )
+            if packing.get('weight_label'):
+                lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
+        if customs.get('hts'):
+            lines.append(f"HTS {escape(customs.get('hts'))}")
+        if customs.get('origin'):
+            lines.append(f"Origin: {escape(customs.get('origin'))}")
+        if lines:
+            elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):

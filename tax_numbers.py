@@ -192,6 +192,14 @@ def seller_gst_number():
     return saved_number(settings.get('gst_number'))
 
 
+def displayed_gst_number(stored=''):
+    """GST number to print. A number saved on the document wins, then the Canada setting, then the initial registration."""
+    saved = saved_number(stored)
+    if saved:
+        return saved
+    return seller_gst_number() or SELLER_GST_INITIAL
+
+
 def seed_seller_gst():
     """Store Adrian's public GST number once, only while the Canada setting is empty."""
     import quickbooks
