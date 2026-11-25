@@ -759,9 +759,15 @@ def canada_bill(document):
 
 
 def header_address_block(document):
-    """Company name above the Lynden address. The GST number sits under the address on Canada bills only."""
+    """Company name, then the Lynden address, then the GST number on Canada bills.
+
+    Canada invoices set omit_issuer_address so the header is only the company name and GST number.
+    US invoices, quotes, and order confirmations keep the Lynden address.
+    """
     name = 'Ora Glass (Canada) Inc.' if canada_bill(document) else 'Ora Glass Inc.'
-    block = escape(name) + '<br/>' + COMPANY_ADDRESS
+    block = escape(name)
+    if not (canada_bill(document) and (document or {}).get('omit_issuer_address')):
+        block += '<br/>' + COMPANY_ADDRESS
     if canada_bill(document):
         gst = str((document or {}).get('seller_gst_number') or '').strip()
         if gst:

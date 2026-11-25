@@ -11207,6 +11207,7 @@ def _render_invoice_pdf(invoice):
                 'kind': invoice.get('kind'),
                 'currency': invoice.get('currency'),
                 'seller_gst_number': invoice.get('seller_gst_number') or '',
+                'omit_issuer_address': True,
             }) + '</font>',
             title_style,
         ),

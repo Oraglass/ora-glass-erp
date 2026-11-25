@@ -84,8 +84,15 @@ def test_customer_block_order_is_shared_by_every_invoice_type(client):
     igu = text.find(b'IGU total')
     assert -1 not in (customer, street, gst, pst, project, order, igu)
     assert customer < street < gst < pst < project < order < igu
+    canada_pdf = pdf_text(client.get('/api/invoices/1/pdf').data)
+    assert b'Ora Glass \\(Canada\\) Inc.' in canada_pdf
+    assert b'GST# 729631119 RT0001' in canada_pdf
+    assert b'Leatherwood' not in canada_pdf
+    assert b'Lynden' not in canada_pdf
+    assert b'100 Main St' in canada_pdf
     us_text = pdf_text(client.get('/api/invoices/3/pdf').data)
     assert b'9 Dock St' in us_text
+    assert b'Leatherwood' in us_text
     assert b'GST#' not in us_text
     assert b'PST:' not in us_text
 
