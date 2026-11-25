@@ -10450,7 +10450,7 @@ def _present_invoice(invoice, payments):
         view['items'] = _shown_intercompany_items(invoice)
     _attach_invoice_gst(view, invoice)
     _attach_invoice_customs(view)
-    if view['kind'] == 'intercompany' and invoice.get('order_id'):
+    if _invoice_shows_shipment(view) and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
             import packing
@@ -10459,6 +10459,15 @@ def _present_invoice(invoice, payments):
             )
             view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _invoice_shows_shipment(invoice):
+    """Intercompany invoices and Canada CAD customer invoices list the same racks and weight."""
+    if (invoice or {}).get('doc_type') == 'credit_note':
+        return False
+    if (invoice or {}).get('kind') == 'intercompany':
+        return True
+    return (invoice or {}).get('issuer') == 'ca' and str((invoice or {}).get('currency') or '').lower() == 'cad'
 
 
 def _attach_invoice_customs(view):
@@ -11125,7 +11134,6 @@ def _render_invoice_pdf(invoice):
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     import documents
-    import packing
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
@@ -11204,23 +11212,20 @@ def _render_invoice_pdf(invoice):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}
-    if invoice.get('kind') == 'intercompany':
-        lines = []
-        if packing.get('lists'):
-            lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
-            for listed in packing.get('lists') or []:
-                numbers = listed.get('racks_label') or packing.format_rack_numbers(listed.get('racks'))
-                weight = f" · {listed.get('weight_text')}" if listed.get('weight_text') else ''
-                text = listed.get('line') or f"{listed.get('number') or 'Packing list'}: {numbers}{weight}"
-                lines.append(escape(text))
-            if packing.get('weight_label'):
-                lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
-        if customs.get('hts'):
-            lines.append(f"HTS {escape(customs.get('hts'))}")
-        if customs.get('origin'):
-            lines.append(f"Origin: {escape(customs.get('origin'))}")
-        if lines:
-            elements.append(Paragraph('<br/>'.join(lines), label_style))
+    shipment = packing.get('shipment') or {}
+    lines = []
+    if shipment.get('rack_line'):
+        lines.append(escape(shipment['rack_line']))
+    for text in shipment.get('list_lines') or []:
+        lines.append(escape(text))
+    if shipment.get('weight_line'):
+        lines.append(escape(shipment['weight_line']))
+    if customs.get('hts'):
+        lines.append(f"HTS {escape(customs.get('hts'))}")
+    if customs.get('origin'):
+        lines.append(f"Origin: {escape(customs.get('origin'))}")
+    if lines:
+        elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):

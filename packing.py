@@ -1202,7 +1202,7 @@ def summarize_packing(entries):
             'weight_text': weight_text,
             'line': line,
         })
-    return {
+    summary = {
         'rack_count': len(racks),
         'racks': racks,
         'lists': lists,
@@ -1210,23 +1210,39 @@ def summarize_packing(entries):
             text for text in (format_weight(amount, unit) for unit, amount in totals.items()) if text
         ),
     }
+    summary['shipment'] = shipment_lines(summary)
+    return summary
+
+
+def shipment_lines(summary):
+    """The rack and weight lines printed on an invoice. Page and PDF both use this."""
+    if not summary or not summary.get('lists'):
+        return {'rack_line': '', 'list_lines': [], 'weight_line': ''}
+    return {
+        'rack_line': f"Racks: {int(summary.get('rack_count') or 0)}",
+        'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
+        'weight_line': f"Total weight: {summary['weight_label']}" if summary.get('weight_label') else '',
+    }
 
 
 def packing_for_intercompany(order, invoice, invoices):
-    """Packing lists whose pieces this intercompany invoice billed.
+    """Packing lists whose pieces this invoice billed.
 
-    Earlier intercompany invoices on the order take their pieces first, so a
-    later invoice does not repeat those lists.
+    Earlier invoices of the same kind on the order take their pieces first, so
+    a later invoice does not repeat those lists. A Canada customer invoice and
+    the intercompany invoice are allocated separately, so the same pieces show
+    the same lists on both.
     """
     pool = []
     for entry in (order or {}).get('packing_lists') or []:
         if entry.get('current') is False:
             continue
         pool.append({'entry': entry, 'left': _serial_qty(entry.get('lines'))})
+    kind = (invoice or {}).get('kind') or 'intercompany'
     ordered = [
         row for row in (invoices or [])
         if row.get('order_id') == (order or {}).get('id')
-        and row.get('kind') == 'intercompany'
+        and (row.get('kind') or 'customer') == kind
         and not row.get('voided')
     ]
     ordered.sort(key=lambda row: (str(row.get('invoice_date') or ''), row.get('id') or 0))
