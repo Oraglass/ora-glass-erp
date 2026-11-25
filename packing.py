@@ -11,6 +11,10 @@ from datetime import date
 
 import production
 
+# Customs description for glass Ora Glass Inc bills to Ora Glass (Canada) Inc.
+INTERCOMPANY_HTS = '7008.00.00.00'
+INTERCOMPANY_ORIGIN = 'USA'
+
 _HEADER = re.compile(r'QTY\s+WIDTH\s+HEIGHT\s+FLOOR', re.I)
 _DELIVERY = re.compile(
     r'Sales Delivery:\s*(\S+)\s+Date:\s*(\d{1,2})/(\d{1,2})/(\d{4})',
@@ -1004,6 +1008,11 @@ def parse_packing_table(filename, payload):
         document['parsed_pcs'] = sum(row['qty'] for row in document['rows'])
         documents.append(document)
     return documents or [empty]
+
+
+def intercompany_customs():
+    """HTS code and country of origin printed on every intercompany invoice."""
+    return {'hts': INTERCOMPANY_HTS, 'origin': INTERCOMPANY_ORIGIN}
 
 
 def racks_on_list(entry):

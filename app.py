@@ -10316,6 +10316,7 @@ def _present_invoice(invoice, payments):
             view['status'] = 'open'
         view['status_label'] = invoice_status_label(view['status'])
         _attach_invoice_gst(view, invoice)
+        _attach_invoice_customs(view)
         return view
     view['applied'] = round(money(invoice.get('total')) - invoice_balance(invoice, payments), 2)
     view['balance'] = invoice_balance(invoice, payments)
@@ -10326,6 +10327,7 @@ def _present_invoice(invoice, payments):
         doc_number = str(invoice.get('project') or '')
     view['qbo_doc_number'] = doc_number
     _attach_invoice_gst(view, invoice)
+    _attach_invoice_customs(view)
     if view['kind'] == 'intercompany' and invoice.get('order_id'):
         order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
         if order:
@@ -10335,6 +10337,14 @@ def _present_invoice(invoice, payments):
             )
             view['packing'] = summary if summary.get('lists') else None
     return view
+
+
+def _attach_invoice_customs(view):
+    if (view or {}).get('kind') != 'intercompany':
+        view['customs'] = None
+        return
+    import packing
+    view['customs'] = packing.intercompany_customs()
 
 
 def _attach_invoice_gst(view, invoice):
@@ -10990,19 +11000,27 @@ def _render_invoice_pdf(invoice):
     if invoice.get('tax_label') and not invoice.get('tax_lines'):
         elements.append(Paragraph(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}", label_style))
     packing = invoice.get('packing') or {}
-    if invoice.get('kind') == 'intercompany' and packing.get('lists'):
-        lines = [f"Racks: {int(packing.get('rack_count') or 0)}"]
-        for listed in packing.get('lists') or []:
-            numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
-            weight = ''
-            if listed.get('weight') not in (None, ''):
-                weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
-            lines.append(
-                f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
-            )
-        if packing.get('weight_label'):
-            lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
-        elements.append(Paragraph('<br/>'.join(lines), label_style))
+    customs = invoice.get('customs') or {}
+    if invoice.get('kind') == 'intercompany':
+        lines = []
+        if packing.get('lists'):
+            lines.append(f"Racks: {int(packing.get('rack_count') or 0)}")
+            for listed in packing.get('lists') or []:
+                numbers = ', '.join(str(number) for number in (listed.get('racks') or [])) or '-'
+                weight = ''
+                if listed.get('weight') not in (None, ''):
+                    weight = f" · {listed.get('weight')} {listed.get('weight_unit') or ''}".rstrip()
+                lines.append(
+                    f"{escape(listed.get('number') or 'Packing list')}: {escape(numbers)}{escape(weight)}"
+                )
+            if packing.get('weight_label'):
+                lines.append(f"Total weight: {escape(packing.get('weight_label'))}")
+        if customs.get('hts'):
+            lines.append(f"HTS {escape(customs.get('hts'))}")
+        if customs.get('origin'):
+            lines.append(f"Origin: {escape(customs.get('origin'))}")
+        if lines:
+            elements.append(Paragraph('<br/>'.join(lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):
