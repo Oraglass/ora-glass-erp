@@ -11706,9 +11706,32 @@ def get_credit():
     requested_currency = clean_text(request.args.get('currency'), 8).lower()
     if requested_currency and requested_currency not in CURRENCIES:
         return json_error('Currency must be USD or CAD.', 400)
-    orders = load_orders()
-    invoices = load_invoices()
-    payments = load_payments()
+    return jsonify(_credit_body(
+        customer, load_orders(), load_invoices(), load_payments(), requested_currency, user,
+    ))
+
+
+def _credit_books(customer, orders, invoices, payments):
+    """Open balances in each currency. Issuing company does not matter."""
+    books = []
+    for code in ('usd', 'cad'):
+        available, limit, receivables = available_credit(customer, code, orders, invoices, payments)
+        unallocated = unallocated_credit(payments, customer.get('id'), code)
+        credits = unapplied_credits(invoices, customer.get('id'), code)
+        books.append({
+            'currency': code,
+            'credit_limit': limit,
+            'open_receivables': receivables,
+            'available_credit': available,
+            'unallocated_payments': unallocated,
+            'unapplied_credits': credits,
+            'balance': round(receivables - credits, 2),
+        })
+    return books
+
+
+def _credit_body(customer, orders, invoices, payments, requested_currency='', user=None):
+    customer_id = customer.get('id')
     preferred = str(customer.get('credit_currency') or 'usd').lower()
     if preferred not in CURRENCIES:
         preferred = 'usd'
@@ -11724,18 +11747,136 @@ def get_credit():
 
         currency = other if not _books_active(preferred) and _books_active(other) else preferred
     available, limit, receivables = available_credit(customer, currency, orders, invoices, payments)
-    return jsonify({
+    credit_currency = str(customer.get('credit_currency') or 'usd').lower()
+    return {
         'customer_id': customer_id,
         'company': customer.get('name') or '',
-        'credit_limit': limit if str(customer.get('credit_currency') or 'usd').lower() == currency else money(customer.get('credit_limit') or 0),
-        'credit_currency': str(customer.get('credit_currency') or 'usd').lower(),
+        'credit_limit': limit if credit_currency == currency else money(customer.get('credit_limit') or 0),
+        'credit_currency': credit_currency,
         'currency': currency,
         'open_receivables': receivables,
         'available_credit': available,
         'unallocated_payments': unallocated_credit(payments, customer_id, currency),
         'unapplied_credits': unapplied_credits(invoices, customer_id, currency),
         'balance': round(receivables - unapplied_credits(invoices, customer_id, currency), 2),
-        'read_only': user.get('role') == 'customer' or not can_record_payments(user),
+        'by_currency': _credit_books(customer, orders, invoices, payments),
+        'cards_all_time': True,
+        'read_only': (user or {}).get('role') == 'customer' or not can_record_payments(user or {}),
+    }
+
+
+def _in_date_range(day, date_from, date_to):
+    day = str(day or '')[:10]
+    if not date_from and not date_to:
+        return True
+    if not day:
+        return False
+    if date_from and day < date_from:
+        return False
+    if date_to and day > date_to:
+        return False
+    return True
+
+
+def _order_invoice_split(order, invoices):
+    """Customer invoices in the order's currency. Intercompany bills are a different company."""
+    currency = str(order.get('currency') or 'usd').lower()
+    total = money(order.get('total'))
+    invoiced = 0.0
+    for invoice in invoices or []:
+        if invoice.get('voided') or document_type(invoice) != 'invoice':
+            continue
+        if invoice.get('order_id') != order.get('id'):
+            continue
+        if (invoice.get('kind') or 'customer') == 'intercompany':
+            continue
+        if str(invoice.get('currency') or 'usd').lower() != currency:
+            continue
+        invoiced += money(invoice.get('total'))
+    invoiced = round(invoiced, 2)
+    return invoiced, round(max(0.0, total - invoiced), 2)
+
+
+@app.route('/api/financial', methods=['GET'])
+@module_required('financial')
+def financial_overview():
+    """All-time credit cards, plus payments, invoices, and orders in the requested dates."""
+    user = current_user()
+    if user.get('role') == 'customer':
+        customer_id = user.get('customer_id')
+    else:
+        customer_id = clean_text(request.args.get('customer_id'), 80)
+        if not customer_id:
+            return json_error('Choose a customer.', 400)
+    customer = load_customers().get(customer_id or '')
+    if not customer:
+        return json_error('Unknown customer.', 404)
+    date_from = _query_date('from')
+    date_to = _query_date('to')
+    orders = load_orders()
+    invoices = load_invoices()
+    payments = load_payments()
+    credit = _credit_body(customer, orders, invoices, payments, '', user)
+    pay_rows = []
+    for row in payments:
+        if row.get('customer_id') != customer_id:
+            continue
+        if not _in_date_range(row.get('date'), date_from, date_to):
+            continue
+        pay_rows.append(_present_payment(row))
+    pay_rows.sort(key=lambda row: (str(row.get('date') or ''), row.get('id') or 0), reverse=True)
+    invoice_rows = []
+    for row in invoices:
+        if row.get('customer_id') != customer_id or document_type(row) != 'invoice':
+            continue
+        if not _in_date_range(row.get('invoice_date'), date_from, date_to):
+            continue
+        shown = _present_invoice(row, payments)
+        invoice_rows.append({
+            'id': shown.get('id'),
+            'number': shown.get('number') or '',
+            'invoice_date': shown.get('invoice_date') or '',
+            'due_date': shown.get('due_date') or '',
+            'project': shown.get('project') or '',
+            'currency': shown.get('currency') or 'usd',
+            'total': shown.get('total'),
+            'balance': shown.get('balance'),
+            'status': shown.get('status') or '',
+            'status_label': shown.get('status_label') or '',
+            'issuer': shown.get('issuer') or 'us',
+            'qbo_sync': shown.get('qbo_sync') or '',
+            'qbo_sync_label': shown.get('qbo_sync_label') or '',
+        })
+    invoice_rows.sort(key=lambda row: (str(row.get('invoice_date') or ''), row.get('id') or 0), reverse=True)
+    order_rows = []
+    for order in orders:
+        if order.get('customer_id') != customer_id or order_status(order) == 'voided':
+            continue
+        if not _in_date_range(order_day(order), date_from, date_to):
+            continue
+        status = order_status(order)
+        invoiced, not_invoiced = _order_invoice_split(order, invoices)
+        order_rows.append({
+            'id': order.get('id'),
+            'number': order.get('number') or str(order.get('id') or ''),
+            'date': order_day(order),
+            'project': order.get('project') or '',
+            'status': status,
+            'status_label': STATUS_LABELS.get(status, status),
+            'currency': str(order.get('currency') or 'usd').lower(),
+            'total': money(order.get('total')),
+            'invoiced': invoiced,
+            'not_invoiced': not_invoiced,
+        })
+    order_rows.sort(key=lambda row: (str(row.get('date') or ''), row.get('id') or 0), reverse=True)
+    return jsonify({
+        'credit': credit,
+        'payments': pay_rows,
+        'invoices': invoice_rows,
+        'orders': order_rows,
+        'from': date_from,
+        'to': date_to,
+        'cards_all_time': True,
     })
 
 

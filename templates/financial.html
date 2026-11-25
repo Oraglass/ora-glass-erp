@@ -6,19 +6,23 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
-.container{max-width:1000px;margin:20px auto;padding:0 20px}
+.container{max-width:1100px;margin:20px auto;padding:0 20px}
 .card{background:white;border-radius:8px;padding:20px}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin:16px 0}
 .stat{background:#f9f9f9;padding:16px;border-radius:8px}
-.stat h3{font-size:22px;color:#C41E3A;margin-bottom:4px}
+.stat h3{font-size:18px;color:#C41E3A;margin-bottom:4px;line-height:1.3}
 .stat p{font-size:13px;color:#666}
-select,button{padding:8px;border-radius:4px;border:1px solid #ddd}
+select,button,input{padding:8px;border-radius:4px;border:1px solid #ddd}
 .btn{background:#C41E3A;color:white;border:none;cursor:pointer}
-table{width:100%;border-collapse:collapse;font-size:13px}
+.btn.secondary{background:#fff;color:#333}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:12px 0}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:18px}
 th{background:#f5f5f5;padding:10px;text-align:left;border-bottom:2px solid #ddd}
 td{padding:10px;border-bottom:1px solid #eee}
-.note{color:#666;font-size:13px}
-h2{color:#333}
+.note{color:#666;font-size:13px;margin:6px 0}
+h2,h3{color:#333}
+a{color:#9f1830}
 </style>
 </head>
 <body>
@@ -28,14 +32,33 @@ h2{color:#333}
 <h2>Financial overview</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 {% if staff_view %}
-<p class="note">Choose a customer to see their credit, payments, and invoice balances. Recording payments is on the Invoices page.</p>
+<p class="note">Choose a customer to see their credit, payments, invoices, and orders. Recording payments is on the Invoices page.</p>
 <select id="fin-customer" aria-label="Customer"></select>
 {% endif %}
+<p class="note" id="cards-scope">Summary cards are all-time. The date range filters the payments, invoices, and orders below.</p>
 <div class="stats" id="credit-stats"></div>
-<h3 style="color:#333;margin:12px 0">Payments</h3>
+<div class="row" id="fin-range">
+<label>From<input type="date" id="fin-from" aria-label="From"></label>
+<label>To<input type="date" id="fin-to" aria-label="To"></label>
+<button type="button" class="btn secondary" data-preset="month">This month</button>
+<button type="button" class="btn secondary" data-preset="30">Last 30 days</button>
+<button type="button" class="btn secondary" data-preset="year">This year</button>
+<button type="button" class="btn secondary" data-preset="all">All</button>
+</div>
+<h3>Payments</h3>
 <table>
 <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Unallocated</th><th>Status</th></tr></thead>
 <tbody id="fin-payments"><tr><td colspan="5" style="color:#666">No payments</td></tr></tbody>
+</table>
+<h3>Invoices</h3>
+<table>
+<thead><tr><th>Number</th><th>Date</th><th>Due</th><th>Project</th><th>Amount</th><th>Balance</th><th>Status</th><th>QuickBooks</th></tr></thead>
+<tbody id="fin-invoices"><tr><td colspan="8" style="color:#666">No invoices</td></tr></tbody>
+</table>
+<h3>Orders</h3>
+<table>
+<thead><tr><th>Order</th><th>Date</th><th>Project</th><th>Status</th><th>Total</th><th>Invoiced</th><th>Not invoiced</th></tr></thead>
+<tbody id="fin-orders"><tr><td colspan="7" style="color:#666">No orders</td></tr></tbody>
 </table>
 </div></div>
 <script>
@@ -46,31 +69,100 @@ function esc(value) {
 function money(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
 }
-async function load(customerId) {
-  const params = new URLSearchParams();
-  if (customerId) params.set('customer_id', customerId);
-  const creditRes = await fetch('/api/credit?' + params.toString());
+function ymd(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return date.getFullYear() + '-' + month + '-' + day;
+}
+function presetRange(name) {
+  const today = new Date();
+  if (name === 'month') return {from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)), to: ymd(today)};
+  if (name === '30') {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 29);
+    return {from: ymd(start), to: ymd(today)};
+  }
+  if (name === 'year') return {from: today.getFullYear() + '-01-01', to: ymd(today)};
+  return {from: '', to: ''};
+}
+function activeBooks(credit, field) {
+  const rows = credit.by_currency || [];
+  const hit = rows.filter(row => Math.abs(Number(row[field]) || 0) > 0.009);
+  if (hit.length) return hit;
+  const home = rows.find(row => row.currency === credit.credit_currency) || {currency: credit.credit_currency || credit.currency || 'usd', [field]: credit[field] || 0};
+  return [home];
+}
+function statAmount(credit, field) {
+  return activeBooks(credit, field).map(row => money(row.currency, row[field])).join('<br>');
+}
+function renderCards(credit) {
   const box = document.getElementById('credit-stats');
-  if (!creditRes.ok) { box.innerHTML = ''; return; }
-  const credit = await creditRes.json();
   box.innerHTML = '<div class="stat"><h3>' + money(credit.credit_currency, credit.credit_limit) + '</h3><p>Credit limit</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.available_credit) + '</h3><p>Available credit</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.open_receivables) + '</h3><p>Open receivables</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.unallocated_payments) + '</h3><p>Unallocated payments</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.unapplied_credits) + '</h3><p>Unapplied credits</p></div>'
-    + '<div class="stat"><h3>' + money(credit.currency, credit.balance) + '</h3><p>Balance</p></div>';
-  const payParams = new URLSearchParams();
-  if (customerId) payParams.set('customer_id', customerId);
-  const payments = await fetch('/api/payments?' + payParams.toString());
+    + '<div class="stat"><h3>' + statAmount(credit, 'available_credit') + '</h3><p>Available credit</p></div>'
+    + '<div class="stat"><h3>' + statAmount(credit, 'open_receivables') + '</h3><p>Open receivables</p></div>'
+    + '<div class="stat"><h3>' + statAmount(credit, 'unallocated_payments') + '</h3><p>Unallocated payments</p></div>'
+    + '<div class="stat"><h3>' + statAmount(credit, 'unapplied_credits') + '</h3><p>Unapplied credits</p></div>'
+    + '<div class="stat"><h3>' + statAmount(credit, 'balance') + '</h3><p>Balance</p></div>';
+}
+function renderPayments(rows) {
   const body = document.getElementById('fin-payments');
-  if (!payments.ok) return;
-  const rows = await payments.json();
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="5" style="color:#666">No payments</td></tr>';
     return;
   }
   body.innerHTML = rows.map(row => '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.method) + '</td><td>' + money(row.currency, row.amount) + '</td><td>' + money(row.currency, row.unallocated) + '</td><td>' + (row.voided ? 'Void' : 'Open') + (row.qbo_sync_label ? ' · ' + esc(row.qbo_sync_label) : '') + '</td></tr>').join('');
 }
+function renderInvoices(rows) {
+  const body = document.getElementById('fin-invoices');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No invoices</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.due_date) + '</td><td>' + esc(row.project) + '</td><td>' + money(row.currency, row.total) + '</td><td>' + money(row.currency, row.balance) + '</td><td>' + esc(row.status_label || row.status) + '</td><td>' + esc(row.qbo_sync_label || 'Not sent') + '</td></tr>').join('');
+}
+function renderOrders(rows) {
+  const body = document.getElementById('fin-orders');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7" style="color:#666">No orders</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(row => '<tr><td><a href="/orders/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.date) + '</td><td>' + esc(row.project) + '</td><td>' + esc(row.status_label || row.status) + '</td><td>' + money(row.currency, row.total) + '</td><td>' + money(row.currency, row.invoiced) + '</td><td>' + money(row.currency, row.not_invoiced) + '</td></tr>').join('');
+}
+async function load(customerId) {
+  const params = new URLSearchParams();
+  if (customerId) params.set('customer_id', customerId);
+  const from = document.getElementById('fin-from').value;
+  const to = document.getElementById('fin-to').value;
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const res = await fetch('/api/financial?' + params.toString());
+  if (!res.ok) {
+    document.getElementById('credit-stats').innerHTML = '';
+    return;
+  }
+  const body = await res.json();
+  renderCards(body.credit);
+  renderPayments(body.payments || []);
+  renderInvoices(body.invoices || []);
+  renderOrders(body.orders || []);
+}
+document.getElementById('fin-range').addEventListener('click', event => {
+  const button = event.target.closest('[data-preset]');
+  if (!button) return;
+  const range = presetRange(button.getAttribute('data-preset'));
+  document.getElementById('fin-from').value = range.from;
+  document.getElementById('fin-to').value = range.to;
+  const select = document.getElementById('fin-customer');
+  load(select ? select.value : '');
+});
+document.getElementById('fin-from').addEventListener('change', () => {
+  const select = document.getElementById('fin-customer');
+  load(select ? select.value : '');
+});
+document.getElementById('fin-to').addEventListener('change', () => {
+  const select = document.getElementById('fin-customer');
+  load(select ? select.value : '');
+});
 async function start() {
   if (!STAFF) { load(''); return; }
   const res = await fetch('/api/order-customers');
