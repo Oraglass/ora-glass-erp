@@ -23,16 +23,19 @@ td{padding:10px;border-bottom:1px solid #eee}
 .note{color:#666;font-size:13px;margin:6px 0}
 h2,h3{color:#333}
 a{color:#9f1830}
+.fin-tabs a.active{color:#fff}
 </style>
 </head>
 <body>
 {% set show_back = true %}
 {% include 'partials/header.html' %}
-<div class="container"><div class="card">
+<div class="container">
+{% include 'partials/financial_tabs.html' %}
+<div class="card">
 <h2>Financial overview</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 {% if staff_view %}
-<p class="note">Choose a customer to see their credit, payments, invoices, and orders. Recording payments is on the Invoices page.</p>
+<p class="note">Choose a customer to see their credit, payments, invoices, and orders. Record a payment on the Record payment tab.</p>
 <select id="fin-customer" aria-label="Customer"></select>
 {% endif %}
 <p class="note" id="cards-scope">Summary cards are all-time. Each currency is shown on its own and includes every open invoice in that currency. The date range filters the payments, invoices, and orders below.</p>

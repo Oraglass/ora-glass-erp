@@ -1311,7 +1311,15 @@ def _security_headers(response):
 def inject_user():
     user = current_user()
     allowed = set(effective_module_ids(user)) if user else set()
-    nav = [item for item in MODULES if item['id'] in allowed]
+    nav = []
+    for item in MODULES:
+        if item['id'] == 'invoices':
+            continue
+        if item['id'] == 'financial' and 'financial' not in allowed and 'invoices' in allowed:
+            nav.append({'id': 'financial', 'label': 'Financials', 'endpoint': 'invoices'})
+            continue
+        if item['id'] in allowed:
+            nav.append(item)
     extras = []
     if user and _is_ora_staff(user):
         extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
@@ -3181,47 +3189,40 @@ def quote_history():
     )
 
 
+def _book_page_flags(user):
+    return {
+        'note': scope_note(),
+        'can_financial': user_has_module(user, 'financial'),
+        'can_invoices': user_has_module(user, 'invoices'),
+        'staff_view': user.get('role') != 'customer',
+        'can_record': can_record_payments(user),
+        'can_issue': can_issue_invoices(user),
+        'is_admin': user.get('role') == 'admin',
+    }
+
+
 @app.route('/invoices')
 @module_required('invoices')
 def invoices():
-    user = current_user()
-    return render_template(
-        'invoices.html',
-        note=scope_note(),
-        staff_view=user.get('role') != 'customer',
-        can_record=can_record_payments(user),
-        can_issue=can_issue_invoices(user),
-        is_admin=user.get('role') == 'admin',
-        focus_id=None,
-    )
+    return render_template('invoices.html', fin_tab='invoices', focus_id=None, **_book_page_flags(current_user()))
 
 
 @app.route('/invoices/<int:invoice_id>')
 @module_required('invoices')
 def invoice_detail(invoice_id):
-    user = current_user()
-    return render_template(
-        'invoices.html',
-        note=scope_note(),
-        staff_view=user.get('role') != 'customer',
-        can_record=can_record_payments(user),
-        can_issue=can_issue_invoices(user),
-        is_admin=user.get('role') == 'admin',
-        focus_id=invoice_id,
-    )
+    return render_template('invoices.html', fin_tab='invoices', focus_id=invoice_id, **_book_page_flags(current_user()))
+
+
+@app.route('/financial/payments')
+@module_required('invoices')
+def financial_payments():
+    return render_template('invoices.html', fin_tab='payments', focus_id=None, **_book_page_flags(current_user()))
 
 
 @app.route('/financial')
 @module_required('financial')
 def financial():
-    user = current_user()
-    return render_template(
-        'financial.html',
-        note=scope_note(),
-        staff_view=user.get('role') != 'customer',
-        can_record=can_record_payments(user),
-        is_admin=user.get('role') == 'admin',
-    )
+    return render_template('financial.html', fin_tab='overview', **_book_page_flags(current_user()))
 
 
 @app.route('/api/customers', methods=['GET'])
