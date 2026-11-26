@@ -7,30 +7,38 @@
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
-.wrap{max-width:1100px;margin:0 auto;padding:16px}
-.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
-h1,h2{margin:0 0 10px;color:#333;font-size:20px}
-.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
-label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
-input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
-button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
-.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.card{background:#fff;border-radius:10px;padding:20px;width:100%;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+h1,h2{margin:0 0 12px;color:#333;font-size:20px}
+.grid,.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px 14px;align-items:end}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:6px;min-width:0}
+label.wide{grid-column:span 2}
+input,select,button,.btn{font:14px 'Segoe UI',Arial,sans-serif;height:40px;padding:0 10px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#222;width:100%}
+button,.btn{background:#9f1830;color:#fff;border:1px solid #9f1830;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;width:auto;white-space:nowrap}
+.grid > button,.filters > button{width:100%}
+button.outline,.btn.outline{background:#fff;color:#9f1830}
+button.outline:hover,.btn.outline:hover{background:#fff6f7}
+.links a:not(.btn){width:auto;height:auto;border:0;background:transparent;color:#9f1830;font-weight:600;align-self:center;padding:0}
+.links > *,.toolbar > *{height:40px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.note{color:#666;font-size:13px;margin:10px 0 0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
+th{background:#f7f7f7;color:#333;font-weight:600}
 .flag{color:#9f1830;font-weight:600}
 .thumb{width:72px;height:54px;object-fit:cover;border-radius:6px;display:block}
-.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer}
+.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer;width:auto;height:auto}
 #photo-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:30}
 #photo-lightbox.open{display:flex}
 #photo-lightbox img{max-width:90vw;max-height:90vh;border-radius:8px}
-.note{color:#666;font-size:13px}
 .correct{display:none;background:#fafafa;padding:8px;border-radius:8px;margin-top:6px}
 .correct.open{display:grid;gap:6px}
-@media (max-width:640px){
-  table,thead,tbody,tr,th,td{display:block}
-  thead{display:none}
-  tr{padding:8px 0;border-bottom:1px solid #eee}
-  td{border:0;padding:2px 0}
+.correct input,.correct select,.correct button{width:100%}
+@media (max-width:900px){
+  .wrap{padding:12px}
+  .card{padding:14px}
+  label.wide{grid-column:span 1}
+  .links > .btn,.toolbar > *{flex:1 1 148px}
 }
 </style>
 </head>
@@ -40,26 +48,30 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="wrap">
 <div class="card">
 <h1>Time Clock</h1>
-<div class="filters" id="kiosk-tools">
+<div class="stack" id="kiosk-tools">
+<div class="grid">
 <label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
-<label>Time zone<select id="kiosk-zone"></select></label>
+<label class="wide">Time zone<select id="kiosk-zone"></select></label>
 <button type="button" id="activate-kiosk">Activate this device as kiosk</button>
+</div>
+<div class="grid">
 <label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
 <button type="button" id="save-retention">Save retention</button>
+</div>
 </div>
 <p class="note">Photos are kept at least 90 days and are visible only to administrators and staff who can manage time.</p>
 <p class="note" id="kiosk-list"></p>
 <p class="note">Times are shown in the time zone stored on each punch. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
-<div class="filters">
-<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<div class="grid">
+<label class="wide">Employee<select id="filter-user"><option value="">All employees</option></select></label>
 <label>From<input type="date" id="filter-from"></label>
 <label>To<input type="date" id="filter-to"></label>
 <button type="button" id="apply">Show</button>
 </div>
 <div class="links">
-<a class="btn" id="csv-link" href="#">Export CSV</a>
-<a class="btn" id="pdf-link" href="#">PDF timesheet</a>
-<a class="btn" id="xlsx-link" href="#">Excel shifts</a>
+<a class="btn outline" id="csv-link" href="#">Export CSV</a>
+<a class="btn outline" id="pdf-link" href="#">PDF timesheet</a>
+<a class="btn outline" id="xlsx-link" href="#">Excel shifts</a>
 <a href="{{ url_for('punch') }}">Punch page</a>
 {% if can_payroll %}<a href="{{ url_for('payroll_page') }}">Payroll</a>{% endif %}
 </div>

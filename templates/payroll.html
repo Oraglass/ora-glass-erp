@@ -7,19 +7,60 @@
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
-.wrap{max-width:1100px;margin:0 auto;padding:16px}
-.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
-h1,h2{margin:0 0 10px;color:#333;font-size:20px}
-.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
-label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
-input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
-button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
-.note{color:#666;font-size:13px}
-.banner{background:#fff6f7;border:1px solid #f0c9d0;color:#9f1830;border-radius:8px;padding:10px 12px;font-weight:600}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
-.days label{display:inline-flex;flex-direction:row;align-items:center;gap:4px;margin-right:8px;color:#222}
-.gross{font-size:18px;font-weight:700}
+.wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.card{background:#fff;border-radius:10px;padding:20px;width:100%;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+h1,h2{margin:0 0 12px;color:#333;font-size:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px 14px;align-items:end}
+.grid.settings{grid-template-columns:repeat(7,minmax(0,1fr))}
+.grid.pay{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:6px;min-width:0}
+label.wide{grid-column:span 2}
+input,select,button,.btn{
+  font:14px 'Segoe UI',Arial,sans-serif;
+  height:40px;
+  padding:0 10px;
+  border:1px solid #ddd;
+  border-radius:6px;
+  background:#fff;
+  color:#222;
+  width:100%;
+}
+button,.btn{
+  background:#9f1830;
+  color:#fff;
+  border:1px solid #9f1830;
+  cursor:pointer;
+  text-decoration:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-weight:600;
+  width:auto;
+  white-space:nowrap;
+}
+button.outline,.btn.outline{background:#fff;color:#9f1830}
+button.outline:hover,.btn.outline:hover{background:#fff6f7}
+.grid > button,.grid > .btn{width:100%}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.toolbar > *{height:40px}
+.days{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:14px 0}
+.days label{flex-direction:row;align-items:center;gap:6px;color:#222;font-size:14px;width:auto}
+.days input{width:16px;height:16px;padding:0;flex:0 0 auto}
+.note{color:#666;font-size:13px;margin:10px 0 0}
+.banner{background:#fff6f7;border:1px solid #f0c9d0;color:#9f1830;border-radius:8px;padding:10px 12px;font-weight:600;margin:0 0 10px}
+.gross{font-size:18px;font-weight:700;margin:14px 0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;table-layout:auto}
+th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
+th{background:#f7f7f7;color:#333;font-weight:600}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stack{display:flex;flex-direction:column;gap:14px}
+@media (max-width:900px){
+  .wrap{padding:12px}
+  .card{padding:14px}
+  .grid.settings{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  label.wide{grid-column:span 1}
+  .toolbar > *{flex:1 1 148px}
+}
 </style>
 </head>
 <body>
@@ -31,7 +72,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <h1>Payroll</h1>
 <p class="banner" id="gross-label">Gross pay (before taxes)</p>
 <p class="note">This is an estimate of gross pay from the schedule, punches, and hourly rates. It is not official tax withholding. Overtime is 1.5× after the weekly hour threshold. There is no daily overtime.</p>
-<div class="filters">
+<div class="grid settings">
 <label>Work week starts<select id="week-start"></select></label>
 <label>OT after hours<input id="ot-hours" type="number" min="1" max="168" step="0.25" value="40"></label>
 <label>Pay frequency<select id="frequency"><option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="semimonthly">Semi-monthly</option></select></label>
@@ -43,7 +84,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 </div>
 <div class="card">
 <h2>Shifts</h2>
-<div class="filters">
+<div class="grid">
 <label>Name<input id="shift-name" placeholder="Day"></label>
 <label>Start<input id="shift-start" value="07:00"></label>
 <label>End<input id="shift-end" value="15:30"></label>
@@ -55,45 +96,46 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 </div>
 <div class="card">
 <h2 id="period-title">Pay period</h2>
-<div class="filters">
-<button type="button" id="prev-period">Previous</button>
-<button type="button" id="next-period">Next</button>
-<a class="btn" id="csv-link" href="#">Summary CSV</a>
-<a class="btn" id="pdf-link" href="#">Summary PDF</a>
+<div class="toolbar">
+<button type="button" class="outline" id="prev-period">Previous</button>
+<button type="button" class="outline" id="next-period">Next</button>
+<a class="btn outline" id="csv-link" href="#">Summary CSV</a>
+<a class="btn outline" id="pdf-link" href="#">Summary PDF</a>
+<a class="btn outline" id="period-xlsx" href="/api/time-clock/shifts.xlsx">Excel shifts</a>
 </div>
 <p class="gross" id="period-total"></p>
 <table>
-<thead><tr><th>Worker</th><th>Regular h</th><th>OT h</th><th>Regular pay</th><th>OT pay</th><th>Adjustments</th><th>Gross</th><th>YTD gross</th><th></th></tr></thead>
+<thead><tr><th>Worker</th><th class="num">Regular h</th><th class="num">OT h</th><th class="num">Regular pay</th><th class="num">OT pay</th><th class="num">Adjustments</th><th class="num">Gross</th><th class="num">YTD gross</th><th>Status</th></tr></thead>
 <tbody id="stub-rows"></tbody>
 </table>
 </div>
 <div class="card">
 <h2>Worker pay</h2>
-<div class="filters">
-<label>Worker<select id="worker"></select></label>
+<div class="grid pay">
+<label class="wide">Worker<select id="worker"><option value="">Select worker</option></select></label>
 <label>Hourly rate<input id="rate" type="number" min="0" step="0.01" placeholder="20.00"></label>
 <label>Currency<input id="currency" value="USD" maxlength="3"></label>
 <label>Rate effective<input id="rate-from" type="date"></label>
 <button type="button" id="save-rate">Save rate</button>
 </div>
 <p class="note" id="rate-history"></p>
-<div class="filters">
-<label>Shift<select id="assign-shift"></select></label>
+<div class="grid pay">
+<label class="wide">Shift<select id="assign-shift"></select></label>
 <label>Assignment effective<input id="assign-from" type="date"></label>
 <button type="button" id="save-assignment">Assign shift</button>
 </div>
 <p class="note" id="assignment-history"></p>
-<div class="filters">
+<div class="grid pay">
 <label>Adjustment<select id="adj-kind"><option value="bonus">Bonus</option><option value="reimbursement">Reimbursement</option></select></label>
 <label>Amount<input id="adj-amount" type="number" min="0" step="0.01"></label>
-<label>Reason<input id="adj-reason" placeholder="Why this amount"></label>
+<label class="wide">Reason<input id="adj-reason" placeholder="Why this amount"></label>
 <button type="button" id="save-adjustment">Add adjustment</button>
 </div>
 <p class="note" id="stub-detail"></p>
-<div class="filters">
+<div class="toolbar">
 <button type="button" id="approve">Approve period</button>
-<button type="button" id="reopen">Reopen</button>
-<a class="btn" id="stub-pdf" href="#">Paystub PDF</a>
+<button type="button" class="outline" id="reopen">Reopen</button>
+<a class="btn outline" id="stub-pdf" href="#">Paystub PDF</a>
 </div>
 </div>
 {% endif %}
@@ -101,27 +143,31 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="card" id="time-kiosk">
 <h2>Time & Kiosk</h2>
 <p class="note">Timesheets, punch photos, and corrections stay here. The shop tablet is the only punch screen.</p>
-<div class="filters">
+<div class="stack">
+<div class="grid">
 <label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
-<label>Time zone<select id="kiosk-zone"></select></label>
+<label class="wide">Time zone<select id="kiosk-zone"></select></label>
 <button type="button" id="activate-kiosk">Set up shop kiosk</button>
-<label>Phone punch time zone<select id="default-zone"></select></label>
+</div>
+<div class="grid">
+<label class="wide">Phone punch time zone<select id="default-zone"></select></label>
 <button type="button" id="save-default-zone">Save phone time zone</button>
 <label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
 <button type="button" id="save-retention">Save retention</button>
 </div>
+</div>
 <p class="note">Opening this on the tablet signs you out there and turns that device into the kiosk. You can also open /kiosk/setup on the tablet.</p>
 <p class="note" id="kiosk-list"></p>
-<div class="filters">
-<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<div class="grid">
+<label class="wide">Employee<select id="filter-user"><option value="">All employees</option></select></label>
 <label>From<input type="date" id="filter-from"></label>
 <label>To<input type="date" id="filter-to"></label>
 <button type="button" id="apply">Show</button>
 </div>
-<div class="filters">
-<a class="btn" id="timesheet-csv" href="#">Export CSV</a>
-<a class="btn" id="timesheet-pdf" href="#">PDF timesheet</a>
-<a class="btn" id="timesheet-xlsx" href="#">Excel shifts</a>
+<div class="toolbar" style="margin-top:12px">
+<a class="btn outline" id="timesheet-csv" href="#">Export CSV</a>
+<a class="btn outline" id="timesheet-pdf" href="#">PDF timesheet</a>
+<a class="btn outline" id="timesheet-xlsx" href="#">Excel shifts</a>
 </div>
 </div>
 <div class="card">
@@ -178,7 +224,7 @@ function render() {
   document.getElementById('shift-rows').innerHTML = (payload.shifts || []).map(shift => '<tr><td>' + esc(shift.name) + '</td><td>' + esc(shift.start) + '–' + esc(shift.end) + '</td><td>' + esc((shift.weekdays || []).map(day => names[day] || day).join(', ')) + '</td><td>' + esc(shift.unpaid_break_minutes) + ' min</td></tr>').join('') || '<tr><td colspan="4">No shifts yet</td></tr>';
   const workers = payload.workers || [];
   const current = selectedWorker();
-  document.getElementById('worker').innerHTML = workers.map(row => '<option value="' + esc(row.account) + '">' + esc(row.name) + (row.employee_number ? ' (' + esc(row.employee_number) + ')' : '') + '</option>').join('');
+  document.getElementById('worker').innerHTML = '<option value="">Select worker</option>' + workers.map(row => '<option value="' + esc(row.account) + '">' + esc(row.name) + (row.employee_number ? ' (' + esc(row.employee_number) + ')' : '') + '</option>').join('');
   if (workers.some(row => row.account === current)) document.getElementById('worker').value = current;
   document.getElementById('assign-shift').innerHTML = '<option value="">No shift</option>' + (payload.shifts || []).map(shift => '<option value="' + esc(shift.id) + '">' + esc(shift.name) + '</option>').join('');
   const worker = selectedWorker();
@@ -191,7 +237,7 @@ function render() {
   const assigned = ((payload.assignments || {})[worker] || []).slice().sort((a, b) => a.effective_from < b.effective_from ? 1 : -1);
   document.getElementById('assignment-history').textContent = assigned.length ? assigned.map(row => row.effective_from + '  ' + shiftName(row.shift_id)).join('   ·   ') : 'No shift assignment yet.';
   if (assigned[0]) document.getElementById('assign-shift').value = assigned[0].shift_id || '';
-  document.getElementById('stub-rows').innerHTML = (payload.stubs || []).map(stub => '<tr><td>' + esc(stub.name) + '</td><td>' + esc(stub.regular_hours) + '</td><td>' + esc(stub.overtime_hours) + '</td><td>' + esc(stub.regular_pay) + '</td><td>' + esc(stub.overtime_pay) + '</td><td>' + esc(stub.adjustment_total) + '</td><td>' + esc(stub.gross_pay || '') + '</td><td>' + esc(stub.ytd_gross || '') + '</td><td>' + esc(stub.status) + '</td></tr>').join('') || '<tr><td colspan="9">No workers</td></tr>';
+  document.getElementById('stub-rows').innerHTML = (payload.stubs || []).map(stub => '<tr><td>' + esc(stub.name) + '</td><td class="num">' + esc(stub.regular_hours) + '</td><td class="num">' + esc(stub.overtime_hours) + '</td><td class="num">' + esc(stub.regular_pay) + '</td><td class="num">' + esc(stub.overtime_pay) + '</td><td class="num">' + esc(stub.adjustment_total) + '</td><td class="num">' + esc(stub.gross_pay || '') + '</td><td class="num">' + esc(stub.ytd_gross || '') + '</td><td>' + esc(stub.status) + '</td></tr>').join('') || '<tr><td colspan="9">No workers</td></tr>';
   const stub = (payload.stubs || []).find(row => row.worker === worker);
   const lines = [];
   if (stub) {
@@ -339,9 +385,12 @@ function renderTime(data) {
 }
 async function loadTime() {
   const params = rangeQuery();
-  document.getElementById('timesheet-csv').href = '/api/time-clock/export.csv?' + params.toString();
-  document.getElementById('timesheet-pdf').href = '/api/time-clock/timesheet.pdf?' + params.toString();
-  document.getElementById('timesheet-xlsx').href = '/api/time-clock/shifts.xlsx?' + params.toString();
+  const sheetQuery = params.toString();
+  document.getElementById('timesheet-csv').href = '/api/time-clock/export.csv?' + sheetQuery;
+  document.getElementById('timesheet-pdf').href = '/api/time-clock/timesheet.pdf?' + sheetQuery;
+  document.getElementById('timesheet-xlsx').href = '/api/time-clock/shifts.xlsx?' + sheetQuery;
+  const periodSheet = document.getElementById('period-xlsx');
+  if (periodSheet) periodSheet.href = '/api/time-clock/shifts.xlsx?' + sheetQuery;
   const res = await fetch('/api/time-clock?' + params.toString());
   if (!res.ok) return;
   renderTime(await res.json());
