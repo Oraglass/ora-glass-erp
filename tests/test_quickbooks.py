@@ -279,7 +279,7 @@ def test_sync_does_not_import_history_until_the_backfill(client, monkeypatch):
         assert result['invoices'] == 3
         assert result['payments'] == 0
         assert any(result['message'] in row.get('message', '') for row in imported.get_json()['connections'][0]['log'])
-        numbers = sorted(row['project'] for row in load_invoices())
+        numbers = sorted(row['number'] for row in load_invoices())
         assert numbers == ['1002', '1003', '1004']
         again = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
         assert again.get_json()['result']['invoices'] == 0
@@ -418,7 +418,7 @@ def test_link_reads_the_card_realm_and_uses_display_name(client, monkeypatch):
         imported = client.post('/api/quickbooks/import/history', json={'connection': 'us'})
         assert imported.status_code == 200, imported.get_json()
         assert imported.get_json()['result']['invoices'] == 1
-        assert [row['project'] for row in load_invoices()] == ['1002']
+        assert [row['number'] for row in load_invoices()] == ['1002']
         invoice_urls = [url for _method, url, _body in fake.calls if 'Invoice' in url]
         assert invoice_urls
         assert all(US_REALM in url for url in invoice_urls)
