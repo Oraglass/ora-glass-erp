@@ -838,6 +838,11 @@ def _shown_fx_date(invoice):
     return str((invoice or {}).get('invoice_date') or '')[:10] or stored
 
 
+def _rack_alert_days(customer):
+    import racks as rack_book
+    return rack_book.alert_days(customer)
+
+
 def _account_rows(customer, orders=None, invoices=None, payments=None):
     """Each issuing company, with its balance when the books were passed in."""
     import customer_accounts
@@ -945,6 +950,8 @@ def public_customer(customer_id, customer, tiers, user_count, orders=None, invoi
         'tier_label': tier_label(customer.get('tier'), tiers),
         'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
         'minimum_sqf_per_piece': _percent(customer.get('minimum_sqf_per_piece'), 100000),
+        'rack_alert_days': _rack_alert_days(customer),
+        'show_overdue_racks': bool(customer.get('show_overdue_racks')),
         'status': customer.get('status') or 'active',
         'user_count': user_count,
     }
@@ -1341,6 +1348,19 @@ def apply_customer_fields(customer, data, tiers, creating):
         if status not in {'active', 'inactive'}:
             return 'Status must be active or inactive.'
         customer['status'] = status
+    if creating or 'rack_alert_days' in data:
+        raw = data.get('rack_alert_days', 14)
+        if isinstance(raw, bool) or isinstance(raw, float):
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        text = str(raw).strip()
+        if not text.isdigit():
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        days = int(text)
+        if days < 1:
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        customer['rack_alert_days'] = days
+    if creating or 'show_overdue_racks' in data:
+        customer['show_overdue_racks'] = bool(data.get('show_overdue_racks'))
     return None
 
 
@@ -1496,6 +1516,15 @@ def inject_user():
             dict(item, label=f"{item['label']} ({review_count})") if item.get('id') == 'orders' else item
             for item in nav
         ]
+    if user and staff_can_order(user):
+        import racks as rack_book
+        open_damage = rack_book.open_damage_count()
+        if open_damage:
+            nav = [
+                dict(item, label=f"{item['label']} ({open_damage})")
+                if item.get('endpoint') == 'racks_page' else item
+                for item in nav
+            ]
     return {
         'current_user': user,
         'nav_modules': nav,
@@ -1720,6 +1749,7 @@ def dashboard():
     user = current_user()
     if not user_has_module(user, 'dashboard'):
         return forbidden()
+    import racks as rack_book
     return render_template(
         'dashboard.html',
         user=user,
@@ -1733,6 +1763,10 @@ def dashboard():
         show_resale=_customer_uses_resale(user),
         canada_tax_label=_canada_tax_label(user),
         review_count=_orders_awaiting_staff(user),
+        overdue_racks=_overdue_rack_panel(user),
+        overdue_report=_overdue_report(user),
+        customer_overdue=_customer_overdue_panel(user),
+        open_damage_reports=rack_book.open_damage_count() if staff_can_order(user) else 0,
     )
 
 
@@ -2423,7 +2457,72 @@ def racks_page():
     user = current_user()
     if not _rack_user_ok(user):
         return forbidden()
-    return render_template('racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin')
+    import racks as rack_book
+    report = rack_book.weekly_report_view() if user.get('role') == 'admin' else None
+    return render_template(
+        'racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin',
+        report=report, customer_overdue=_customer_overdue_panel(user),
+        open_damage_reports=rack_book.open_damage_count() if staff_can_order(user) else 0,
+    )
+
+
+@app.route('/racks/damage')
+@login_required
+def damage_reports_page():
+    user = current_user()
+    if not staff_can_order(user):
+        return forbidden()
+    import racks as rack_book
+    status = clean_text(request.args.get('status'), 20)
+    customer_id = clean_text(request.args.get('customer_id'), 80)
+    rack = clean_text(request.args.get('rack'), 40)
+    start = clean_text(request.args.get('from'), 10)
+    end = clean_text(request.args.get('to'), 10)
+    rows = rack_book.filter_damage_reports(
+        rack_book.load_damage_reports(),
+        status=status, customer_id=customer_id, rack=rack, start=start, end=end,
+    )
+    customers = [
+        {'id': key, 'name': customer.get('name') or key}
+        for key, customer in load_customers().items()
+        if isinstance(customer, dict) and not customer.get('books_entity')
+    ]
+    customers.sort(key=lambda row: row['name'].lower())
+    return render_template(
+        'damage_reports.html',
+        reports=rows,
+        customers=customers,
+        filters={'status': status, 'customer_id': customer_id, 'rack': rack, 'from': start, 'to': end},
+        open_damage_reports=rack_book.open_damage_count(),
+        can_invoice=can_issue_invoices(user),
+        statuses=[
+            {'id': 'open', 'label': 'To be repaired'},
+            {'id': 'repaired', 'label': 'Repaired, no cost'},
+            {'id': 'charged', 'label': 'Charge customer'},
+        ],
+    )
+
+
+@app.route('/racks/<rack_number>')
+@login_required
+def rack_detail(rack_number):
+    user = current_user()
+    if user.get('role') in {'driver', 'customer', 'shop'} or not staff_can_order(user):
+        return forbidden()
+    import racks as rack_book
+    rack_book.backfill_from_orders(load_orders(), user)
+    number = str(rack_number or '').strip()
+    row = rack_book.load_rows().get(number)
+    if not isinstance(row, dict):
+        return json_error('That rack was not found.', 404) if request.accept_mimetypes.best == 'application/json' else (
+            render_template('rack_detail.html', rack=None, missing=number), 404
+        )
+    company = load_customers().get(row.get('customer_id') or '') or {}
+    shown = rack_book.present(row, alert_after=rack_book.alert_days(company))
+    shown['number'] = number
+    return render_template(
+        'rack_detail.html', rack=shown, missing='', admin=user.get('role') == 'admin',
+    )
 
 
 @app.route('/racks/scan')
@@ -2476,9 +2575,37 @@ def rack_check():
     data = json_body() or {}
     import racks as rack_book
     customer_id = '' if user.get('role') == 'driver' else clean_text(data.get('customer_id'), 80)
-    return jsonify(rack_book.check_scan(
+    verdict = rack_book.check_scan(
         rack_book.load_rows(), data.get('text'), customer_id, data.get('already') or [],
-    ))
+    )
+    if verdict.get('rack'):
+        rack_book.record_scan(verdict.get('rack'), user, data.get('scan_method'))
+    return jsonify(verdict)
+
+
+def _pickup_field(data, key):
+    value = data.get(key)
+    if isinstance(value, (list, dict)):
+        return value
+    text = str(value or '').strip()
+    if not text:
+        return [] if key != 'notes' and key != 'methods' else {}
+    if text[:1] in '[{':
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (list, dict)):
+            return parsed
+    if key in {'notes', 'methods'}:
+        return {}
+    return [part.strip() for part in text.split(',') if part.strip()]
+
+
+def _discard_damage_photos(pending):
+    import racks as rack_book
+    for number, photo_id in pending:
+        rack_book.discard_damage_photo(number, photo_id)
 
 
 @app.route('/api/racks/pickup', methods=['POST'])
@@ -2487,7 +2614,7 @@ def rack_pickup():
     user = current_user()
     if not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
-    data = json_body() or {}
+    data = (json_body() or {}) if request.is_json else request.form
     if user.get('role') == 'driver':
         customer_id = ''
         customer_name = ''
@@ -2498,13 +2625,234 @@ def rack_pickup():
             return json_error('Choose the customer.', 400)
         customer_name = customer.get('name') or ''
     import racks as rack_book
+    racks = _pickup_field(data, 'racks')
+    methods = _pickup_field(data, 'methods')
+    notes = _pickup_field(data, 'notes')
+    if not isinstance(notes, dict):
+        notes = {}
+    if not isinstance(methods, dict):
+        methods = {}
+    damage = {}
+    pending = []
+    for raw_number in _pickup_field(data, 'damaged') or []:
+        number = rack_book.rack_number_from_scan(raw_number)
+        if not number or number in damage:
+            continue
+        uploads = request.files.getlist('photos-' + number) if request.files else []
+        if len(uploads) > rack_book.MAX_DAMAGE_PHOTOS:
+            _discard_damage_photos(pending)
+            return json_error('Each rack can have up to 8 damage photos.', 400)
+        photos = []
+        for upload in uploads:
+            raw = upload.read()
+            if not raw:
+                continue
+            saved = rack_book.store_damage_photo(number, raw)
+            if not saved:
+                _discard_damage_photos(pending)
+                return json_error('Add a photo the phone can read. Use an image.', 400)
+            pending.append((number, saved['id']))
+            photos.append(saved)
+        damage[number] = {'note': clean_text(notes.get(number), 240), 'photos': photos}
     result = rack_book.confirm_pickup(
-        data.get('racks') or [], customer_id, customer_name,
+        racks, customer_id, customer_name,
         clean_text(data.get('truck_plate'), 40), user,
+        methods=methods, damage=damage,
     )
+    moved = set(result.get('moved') or [])
+    for number, photo_id in pending:
+        if number not in moved:
+            rack_book.discard_damage_photo(number, photo_id)
     if not result['moved']:
         return json_error('None of those racks are at this customer.', 400)
     return jsonify(result)
+
+
+@app.route('/api/racks/<rack_number>/clear-damage', methods=['POST'])
+@login_required
+def clear_rack_damage(rack_number):
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can clear the damaged flag.', 403)
+    import racks as rack_book
+    row = rack_book.clear_damage(rack_number, user)
+    if not row:
+        return json_error('That rack is not marked damaged.', 400)
+    return jsonify(rack_book.present(row))
+
+
+def _repair_invoice(customer, user, amount, description, order_id=None, shipment_number=''):
+    """A one-line service invoice on the customer's account, in that company's currency."""
+    import customer_accounts
+    customer_accounts.ensure_accounts(customer)
+    issuer = customer_accounts.home_entity(customer)
+    selling, account_error = customer_accounts.require_account(customer, issuer)
+    if account_error or not selling:
+        issuer = 'us'
+        currency = 'usd'
+    else:
+        currency = selling.get('currency') or ('cad' if issuer == 'ca' else 'usd')
+    if currency not in CURRENCIES:
+        currency = 'cad' if issuer == 'ca' else 'usd'
+    total = money(amount)
+    line = {
+        'description': description,
+        'name': description,
+        'qty': 1,
+        'pcs': 1,
+        'unit_price': total,
+        'price_pc': total,
+        'total': total,
+        'kind': 'service',
+        'item_type': 'service',
+    }
+    today = datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    days = payment_term_days(customer)
+    document = {
+        'doc_type': 'invoice',
+        'source': 'repair',
+        'order_id': order_id,
+        'quote_id': None,
+        'customer_id': customer.get('id'),
+        'company': customer.get('name') or '',
+        'project': 'Rack repair',
+        'shipment_number': shipment_number or '',
+        'currency': currency,
+        'lines': [line],
+        'items': [line],
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'igu_subtotal': 0,
+        'igu_total': 0,
+        'extras_total': 0,
+        'service_total': total,
+        'subtotal': total,
+        'pretax_total': total,
+        'tax_free': issuer != 'ca',
+        'total': total,
+        'invoice_date': today.isoformat(),
+        'due_date': (today + timedelta(days=days)).isoformat(),
+        'payment_terms': customer.get('payment_terms') or 'Net 30',
+        'payment_terms_days': days,
+        'status': 'unpaid',
+        'balance': total,
+        'voided': False,
+        'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'created_by': user.get('email') or user.get('phone') or '',
+        'issuer': issuer,
+        'kind': 'customer',
+    }
+    if issuer == 'ca':
+        _apply_canada_tax(document, customer, customer.get('province'))
+    else:
+        document.update(_tax_number_snapshot(customer))
+    document['audit'] = [_audit(user, 'created', 'repair invoice')]
+    stored = append_invoice(document)
+    _qbo('push_document', stored)
+    return stored
+
+
+@app.route('/api/racks/damage-reports', methods=['GET'])
+@login_required
+def damage_report_list():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    rows = rack_book.filter_damage_reports(
+        rack_book.load_damage_reports(),
+        status=clean_text(request.args.get('status'), 20),
+        customer_id=clean_text(request.args.get('customer_id'), 80),
+        rack=clean_text(request.args.get('rack'), 40),
+        start=clean_text(request.args.get('from'), 10),
+        end=clean_text(request.args.get('to'), 10),
+    )
+    return jsonify(rows)
+
+
+@app.route('/api/racks/damage-reports/<int:report_id>/repaired', methods=['POST'])
+@login_required
+def damage_report_repaired(report_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    saved, error = rack_book.close_damage_report(report_id, user, rack_book.REPORT_REPAIRED)
+    if error:
+        return json_error(error, 400)
+    return jsonify(saved)
+
+
+@app.route('/api/racks/damage-reports/<int:report_id>/charge', methods=['POST'])
+@login_required
+def damage_report_charge(report_id):
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body() or {}
+    description = clean_text(data.get('description'), 200)
+    if not description:
+        return json_error('Enter a description.', 400)
+    try:
+        amount = money(data.get('amount'))
+    except (TypeError, ValueError):
+        return json_error('Enter an amount.', 400)
+    if amount <= 0:
+        return json_error('The amount must be greater than zero.', 400)
+    import racks as rack_book
+    report = rack_book.damage_report(report_id)
+    if not report:
+        return json_error('That report was not found.', 400)
+    if report.get('status') != rack_book.REPORT_OPEN:
+        return json_error('That report is already closed.', 400)
+    customer = load_customers().get(report.get('customer_id') or '')
+    if not customer:
+        return json_error('That customer was not found.', 400)
+    customer = dict(customer)
+    customer['id'] = report.get('customer_id')
+    invoice = _repair_invoice(
+        customer, user, amount, description,
+        order_id=report.get('order_id'),
+        shipment_number=report.get('shipment_number') or '',
+    )
+    saved, error = rack_book.close_damage_report(
+        report_id, user, rack_book.REPORT_CHARGED,
+        invoice_id=invoice.get('id'), invoice_number=invoice.get('number') or '',
+    )
+    if error:
+        return json_error(error, 400)
+    saved['invoice_id'] = invoice.get('id')
+    saved['invoice_number'] = invoice.get('number') or ''
+    return jsonify(saved)
+
+
+@app.route('/api/racks/<rack_number>/photos/<photo_id>', methods=['GET'])
+@login_required
+def rack_damage_photo(rack_number, photo_id):
+    user = current_user()
+    if not staff_can_order(user) or user.get('role') == 'driver':
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    number = rack_book.rack_number_from_scan(rack_number)
+    row = rack_book.load_rows().get(number) if number else None
+    known = set()
+    if isinstance(row, dict):
+        for item in row.get('history') or []:
+            if not isinstance(item, dict):
+                continue
+            for photo in item.get('photos') or []:
+                if isinstance(photo, dict) and photo.get('id'):
+                    known.add(str(photo.get('id')))
+        for photo in row.get('damage_photos') or []:
+            if isinstance(photo, dict) and photo.get('id'):
+                known.add(str(photo.get('id')))
+    if str(photo_id) not in known:
+        return json_error('That photo was not found.', 404)
+    path = rack_book.damage_photo_path(number, photo_id)
+    if not path or not os.path.isfile(path):
+        return json_error('That photo was not found.', 404)
+    return send_file(path, mimetype='image/jpeg')
 
 
 @app.route('/api/racks/<rack_number>/return', methods=['POST'])
@@ -7336,6 +7684,13 @@ def order_for_viewer(order, user, with_coverage=False):
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
+        'delivery_creates_invoice': not (
+            (order.get('remake') and not order.get('charge_customer'))
+            or order.get('legacy')
+            or order.get('shipments')
+            or order.get('invoice_id')
+        ),
+        'delivery_confirm': _delivery_confirm(order),
         'drawings': _public_drawings(order),
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
@@ -8924,6 +9279,28 @@ def _apply_prepayments_to_invoice(order_id, invoice_id, user):
     return payments
 
 
+def _delivery_billing_note(order):
+    """The invoice sentence for Mark delivered. Matches set_order_status."""
+    if order.get('remake') and not order.get('charge_customer'):
+        return 'No invoice is created. This remake is not charged to the customer.'
+    if order.get('legacy'):
+        return 'No invoice is created. Legacy jobs are not invoiced.'
+    if order.get('shipments'):
+        return 'Billing follows the shipments; existing invoice(s) are kept, no new invoice is created.'
+    if order.get('invoice_id'):
+        return 'The existing invoice is kept. No new invoice is created.'
+    return 'This creates an invoice.'
+
+
+def _delivery_confirm(order):
+    return (
+        'Mark this order as delivered? '
+        + _delivery_billing_note(order)
+        + ' Racks on this order start their customer stay timer now. '
+        + 'Further edits are limited to an administrator, and the invoice is not changed.'
+    )
+
+
 @app.route('/api/orders/<int:order_id>/status', methods=['POST'])
 @module_required('orders')
 def set_order_status(order_id):
@@ -9214,9 +9591,7 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         })
     _stamp_log(order, user, changes)
     import racks as rack_book
-    rack_book.record_packing(
-        order, parsed.get('rack') or '', parsed.get('number') or '', parsed.get('rack_name') or '', user,
-    )
+    rack_book.sync_order_racks(order, user)
     return order, progress, unmatched
 
 
@@ -9772,9 +10147,13 @@ def reassign_legacy_packing(order_id, list_id):
     left, error = update_order(order_id, take_off_legacy)
     if error:
         return json_error(error, 400)
+    import racks as rack_book
     if not left.get('shipments') and not any(row.get('current', True) for row in left.get('packing_lists') or []):
+        rack_book.release_order_packing(order_id, user)
         save_orders([row for row in load_orders() if row.get('id') != order_id])
         left = None
+    else:
+        rack_book.sync_order_racks(left, user)
     return jsonify({
         'order_id': saved.get('id'),
         'legacy_id': None if left is None else left.get('id'),
@@ -9842,6 +10221,9 @@ def remove_packing_list(order_id, list_id):
         return updated, None
 
     saved, error = update_order(order_id, mutator)
+    if not error:
+        import racks as rack_book
+        rack_book.sync_order_racks(saved, user)
     if error:
         return json_error(error, 400)
     return jsonify(order_for_viewer(saved, user, with_coverage=True))
@@ -14580,10 +14962,44 @@ def seed_command(links, base_url):
         click.echo(f'{email}  {base}/setup-password/{token}')
 
 
+def _customer_overdue_panel(user):
+    """A customer's own overdue racks, and only when that company turned the alert on."""
+    if not user or user.get('role') != 'customer':
+        return None
+    customer_id = user.get('customer_id') or ''
+    customer = load_customers().get(customer_id) or {}
+    if not customer.get('show_overdue_racks'):
+        return None
+    import racks as rack_book
+    rows = [
+        row for row in rack_book.overdue_rows(rack_book.load_rows())
+        if row.get('customer_id') == customer_id
+    ]
+    return {'count': len(rows), 'rows': rows, 'alert_after': rack_book.alert_days(customer)}
+
+
+def _overdue_rack_panel(user):
+    if not user or user.get('role') != 'admin':
+        return None
+    import racks as rack_book
+    rack_book.backfill_from_orders(load_orders(), user)
+    rows = rack_book.overdue_rows(rack_book.load_rows())
+    return {'count': len(rows), 'rows': rows[:8]}
+
+
+def _overdue_report(user):
+    if not user or user.get('role') != 'admin':
+        return None
+    import racks as rack_book
+    return rack_book.weekly_report_view()
+
+
 def _start_background_jobs():
     import quickbooks
+    import racks as rack_book
     quickbooks.start_weekly_open_import()
     quickbooks.start_cdc_loop()
+    rack_book.start_weekly_overdue_report()
 
 
 _start_background_jobs()

@@ -18,7 +18,13 @@ th{background:#f5f5f5;text-align:left;padding:8px;border-bottom:2px solid #ddd}
 td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
 .num{text-align:right}
 .overdue{background:#fff4e5}
+.badge-overdue{display:inline-block;margin-left:6px;background:#9f1239;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.badge-damaged{display:inline-block;margin-left:6px;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.damage-alert{background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:12px}
+.damaged{background:#fff7ed}
 .note{color:#555;font-size:14px;margin-top:8px}
+.report{margin-top:16px;border-top:1px solid #eee;padding-top:12px}
+th.sortable{cursor:pointer}
 a{color:#C41E3A}
 </style>
 </head>
@@ -27,7 +33,21 @@ a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="color:#333">Racks</h2>
-<p class="note">{% if staff %}Every rack, and how long it has been at a customer. More than 14 days is highlighted.{% else %}Racks your company is holding.{% endif %}</p>
+<p class="note">{% if staff %}Every rack, and how long it has been at a customer. A rack is overdue after the number of days set on that company. The default is 14.{% else %}Racks your company is holding.{% endif %}</p>
+{% if staff %}
+<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports{% if open_damage_reports %} <span class="badge-damaged">{{ open_damage_reports }}</span>{% endif %}</a></p>
+<p class="note{% if open_damage_reports %} damage-alert{% endif %}" id="open-damage-reports"><a href="/racks/damage">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</a></p>
+{% endif %}
+{% if customer_overdue and customer_overdue.count %}
+<div class="note" id="customer-overdue-racks" style="background:#fff4e5;border:1px solid #f0c9d0;border-radius:8px;padding:12px">
+<strong>{{ customer_overdue.count }} of your racks {{ 'have' if customer_overdue.count != 1 else 'has' }} been out longer than {{ customer_overdue.alert_after }} days.</strong>
+<ul>
+{% for row in customer_overdue.rows %}
+<li>{{ row.number }} · delivered {{ row.delivered_on }} · {{ row.days }} days · {{ row.packing_number }}</li>
+{% endfor %}
+</ul>
+</div>
+{% endif %}
 <p class="note" id="rack-focus" hidden></p>
 <div class="filters">
 {% if staff %}
@@ -37,6 +57,8 @@ a{color:#C41E3A}
 <option value="at_ora">At Ora Glass</option>
 <option value="at_customer">At customer</option>
 <option value="returned">Returned</option>
+<option value="damaged">Damaged</option>
+<option value="overdue">Overdue</option>
 </select>
 <select id="rack-customer" aria-label="Customer"><option value="">All customers</option></select>
 <button type="button" class="btn" id="rack-filter">Filter</button>
@@ -44,9 +66,29 @@ a{color:#C41E3A}
 {% endif %}
 </div>
 <table>
-<thead><tr><th>Rack</th><th>Name</th><th>Status</th><th>Customer</th><th class="num">Days</th><th>Shipment</th><th>Truck</th><th>History</th></tr></thead>
-<tbody id="rack-list"><tr><td colspan="8" class="note">Loading...</td></tr></tbody>
+<thead><tr>
+<th>Rack</th><th>Name</th><th>Status</th><th>Customer</th>
+{% if staff %}<th class="num sortable" data-sort="trips">Trips</th><th class="num sortable" data-sort="avg_days">Avg days</th><th class="num sortable" data-sort="days">Days at customer</th>{% else %}<th class="num">Days</th>{% endif %}
+<th>Shipment</th><th>Truck</th>{% if not staff %}<th>History</th>{% endif %}
+</tr></thead>
+<tbody id="rack-list"><tr><td colspan="9" class="note">Loading...</td></tr></tbody>
 </table>
+{% if admin and report %}
+<div class="report" id="overdue-report">
+<h3>Weekly overdue racks</h3>
+<p class="note">Built {{ report.schedule }} and kept in the ERP. Customers are not emailed.{% if report.ran %} Last run {{ report.at_label }}.{% else %} It has not run yet.{% endif %}</p>
+{% if report.rows %}
+<table>
+<thead><tr><th>Rack</th><th>Customer</th><th class="num">Days</th><th>Delivered on</th><th>Packing list</th></tr></thead>
+<tbody>
+{% for row in report.rows %}
+<tr><td><a href="/racks/{{ row.number }}">{{ row.number }}</a></td><td>{{ row.customer_name }}</td><td class="num">{{ row.days }}</td><td>{{ row.delivered_on }}</td><td>{{ row.packing_number }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+</div>
+{% endif %}
 </div></div>
 <script>
 const STAFF = {{ staff|tojson }};
@@ -54,15 +96,52 @@ const ADMIN = {{ admin|tojson }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+let rackRows = [];
+let sortKey = '';
+let sortDir = 1;
+function numberValue(row, key) {
+  const value = row[key];
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+function sortedRows() {
+  const rows = rackRows.slice();
+  if (!sortKey) return rows;
+  rows.sort((left, right) => {
+    const a = numberValue(left, sortKey);
+    const b = numberValue(right, sortKey);
+    if (a == null && b == null) return String(left.number).localeCompare(String(right.number));
+    if (a == null) return 1;
+    if (b == null) return -1;
+    if (a === b) return String(left.number).localeCompare(String(right.number));
+    return (a - b) * sortDir;
+  });
+  return rows;
+}
 function render(rows) {
   const body = document.getElementById('rack-list');
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="note">No racks.</td></tr>'; return; }
+  const span = STAFF ? 9 : 8;
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="' + span + '" class="note">No racks.</td></tr>'; return; }
   body.innerHTML = rows.map(row => {
-    const history = (row.history || []).map(item => '<li>' + esc(item.note || item.action) + ' · ' + esc(item.user || '') + ' · ' + esc(item.at || '') + '</li>').join('');
+    const history = (row.history || []).map(item => '<li>' + esc(item.note || item.action) + ' · ' + esc(item.user_name || item.user || '') + ' · ' + esc(item.at_label || item.at || '') + '</li>').join('');
     const returning = (ADMIN && row.status === 'at_customer')
       ? '<div><button type="button" class="btn secondary" data-return="' + esc(row.number) + '">Mark returned</button></div>'
       : '';
-    return '<tr class="' + (row.overdue ? 'overdue' : '') + '"><td>' + esc(row.number) + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + returning + '</td><td>' + esc(row.customer_name || '') + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td><td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td><td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td></tr>';
+    const badge = row.overdue && (STAFF || row.alert_customer) ? '<span class="badge-overdue">Overdue</span>' : '';
+    const damaged = row.damaged ? '<span class="badge-damaged">Damaged</span>' : '';
+    const clearing = (ADMIN && row.damaged)
+      ? '<div><button type="button" class="btn secondary" data-clear-damage="' + esc(row.number) + '">Clear damaged</button></div>'
+      : '';
+    const rackCell = STAFF
+      ? '<a href="/racks/' + encodeURIComponent(row.number) + '">' + esc(row.number) + '</a>'
+      : esc(row.number);
+    const stats = STAFF
+      ? '<td class="num">' + esc(row.trips) + (row.trip_open ? ', 1 open' : '') + '</td><td class="num">' + (row.avg_days == null ? '' : esc(row.avg_days)) + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td>'
+      : '<td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td>';
+    const past = STAFF ? '' : '<td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td>';
+    const tone = row.damaged ? 'damaged' : (row.overdue ? 'overdue' : '');
+    return '<tr class="' + tone + '"><td>' + rackCell + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + badge + damaged + returning + clearing + '</td><td>' + esc(row.customer_name || '') + '</td>' + stats + '<td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td>' + past + '</tr>';
   }).join('');
 }
 async function load() {
@@ -83,9 +162,18 @@ async function load() {
     labels.href = '/api/racks/labels.pdf' + (params.toString() ? '?' + params.toString() : '');
   }
   const res = await fetch('/api/racks?' + params.toString());
-  if (!res.ok) { document.getElementById('rack-list').innerHTML = '<tr><td colspan="8" class="note">Could not load racks.</td></tr>'; return; }
-  render(await res.json());
+  if (!res.ok) { document.getElementById('rack-list').innerHTML = '<tr><td colspan="9" class="note">Could not load racks.</td></tr>'; return; }
+  rackRows = await res.json();
+  render(sortedRows());
 }
+document.querySelectorAll('[data-sort]').forEach(header => {
+  header.addEventListener('click', () => {
+    const key = header.getAttribute('data-sort');
+    sortDir = sortKey === key ? -sortDir : 1;
+    sortKey = key;
+    render(sortedRows());
+  });
+});
 if (STAFF) {
   fetch('/api/racks/sites').then(res => res.json()).then(rows => {
     const select = document.getElementById('rack-customer');
@@ -94,6 +182,21 @@ if (STAFF) {
   document.getElementById('rack-filter').addEventListener('click', load);
 }
 document.getElementById('rack-list').addEventListener('click', async (event) => {
+  const clear = event.target.closest('[data-clear-damage]');
+  if (clear && ADMIN) {
+    const number = clear.getAttribute('data-clear-damage');
+    if (!window.confirm('Clear the damaged flag on rack ' + number + '?')) return;
+    clear.disabled = true;
+    const cleared = await fetch('/api/racks/' + encodeURIComponent(number) + '/clear-damage', {method: 'POST'});
+    const payload = await cleared.json().catch(() => ({}));
+    if (!cleared.ok) {
+      clear.disabled = false;
+      alert(payload.error || 'Could not clear the damaged flag');
+      return;
+    }
+    load();
+    return;
+  }
   const button = event.target.closest('[data-return]');
   if (!button || !ADMIN) return;
   const number = button.getAttribute('data-return');
@@ -108,6 +211,9 @@ document.getElementById('rack-list').addEventListener('click', async (event) => 
   }
   load();
 });
+const initialStatus = new URLSearchParams(location.search).get('status') || '';
+const statusSelect = document.getElementById('rack-status');
+if (statusSelect && initialStatus) statusSelect.value = initialStatus;
 load();
 </script>
 </body>

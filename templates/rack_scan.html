@@ -13,6 +13,14 @@ h2{color:#333;font-size:28px;margin:8px 0}
 .card{background:#fff;border-radius:12px;padding:16px;margin-top:12px}
 label{display:block;font-size:16px;color:#333;margin-top:12px}
 input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px;border:1px solid #ccc;border-radius:12px}
+.keep{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:16px;color:#333}
+.keep input{display:inline-block;width:22px;height:22px;margin:0;padding:0}
+.damage-box{margin:8px 0 14px;padding:12px;background:#fff7ed;border-radius:12px}
+.damage-box input[type=file]{font-size:16px;padding:10px}
+.previews{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.previews figure{margin:0;width:96px}
+.previews img{width:96px;height:96px;object-fit:cover;border-radius:8px;display:block}
+.previews button{margin-top:4px;width:100%;font-size:14px;padding:6px;border:1px solid #ccc;border-radius:8px;background:#fff}
 #scan-input{font-size:32px;padding:18px}
 .btn{display:block;width:100%;background:#C41E3A;color:#fff;border:0;border-radius:12px;font-size:22px;font-weight:700;padding:18px 16px;margin-top:12px;cursor:pointer}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
@@ -27,7 +35,7 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 {% include 'partials/header.html' %}
 <div class="container">
 <h2>Pick up racks</h2>
-<p class="note">Point the phone camera at the QR code. The code is the rack number. Type it if the camera is not available.</p>
+<p class="note">Point the phone camera at the QR code. The rack is added as soon as the code is read. Type it if the camera is not available.</p>
 <div class="card">
 {% if not driver %}
 <label>Customer
@@ -37,7 +45,8 @@ input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px
 <label>Truck plate
 <input id="plate" aria-label="Truck plate" placeholder="Optional" autocomplete="off">
 </label>
-<button type="button" class="btn" id="camera">Scan rack</button>
+<button type="button" class="btn" id="camera">Start camera</button>
+<label class="keep"><input type="checkbox" id="keep-scanning"> Keep scanning</label>
 <div id="reader" hidden></div>
 <label>Rack number
 <input id="scan-input" autofocus autocomplete="off" inputmode="numeric" aria-label="Rack number" enterkeyhint="done">
@@ -58,18 +67,47 @@ const scans = [];
 const input = document.getElementById('scan-input');
 const list = document.getElementById('list');
 let camera = null;
+let audioCtx = null;
+let scanLock = false;
+let lastCameraCode = '';
+let lastCameraAt = 0;
+let resumeTimer = null;
 
+function unlockBeep() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!audioCtx) audioCtx = new Ctx();
+  const pending = audioCtx.resume();
+  if (pending && pending.catch) pending.catch(function() {});
+  try {
+    const buffer = audioCtx.createBuffer(1, 1, 22050);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    source.start(0);
+  } catch (error) {}
+}
 function beep(ok) {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const tone = ctx.createOscillator();
-    const gain = ctx.createGain();
-    tone.frequency.value = ok ? 880 : 220;
+    if (!audioCtx) unlockBeep();
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const tone = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
     tone.connect(gain);
-    gain.connect(ctx.destination);
-    gain.gain.value = 0.08;
-    tone.start();
-    setTimeout(() => { tone.stop(); ctx.close(); }, ok ? 120 : 280);
+    gain.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (ok ? 0.14 : 0.28));
+    tone.frequency.value = ok ? 880 : 220;
+    tone.start(now);
+    tone.stop(now + (ok ? 0.15 : 0.3));
+  } catch (error) {}
+}
+function buzz() {
+  try {
+    if (navigator.vibrate) navigator.vibrate(150);
   } catch (error) {}
 }
 function render() {
@@ -88,7 +126,17 @@ function render() {
   });
   let html = groups.map(group => {
     const heading = groups.length > 1 ? '<h3>' + esc(group.name) + '</h3>' : '';
-    const rows = group.rows.map(row => '<div class="row ok"><strong>' + esc(row.rack) + '</strong><span>' + esc(row.customer_name || group.name) + '</span></div>').join('');
+    const rows = group.rows.map(row => {
+      const photos = (row.files || []).map((file, index) => '<figure><img src="' + esc(file.url) + '" alt="Damage photo"><button type="button" data-remove-photo="' + esc(row.rack) + '" data-index="' + index + '">Remove</button></figure>').join('');
+      const box = row.damaged ? '' : ' hidden';
+      return '<div class="row ok"><strong>' + esc(row.rack) + '</strong><span>' + esc(row.customer_name || group.name) + '</span></div>'
+        + '<label class="keep"><input type="checkbox" data-damaged="' + esc(row.rack) + '"' + (row.damaged ? ' checked' : '') + '> Damaged</label>'
+        + '<div class="damage-box"' + box + ' data-damage-box="' + esc(row.rack) + '">'
+        + '<label>Add photos of damage<input type="file" accept="image/*" capture="environment" multiple data-photos="' + esc(row.rack) + '"></label>'
+        + '<div class="previews">' + photos + '</div>'
+        + '<label>Note<input data-note="' + esc(row.rack) + '" maxlength="240" placeholder="Optional" value="' + esc(row.note || '') + '"></label>'
+        + '</div>';
+    }).join('');
     return heading + rows;
   }).join('');
   html += flagged.map(row => {
@@ -97,11 +145,54 @@ function render() {
   }).join('');
   list.innerHTML = html;
 }
+function scanByRack(number) {
+  return scans.find(row => row.result === 'ok' && row.rack === number);
+}
+list.addEventListener('change', event => {
+  const box = event.target.closest('[data-damaged]');
+  if (box) {
+    const row = scanByRack(box.getAttribute('data-damaged'));
+    if (!row) return;
+    row.damaged = box.checked;
+    if (!row.damaged) {
+      (row.files || []).forEach(file => { if (file.url) URL.revokeObjectURL(file.url); });
+      row.files = [];
+      row.note = '';
+    }
+    render();
+    return;
+  }
+  const picker = event.target.closest('[data-photos]');
+  if (!picker) return;
+  const row = scanByRack(picker.getAttribute('data-photos'));
+  if (!row) return;
+  row.files = row.files || [];
+  Array.from(picker.files || []).forEach(file => {
+    row.files.push({file: file, url: URL.createObjectURL(file)});
+  });
+  render();
+});
+list.addEventListener('click', event => {
+  const button = event.target.closest('[data-remove-photo]');
+  if (!button) return;
+  const row = scanByRack(button.getAttribute('data-remove-photo'));
+  if (!row || !row.files) return;
+  const index = Number(button.getAttribute('data-index'));
+  const removed = row.files.splice(index, 1)[0];
+  if (removed && removed.url) URL.revokeObjectURL(removed.url);
+  render();
+});
+list.addEventListener('input', event => {
+  const note = event.target.closest('[data-note]');
+  if (!note) return;
+  const row = scanByRack(note.getAttribute('data-note'));
+  if (row) row.note = note.value;
+});
 function chosenCustomer() {
   const select = document.getElementById('customer');
   return select ? select.value : '';
 }
-async function addScan(raw) {
+async function addScan(raw, options) {
   const text = String(raw || '');
   if (!text.trim()) return;
   const res = await fetch('/api/racks/check', {
@@ -109,57 +200,135 @@ async function addScan(raw) {
     body: JSON.stringify({
       text: text,
       customer_id: DRIVER ? '' : chosenCustomer(),
-      already: scans.filter(row => row.result === 'ok').map(row => row.rack)
+      already: scans.filter(row => row.result === 'ok').map(row => row.rack),
+      scan_method: (options && options.method) || 'typed'
     })
   });
   const body = await res.json().catch(() => ({result: 'unknown', message: 'Could not check that rack', raw: text, rack: text.trim()}));
+  body.scan_method = (options && options.method) || 'typed';
   scans.push(body);
   beep(body.result === 'ok');
   render();
-  input.value = '';
+  if (options && options.keepValue) input.value = text.trim();
+  else input.value = '';
   input.focus();
 }
-input.addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    addScan(input.value);
-  }
-});
-document.getElementById('add-rack').addEventListener('click', () => addScan(input.value));
-document.getElementById('camera').addEventListener('click', async () => {
+function qrbox(viewWidth, viewHeight) {
+  const edge = Math.max(50, Math.floor(Math.min(viewWidth, viewHeight) * 0.7));
+  return {width: edge, height: edge};
+}
+async function stopCamera() {
+  if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
   const box = document.getElementById('reader');
-  if (camera) {
-    await camera.stop();
-    camera = null;
-    box.hidden = true;
-    document.getElementById('camera').textContent = 'Scan rack';
-    input.focus();
+  const current = camera;
+  camera = null;
+  if (current) {
+    try { await current.stop(); } catch (error) {}
+    try { current.clear(); } catch (error) {}
+  }
+  box.hidden = true;
+  document.getElementById('camera').textContent = 'Start camera';
+  input.focus();
+}
+async function onCameraCode(text) {
+  const code = String(text || '').trim();
+  if (!code || scanLock) return;
+  const now = Date.now();
+  if (code === lastCameraCode && now - lastCameraAt < 2000) return;
+  scanLock = true;
+  lastCameraCode = code;
+  lastCameraAt = now;
+  input.value = code;
+  buzz();
+  const keep = document.getElementById('keep-scanning').checked;
+  if (keep && camera) {
+    try { await camera.pause(true); } catch (error) {}
+  } else {
+    await stopCamera();
+  }
+  await addScan(code, {keepValue: true, method: 'camera'});
+  if (keep && camera) {
+    resumeTimer = setTimeout(function() {
+      scanLock = false;
+      if (!camera) return;
+      const resumed = camera.resume();
+      if (resumed && resumed.catch) resumed.catch(function() {});
+    }, 1000);
+  } else {
+    scanLock = false;
+  }
+}
+async function startCamera() {
+  const box = document.getElementById('reader');
+  if (!window.Html5Qrcode) {
+    document.getElementById('message').textContent = 'The camera scanner did not load.';
     return;
   }
-  if (!window.Html5Qrcode) { document.getElementById('message').textContent = 'The camera scanner did not load.'; return; }
   box.hidden = false;
-  camera = new Html5Qrcode('reader');
-  let last = '';
-  let lastAt = 0;
-  await camera.start({facingMode: 'environment'}, {fps: 8, qrbox: 220}, text => {
-    const now = Date.now();
-    if (text === last && now - lastAt < 1500) return;
-    last = text;
-    lastAt = now;
-    addScan(text);
-  });
+  const formats = window.Html5QrcodeSupportedFormats;
+  const options = {experimentalFeatures: {useBarCodeDetectorIfSupported: false}, verbose: false};
+  if (formats && formats.QR_CODE != null) options.formatsToSupport = [formats.QR_CODE];
+  camera = new Html5Qrcode('reader', options);
+  await camera.start(
+    {facingMode: 'environment'},
+    {fps: 10, qrbox: qrbox, experimentalFeatures: {useBarCodeDetectorIfSupported: false}},
+    onCameraCode,
+    function() {}
+  );
   document.getElementById('camera').textContent = 'Stop camera';
+}
+let typedAt = 0;
+input.addEventListener('keydown', event => {
+  if (!input.value) typedAt = Date.now();
+  if (!typedAt) typedAt = Date.now();
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  const method = (Date.now() - typedAt) <= 120 ? 'gun' : 'typed';
+  typedAt = 0;
+  unlockBeep();
+  addScan(input.value, {method: method});
+});
+document.getElementById('add-rack').addEventListener('click', () => {
+  typedAt = 0;
+  unlockBeep();
+  addScan(input.value, {method: 'typed'});
+});
+document.getElementById('camera').addEventListener('click', async () => {
+  unlockBeep();
+  if (camera) {
+    scanLock = false;
+    await stopCamera();
+    return;
+  }
+  try {
+    await startCamera();
+  } catch (error) {
+    document.getElementById('message').textContent = 'The camera could not start. Type the rack number instead.';
+    await stopCamera();
+  }
 });
 document.getElementById('confirm').addEventListener('click', async () => {
-  const racks = scans.filter(row => row.result === 'ok').map(row => row.rack);
-  const res = await fetch('/api/racks/pickup', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      customer_id: DRIVER ? '' : chosenCustomer(),
-      truck_plate: document.getElementById('plate').value,
-      racks: racks
-    })
+  const ready = scans.filter(row => row.result === 'ok');
+  const form = new FormData();
+  form.append('customer_id', DRIVER ? '' : chosenCustomer());
+  form.append('truck_plate', document.getElementById('plate').value);
+  form.append('racks', JSON.stringify(ready.map(row => row.rack)));
+  form.append('methods', JSON.stringify(ready.reduce((map, row) => {
+    map[row.rack] = row.scan_method || 'typed';
+    return map;
+  }, {})));
+  const damaged = ready.filter(row => row.damaged);
+  form.append('damaged', JSON.stringify(damaged.map(row => row.rack)));
+  form.append('notes', JSON.stringify(damaged.reduce((map, row) => {
+    map[row.rack] = row.note || '';
+    return map;
+  }, {})));
+  damaged.forEach(row => {
+    (row.files || []).forEach(item => {
+      form.append('photos-' + row.rack, item.file, item.file.name || 'damage.jpg');
+    });
   });
+  const res = await fetch('/api/racks/pickup', {method: 'POST', body: form});
   const body = await res.json().catch(() => ({}));
   const message = document.getElementById('message');
   if (!res.ok) { message.textContent = body.error || 'The pickup was not saved'; return; }

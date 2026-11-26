@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORA Glass ERP - Rack {{ rack.number if rack else missing }}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
+.container{max-width:900px;margin:20px auto;padding:0 20px}
+.card{background:#fff;border-radius:8px;padding:16px 20px;margin-bottom:16px}
+.note{color:#555;font-size:14px;margin-top:6px}
+.stats{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px}
+.stats div{min-width:140px}
+.stats strong{display:block;font-size:20px;color:#333}
+.badge-overdue{display:inline-block;background:#9f1239;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.badge-damaged{display:inline-block;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.gallery{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.gallery img,.thumbs img{width:160px;height:160px;object-fit:cover;border-radius:8px}
+.thumbs img{width:72px;height:72px;margin-top:6px}
+.btn{background:#fff;color:#333;border:1px solid #ccc;padding:8px 14px;border-radius:4px;margin-top:12px;cursor:pointer}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+th{background:#f5f5f5;text-align:left;padding:8px;border-bottom:2px solid #ddd}
+td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
+a{color:#C41E3A}
+</style>
+</head>
+<body>
+{% set show_back = true %}
+{% include 'partials/header.html' %}
+<div class="container">
+<p class="note"><a href="/racks">All racks</a></p>
+{% if not rack %}
+<div class="card"><h2>Rack {{ missing }}</h2><p class="note">That rack was not found.</p></div>
+{% else %}
+<div class="card" id="rack-detail">
+<h2>Rack {{ rack.number }} {% if rack.overdue %}<span class="badge-overdue">Overdue</span>{% endif %}{% if rack.damaged %} <span class="badge-damaged">Damaged</span>{% endif %}</h2>
+<p class="note">{{ rack.name or '' }} · {{ rack.status_label }}</p>
+{% if rack.damaged %}
+<div id="damage-gallery">
+{% if rack.damage_note %}<p class="note">{{ rack.damage_note }}</p>{% endif %}
+<div class="gallery">
+{% for photo in rack.damage_photos %}
+<img src="/api/racks/{{ rack.number }}/photos/{{ photo.id }}" alt="Damage photo of rack {{ rack.number }}">
+{% endfor %}
+</div>
+{% if admin %}<button type="button" class="btn" id="clear-damage">Clear damaged</button>{% endif %}
+</div>
+{% endif %}
+<div class="stats">
+<div><span class="note">Trips</span><strong id="rack-trips">{{ rack.trips }}{% if rack.trip_open %}, 1 open{% endif %}</strong></div>
+<div><span class="note">Days at customers</span><strong>{{ rack.total_days }}</strong></div>
+<div><span class="note">Average days</span><strong id="rack-avg">{{ rack.avg_days if rack.avg_days is not none else '—' }}</strong></div>
+<div><span class="note">Longest stay</span><strong id="rack-longest">{{ rack.longest_days if rack.longest_days is not none else '—' }}</strong></div>
+<div><span class="note">Current location</span><strong id="rack-location">{{ rack.current_location }}</strong></div>
+<div><span class="note">Days there</span><strong id="rack-days">{{ rack.days if rack.days is not none else '—' }}</strong></div>
+</div>
+<p class="note" id="rack-last-scan">{% if rack.last_scan_label %}Last scanned {{ rack.last_scan_label }} by {{ rack.last_scan_by }}{% if rack.last_scan_role %} ({{ rack.last_scan_role }}){% endif %}{% if rack.last_scan_method %}, {{ rack.last_scan_method }}{% endif %}.{% else %}Not scanned yet.{% endif %}</p>
+</div>
+<div class="card">
+<h3>Timeline</h3>
+<table id="rack-timeline">
+<thead><tr><th>When</th><th>Action</th><th>Who</th><th>Before</th><th>After</th><th>Packing list</th><th>Scan</th></tr></thead>
+<tbody>
+{% for item in rack.history %}
+<tr>
+<td>{{ item.at_label or item.at }}</td>
+<td>{{ item.note or item.action }}{% if item.photos %}<div class="thumbs">{% for photo in item.photos %}<img src="/api/racks/{{ rack.number }}/photos/{{ photo.id }}" alt="Damage photo">{% endfor %}</div>{% endif %}</td>
+<td>{{ item.user_name or item.user }}{% if item.role_label %} ({{ item.role_label }}){% endif %}</td>
+<td>{{ item.location_before }}{% if item.customer_before_name and item.customer_before_name != item.location_before %} · {{ item.customer_before_name }}{% endif %}</td>
+<td>{{ item.location_after }}{% if item.customer_after_name and item.customer_after_name != item.location_after %} · {{ item.customer_after_name }}{% endif %}</td>
+<td>{{ item.packing_number }}</td>
+<td>{{ item.scan_method }}</td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="note">No events yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endif %}
+</div>
+{% if rack and admin and rack.damaged %}
+<script>
+document.getElementById('clear-damage').addEventListener('click', async () => {
+  if (!window.confirm('Clear the damaged flag on rack {{ rack.number }}?')) return;
+  const res = await fetch('/api/racks/{{ rack.number }}/clear-damage', {method: 'POST'});
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    alert(payload.error || 'Could not clear the damaged flag');
+    return;
+  }
+  window.location.reload();
+});
+</script>
+{% endif %}
+</body>
+</html>
