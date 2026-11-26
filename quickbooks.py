@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -13,8 +14,9 @@ import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from billing import TERM_DAYS, invoice_balance, invoice_status, money
+from billing import TERM_DAYS, invoice_applied, invoice_balance, invoice_status, money
 from storage import (
     append_invoice,
     append_payment,
@@ -534,6 +536,7 @@ def status_view():
         'missing': missing,
         'connections': cards,
         'connection_expired': any(card['connection_expired'] for card in cards),
+        'weekly_import': weekly_import_view(),
     })
     return view
 
@@ -1035,6 +1038,421 @@ def import_linked_history():
         )
     log('info', message)
     return {'customers': confirmed, 'invoices': invoices, 'credits': credits, 'payments': payments, 'message': message}
+
+
+def import_open_invoices_for_customer(customer_id):
+    """Read one customer's open invoices from the QuickBooks company they belong to.
+
+    Open Windows Inc is QuickBooks customer 2 in the US company, realm 9341456057091137.
+    This function only reads QuickBooks. It does not create or change anything there.
+    """
+    customer_id = str(customer_id or '').strip()
+    customer = load_customers().get(customer_id)
+    if not customer:
+        raise QuickBooksError('Unknown customer.')
+    if _is_open_windows(customer):
+        link = _open_windows_us_link(customer_id)
+        if not link:
+            raise QuickBooksError(
+                'Link Open Windows Inc on the Ora Glass Inc card as QuickBooks customer 2, '
+                f'realm {US_REALM}.'
+            )
+        with connection_scope('us'):
+            if not connected():
+                raise QuickBooksError('QuickBooks is not connected for Ora Glass Inc.')
+            if _active_realm() != US_REALM:
+                raise QuickBooksError(
+                    f'The Ora Glass Inc card is not connected to realm {US_REALM}.'
+                )
+            return import_open_invoices(customer_id)
+    keys = []
+    for row in load_links():
+        if row.get('kind') != 'customer' or str(row.get('erp_id') or '') != customer_id:
+            continue
+        key = row.get('connection') or 'us'
+        if key not in keys:
+            keys.append(key)
+    if not keys:
+        raise QuickBooksError('Link this customer to QuickBooks before importing open invoices.')
+    combined = {'customers': 0, 'invoices': 0, 'skipped': 0, 'refreshed': 0, 'message': ''}
+    messages = []
+    for key in keys:
+        with connection_scope(key):
+            part = import_open_invoices(customer_id)
+        combined['customers'] += part['customers']
+        combined['invoices'] += part['invoices']
+        combined['skipped'] += part['skipped']
+        combined['refreshed'] += part.get('refreshed') or 0
+        messages.append(part['message'])
+    combined['message'] = ' '.join(messages)
+    return combined
+
+
+def import_open_invoices(customer_id=None):
+    """Copy open invoices for customers linked on this QuickBooks company.
+
+    A row is skipped when its QuickBooks id or DocNumber is already in the ERP.
+    Paid invoices are left in QuickBooks. Nothing is posted back.
+    """
+    if not connected():
+        raise QuickBooksError('QuickBooks is not connected.')
+    drop_wrong_canada_open_windows_link(announce=True)
+    realm = _active_realm()
+    wanted = str(customer_id or '').strip()
+    targets = []
+    for row in load_links():
+        if row.get('kind') != 'customer' or (row.get('connection') or 'us') != _connection_key():
+            continue
+        erp_id = str(row.get('erp_id') or '')
+        if not erp_id or erp_id not in load_customers():
+            continue
+        if wanted and erp_id != wanted:
+            continue
+        if str(row.get('realm_id') or '') != realm:
+            log(
+                'error',
+                f'{erp_id} is linked to QuickBooks id {row.get("qbo_id")} without realm {realm}. '
+                'Link that customer again on this card before importing.',
+            )
+            continue
+        if erp_id not in targets:
+            targets.append(erp_id)
+    created = skipped = refreshed = 0
+    for erp_id in targets:
+        counts = _import_open_invoices(erp_id)
+        created += counts['invoices']
+        skipped += counts['skipped']
+        refreshed += counts['refreshed']
+    if wanted and not targets:
+        message = (
+            'That customer is not linked on this QuickBooks company. '
+            'Link the customer on this card, then import again.'
+        )
+    elif not targets:
+        message = 'Import found no linked customers. Link the QuickBooks customer to an ERP company, then import again.'
+    else:
+        message = (
+            f'Imported {created} open invoice{"s" if created != 1 else ""} from QuickBooks. '
+            f'Updated {refreshed} existing balance{"s" if refreshed != 1 else ""}. '
+            f'Skipped {skipped} that were already in the ERP. Nothing was sent to QuickBooks.'
+        )
+    log('info', message)
+    return {
+        'customers': len(targets),
+        'invoices': created,
+        'skipped': skipped,
+        'refreshed': refreshed,
+        'message': message,
+    }
+
+
+def _is_open_windows(customer):
+    name = str((customer or {}).get('name') or '').strip().casefold()
+    return (customer or {}).get('id') == 'open-windows' or name in {'open windows', 'open windows inc'}
+
+
+def _open_windows_us_link(customer_id):
+    for row in load_links():
+        if row.get('kind') != 'customer' or (row.get('connection') or 'us') != 'us':
+            continue
+        if str(row.get('erp_id') or '') != str(customer_id):
+            continue
+        if str(row.get('qbo_id') or '') != '2':
+            continue
+        if str(row.get('realm_id') or '') != US_REALM:
+            continue
+        return row
+    return None
+
+
+def _import_open_invoices(customer_id):
+    link = find_link('customer', erp_id=customer_id)
+    qbo_id = str((link or {}).get('qbo_id') or '')
+    if not qbo_id.isdigit():
+        return {'invoices': 0, 'skipped': 0, 'refreshed': 0}
+    _customer_record(qbo_id)
+    rows = query_all(f"select * from Invoice where CustomerRef = '{qbo_id}'")
+    counts = {'invoices': 0, 'skipped': 0, 'refreshed': 0}
+    for row in rows:
+        outcome = _import_one_open_invoice(row, customer_id)
+        if outcome == 'created':
+            counts['invoices'] += 1
+        elif outcome == 'skipped':
+            counts['skipped'] += 1
+        elif outcome == 'refreshed':
+            counts['refreshed'] += 1
+    return counts
+
+
+def _is_imported_invoice(invoice):
+    if not isinstance(invoice, dict):
+        return False
+    if invoice.get('imported'):
+        return True
+    return bool(invoice.get('qbo_origin') and invoice.get('source') == 'quickbooks')
+
+
+def _imported_invoice_for(row, customer_id):
+    """An invoice this import already copied for this customer. Native ERP invoices are left alone."""
+    qbo_id = str(row.get('Id') or '')
+    doc_number = str(row.get('DocNumber') or '').strip()
+    realm = _active_realm()
+    for invoice in load_invoices():
+        if not _is_imported_invoice(invoice) or invoice.get('customer_id') != customer_id:
+            continue
+        if invoice.get('issuer') not in (None, '', _connection_key()):
+            continue
+        same_id = qbo_id and str(invoice.get('qbo_id') or '') == qbo_id
+        same_number = doc_number and str(invoice.get('number') or '').strip() == doc_number
+        same_doc = doc_number and str(invoice.get('qbo_doc_number') or '').strip() == doc_number
+        if not (same_id or same_number or same_doc):
+            continue
+        stored_realm = str(invoice.get('qbo_realm_id') or '')
+        if stored_realm and stored_realm != realm:
+            continue
+        return invoice
+    return None
+
+
+def _apply_qbo_balance(invoice, row):
+    """Make an imported invoice show the balance QuickBooks currently reports. Does not write to QuickBooks."""
+    total = money(row.get('TotalAmt'))
+    balance = money(row.get('Balance') if row.get('Balance') is not None else total)
+    payments = load_payments()
+    applied = invoice_applied(invoice, payments)
+    invoice['total'] = total
+    invoice['subtotal'] = total
+    invoice['opening_applied'] = round(max(0.0, total - balance - applied), 2)
+    invoice['balance'] = invoice_balance(invoice, payments)
+    invoice['status'] = invoice_status(invoice, payments)
+    if row.get('DueDate'):
+        invoice['due_date'] = row.get('DueDate')
+    invoices = load_invoices()
+    for index, item in enumerate(invoices):
+        if item.get('id') == invoice.get('id'):
+            invoices[index] = invoice
+    save_invoices(invoices)
+
+
+def _import_one_open_invoice(row, customer_id):
+    existing = _imported_invoice_for(row, customer_id)
+    balance = money(row.get('Balance') if row.get('Balance') is not None else row.get('TotalAmt'))
+    if existing:
+        _apply_qbo_balance(existing, row)
+        return 'refreshed'
+    if balance <= 0.009:
+        return 'ignored'
+    if _invoice_already_known(row):
+        return 'skipped'
+    return _store_open_invoice(row, customer_id)
+
+
+def _invoice_already_known(row):
+    qbo_id = str(row.get('Id') or '')
+    doc_number = str(row.get('DocNumber') or '').strip()
+    if qbo_id and find_link('invoice', qbo_id=qbo_id):
+        return True
+    for invoice in load_invoices():
+        if qbo_id and str(invoice.get('qbo_id') or '') == qbo_id:
+            return True
+        if not doc_number:
+            continue
+        if str(invoice.get('number') or '').strip() == doc_number:
+            return True
+        if str(invoice.get('qbo_doc_number') or '').strip() == doc_number:
+            return True
+        if invoice.get('source') == 'quickbooks' and str(invoice.get('project') or '').strip() == doc_number:
+            return True
+    for link in load_links():
+        if link.get('kind') == 'invoice' and qbo_id and str(link.get('qbo_id') or '') == qbo_id:
+            return True
+    return False
+
+
+def _store_open_invoice(row, customer_id):
+    """One ERP invoice whose number, dates, amount, and balance match QuickBooks."""
+    doc_number = str(row.get('DocNumber') or '').strip()
+    if not doc_number:
+        doc_number = str(row.get('Id') or '').strip()
+    if not doc_number:
+        return 'skipped'
+    total = money(row.get('TotalAmt'))
+    balance = money(row.get('Balance') if row.get('Balance') is not None else total)
+    if balance <= 0.009:
+        return 'skipped'
+    currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
+    if currency not in {'usd', 'cad'}:
+        currency = 'usd'
+    description = 'Imported from QuickBooks'
+    for line in row.get('Line') or []:
+        if line.get('Description'):
+            description = line['Description']
+            break
+    opening = round(max(0.0, total - balance), 2)
+    stored = append_invoice({
+        'doc_type': 'invoice',
+        'kind': 'customer',
+        'source': 'quickbooks',
+        'qbo_origin': True,
+        'imported': True,
+        'legacy': True,
+        'issuer': _connection_key(),
+        'customer_id': customer_id,
+        'company': (load_customers().get(customer_id) or {}).get('name') or '',
+        'project': '',
+        'number': doc_number,
+        'qbo_doc_number': str(row.get('DocNumber') or doc_number),
+        'qbo_id': str(row.get('Id') or ''),
+        'qbo_sync': 'synced',
+        'qbo_realm_id': _active_realm(),
+        'currency': currency,
+        'lines': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],
+        'items': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],
+        'total': total,
+        'subtotal': total,
+        'balance': balance,
+        'opening_applied': opening,
+        'status': 'paid' if balance <= 0.009 else ('partial' if opening > 0.009 else 'unpaid'),
+        'invoice_date': row.get('TxnDate') or _today(),
+        'due_date': row.get('DueDate') or '',
+        'payment_terms': 'Net 30',
+        'voided': False,
+        'created_at': _now(),
+        'created_by': 'quickbooks',
+    })
+    payments = load_payments()
+    stored['balance'] = invoice_balance(stored, payments)
+    stored['status'] = invoice_status(stored, payments)
+    invoices = load_invoices()
+    for index, item in enumerate(invoices):
+        if item.get('id') == stored['id']:
+            invoices[index] = stored
+    save_invoices(invoices)
+    upsert_link(
+        'invoice', stored['id'], row.get('Id'), row.get('SyncToken'), 'qbo',
+        realm_id=_active_realm(),
+    )
+    return 'created'
+
+
+PACIFIC = ZoneInfo('America/Los_Angeles')
+WEEKLY_IMPORT_HOUR = 6
+_WEEKLY_STARTED = False
+
+
+def _pacific(now=None):
+    if now is None:
+        return datetime.now(PACIFIC)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=PACIFIC)
+    return now.astimezone(PACIFIC)
+
+
+def weekly_open_import_due(now=None):
+    """True after 6:00 AM Pacific on Monday, until this week's import is stored."""
+    now = _pacific(now)
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=WEEKLY_IMPORT_HOUR, minute=0, second=0, microsecond=0,
+    )
+    week = monday.date().isoformat()
+    if now < monday:
+        return False, week
+    guard = _load('qbo_weekly_open_import.json', {})
+    if not isinstance(guard, dict):
+        guard = {}
+    return guard.get('week') != week, week
+
+
+def run_weekly_open_import_if_due(now=None):
+    """Import open invoices for every linked customer in both companies, at most once each week.
+
+    The read uses the same rules as the manual import and then refreshes balances already copied in.
+    Nothing is posted to QuickBooks.
+    """
+    due, week = weekly_open_import_due(now)
+    if not due:
+        return None
+    companies = []
+    for key, label, _currency in CONNECTIONS:
+        with connection_scope(key):
+            if not connected():
+                part = {
+                    'connection': key,
+                    'invoices': 0,
+                    'skipped': 0,
+                    'refreshed': 0,
+                    'message': f'{label} is not connected.',
+                }
+            else:
+                try:
+                    part = import_open_invoices()
+                except QuickBooksError as exc:
+                    part = {
+                        'invoices': 0,
+                        'skipped': 0,
+                        'refreshed': 0,
+                        'message': str(exc),
+                    }
+                part['connection'] = key
+            companies.append(part)
+    message = ' '.join(part.get('message') or '' for part in companies).strip()
+    record = {
+        'week': week,
+        'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'message': message,
+        'companies': [
+            {
+                'connection': part.get('connection'),
+                'invoices': part.get('invoices') or 0,
+                'skipped': part.get('skipped') or 0,
+                'refreshed': part.get('refreshed') or 0,
+                'message': part.get('message') or '',
+            }
+            for part in companies
+        ],
+    }
+    _save('qbo_weekly_open_import.json', record)
+    logger.info('Weekly QuickBooks open-invoice import: %s', message)
+    return record
+
+
+def weekly_import_view():
+    record = _load('qbo_weekly_open_import.json', {})
+    if not isinstance(record, dict):
+        record = {}
+    at = str(record.get('at') or '')
+    label = ''
+    if at:
+        try:
+            label = _pacific(datetime.fromisoformat(at)).strftime('%Y-%m-%d %H:%M') + ' Pacific'
+        except ValueError:
+            label = at
+    return {
+        'at': at,
+        'at_label': label,
+        'week': record.get('week') or '',
+        'message': record.get('message') or '',
+        'companies': record.get('companies') or [],
+        'schedule': 'Monday at 6:00 AM Pacific',
+    }
+
+
+def _weekly_open_import_loop():
+    while True:
+        try:
+            run_weekly_open_import_if_due()
+        except Exception:
+            logger.exception('Weekly QuickBooks open-invoice import failed.')
+        time.sleep(CDC_INTERVAL)
+
+
+def start_weekly_open_import():
+    """Start the in-process Monday import. Production only, and only in the one gunicorn worker."""
+    global _WEEKLY_STARTED
+    if _WEEKLY_STARTED or os.environ.get('APP_ENV') != 'production':
+        return
+    _WEEKLY_STARTED = True
+    threading.Thread(target=_weekly_open_import_loop, name='qbo-weekly-open-import', daemon=True).start()
 
 
 def apply_import(decisions):

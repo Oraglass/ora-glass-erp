@@ -246,16 +246,22 @@ def document_type(row):
     return value if value in {'invoice', 'credit_note'} else 'invoice'
 
 
+def invoice_settled(invoice, payments):
+    """Payments recorded here, plus the amount QuickBooks had already applied on an imported invoice."""
+    opening = money((invoice or {}).get('opening_applied') or 0)
+    return round(opening + invoice_applied(invoice, payments), 2)
+
+
 def invoice_balance(invoice, payments):
     if (invoice or {}).get('voided') or document_type(invoice) == 'credit_note':
         return 0.0
-    return round(money(invoice.get('total')) - invoice_applied(invoice, payments), 2)
+    return round(money(invoice.get('total')) - invoice_settled(invoice, payments), 2)
 
 
 def invoice_status(invoice, payments):
     if (invoice or {}).get('voided'):
         return 'void'
-    applied = invoice_applied(invoice, payments)
+    applied = invoice_settled(invoice, payments)
     balance = round(money(invoice.get('total')) - applied, 2)
     if balance <= 0.009:
         return 'paid'

@@ -1,0 +1,10 @@
+<style>
+.fin-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.fin-tabs a{padding:8px 14px;border-radius:6px;background:#fff;color:#333;text-decoration:none;border:1px solid #ddd}
+.fin-tabs a.active{background:#C41E3A;color:#fff;border-color:#C41E3A}
+</style>
+<nav class="fin-tabs" aria-label="Financial">
+{% if can_financial %}<a href="{{ url_for('financial') }}"{% if fin_tab == 'overview' %} class="active" aria-current="page"{% endif %}>Overview</a>{% endif %}
+{% if can_invoices %}<a href="{{ url_for('invoices') }}"{% if fin_tab == 'invoices' %} class="active" aria-current="page"{% endif %}>Invoices</a>{% endif %}
+{% if can_invoices %}<a href="{{ url_for('financial_payments') }}"{% if fin_tab == 'payments' %} class="active" aria-current="page"{% endif %}>Record payment</a>{% endif %}
+</nav>

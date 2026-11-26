@@ -29,12 +29,19 @@ h2,h3{color:#333}
 .pick-table .order{width:42px;text-align:center;font-weight:600}
 .pick-table input[type=checkbox]{width:16px;height:16px}
 #allocation-preview,#alloc-preview{margin:8px 0}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto}
+.modal[hidden]{display:none}
+.modal-card{background:#fff;border-radius:8px;padding:24px 20px 20px;max-width:920px;width:100%;position:relative}
+.modal-close{position:absolute;top:8px;right:8px;background:#fff;color:#333;border:1px solid #ccc;border-radius:4px;font-size:20px;line-height:1;cursor:pointer;padding:4px 10px}
+.fin-tabs a.active{color:#fff}
 </style>
 </head>
 <body>
 {% set show_back = true %}
 {% include 'partials/header.html' %}
 <div class="container">
+{% include 'partials/financial_tabs.html' %}
+<div id="invoice-panel"{% if fin_tab != 'invoices' %} hidden{% endif %}>
 <div class="card">
 <h2>Invoices</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
@@ -66,7 +73,6 @@ h2,h3{color:#333}
 <thead><tr><th>Number</th><th>Type</th><th>Issued by</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
 <tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
 </table>
-<div id="invoice-detail"></div>
 </div>
 {% if can_issue %}
 <div class="card" id="create-invoice" hidden>
@@ -99,8 +105,15 @@ h2,h3{color:#333}
 </form>
 </div>
 {% endif %}
-<div class="card" id="payment-screen">
-<h3>Payments</h3>
+<div id="invoice-modal" class="modal" hidden>
+<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="invoice-modal-title">
+<button type="button" class="modal-close" id="invoice-modal-close" aria-label="Close">×</button>
+<div id="invoice-detail"></div>
+</div>
+</div>
+</div>
+<div class="card" id="payment-screen"{% if fin_tab != 'payments' %} hidden{% endif %}>
+<h2>Record payment</h2>
 <p class="note" id="credit-summary"></p>
 {% if can_record %}
 <form id="payment-form">
@@ -135,6 +148,8 @@ h2,h3{color:#333}
 </table>
 {% if can_record %}
 <div id="allocation-form">
+<p class="note" id="alloc-empty">No unallocated payments.</p>
+<div id="alloc-controls" hidden>
 <div class="row">
 <select id="alloc-payment" aria-label="Payment"></select>
 </div>
@@ -147,6 +162,7 @@ h2,h3{color:#333}
 <input id="alloc-target" type="number" min="1" placeholder="Order id" aria-label="Order id">
 <input id="alloc-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Allocation amount">
 <button type="button" class="btn secondary" id="alloc-order">Apply to order</button>
+</div>
 </div>
 </div>
 {% endif %}
@@ -211,11 +227,19 @@ function renderInvoices(rows) {
     body.innerHTML = '<tr><td colspan="9" style="color:#666">No invoices found</td></tr>';
     return;
   }
-  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.issuer_label || '') + ' · ' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
+  body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '" data-invoice="' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.issuer_label || '') + ' · ' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
+}
+function closeInvoiceModal(updateUrl) {
+  const modal = document.getElementById('invoice-modal');
+  const box = document.getElementById('invoice-detail');
+  if (box) box.innerHTML = '';
+  if (modal) modal.hidden = true;
+  if (updateUrl !== false && location.pathname.indexOf('/invoices/') === 0) history.pushState({}, '', '/invoices');
 }
 function renderDetail(invoice) {
   const box = document.getElementById('invoice-detail');
-  if (!invoice) { box.innerHTML = ''; return; }
+  const modal = document.getElementById('invoice-modal');
+  if (!invoice) { closeInvoiceModal(false); return; }
   const lines = (invoice.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + money(invoice.currency, item.total) + '</td></tr>').join('');
   const charges = (invoice.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td></td><td class="num">' + money(invoice.currency, charge.amount) + '</td></tr>').join('');
   const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
@@ -233,7 +257,7 @@ function renderDetail(invoice) {
     return text;
   }).join('<br>');
   const partyNote = party ? '<p class="note" id="invoice-party">' + party + '</p>' : '';
-  box.innerHTML = '<h3 style="margin-top:18px">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
+  box.innerHTML = '<h3 id="invoice-modal-title" style="margin-top:0">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
     + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ((invoice.tax_lines || []).length ? '' : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + '</p>'
     + partyNote
     + fxLine + fxForm + packingNote + customs
@@ -248,6 +272,7 @@ function renderDetail(invoice) {
     + (IS_ADMIN && invoice.doc_type !== 'credit_note' && !invoice.voided && invoice.status === 'unpaid' ? '<button type="button" class="btn" id="regenerate-doc">Regenerate</button>' : '')
     + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')
     + (CAN_ISSUE && invoice.doc_type === 'credit_note' && !invoice.voided ? '<div class="row"><input id="apply-invoice" type="number" min="1" placeholder="Invoice id" aria-label="Invoice id"><input id="apply-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Amount"><button type="button" class="btn" id="apply-credit">Apply to invoice</button></div>' : '');
+  if (modal) modal.hidden = false;
   const sendQbo = document.getElementById('send-qbo');
   if (sendQbo) sendQbo.addEventListener('click', async () => {
     sendQbo.disabled = true;
@@ -368,16 +393,33 @@ function togglePick(group, id, checked) {
   else pickedIds = next;
   renderPickers();
 }
-function renderPayments(rows) {
-  paymentRows = rows;
-  const body = document.getElementById('payment-list');
+function setAllocChooser(openRows) {
+  const empty = document.getElementById('alloc-empty');
+  const controls = document.getElementById('alloc-controls');
   const select = document.getElementById('alloc-payment');
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="8" style="color:#666">No payments</td></tr>';
+  const has = openRows.length > 0;
+  if (empty) empty.hidden = has;
+  if (controls) controls.hidden = !has;
+  if (!has) {
     if (select) select.innerHTML = '';
     allocInvoices = [];
     allocIds = [];
     renderPickers();
+    return;
+  }
+  const previous = select ? select.value : '';
+  if (select) {
+    select.innerHTML = openRows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.date) + ' · ' + esc(row.company) + ' · ' + money(row.currency, row.unallocated) + '</option>').join('');
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+  }
+  loadAllocInvoices();
+}
+function renderPayments(rows) {
+  paymentRows = rows;
+  const body = document.getElementById('payment-list');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" style="color:#666">No payments</td></tr>';
+    setAllocChooser([]);
     return;
   }
   body.innerHTML = rows.map(row => {
@@ -387,12 +429,7 @@ function renderPayments(rows) {
     const voidButton = CAN_RECORD && !row.voided ? '<button type="button" class="btn secondary" data-void="' + esc(row.id) + '">Void</button>' : '';
     return '<tr><td>' + esc(row.date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.method) + (row.reference ? '<br>' + esc(row.reference) : '') + '</td><td class="num">' + money(row.currency, row.amount) + '</td><td class="num">' + money(row.currency, row.unallocated) + '</td><td>' + status + '</td><td>' + qbo + '</td><td>' + sendButton + voidButton + '</td></tr>';
   }).join('');
-  const previous = select ? select.value : '';
-  if (select) {
-    select.innerHTML = rows.filter(row => !row.voided && Number(row.unallocated) > 0).map(row => '<option value="' + esc(row.id) + '">#' + esc(row.id) + ' ' + esc(row.company) + ' ' + money(row.currency, row.unallocated) + ' left</option>').join('');
-    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
-  }
-  loadAllocInvoices();
+  setAllocChooser(rows.filter(row => !row.voided && Number(row.unallocated) > 0));
 }
 async function loadOpenInvoices() {
   const box = document.getElementById('open-invoice-list');
@@ -698,11 +735,32 @@ if (allocOrder) {
     loadCredit();
   });
 }
-async function loadDetail() {
-  if (!FOCUS) return;
-  const res = await fetch('/api/invoices/' + FOCUS);
+async function loadDetail(id) {
+  const invoiceId = id || FOCUS;
+  if (!invoiceId) return;
+  const res = await fetch('/api/invoices/' + invoiceId);
   if (res.ok) renderDetail(await res.json());
 }
+const invoiceList = document.getElementById('invoice-list');
+if (invoiceList) invoiceList.addEventListener('click', event => {
+  const link = event.target.closest('[data-invoice]');
+  if (!link) return;
+  event.preventDefault();
+  const id = link.getAttribute('data-invoice');
+  history.pushState({}, '', '/invoices/' + id);
+  loadDetail(id);
+});
+const modalClose = document.getElementById('invoice-modal-close');
+if (modalClose) modalClose.addEventListener('click', () => closeInvoiceModal());
+document.addEventListener('keydown', event => {
+  const modal = document.getElementById('invoice-modal');
+  if (event.key === 'Escape' && modal && !modal.hidden) closeInvoiceModal();
+});
+window.addEventListener('popstate', () => {
+  const match = location.pathname.match(/^\/invoices\/(\d+)$/);
+  if (match) loadDetail(match[1]);
+  else closeInvoiceModal(false);
+});
 loadCustomers().then(() => { loadInvoices(); loadPayments(); loadCredit(); loadDetail(); });
 </script>
 </body>
