@@ -190,7 +190,19 @@ function summaryMoney(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' ' + (negative ? '-' : '') + '$' + Math.abs(Number(amount) || 0).toFixed(2);
 }
 function invoiceSummary(invoice) {
-  const rows = invoice.summary || [];
+  const source = invoice.summary || [];
+  const applied = source.some(row => {
+    const label = String(row.label || '');
+    const isDiscount = label.indexOf('Discount') === 0 || label.indexOf('Additional discount') === 0;
+    return isDiscount && Math.abs(Number(row.amount) || 0) >= 0.005;
+  });
+  const rows = source.filter(row => {
+    const label = String(row.label || '');
+    const value = Math.abs(Number(row.amount) || 0);
+    if ((label.indexOf('Discount') === 0 || label.indexOf('Additional discount') === 0) && value < 0.005) return false;
+    if (!applied && (label === 'IGU total' || label === 'Total before extras')) return false;
+    return true;
+  });
   if (!rows.length) return '';
   return '<table class="totals" id="invoice-totals">' + rows.map(row => '<tr><td>' + esc(row.label) + '</td><td class="num">' + summaryMoney(invoice.currency, row.amount) + '</td></tr>').join('') + '</table>';
 }

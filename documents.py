@@ -835,6 +835,9 @@ def invoice_summary(invoice):
         discount_label = 'fixed'
     subtotal_label = 'Tax-free subtotal' if (invoice or {}).get('tax_free') else 'IGU subtotal'
     discount_amount = amount((invoice or {}).get('discount_amount'))
+    # A 0% or $0 discount must not print as "Discount (0.00%) $-0.00".
+    if abs(discount_amount) < 0.005:
+        discount_amount = 0.0
     rows = [
         {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('igu_subtotal'))},
     ]

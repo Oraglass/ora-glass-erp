@@ -6,6 +6,32 @@ from tests.conftest import login, write_user
 from tests.test_quote_export import pdf_text
 
 
+def test_a_zero_percent_discount_is_left_off_the_totals():
+    """Discount (0.00%) $-0.00 and the matching IGU total are not printed."""
+    blank = {
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'igu_subtotal': 100,
+        'subtotal': 100,
+        'igu_total': 100,
+        'total': 100,
+        'balance': 100,
+        'applied': 0,
+    }
+    labels = [row['label'] for row in documents.invoice_summary(blank)]
+    assert labels == ['IGU subtotal', 'Grand total', 'Payments applied', 'Balance due']
+    assert 'Discount (0.00%)' not in labels
+    assert 'IGU total' not in labels
+    credit = dict(blank, doc_type='credit_note')
+    credit_labels = [row['label'] for row in documents.invoice_summary(credit)]
+    assert 'Discount (0.00%)' not in credit_labels
+    assert 'IGU total' not in credit_labels
+    assert 'Unapplied credit' in credit_labels
+    priced = dict(blank, discount={'type': 'percent', 'value': 5}, discount_amount=5, igu_total=95, total=95, balance=95)
+    priced_labels = [row['label'] for row in documents.invoice_summary(priced)]
+    assert priced_labels[:3] == ['IGU subtotal', 'Discount (5.00%)', 'IGU total']
+
+
 def test_tax_line_labels_are_the_name_and_rate_only():
     invoice = {
         'seller_gst_number': '729631119 RT0001',
@@ -124,6 +150,7 @@ def test_canada_invoice_moves_gst_into_the_totals_and_keeps_pst_in_the_header(cl
         'igu_subtotal': 2517.00,
         'subtotal': 2517.00,
         'igu_total': 2517.00,
+        'discount': {'type': 'percent', 'value': 0},
         'discount_amount': 0,
         'total': 2819.04,
         'balance': 2819.04,
@@ -145,11 +172,12 @@ def test_canada_invoice_moves_gst_into_the_totals_and_keeps_pst_in_the_header(cl
     ]
     assert [row['amount'] for row in body['summary'] if row['label'].startswith('GST')] == [125.85]
     discounted = dict(body)
+    discounted['discount'] = {'type': 'percent', 'value': 5}
     discounted['discount_amount'] = 10
     discounted['igu_total'] = 90
     shown = documents.invoice_summary(discounted)
     assert [row['label'] for row in shown if row['label'].startswith('Discount') or row['label'] == 'IGU total'] == [
-        'Discount (fixed)', 'IGU total',
+        'Discount (5.00%)', 'IGU total',
     ]
     text = pdf_text(client.get('/api/invoices/1/pdf').data)
     pst = text.find(b'PST:')
