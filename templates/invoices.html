@@ -18,6 +18,7 @@ td{padding:10px;border-bottom:1px solid #eee}
 .num{text-align:right}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:6px}
+.weight-missing{color:#9f1239;font-weight:600}
 .error,a.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.unpaid{background:#fff3cd;color:#856404}
@@ -244,8 +245,16 @@ function renderDetail(invoice) {
   const charges = (invoice.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td></td><td class="num">' + money(invoice.currency, charge.amount) + '</td></tr>').join('');
   const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
   const shipment = (invoice.packing && invoice.packing.shipment) || null;
-  const packingLines = shipment ? (shipment.list_lines || []).map(line => '<li>' + esc(line) + '</li>').join('') : '';
-  const packingNote = shipment && shipment.rack_line ? '<p class="note" id="invoice-racks">' + esc(shipment.rack_line) + '</p>' + (packingLines ? '<ul id="invoice-rack-lists">' + packingLines + '</ul>' : '') + (shipment.weight_line ? '<p class="note" id="invoice-weight">' + esc(shipment.weight_line) + '</p>' : '') : '';
+  const packingLines = shipment ? (shipment.list_lines || []).map(line => {
+    const missing = String(line).indexOf('not found') >= 0;
+    return '<li' + (missing ? ' class="weight-missing"' : '') + '>' + esc(line) + '</li>';
+  }).join('') : '';
+  const totalLine = (id, text) => {
+    if (!text) return '';
+    const missing = String(text).indexOf('not found') >= 0;
+    return '<p class="note' + (missing ? ' weight-missing' : '') + '" id="' + id + '">' + esc(text) + '</p>';
+  };
+  const packingNote = shipment && ((shipment.list_lines || []).length || shipment.rack_line) ? (packingLines ? '<ul id="invoice-rack-lists">' + packingLines + '</ul>' : '') + totalLine('invoice-racks', shipment.rack_line) + totalLine('invoice-pcs', shipment.pcs_line) + totalLine('invoice-sqft', shipment.sqft_line) + totalLine('invoice-weight', shipment.weight_line) : '';
   const customs = invoice.kind === 'intercompany' && invoice.customs ? '<p class="note" id="invoice-customs">HTS ' + esc(invoice.customs.hts) + '<br>Origin: ' + esc(invoice.customs.origin) + '</p>' : '';
   const fxForm = CAN_ISSUE && invoice.kind === 'intercompany' && !invoice.voided ? '<div class="row"><input id="fx-rate" type="number" min="0.0001" step="0.0001" value="' + esc(invoice.fx_rate || '') + '" aria-label="Exchange rate"><button type="button" class="btn" id="save-fx">Save exchange rate</button></div>' : '';
   const gst = invoice.seller_gst_number ? 'GST# ' + invoice.seller_gst_number : '';
@@ -262,6 +271,7 @@ function renderDetail(invoice) {
     + partyNote
     + fxLine + fxForm + packingNote + customs
     + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
+    + (invoice.regenerate_warning ? '<p class="error" id="regenerate-warning">' + esc(invoice.regenerate_warning) + '</p>' : '')
     + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + qboErrorHtml(invoice.qbo_error, invoice.qbo_settings_url) + '</p>' : '')
     + (IS_ADMIN && !invoice.voided && invoice.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" id="send-qbo">Send to QuickBooks</button>' : '')
     + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + qboErrorHtml(invoice.qbo_warning, invoice.qbo_warning_url || invoice.qbo_settings_url) + '</p>' : '')
@@ -295,8 +305,19 @@ function renderDetail(invoice) {
   if (voidButton) voidButton.addEventListener('click', async () => {
     const reason = prompt('Why void this document?');
     if (!reason) return;
-    const res = await fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})});
-    const body = await res.json().catch(() => ({}));
+    const send = (extra) => fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({reason}, extra || {}))});
+    let res = await send();
+    let body = await res.json().catch(() => ({}));
+    if (res.status === 409 && body.needs_payment_choice) {
+      const open = body.open_invoices || [];
+      const listed = open.map(row => row.number + ' (open ' + row.balance + ')').join(', ') || 'none';
+      const choice = prompt(body.error + ' Open invoices: ' + listed + '. Enter an invoice number to move the payment, or leave the box empty to keep it as unapplied credit.');
+      if (choice === null) return;
+      const match = open.find(row => String(row.number) === choice.trim());
+      if (choice.trim() && !match) { alert('That invoice is not open for this customer.'); return; }
+      res = await send(match ? {disposition: 'invoice', target_invoice_id: match.id} : {disposition: 'credit'});
+      body = await res.json().catch(() => ({}));
+    }
     if (!res.ok) { alert(body.error || 'Not voided'); return; }
     loadInvoices();
     renderDetail(body);

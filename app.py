@@ -9010,6 +9010,9 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         ] or ([str(parsed.get('rack')).strip()] if str(parsed.get('rack') or '').strip() else []),
         'weight': parsed.get('weight'),
         'weight_unit': parsed.get('weight_unit') or '',
+        'weight_missing': parsed.get('weight') in (None, ''),
+        'total_pcs': parsed.get('total_pcs'),
+        'total_sqft': parsed.get('total_sqft'),
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -10601,6 +10604,7 @@ def _present_invoice(invoice, payments):
     view['qbo_id'] = str(invoice.get('qbo_id') or '')
     view['qbo_sync'] = invoice.get('qbo_sync') or ''
     view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    view['regenerate_warning'] = invoice.get('regenerate_warning') or ''
     view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], view.get('issuer') or 'us') if view['qbo_error'] else ''
     view['qbo_warning_url'] = quickbooks.settings_url(invoice.get('qbo_warning') or '', view.get('issuer') or 'us') if invoice.get('qbo_warning') else ''
     if not view['qbo_id'] and not view['qbo_sync']:
@@ -10621,6 +10625,7 @@ def _present_invoice(invoice, payments):
         'error': 'Not sent',
         'not_connected': 'Not connected',
         'voided': 'Voided in QuickBooks',
+        'moved': 'Updated in QuickBooks',
     }.get(view['qbo_sync'], 'Not sent')
     if view.get('fx_rate') not in (None, ''):
         view['fx_date'] = _shown_fx_date(invoice)
@@ -10730,6 +10735,10 @@ def _packing_measures_changed(original, measured):
         before = by_id.get(row.get('id')) or {}
         if row.get('weight') not in (None, '') and before.get('weight') in (None, ''):
             return True
+        if row.get('total_pcs') not in (None, '') and before.get('total_pcs') in (None, ''):
+            return True
+        if row.get('total_sqft') not in (None, '') and before.get('total_sqft') in (None, ''):
+            return True
         if row.get('racks') and not (before.get('racks') or before.get('rack')):
             return True
     return False
@@ -10749,6 +10758,13 @@ def _store_packing_measures(order_id, measured):
         if entry.get('weight') in (None, '') and fresh.get('weight') not in (None, ''):
             entry['weight'] = fresh.get('weight')
             entry['weight_unit'] = fresh.get('weight_unit') or ''
+            entry['weight_missing'] = False
+        elif entry.get('weight') in (None, '') and fresh.get('weight_missing'):
+            entry['weight_missing'] = True
+        if entry.get('total_pcs') in (None, '') and fresh.get('total_pcs') not in (None, ''):
+            entry['total_pcs'] = fresh.get('total_pcs')
+        if entry.get('total_sqft') in (None, '') and fresh.get('total_sqft') not in (None, ''):
+            entry['total_sqft'] = fresh.get('total_sqft')
         if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
             entry['racks'] = list(fresh.get('racks') or [])
             if not entry.get('rack'):
@@ -10760,7 +10776,9 @@ def _measured_packing_list(entry, order_id):
     row = dict(entry or {})
     has_weight = row.get('weight') not in (None, '')
     has_racks = bool(row.get('racks') or row.get('rack'))
-    if has_weight and has_racks:
+    has_pcs = row.get('total_pcs') not in (None, '')
+    has_sqft = row.get('total_sqft') not in (None, '')
+    if has_weight and has_racks and has_pcs and has_sqft:
         return row
     payload = _read_packing_file(order_id, row.get('stored'))
     if not payload:
@@ -10776,8 +10794,8 @@ def _measured_packing_list(entry, order_id):
         measures = packing.weights_by_number(text_lines)
     except Exception:
         return row
+    number = str(row.get('number') or '')
     if not has_weight:
-        number = str(row.get('number') or '')
         chosen = measures.get(number)
         if not chosen and len(measures) == 1:
             only = next(iter(measures))
@@ -10789,6 +10807,11 @@ def _measured_packing_list(entry, order_id):
         elif (not number or parsed.get('number') == number) and parsed.get('weight') is not None:
             row['weight'] = parsed.get('weight')
             row['weight_unit'] = parsed.get('weight_unit') or ''
+    same_list = not number or parsed.get('number') == number
+    if not has_pcs and same_list and parsed.get('total_pcs') not in (None, ''):
+        row['total_pcs'] = parsed.get('total_pcs')
+    if not has_sqft and same_list and parsed.get('total_sqft') not in (None, ''):
+        row['total_sqft'] = parsed.get('total_sqft')
     if not row.get('racks') and parsed.get('racks'):
         row['racks'] = list(parsed.get('racks') or [])
     if not row.get('rack') and parsed.get('rack'):
@@ -11164,10 +11187,106 @@ def _mark_invoice_void(document, user, reason):
     document['audit'] = audit
 
 
+def _save_invoice_row(document):
+    rows = load_invoices()
+    for index, row in enumerate(rows):
+        if row.get('id') == document.get('id'):
+            rows[index] = document
+            save_invoices(rows)
+            return document
+    rows.append(document)
+    save_invoices(rows)
+    return document
+
+
+def _rebuilt_invoice(order, document, user):
+    """New lines and totals for this invoice, still on the same number."""
+    quantities = _quantities_on_invoice(order, document)
+    if not quantities:
+        return None, 'This invoice has no glass pieces to regenerate.'
+    kind = document.get('kind') or 'customer'
+    items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
+    shipment = {
+        'id': document.get('shipment_id'),
+        'number': document.get('shipment_number') or '',
+        'date': document.get('shipment_date') or '',
+        'rack': document.get('shipment_rack') or '',
+        'truck_plate': document.get('truck_plate') or '',
+        'notes': document.get('shipment_notes') or '',
+        'items': items,
+    }
+    full_value = shipments.shipment_progress(order)['ordered_value'] or money(order.get('total'))
+    if kind == 'intercompany':
+        portion = round(sum(money(row.get('total')) for row in items), 2)
+        summary, error = price_summary(items, _scaled_discount(order, portion, full_value), [])
+        if error:
+            return None, error
+        from billing import apply_additional_discount
+        summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
+        invoice_day = date.fromisoformat(document.get('invoice_date')) if document.get('invoice_date') else datetime.now(ZoneInfo('America/Los_Angeles')).date()
+        currency = str(order.get('currency') or 'usd').lower()
+        import quickbooks
+        if currency == 'cad':
+            rate, fx_date = _erp_fx(invoice_day)
+        else:
+            rate, fx_date = 1.0, invoice_day.isoformat()
+        books = load_customers().get(_canada_books_customer()) or {}
+        books['id'] = _canada_books_customer()
+        if currency == 'cad':
+            intercompany_items, usd_total = _usd_intercompany_items(items, rate)
+        else:
+            intercompany_items, usd_total = _usd_intercompany_items(items, 1)
+        built = _invoice_for_items(
+            order, user, books, intercompany_items,
+            {'discount': {'type': 'percent', 'value': 0}, 'discount_amount': 0, 'extra_charges': [],
+             'igu_subtotal': usd_total, 'igu_total': usd_total, 'extras_total': 0, 'total': usd_total},
+            'us', 'intercompany', shipment,
+        )
+        import tax_numbers
+        built.update({
+            'currency': 'usd',
+            'fx_rate': rate,
+            'fx_date': fx_date,
+            'fx_source': 'erp',
+            'fx_pair': 'FXUSDCAD',
+            'cad_total': money(summary.get('total')) if currency == 'cad' else None,
+            'company': 'Ora Glass (Canada) Inc',
+            'customer_id': books.get('id'),
+            'seller_gst_number': tax_numbers.displayed_gst_number(),
+        })
+    else:
+        portion = round(sum(
+            money(row.get('total')) for row in items
+            if row.get('kind') not in {'irregular_surcharge', 'dwg_creation'}
+        ), 2)
+        summary, error = price_summary(items, _scaled_discount(order, portion, full_value), order.get('extra_charges') or [])
+        if error:
+            return None, error
+        from billing import apply_additional_discount
+        summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
+        customer = _order_customer(order)
+        issuer = document.get('issuer') or ('ca' if _needs_intercompany(order) else 'us')
+        built = _invoice_for_items(order, user, customer, items, summary, issuer, 'customer', shipment)
+    built['id'] = document.get('id')
+    built['number'] = document.get('number')
+    built['invoice_date'] = document.get('invoice_date') or built.get('invoice_date')
+    built['due_date'] = document.get('due_date') or built.get('due_date')
+    built['created_at'] = document.get('created_at') or built.get('created_at')
+    built['created_by'] = document.get('created_by') or built.get('created_by')
+    for key in ('qbo_id', 'qbo_doc_number', 'qbo_realm_id', 'qbo_sync_token'):
+        if document.get(key) not in (None, ''):
+            built[key] = document.get(key)
+    built['qbo_sync'] = document.get('qbo_sync') or ''
+    audit = list(document.get('audit') or [])
+    audit.append(_audit(user, 'regenerated', 'Rebuilt lines and totals on this invoice'))
+    built['audit'] = audit
+    return built, None
+
+
 @app.route('/api/invoices/<int:invoice_id>/regenerate', methods=['POST'])
 @module_required('invoices')
 def regenerate_invoice(invoice_id):
-    """Rebuild an unpaid invoice so line add-ons are included, without billing the pieces twice."""
+    """Issue a new invoice number, move payments onto it, then void the old one."""
     user = current_user()
     if user.get('role') != 'admin':
         return json_error('Only an administrator can regenerate an invoice.', 403)
@@ -11179,65 +11298,266 @@ def regenerate_invoice(invoice_id):
         return json_error('Only an invoice can be regenerated.', 400)
     if document.get('voided'):
         return json_error('This document is already void.', 400)
-    from billing import invoice_status
-    payments = load_payments()
-    if invoice_status(document, payments) != 'unpaid':
-        return json_error('Only an unpaid invoice can be regenerated.', 400)
     order = next((row for row in load_orders() if row.get('id') == document.get('order_id')), None)
     if not order:
         return json_error('The order for this invoice was not found.', 404)
-    quantities = _quantities_on_invoice(order, document)
-    if not quantities:
-        return json_error('This invoice has no glass pieces to regenerate.', 400)
-    reason = 'Regenerated to include line add-ons'
     import quickbooks
-    qbo_void = quickbooks.void_document(document)
-    if qbo_void is False:
-        return json_error(
-            document.get('qbo_error') or 'QuickBooks did not void the previous invoice, so a new one was not created.',
-            400,
-        )
-    _mark_invoice_void(document, user, reason)
-    for index, row in enumerate(invoices):
-        if row.get('id') == document.get('id'):
-            invoices[index] = document
-    save_invoices(invoices)
-    kind = document.get('kind') or 'customer'
-    if kind == 'intercompany':
-        items, _pcs, _sqf = shipments.shipment_lines(order, quantities)
-        shipment = {
-            'id': None,
-            'number': document.get('shipment_number') or '',
-            'date': document.get('shipment_date') or datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat(),
-            'rack': document.get('shipment_rack') or '',
-            'truck_plate': document.get('truck_plate') or '',
-            'notes': 'Regenerated invoice',
-            'items': items,
-            'lines': [
-                {'serial': item.get('serial'), 'qty': item.get('pcs'), 'index': item.get('source_index')}
-                for item in items if item.get('serial') not in (None, '')
-            ],
-            'invoiced': False,
-        }
-        number, error = _issue_shipment_invoice(order, shipment, user, False)
-    else:
-        number, error = _issue_packed_customer_invoice(order, user, quantities)
-    if error or not number:
-        document['voided'] = False
-        document.pop('void_reason', None)
-        document.pop('voided_by', None)
-        document.pop('voided_at', None)
-        fresh_rows = load_invoices()
-        for index, row in enumerate(fresh_rows):
-            if row.get('id') == document.get('id'):
-                fresh_rows[index] = document
-        save_invoices(fresh_rows)
+    quickbooks.clear_invoice_replace()
+    plan, remote = quickbooks.prepare_replacement(document)
+    if plan == 'error':
+        return json_error(remote or 'QuickBooks did not accept a replacement, so the original invoice was left unchanged.', 400)
+    logger.info('Regenerating %s. Payments are moved before the old invoice is voided.', document.get('number'))
+    draft, error = _rebuilt_invoice(order, document, user)
+    if error or not draft:
         return json_error(error or 'Could not regenerate this invoice.', 400)
-    replacement = next(
-        (row for row in load_invoices() if row.get('number') == number and not row.get('voided')),
-        None,
+    replacement = dict(draft)
+    for key in ('id', 'number', 'qbo_id', 'qbo_doc_number', 'qbo_sync', 'qbo_realm_id', 'qbo_sync_token', 'qbo_error', 'qbo_warning', 'regenerate_warning'):
+        replacement.pop(key, None)
+    stored = append_invoice(replacement)
+    logger.info('Created %s to replace %s.', stored.get('number'), document.get('number'))
+    if plan == 'linked':
+        quickbooks.push_document_id(stored.get('id'))
+        fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), None)
+        if not fresh or fresh.get('qbo_sync') != 'synced' or not fresh.get('qbo_id'):
+            _void_local_invoice(fresh or stored, 'Removed because QuickBooks did not accept the replacement.')
+            detail = (fresh or {}).get('qbo_error') or 'QuickBooks did not accept the replacement invoice'
+            return json_error(f'{detail} The original invoice was left unchanged.', 400)
+    else:
+        fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), stored)
+    warning = _move_invoice_allocations(document, fresh)
+    if plan == 'linked':
+        moved, message = _sync_moved_payments(document, fresh, remote)
+        if not moved:
+            _restore_allocations(fresh.get('id'), document.get('id'))
+            _void_local_invoice(fresh, 'Removed because the QuickBooks payment was not moved.')
+            if fresh.get('qbo_id'):
+                quickbooks.void_unlinked_invoice(fresh.get('qbo_id'), '0')
+            return json_error(message or 'The QuickBooks payment was not moved, so the original invoice was left unchanged.', 400)
+    elif _payments_on_invoice(document):
+        logger.info('Moved ERP payments from %s to %s. This invoice was not in QuickBooks.', document.get('number'), fresh.get('number'))
+    _apply_regenerate_warning(fresh, warning)
+    _void_local_invoice(document, 'Regenerated to include line add-ons')
+    logger.info('Voided %s after %s took its payments.', document.get('number'), fresh.get('number'))
+    done = _finish_invoice(next(row for row in load_invoices() if row.get('id') == fresh.get('id')), user)
+    return jsonify(_present_invoice(done, load_payments()))
+
+
+def _drop_invoice_allocations(invoice):
+    """Remove allocations to this invoice. The payment amount stays as unapplied credit."""
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        if payment.get('voided'):
+            continue
+        kept = [
+            row for row in payment.get('allocations') or []
+            if row.get('voided') or row.get('target_type') != 'invoice' or row.get('target_id') != invoice.get('id')
+        ]
+        if len(kept) != len(payment.get('allocations') or []):
+            payment['allocations'] = kept
+            changed = True
+            logger.info('Left payment %s as unapplied credit.', payment.get('id'))
+    if changed:
+        save_payments(payments)
+
+
+def _payments_on_invoice(invoice):
+    found = []
+    for payment in load_payments():
+        if payment.get('voided'):
+            continue
+        for row in payment.get('allocations') or []:
+            if not row.get('voided') and row.get('target_type') == 'invoice' and row.get('target_id') == invoice.get('id'):
+                found.append(payment)
+                break
+    return found
+
+
+def _sync_moved_payments(original, replacement, remote):
+    """Point each QuickBooks payment at the replacement, then void the old invoice."""
+    import quickbooks
+    old_qbo = str((remote or {}).get('Id') or original.get('qbo_id') or '')
+    for payment in _payments_on_invoice(replacement):
+        if not payment.get('qbo_id'):
+            continue
+        logger.info('Updating QuickBooks payment %s to invoice %s.', payment.get('qbo_id'), replacement.get('qbo_id'))
+        updated = quickbooks.push_payment(payment, force_update=True)
+        if not updated:
+            return False, payment.get('qbo_error') or f'QuickBooks payment {payment.get("qbo_id")} was not updated, so the original invoice was left unchanged.'
+    if not old_qbo:
+        return True, ''
+    ok, message = quickbooks.void_unlinked_invoice(old_qbo, (remote or {}).get('SyncToken') or '0')
+    if not ok:
+        return False, message
+    return True, ''
+
+
+def _apply_regenerate_warning(invoice, warning):
+    if not warning or not invoice:
+        return
+    logger.warning(warning)
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') == invoice.get('id'):
+            row['regenerate_warning'] = warning
+            invoice['regenerate_warning'] = warning
+    save_invoices(rows)
+
+
+def _replace_rejected_invoice(original, draft, user, remote):
+    """The in-place QuickBooks update was rejected. Replace, move payments, then void."""
+    import quickbooks
+    replacement = dict(draft)
+    for key in ('id', 'number', 'qbo_id', 'qbo_doc_number', 'qbo_sync', 'qbo_realm_id', 'qbo_sync_token', 'qbo_error', 'qbo_warning'):
+        replacement.pop(key, None)
+    stored = append_invoice(replacement)
+    logger.info(
+        'QuickBooks rejected the update of %s. Created %s before voiding the old invoice.',
+        original.get('number'), stored.get('number'),
     )
-    return jsonify(_present_invoice(replacement or document, load_payments()))
+    quickbooks.push_document_id(stored.get('id'))
+    fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), None)
+    if not fresh or not fresh.get('qbo_id') or fresh.get('qbo_sync') != 'synced':
+        _void_local_invoice(fresh or stored, 'Replacement was removed because QuickBooks did not accept it.')
+        return None, (fresh or {}).get('qbo_error') or 'QuickBooks did not accept the replacement invoice, so the original was left unchanged.'
+    warning = _move_invoice_allocations(original, fresh)
+    _apply_regenerate_warning(fresh, warning)
+    payment_ids = []
+    for payment in load_payments():
+        if payment.get('voided') or not payment.get('qbo_id'):
+            continue
+        if any(
+            not row.get('voided') and row.get('target_type') == 'invoice' and row.get('target_id') == fresh.get('id')
+            for row in payment.get('allocations') or []
+        ):
+            payment_ids.append(str(payment.get('qbo_id')))
+    old_qbo = str((remote or {}).get('Id') or original.get('qbo_id') or '')
+    if old_qbo:
+        if payment_ids:
+            ok, message = quickbooks.repoint_payments_then_void(old_qbo, fresh.get('qbo_id'), payment_ids)
+            if not ok:
+                _void_local_invoice(fresh, 'Replacement was removed because the QuickBooks payment could not be moved.')
+                _restore_allocations(fresh.get('id'), original.get('id'))
+                return None, message or 'The QuickBooks payment was not moved, so the original invoice was left unchanged.'
+        else:
+            voided = quickbooks.void_document(original)
+            if voided is False:
+                _void_local_invoice(fresh, 'Replacement was removed because the old QuickBooks invoice could not be voided.')
+                _restore_allocations(fresh.get('id'), original.get('id'))
+                return None, original.get('qbo_error') or 'The old QuickBooks invoice was not voided, so the original was left unchanged.'
+    _void_local_invoice(original, 'Replaced after QuickBooks rejected an in-place update.')
+    logger.info('Voided %s after %s took its payments.', original.get('number'), fresh.get('number'))
+    done = _finish_invoice(next(row for row in load_invoices() if row.get('id') == fresh.get('id')), user)
+    return done, None
+
+
+def _trim_invoice_allocations(invoice):
+    """Keep the payment on this invoice. Amounts above the new total become unallocated credit."""
+    return _move_invoice_allocations(invoice, invoice)
+
+
+def _restore_allocations(new_id, old_id):
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        for row in payment.get('allocations') or []:
+            if row.get('target_type') == 'invoice' and row.get('target_id') == new_id:
+                row['target_id'] = old_id
+                changed = True
+    if changed:
+        save_payments(payments)
+
+
+def _void_local_invoice(document, reason):
+    if not document or not document.get('id'):
+        return
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') != document.get('id'):
+            continue
+        row['voided'] = True
+        row['void_reason'] = reason
+    save_invoices(rows)
+
+
+def _move_invoice_allocations(original, replacement):
+    """Point payment allocations at the replacement invoice.
+
+    Amounts stay the same until they would exceed the new total. The rest
+    stays on the payment as unallocated credit.
+    """
+    from billing import money
+    if not original or not replacement:
+        return ''
+    new_total = money(replacement.get('total'))
+    room = new_total
+    dropped = 0.0
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        if payment.get('voided'):
+            continue
+        kept = []
+        touched = False
+        for row in payment.get('allocations') or []:
+            if row.get('voided') or row.get('target_type') != 'invoice' or row.get('target_id') != original.get('id'):
+                kept.append(row)
+                continue
+            touched = True
+            amount = money(row.get('amount'))
+            take = money(min(amount, room)) if room > 0 else 0.0
+            if take > 0.009:
+                moved = dict(row)
+                moved['target_id'] = replacement.get('id')
+                moved['amount'] = take
+                kept.append(moved)
+                room = money(room - take)
+            leftover = money(amount - take)
+            if leftover > 0.009:
+                dropped = money(dropped + leftover)
+        if touched:
+            payment['allocations'] = kept
+            changed = True
+            logger.info(
+                'Moved payment %s from invoice %s to %s.',
+                payment.get('id'), original.get('number') or original.get('id'),
+                replacement.get('number') or replacement.get('id'),
+            )
+    if changed:
+        save_payments(payments)
+    if dropped > 0.009:
+        return (
+            f'{dropped:.2f} of the payment was more than the new invoice total '
+            'and was left as unallocated credit.'
+        )
+    return ''
+
+
+def _abort_regenerated_invoice(original, replacement):
+    """Put the original invoice back and drop the new one when QuickBooks was not updated."""
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') == (original or {}).get('id'):
+            row['voided'] = False
+            row.pop('void_reason', None)
+            row.pop('voided_by', None)
+            row.pop('voided_at', None)
+        if replacement and row.get('id') == replacement.get('id'):
+            row['voided'] = True
+            row['void_reason'] = 'Regenerate was rolled back because QuickBooks was not updated.'
+            row.pop('qbo_id', None)
+    save_invoices(rows)
+
+
+def _release_replaced_quickbooks_id(original):
+    """The QuickBooks id now belongs to the new invoice. The voided one no longer claims it."""
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') != (original or {}).get('id'):
+            continue
+        row.pop('qbo_id', None)
+        row['qbo_sync'] = 'moved'
+    save_invoices(rows)
 
 
 @app.route('/api/invoices/<int:invoice_id>/void', methods=['POST'])
@@ -11256,6 +11576,65 @@ def void_document(invoice_id):
         return json_error('Not found', 404)
     if document.get('voided'):
         return json_error('This document is already void.', 400)
+    disposition = str(data.get('disposition') or '').strip()
+    qbo_voided = False
+    if document_type(document) == 'invoice' and _payments_on_invoice(document):
+        if disposition not in {'credit', 'invoice'}:
+            from billing import invoice_balance
+            return jsonify({
+                'error': 'This invoice has a payment applied. Move it to another open invoice for this customer, or leave it as unapplied credit.',
+                'needs_payment_choice': True,
+                'open_invoices': [
+                    {'id': row.get('id'), 'number': row.get('number'), 'balance': invoice_balance(row, load_payments())}
+                    for row in load_invoices()
+                    if row.get('id') != document.get('id')
+                    and not row.get('voided')
+                    and document_type(row) == 'invoice'
+                    and row.get('customer_id') == document.get('customer_id')
+                    and str(row.get('currency') or 'usd').lower() == str(document.get('currency') or 'usd').lower()
+                    and invoice_balance(row, load_payments()) > 0.009
+                ],
+            }), 409
+        snapshot = json.loads(json.dumps(load_payments()))
+        if disposition == 'credit':
+            _drop_invoice_allocations(document)
+            logger.info('Left the payment on %s as unapplied credit before voiding.', document.get('number'))
+        else:
+            target = next((row for row in load_invoices() if row.get('id') == data.get('target_invoice_id')), None)
+            if not target or target.get('voided') or target.get('customer_id') != document.get('customer_id'):
+                return json_error('Choose an open invoice for the same customer.', 400)
+            if str(target.get('currency') or 'usd').lower() != str(document.get('currency') or 'usd').lower():
+                return json_error('Choose an invoice in the same currency.', 400)
+            logger.info('Moving the payment from %s to %s before voiding.', document.get('number'), target.get('number'))
+            _move_invoice_allocations(document, target)
+        import quickbooks
+        for payment in load_payments():
+            if payment.get('voided') or not payment.get('qbo_id'):
+                continue
+            if payment.get('id') not in {row.get('id') for row in snapshot}:
+                continue
+            touched = any(
+                row.get('target_type') == 'invoice' and row.get('target_id') == document.get('id')
+                for row in next(item for item in snapshot if item.get('id') == payment.get('id')).get('allocations') or []
+            )
+            if not touched:
+                continue
+            updated = quickbooks.push_payment(payment, force_update=True)
+            if not updated:
+                save_payments(snapshot)
+                return json_error(
+                    payment.get('qbo_error') or 'QuickBooks did not update the payment, so the invoice was not voided.',
+                    400,
+                )
+        if document.get('qbo_id'):
+            ok, message = quickbooks.void_unlinked_invoice(document.get('qbo_id'), '0')
+            if not ok:
+                save_payments(snapshot)
+                for payment in snapshot:
+                    if payment.get('qbo_id'):
+                        quickbooks.push_payment(payment, force_update=True)
+                return json_error(message or 'The invoice was not voided because a payment is still linked in QuickBooks.', 400)
+            qbo_voided = True
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     document['voided'] = True
     document['void_reason'] = reason
@@ -11294,7 +11673,8 @@ def void_document(invoice_id):
     save_payments(payments)
     _refresh_invoice_statuses(payments)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
-    _qbo('void_document', fresh)
+    if not qbo_voided:
+        _qbo('void_document', fresh)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 
@@ -11413,12 +11793,11 @@ def _render_invoice_pdf(invoice):
     customs = invoice.get('customs') or {}
     shipment = packing.get('shipment') or {}
     lines = list(shipment_bits)
-    if shipment.get('rack_line'):
-        lines.append(escape(shipment['rack_line']))
     for text in shipment.get('list_lines') or []:
         lines.append(escape(text))
-    if shipment.get('weight_line'):
-        lines.append(escape(shipment['weight_line']))
+    for key in ('rack_line', 'pcs_line', 'sqft_line', 'weight_line'):
+        if shipment.get(key):
+            lines.append(escape(shipment[key]))
     if customs.get('hts'):
         lines.append(f"HTS {escape(customs.get('hts'))}")
     if customs.get('origin'):

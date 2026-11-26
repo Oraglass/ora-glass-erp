@@ -51,7 +51,8 @@ def test_parser_reads_the_packing_list_layout():
     assert parsed['rack'] == 'RackCode 4001 L2100*920*2200'
     assert parsed['total_pcs'] == 3
     assert parsed['parsed_pcs'] == 3
-    assert parsed['warnings'] == []
+    assert parsed['warnings'] == ['Weight not found.']
+    assert parsed['weight_missing'] is True
     assert len(parsed['rows']) == 2
     first = parsed['rows'][0]
     assert first['qty'] == 2

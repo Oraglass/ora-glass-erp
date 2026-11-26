@@ -69,6 +69,117 @@ def test_highq_weight_is_read_when_the_amount_is_on_the_next_line():
     assert both['XF261123002']['weight'] == 1200
 
 
+def test_weight_on_the_rack_line_is_the_printed_amount(client):
+    """A two-column PDF puts 'Appx. 1,200 lb' on the same extracted line as the rack."""
+    import io
+    from reportlab.pdfgen import canvas
+    import packing
+    lines = [
+        'Sales Delivery: XF261123002 Date: 11/24/2026',
+        'Sold To: HighQ',
+        'Job Name: PO1',
+        'Total Weight :',
+        '5016 A1900*1220*1800(THK:400*2)                    Appx. 1,200 lb',
+        '(1)    2',
+        '24 36',
+        '609.6 mm 914.4 mm',
+    ]
+    parsed = packing.parse_packing_lines(lines)
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 1200
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['weight_missing'] is False
+    assert 'Weight not found.' not in parsed['warnings']
+    buffer = io.BytesIO()
+    sheet = canvas.Canvas(buffer, pagesize=(792, 612))
+    sheet.setFont('Courier', 9)
+    sheet.drawString(40, 540, 'Sales Delivery: XF261123002 Date: 11/24/2026')
+    sheet.drawString(40, 510, 'Job Name: PO1')
+    sheet.drawString(430, 510, 'Total Weight :')
+    sheet.drawString(40, 490, '5016 A1900*1220*1800(THK:400*2)')
+    sheet.drawString(520, 490, 'Appx. 1200 lb')
+    sheet.drawString(40, 450, '(1)    2')
+    sheet.drawString(80, 430, '24 36')
+    sheet.drawString(80, 410, '609.6 mm 914.4 mm')
+    sheet.save()
+    from_pdf = packing.parse_packing_pdf(buffer.getvalue())
+    assert from_pdf['weight'] == 1200
+    assert from_pdf['weight_unit'] == 'LBS'
+    assert from_pdf['rack'] == '5016'
+    blank = packing.parse_packing_lines([
+        'Sales Delivery: XF261123002 Date: 11/24/2026',
+        '5016 A1900*1220*1800(THK:400*2)',
+        '(1)    2',
+        '24 36',
+        '609.6 mm 914.4 mm',
+    ])
+    assert blank['weight'] is None
+    assert blank['weight_missing'] is True
+    assert 'Weight not found.' in blank['warnings']
+    write_user('admin@oraglass.us', 'admin')
+    write_user(
+        'ap@highq.example', 'customer', customer_id='highq',
+        customer_name='HighQ Developments Inc', customer_subrole='management', password='Validpass1',
+    )
+    from storage import save_orders
+    save_orders([{
+        'id': 1, 'customer_id': 'highq', 'company': 'HighQ Developments Inc',
+        'project': 'PO1', 'status': 'approved', 'currency': 'cad',
+        'items': [{
+            'name': 'Unit', 'pcs': 2, 'floor': 'W01', 'price_pc': 10, 'price_sqf': 10,
+            'sqf': 1, 'total': 20,
+            'spec': {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': 24, 'height': 36, 'unit': 'in'},
+        }],
+    }])
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    uploaded = client.post(
+        '/api/packing-lists',
+        data={'files': (io.BytesIO('\n'.join(lines).encode()), 'XF261123002.txt')},
+        content_type='multipart/form-data',
+    )
+    assert uploaded.status_code == 200, uploaded.get_json()
+    stored = next(row for row in __import__('storage').load_orders()[0]['packing_lists'] if row.get('current', True))
+    assert stored['number'] == 'XF261123002'
+    assert stored['weight'] == 1200
+    assert stored['weight_unit'] == 'LBS'
+    assert stored['weight_missing'] is False
+    assert stored['racks'] == ['5016']
+
+
+def test_adrian_packing_list_layout_stores_the_printed_weight():
+    """pdftotext -layout of XF261123002. The weight is on the totals line, not calculated."""
+    from pathlib import Path
+    import packing
+    text = Path('tests/fixtures/xf261123002_layout.txt').read_text(encoding='utf-8')
+    parsed = packing.parse_packing_lines(text.splitlines())
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['date'] == '2026-11-23'
+    assert parsed['rack'] == '5016'
+    assert parsed['racks'] == ['5016']
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+    assert parsed['weight_missing'] is False
+    samples = [
+        ('Total Weight : Approx. 1,463 LBS', 1463, 'LBS'),
+        ('Total Weight : Approx. 463.50 LB', 463.5, 'LBS'),
+        ('Total Weight : Approx. 10.5 KG', 10.5, 'KG'),
+    ]
+    for line, amount, unit in samples:
+        row = packing.parse_packing_lines([
+            'Sales Delivery: XF9 Date: 11/23/2026',
+            line,
+            '5016 L3000*920*2200(THK:550)',
+            '(1) 1',
+            '24 36',
+            '609.6 mm 914.4 mm',
+        ])
+        assert row['weight'] == amount, line
+        assert row['weight_unit'] == unit, line
+
+
 def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description():
     import packing
     parsed = packing.parse_packing_lines(HIGHQ_LIST.splitlines())

@@ -38,6 +38,8 @@ class FakeQBO:
         }]
         self.payments = []
         self.cdc = []
+        self.reject_invoice_update = False
+        self.fail_next_invoice_create = False
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, body))
@@ -80,14 +82,74 @@ class FakeQBO:
             return 200, {}, json.dumps({'Customer': {**self.customers[0], 'SyncToken': '4'}}).encode()
         if path.rstrip('/').endswith('/customer'):
             return 200, {}, json.dumps({'Customer': {'Id': data.get('Id') or '55', 'SyncToken': '1', 'DisplayName': data.get('DisplayName')}}).encode()
-        if path.rstrip('/').endswith('/invoice') or 'operation=void' in url and '/invoice' in path:
-            return 200, {}, json.dumps({'Invoice': {'Id': data.get('Id') or '80', 'SyncToken': '0'}}).encode()
+        if 'operation=void' in url and '/invoice' in path:
+            return 200, {}, json.dumps({'Invoice': {'Id': data.get('Id') or '80', 'SyncToken': '1', 'Balance': 0, 'TotalAmt': 0}}).encode()
+        if path.rstrip('/').endswith('/invoice'):
+            total = 0.0
+            for line in data.get('Line') or []:
+                if line.get('DetailType') == 'DiscountLineDetail':
+                    continue
+                total += float(line.get('Amount') or 0)
+            total = round(total, 2)
+            if not data.get('Id') and self.fail_next_invoice_create:
+                self.fail_next_invoice_create = False
+                return 400, {}, json.dumps({'Fault': {'Error': [{'Message': 'Invoice was not created', 'code': '6000'}]}}).encode()
+            if data.get('Id'):
+                if self.reject_invoice_update:
+                    return 400, {}, json.dumps({'Fault': {'Error': [{'Message': 'Invoice update was rejected', 'code': '6000'}]}}).encode()
+                match = next((row for row in self.invoices if str(row.get('Id')) == str(data['Id'])), None)
+                if match is None:
+                    match = {'Id': str(data['Id']), 'Balance': total}
+                    self.invoices.append(match)
+                match['SyncToken'] = str(int(match.get('SyncToken') or 0) + 1)
+                match['DocNumber'] = data.get('DocNumber') or match.get('DocNumber') or ''
+                match['TotalAmt'] = total
+                match['Balance'] = total
+                match['Line'] = data.get('Line') or []
+                return 200, {}, json.dumps({'Invoice': match}).encode()
+            used = {str(row.get('Id')) for row in self.invoices}
+            number = 80
+            while str(number) in used:
+                number += 1
+            created = {
+                'Id': str(number), 'SyncToken': '0',
+                'DocNumber': data.get('DocNumber') or '',
+                'TotalAmt': total, 'Balance': total,
+                'Line': data.get('Line') or [],
+            }
+            self.invoices.append(created)
+            return 200, {}, json.dumps({'Invoice': created}).encode()
         if 'creditmemo' in path:
             return 200, {}, json.dumps({'CreditMemo': {'Id': data.get('Id') or '81', 'SyncToken': '0'}}).encode()
-        if '/payment' in path:
-            return 200, {}, json.dumps({'Payment': {'Id': data.get('Id') or '82', 'SyncToken': '0', 'TotalAmt': data.get('TotalAmt')}}).encode()
+        if '/payment/' in path and method == 'GET':
+            wanted = path.rstrip('/').split('/')[-1]
+            match = next((row for row in self.payments if str(row.get('Id')) == wanted), None)
+            if not match:
+                match = {'Id': wanted, 'SyncToken': '0', 'Line': []}
+            return 200, {}, json.dumps({'Payment': match}).encode()
+        if '/payment' in path and 'operation=void' not in url:
+            if data.get('Id'):
+                match = next((row for row in self.payments if str(row.get('Id')) == str(data['Id'])), None)
+                if match is None:
+                    match = {'Id': str(data['Id']), 'SyncToken': '0', 'Line': []}
+                    self.payments.append(match)
+                if 'Line' in data:
+                    match['Line'] = data['Line']
+                match['SyncToken'] = str(int(match.get('SyncToken') or 0) + 1)
+                match['TotalAmt'] = data.get('TotalAmt', match.get('TotalAmt'))
+                return 200, {}, json.dumps({'Payment': match}).encode()
+            created = {
+                'Id': '82', 'SyncToken': '0', 'TotalAmt': data.get('TotalAmt'),
+                'Line': data.get('Line') or [],
+            }
+            self.payments.append(created)
+            return 200, {}, json.dumps({'Payment': created}).encode()
         if '/invoice/' in path and method == 'GET':
-            return 200, {}, json.dumps({'Invoice': self.invoices[0]}).encode()
+            wanted = path.rstrip('/').split('/')[-1]
+            match = next((row for row in self.invoices if str(row.get('Id')) == wanted), None)
+            if not match:
+                match = {'Id': wanted, 'SyncToken': '0', 'TotalAmt': 0, 'Balance': 0}
+            return 200, {}, json.dumps({'Invoice': match}).encode()
         return 200, {}, b'{}'
 
     def posts(self, suffix):
@@ -463,9 +525,21 @@ def test_erp_invoice_payment_and_credit_note_are_pushed_once(client, monkeypatch
         assert allocated.status_code == 200, allocated.get_json()
         linked = json.loads(fake.posts('/payment')[-1][2])
         assert linked['Line'][0]['LinkedTxn'][0]['TxnType'] == 'Invoice'
-        voided = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company'})
+        blocked = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company'})
+        assert blocked.status_code == 409, blocked.get_json()
+        assert blocked.get_json()['needs_payment_choice'] is True
+        calls_before = len(fake.calls)
+        voided = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company', 'disposition': 'credit'})
         assert voided.status_code == 200, voided.get_json()
-        assert any('operation=void' in call[1] for call in fake.calls)
+        followed = [call for call in fake.calls[calls_before:] if call[0] == 'POST']
+        kinds = []
+        for _method, url, _body in followed:
+            path = urllib.parse.urlparse(url).path
+            if 'operation=void' in url:
+                kinds.append('void')
+            elif path.rstrip('/').endswith('/payment'):
+                kinds.append('payment')
+        assert kinds == ['payment', 'void']
     finally:
         quickbooks.TRANSPORT = None
 
