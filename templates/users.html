@@ -130,7 +130,7 @@ td.actions{width:15.5rem;vertical-align:middle}
 <div class="form-group" id="module-group">
 <label>Modules</label>
 <div class="tier-checks" id="u-modules"></div>
-<p class="help" id="module-help">Ora Glass employees only see the modules checked here. Customer users can only be given Quotes, Quote History, Orders, Invoices, and Financials. The shop time clock is not a module.</p>
+<p class="help" id="module-help">Ora Glass employees only see the modules checked here. The list matches the top menu. Invoices stays its own permission; when Financials is also on, Invoices is a tab inside Financials instead of its own menu item. Customer users can only be given Quotes, Quote History, Orders, Invoices, Financials, and Racks. QuickBooks is off unless an admin turns it on. Payroll and time are not in this list: use Manage time and Manage payroll below. The shop time clock is not a module. A module added later stays off until an admin ticks it for that person.</p>
 </div>
 <div class="form-group" id="uses-time-group" style="display:none">
 <label><input type="checkbox" id="u-uses-time-clock"> Uses time clock</label>
@@ -286,7 +286,7 @@ function onRoleChanged() {
   const role = document.getElementById('u-role').value;
   document.getElementById('subrole-group').style.display = role === 'customer' ? 'block' : 'none';
   if (role === 'customer') renderModuleChecks(new Set(CUSTOMER_MODULES.map(mod => mod.id)));
-  else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders']));
+  else if (role === 'employee') renderModuleChecks(new Set(['quotes', 'quote-history', 'orders', 'production-settings', 'shipments', 'racks']));
   else renderModuleChecks(new Set());
   syncStaffPrivileges();
   syncRoleExtras();

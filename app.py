@@ -183,31 +183,46 @@ from timeclock import (
 
 logger = logging.getLogger('ora_glass')
 
-# Every gated area that exists as a page or API. There is no separate
-# Production or Shipping screen; the old production role used Orders and Inventory.
+# The top menu and the Users checklist both read this list. Payroll is not here:
+# Manage time and Manage payroll already gate that page.
+# Invoices stays a permission. The menu hides it when Financials is also on,
+# because the invoice pages live under that tab.
 MODULES = (
     {'id': 'dashboard', 'label': 'Dashboard', 'short': 'Dashboard', 'endpoint': 'dashboard'},
     {'id': 'quotes', 'label': 'Quotes', 'short': 'Quotes', 'endpoint': 'quotes'},
     {'id': 'quote-history', 'label': 'Quote History', 'short': 'History', 'endpoint': 'quote_history'},
     {'id': 'orders', 'label': 'Orders', 'short': 'Orders', 'endpoint': 'orders'},
+    {'id': 'production-settings', 'label': 'Production settings', 'short': 'Production', 'endpoint': 'production_settings'},
+    {'id': 'shipments', 'label': 'Shipments', 'short': 'Shipments', 'endpoint': 'shipments_page'},
+    {'id': 'racks', 'label': 'Racks', 'short': 'Racks', 'endpoint': 'racks_page'},
     {'id': 'inventory', 'label': 'Inventory', 'short': 'Inventory', 'endpoint': 'inventory'},
     {'id': 'pricing', 'label': 'Pricing', 'short': 'Pricing', 'endpoint': 'pricing_admin'},
     {'id': 'invoices', 'label': 'Invoices', 'short': 'Invoices', 'endpoint': 'invoices'},
     {'id': 'financial', 'label': 'Financials', 'short': 'Financials', 'endpoint': 'financial'},
     {'id': 'customers', 'label': 'Customers', 'short': 'Customers', 'endpoint': 'customers_page'},
     {'id': 'users', 'label': 'Users', 'short': 'Users', 'endpoint': 'users_page'},
+    {'id': 'quickbooks', 'label': 'QuickBooks', 'short': 'QuickBooks', 'endpoint': 'quickbooks_settings'},
 )
 MODULE_IDS = tuple(item['id'] for item in MODULES)
+# Version 1 records the one-time grant for pages staff could already open
+# (production settings, shipments, racks, and customer racks). A later version
+# must not grant the new id. Admins bypass the list and see every module.
+MODULES_VERSION = 1
 # Customers may only be given these. Dashboard stays available as their home page.
-CUSTOMER_CEILING = ('quotes', 'quote-history', 'orders', 'invoices', 'financial')
+CUSTOMER_CEILING = ('quotes', 'quote-history', 'orders', 'invoices', 'financial', 'racks')
 # Access that existing roles already had, plus Dashboard, which was not gated.
+# Production settings was open to every Ora Glass employee. Shipments and Racks
+# were open to anyone who could open Orders. QuickBooks was admin only.
 LEGACY_ROLE_MODULES = {
     'admin': MODULE_IDS,
-    'sales': ('dashboard', 'quotes', 'quote-history', 'orders', 'customers', 'invoices'),
-    'production': ('dashboard', 'orders', 'inventory'),
-    'viewer': ('dashboard', 'quotes', 'quote-history', 'orders'),
+    'sales': (
+        'dashboard', 'quotes', 'quote-history', 'orders', 'production-settings',
+        'shipments', 'racks', 'customers', 'invoices',
+    ),
+    'production': ('dashboard', 'orders', 'production-settings', 'shipments', 'racks', 'inventory'),
+    'viewer': ('dashboard', 'quotes', 'quote-history', 'orders', 'production-settings', 'shipments', 'racks'),
     'customer': ('dashboard',) + CUSTOMER_CEILING,
-    'employee': ('dashboard',),
+    'employee': ('dashboard', 'production-settings'),
 }
 LEGACY_STAFF_ROLES = ('sales', 'production', 'viewer', 'employee')
 ROLES = {
@@ -600,23 +615,115 @@ def normalize_role(role):
     return None, None
 
 
+def _ordered_modules(chosen):
+    selected = set(chosen or [])
+    ordered = [module_id for module_id in MODULE_IDS if module_id in selected]
+    for module_id in chosen or []:
+        if module_id not in ordered:
+            ordered.append(module_id)
+    return ordered
+
+
+def _stamp_module_generation(record, module_ids=None):
+    """Remember which module ids existed when this account was saved.
+
+    A module added after that stays off until an admin ticks it. Admins are not
+    stored this way: they receive every current module.
+    """
+    record['modules_version'] = MODULES_VERSION
+    record['known_modules'] = list(module_ids or MODULE_IDS)
+
+
+def _grant_modules_v1(user):
+    """Pages this account could already open before those pages were checkboxes."""
+    role = user.get('role') or ''
+    if role == 'admin':
+        user.pop('modules', None)
+        return
+    if role in ('shop', 'driver'):
+        user['modules'] = []
+        return
+    stored = user.get('modules', None)
+    if stored is None:
+        base = list(LEGACY_ROLE_MODULES.get(role, ('dashboard',)))
+    else:
+        base = [item for item in stored if isinstance(item, str)]
+    if role == 'customer':
+        if 'racks' not in base:
+            base.append('racks')
+    elif role in LEGACY_STAFF_ROLES:
+        if 'production-settings' not in base:
+            base.append('production-settings')
+        if 'orders' in base:
+            for module_id in ('shipments', 'racks'):
+                if module_id not in base:
+                    base.append(module_id)
+    user['modules'] = _ordered_modules(base)
+
+
+def migrate_user_modules(user, module_ids=None):
+    """Apply the one-time grant, then record any module added since as off.
+
+    ``module_ids`` lets a test pretend a new key exists. Passing a longer list
+    never turns that key on for someone who was already migrated.
+    """
+    if not isinstance(user, dict):
+        return False
+    catalog = list(module_ids or MODULE_IDS)
+    try:
+        version = int(user.get('modules_version') or 0)
+    except (TypeError, ValueError):
+        version = 0
+    changed = False
+    if version < 1:
+        _grant_modules_v1(user)
+        user['modules_version'] = MODULES_VERSION
+        user['known_modules'] = list(catalog)
+        return True
+    known = [item for item in (user.get('known_modules') or []) if isinstance(item, str)]
+    fresh = [module_id for module_id in catalog if module_id not in known]
+    if fresh:
+        user['known_modules'] = known + fresh
+        changed = True
+    if user.get('modules_version') != MODULES_VERSION:
+        user['modules_version'] = MODULES_VERSION
+        changed = True
+    return changed
+
+
+def migrate_stored_modules():
+    users = load_users()
+    changed = False
+    for user in users.values():
+        if migrate_user_modules(user):
+            changed = True
+    if changed:
+        save_users(users)
+    return changed
+
+
 def apply_modules(record, data, preset_role=None):
     """Persist module access. Customers cannot be given anything outside their ceiling."""
     role = record.get('role')
     if role == 'admin':
         record.pop('modules', None)
+        record.pop('known_modules', None)
+        record['modules_version'] = MODULES_VERSION
         return None
     if role == 'shop':
         if isinstance(data.get('modules'), list) and any(str(item or '').strip() for item in data.get('modules')):
             return 'Shop workers cannot be given modules.'
         record['modules'] = []
+        _stamp_module_generation(record)
         return None
     if role == 'driver':
         record['modules'] = []
+        _stamp_module_generation(record)
         return None
     if 'modules' not in data:
         if preset_role in LEGACY_ROLE_MODULES:
             record['modules'] = list(LEGACY_ROLE_MODULES[preset_role])
+        _stamp_module_generation(record)
         return None
     raw = data.get('modules')
     if not isinstance(raw, list):
@@ -634,10 +741,12 @@ def apply_modules(record, data, preset_role=None):
         if extra:
             return 'That module is not available to customer users.'
         record['modules'] = [module_id for module_id in CUSTOMER_CEILING if module_id in cleaned]
+        _stamp_module_generation(record)
         return None
     record['modules'] = [module_id for module_id in MODULE_IDS if module_id in cleaned and module_id != 'dashboard']
     if 'dashboard' in cleaned:
         record['modules'].insert(0, 'dashboard')
+    _stamp_module_generation(record)
     return None
 
 
@@ -1341,6 +1450,10 @@ def bootstrap_once():
         _migrate_igu_names()
     except Exception:
         logger.exception('IGU name normalization failed')
+    try:
+        migrate_stored_modules()
+    except Exception:
+        logger.exception('Module access migration failed')
     _state['bootstrapped'] = True
 
 
@@ -1364,9 +1477,10 @@ def _security_headers(response):
     return response
 
 
-@app.context_processor
-def inject_user():
-    user = current_user()
+def nav_modules_for(user):
+    """Top menu. The same MODULES list feeds the Users checklist."""
+    if user and user.get('role') == 'driver':
+        return [{'id': 'racks', 'label': 'Racks', 'endpoint': 'rack_scan'}]
     allowed = set(effective_module_ids(user)) if user else set()
     nav = []
     for item in MODULES:
@@ -1374,38 +1488,23 @@ def inject_user():
             continue
         if item['id'] == 'invoices' and 'financial' in allowed:
             continue
-        nav.append(item)
-    extras = []
-    if user and _is_ora_staff(user):
-        extras.append({'id': 'production-settings', 'label': 'Production settings', 'endpoint': 'production_settings'})
-    if user and staff_can_order(user):
-        extras.append({'id': 'shipments', 'label': 'Shipments', 'endpoint': 'shipments_page'})
-        extras.append({'id': 'racks', 'label': 'Racks', 'endpoint': 'racks_page'})
-    if user and user.get('role') == 'customer':
-        nav.append({'id': 'racks', 'label': 'Racks', 'endpoint': 'racks_page'})
-    if user and user.get('role') == 'driver':
-        nav = [{'id': 'racks', 'label': 'Racks', 'endpoint': 'rack_scan'}]
-    if extras:
-        placed = False
-        for index, item in enumerate(nav):
-            if item['id'] == 'orders':
-                nav[index + 1:index + 1] = extras
-                placed = True
-                break
-        if not placed:
-            nav.extend(extras)
+        nav.append(dict(item))
+    if user and (can_manage_time(user) or can_manage_payroll(user)):
+        nav.append({
+            'id': 'payroll',
+            'label': 'Payroll' if can_manage_payroll(user) else 'Time',
+            'endpoint': 'payroll_page',
+        })
     if user and user.get('role') == 'customer':
         nav.append({'id': 'company', 'label': 'Company', 'endpoint': 'company_page'})
-    if user and user.get('role') == 'admin':
-        link = {'id': 'quickbooks', 'label': 'QuickBooks', 'endpoint': 'quickbooks_settings'}
-        placed = False
-        for index, item in enumerate(nav):
-            if item['id'] == 'financial':
-                nav.insert(index + 1, link)
-                placed = True
-                break
-        if not placed:
-            nav.append(link)
+    return nav
+
+
+@app.context_processor
+def inject_user():
+    user = current_user()
+    allowed = set(effective_module_ids(user)) if user else set()
+    nav = nav_modules_for(user)
     review_count = _orders_awaiting_staff(user)
     if review_count:
         nav = [
@@ -1731,7 +1830,7 @@ def quickbooks_launch():
         return redirect(url_for('login', next='/settings/quickbooks'))
     if user.get('must_change_password'):
         return redirect(url_for('change_password'))
-    if user.get('role') != 'admin':
+    if not user_has_module(user, 'quickbooks'):
         return forbidden()
     return redirect(url_for('quickbooks_settings'))
 
@@ -1770,14 +1869,14 @@ def _quickbooks_tab_redirect(key=None):
 
 
 @app.route('/settings/quickbooks')
-@admin_required
+@module_required('quickbooks')
 def quickbooks_settings():
     import quickbooks
     return render_template('quickbooks.html', status=quickbooks.status_view())
 
 
 @app.route('/quickbooks/connect')
-@admin_required
+@module_required('quickbooks')
 def quickbooks_connect():
     import secrets as token_secrets
     import quickbooks
@@ -1793,7 +1892,7 @@ def quickbooks_connect():
 
 
 @app.route('/quickbooks/callback')
-@admin_required
+@module_required('quickbooks')
 def quickbooks_callback():
     import quickbooks
     if request.args.get('error'):
@@ -1822,14 +1921,14 @@ def quickbooks_callback():
 
 
 @app.route('/api/quickbooks/status', methods=['GET'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_status():
     import quickbooks
     return jsonify(quickbooks.status_view())
 
 
 @app.route('/api/quickbooks/disconnect', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_disconnect():
     import quickbooks
     data = json_body() or {}
@@ -1840,7 +1939,7 @@ def quickbooks_disconnect():
 
 
 @app.route('/api/quickbooks/settings', methods=['PUT'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_save_settings():
     import quickbooks
     data = json_body() or {}
@@ -1910,7 +2009,7 @@ def _quickbooks_save_settings(quickbooks, data):
 
 
 @app.route('/api/quickbooks/gst-number', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def change_seller_gst():
     """Change Ora Glass (Canada) Inc's GST/HST number. The general settings save cannot."""
     import quickbooks
@@ -1943,7 +2042,7 @@ def quickbooks_tax_codes():
 
 
 @app.route('/api/quickbooks/sync', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_sync():
     import quickbooks
     data = json_body() or {}
@@ -1961,7 +2060,7 @@ def quickbooks_sync():
 
 
 @app.route('/api/quickbooks/import/preview', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_import_preview():
     import quickbooks
     data = json_body() or {}
@@ -1977,7 +2076,7 @@ def quickbooks_import_preview():
 
 
 @app.route('/api/quickbooks/import/apply', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_import_apply():
     import quickbooks
     data = json_body() or {}
@@ -1992,7 +2091,7 @@ def quickbooks_import_apply():
 
 
 @app.route('/api/quickbooks/link-customer', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_link_customer():
     import quickbooks
     data = json_body() or {}
@@ -2009,7 +2108,7 @@ def quickbooks_link_customer():
 
 
 @app.route('/api/quickbooks/unlink-customer', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_unlink_customer():
     import quickbooks
     data = json_body() or {}
@@ -2026,7 +2125,7 @@ def quickbooks_unlink_customer():
 
 
 @app.route('/api/quickbooks/import/open-invoices', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_import_open_invoices():
     """Copy open QuickBooks invoices into the ERP. This request never writes to QuickBooks."""
     import quickbooks
@@ -2061,7 +2160,7 @@ def financial_import_open_invoices():
 
 
 @app.route('/api/quickbooks/import/history', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_import_history():
     import quickbooks
     data = json_body() or {}
@@ -2078,7 +2177,7 @@ def quickbooks_import_history():
 
 
 @app.route('/api/quickbooks/intercompany', methods=['POST'])
-@admin_required
+@module_required('quickbooks')
 def quickbooks_intercompany():
     import quickbooks
     data = json_body() or {}
@@ -2311,22 +2410,18 @@ def export_quote():
 
 
 @app.route('/shipments')
-@module_required('orders')
+@module_required('shipments')
 def shipments_page():
-    user = current_user()
-    if not staff_can_order(user):
-        return forbidden()
     return render_template('shipments.html')
 
 
 def _rack_user_ok(user, scan=False):
+    """Drivers keep the scan page. Everyone else needs the Racks module."""
     if not user or user.get('role') == 'shop':
         return False
-    if scan:
-        return user.get('role') == 'driver' or staff_can_order(user)
-    if user.get('role') == 'customer':
-        return True
-    return staff_can_order(user)
+    if user.get('role') == 'driver':
+        return bool(scan)
+    return user_has_module(user, 'racks')
 
 
 @app.route('/racks')
@@ -2436,7 +2531,7 @@ def mark_rack_returned(rack_number):
 @login_required
 def rack_labels():
     user = current_user()
-    if not staff_can_order(user):
+    if user.get('role') == 'customer' or not user_has_module(user, 'racks'):
         return json_error('Access denied', 403)
     import racks as rack_book
     rows = rack_book.visible_rows(
@@ -2478,20 +2573,15 @@ def _open_shipment_rows(user):
 
 
 @app.route('/api/shipments/open', methods=['GET'])
-@module_required('orders')
+@module_required('shipments')
 def open_shipments():
-    user = current_user()
-    if not staff_can_order(user):
-        return json_error('Access denied', 403)
-    return jsonify(_open_shipment_rows(user))
+    return jsonify(_open_shipment_rows(current_user()))
 
 
 @app.route('/api/shipments/open.xlsx', methods=['GET'])
-@module_required('orders')
+@module_required('shipments')
 def export_open_shipments_excel():
     user = current_user()
-    if not staff_can_order(user):
-        return json_error('Access denied', 403)
     payload = shipments.backorder_workbook(_open_shipment_rows(user))
     return send_file(
         BytesIO(payload),
@@ -2502,11 +2592,9 @@ def export_open_shipments_excel():
 
 
 @app.route('/api/shipments/open.pdf', methods=['GET'])
-@module_required('orders')
+@module_required('shipments')
 def export_open_shipments_pdf():
     user = current_user()
-    if not staff_can_order(user):
-        return json_error('Access denied', 403)
     payload = shipments.backorder_pdf(_open_shipment_rows(user))
     return send_file(BytesIO(payload), mimetype='application/pdf', as_attachment=True, download_name='backorders.pdf')
 
@@ -3029,11 +3117,9 @@ def _render_pricing(tab):
 
 
 def _production_staff():
-    user, response = _enforce()
+    user, response = _enforce(module='production-settings')
     if response is not None:
         return None, response
-    if not _is_ora_staff(user):
-        return None, forbidden()
     return user, None
 
 

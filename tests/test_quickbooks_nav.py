@@ -30,9 +30,12 @@ def test_only_an_admin_sees_quickbooks_after_financials(client):
     write_user('lee@harbor.example', 'customer', customer_id='harbor', customer_name='Harbor Glass')
     assert login(client, 'admin@oraglass.us').status_code == 302
     labels = [label for _href, label in _nav(client.get('/invoices'))]
-    assert labels[labels.index('Financials') + 1] == 'QuickBooks'
+    assert labels[labels.index('Users') + 1] == 'QuickBooks'
+    assert 'Production settings' in labels
+    assert 'Shipments' in labels
+    assert 'Racks' in labels
     hrefs = [href for href, label in _nav(client.get('/invoices'))]
-    assert hrefs[hrefs.index('/financial') + 1] == '/settings/quickbooks'
+    assert hrefs[hrefs.index('/users') + 1] == '/settings/quickbooks'
     client.post('/logout')
 
     assert login(client, 'seller@oraglass.us').status_code == 302

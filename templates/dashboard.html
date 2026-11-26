@@ -125,7 +125,7 @@
                 <p>Manage user accounts</p>
             </a>
             {% endif %}
-            {% if user.role == 'admin' %}
+            {% if 'quickbooks' in modules %}
             <a href="/settings/quickbooks" class="module" id="quickbooks-tile">
                 <h3>QuickBooks</h3>
                 {% if qbo_expired %}
