@@ -9894,7 +9894,8 @@ def _issue_packed_customer_invoice(order, user, quantities=None):
     customer = _order_customer(order)
     issuer = 'ca' if _needs_intercompany(order) else 'us'
     shipment = {
-        'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '',         'notes': '',
+        'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '',
+        'notes': '', 'source': 'packed',
     }
     document = _invoice_for_items(order, user, customer, items, summary, issuer, 'customer', shipment)
     stored = append_invoice(document)
@@ -9924,6 +9925,7 @@ def _issue_packed_intercompany(order, user):
         'rack': '',
         'truck_plate': '',
         'notes': '',
+        'source': 'packed',
         'items': items,
         'lines': [
             {'serial': item.get('serial'), 'qty': item.get('pcs'), 'index': item.get('source_index')}
@@ -10322,7 +10324,8 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
         'shipment_date': (shipment or {}).get('date') or '',
         'shipment_rack': (shipment or {}).get('rack') or '',
         'truck_plate': (shipment or {}).get('truck_plate') or '',
-        'shipment_notes': (shipment or {}).get('notes') or '',
+        'shipment_notes': _printed_shipment_note((shipment or {}).get('notes')),
+        'shipment_source': (shipment or {}).get('source') or '',
         'status': 'unpaid',
         'balance': summary.get('total', 0),
         'issuer': issuer,
@@ -10605,8 +10608,17 @@ def _invoices_visible(user):
     return rows
 
 
+def _printed_shipment_note(value):
+    """A customer-facing shipment note. The packed-pieces placeholder is not one."""
+    note = str(value or '').strip()
+    if note == 'Packed pieces':
+        return ''
+    return note
+
+
 def _present_invoice(invoice, payments):
     view = dict(invoice)
+    view['shipment_notes'] = _printed_shipment_note(invoice.get('shipment_notes'))
     view.pop('price_addon_percent', None)
     view['doc_type'] = document_type(invoice)
     view['issuer'] = invoice.get('issuer') or 'us'
@@ -11907,8 +11919,8 @@ def _render_invoice_pdf(invoice):
             f" &nbsp; <b>Rack:</b> {escape(invoice.get('shipment_rack') or '')}"
             f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}"
         )
-    note = str(invoice.get('shipment_notes') or '').strip()
-    if note and note.lower() != 'packed pieces':
+    note = _printed_shipment_note(invoice.get('shipment_notes'))
+    if note:
         shipment_bits.append(f"<b>Notes:</b> {escape(note)}")
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}

@@ -32,6 +32,40 @@ def test_a_zero_percent_discount_is_left_off_the_totals():
     assert priced_labels[:3] == ['IGU subtotal', 'Discount (5.00%)', 'IGU total']
 
 
+def test_packed_pieces_is_not_printed_as_a_note(client):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_invoices([
+        {
+            'id': 1, 'number': 'CA-INV-0001', 'kind': 'customer', 'issuer': 'ca', 'currency': 'cad',
+            'company': 'HighQ Developments Inc', 'invoice_date': '2026-11-20',
+            'shipment_notes': 'Packed pieces', 'shipment_source': 'packed',
+            'subtotal': 10, 'igu_subtotal': 10, 'igu_total': 10, 'total': 10, 'balance': 10,
+            'discount_amount': 0, 'items': [{'name': 'Glass', 'pcs': 1, 'total': 10}],
+        },
+        {
+            'id': 2, 'number': 'CA-INV-0002', 'kind': 'customer', 'issuer': 'ca', 'currency': 'cad',
+            'company': 'HighQ Developments Inc', 'invoice_date': '2026-11-20',
+            'shipment_notes': 'Leave at the dock',
+            'subtotal': 10, 'igu_subtotal': 10, 'igu_total': 10, 'total': 10, 'balance': 10,
+            'discount_amount': 0, 'items': [{'name': 'Glass', 'pcs': 1, 'total': 10}],
+        },
+    ])
+    hidden = client.get('/api/invoices/1').get_json()
+    assert hidden['shipment_notes'] == ''
+    assert hidden['shipment_source'] == 'packed'
+    placeholder = pdf_text(client.get('/api/invoices/1/pdf').data)
+    assert b'Packed pieces' not in placeholder
+    assert b'Notes:' not in placeholder
+    shown = client.get('/api/invoices/2').get_json()
+    assert shown['shipment_notes'] == 'Leave at the dock'
+    real = pdf_text(client.get('/api/invoices/2/pdf').data)
+    assert b'Notes:' in real
+    assert b'Leave at the dock' in real
+    page = open('templates/invoices.html', encoding='utf-8').read()
+    assert "shipmentNote !== 'Packed pieces'" in page
+
+
 def test_tax_line_labels_are_the_name_and_rate_only():
     invoice = {
         'seller_gst_number': '729631119 RT0001',
