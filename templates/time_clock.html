@@ -10,17 +10,23 @@ body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#
 .wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
 .card{background:#fff;border-radius:10px;padding:20px;width:100%;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 h1,h2{margin:0 0 12px;color:#333;font-size:20px}
-.grid,.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px 14px;align-items:end}
+.grid{display:grid;gap:12px 14px;align-items:end}
+.grid.kiosk{grid-template-columns:minmax(180px,1fr) minmax(220px,1.6fr) 200px}
+.grid.filters{grid-template-columns:minmax(200px,1.6fr) minmax(150px,1fr) minmax(150px,1fr) 140px}
+.grid .span2{grid-column:span 2}
 label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:6px;min-width:0}
-label.wide{grid-column:span 2}
-input,select,button,.btn{font:14px 'Segoe UI',Arial,sans-serif;height:40px;padding:0 10px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#222;width:100%}
-button,.btn{background:#9f1830;color:#fff;border:1px solid #9f1830;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;width:auto;white-space:nowrap}
-.grid > button,.filters > button{width:100%}
-button.outline,.btn.outline{background:#fff;color:#9f1830}
-button.outline:hover,.btn.outline:hover{background:#fff6f7}
+input,select,button,a.btn{font:14px 'Segoe UI',Arial,sans-serif;height:40px;min-height:40px;padding:0 12px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#222;width:100%;box-sizing:border-box}
+button,a.btn{background:#9f1830;color:#fff;border:1px solid #9f1830;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;line-height:1;white-space:nowrap}
+.grid > button{width:100%}
+button.outline,a.btn.outline{background:#fff;color:#9f1830;border:1px solid #9f1830}
+button.outline:hover,a.btn.outline:hover{background:#fff6f7}
+.links{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+.links > a.btn{width:auto;min-width:148px;height:40px;padding:0 16px}
 .links a:not(.btn){width:auto;height:auto;border:0;background:transparent;color:#9f1830;font-weight:600;align-self:center;padding:0}
-.links > *,.toolbar > *{height:40px}
 .stack{display:flex;flex-direction:column;gap:14px}
+.kiosk-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px}
+.kiosk-row span{flex:1 1 180px}
+.kiosk-row button{width:auto;min-width:100px;flex:0 0 auto}
 .note{color:#666;font-size:13px;margin:10px 0 0}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
 th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
@@ -37,8 +43,9 @@ th{background:#f7f7f7;color:#333;font-weight:600}
 @media (max-width:900px){
   .wrap{padding:12px}
   .card{padding:14px}
-  label.wide{grid-column:span 1}
-  .links > .btn,.toolbar > *{flex:1 1 148px}
+  .grid.kiosk,.grid.filters{grid-template-columns:1fr 1fr}
+  .grid > button{grid-column:1 / -1}
+  .links > a.btn{flex:1 1 148px}
 }
 </style>
 </head>
@@ -49,21 +56,22 @@ th{background:#f7f7f7;color:#333;font-weight:600}
 <div class="card">
 <h1>Time Clock</h1>
 <div class="stack" id="kiosk-tools">
-<div class="grid">
+<div class="grid kiosk">
 <label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
-<label class="wide">Time zone<select id="kiosk-zone"></select></label>
+<label>Time zone<select id="kiosk-zone"></select></label>
 <button type="button" id="activate-kiosk">Activate this device as kiosk</button>
 </div>
-<div class="grid">
+<div class="grid kiosk">
 <label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<span></span>
 <button type="button" id="save-retention">Save retention</button>
 </div>
 </div>
 <p class="note">Photos are kept at least 90 days and are visible only to administrators and staff who can manage time.</p>
-<p class="note" id="kiosk-list"></p>
+<div class="note" id="kiosk-list"></div>
 <p class="note">Times are shown in the time zone stored on each punch. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
-<div class="grid">
-<label class="wide">Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<div class="grid filters">
+<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
 <label>From<input type="date" id="filter-from"></label>
 <label>To<input type="date" id="filter-to"></label>
 <button type="button" id="apply">Show</button>
@@ -224,8 +232,8 @@ async function loadKiosks() {
     const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
     const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + esc(row.id) + '">Revoke</button>';
     const unlock = row.locked ? ' <button type="button" data-unlock="' + esc(row.id) + '">Unlock</button>' : '';
-    return '<span>' + esc(row.name) + ' · ' + state + ' · ' + esc(row.timezone || '') + '</span>' + revoke + unlock;
-  }).join('<br>') : 'No kiosks registered.';
+    return '<div class="kiosk-row"><span>' + esc(row.name) + ' · ' + state + ' · ' + esc(row.timezone || '') + '</span>' + revoke + unlock + '</div>';
+  }).join('') : 'No kiosks registered.';
 }
 fetch('/api/time-zones').then(res => res.ok ? res.json() : null).then(body => {
   if (!body) return;

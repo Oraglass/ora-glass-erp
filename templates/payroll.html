@@ -10,22 +10,25 @@ body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#
 .wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
 .card{background:#fff;border-radius:10px;padding:20px;width:100%;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 h1,h2{margin:0 0 12px;color:#333;font-size:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px 14px;align-items:end}
+.grid{display:grid;gap:12px 14px;align-items:end}
 .grid.settings{grid-template-columns:repeat(7,minmax(0,1fr))}
-.grid.pay{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.grid.pay,.grid.kiosk{grid-template-columns:minmax(180px,1.5fr) minmax(130px,1fr) minmax(120px,0.9fr) minmax(150px,1fr) 168px}
+.grid.filters{grid-template-columns:minmax(200px,1.6fr) minmax(150px,1fr) minmax(150px,1fr) 140px}
+.grid .span2{grid-column:span 2}
 label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:6px;min-width:0}
-label.wide{grid-column:span 2}
-input,select,button,.btn{
+input,select,button,a.btn{
   font:14px 'Segoe UI',Arial,sans-serif;
   height:40px;
-  padding:0 10px;
+  min-height:40px;
+  padding:0 12px;
   border:1px solid #ddd;
   border-radius:6px;
   background:#fff;
   color:#222;
   width:100%;
+  box-sizing:border-box;
 }
-button,.btn{
+button,a.btn{
   background:#9f1830;
   color:#fff;
   border:1px solid #9f1830;
@@ -35,31 +38,40 @@ button,.btn{
   align-items:center;
   justify-content:center;
   font-weight:600;
-  width:auto;
+  line-height:1;
   white-space:nowrap;
 }
-button.outline,.btn.outline{background:#fff;color:#9f1830}
-button.outline:hover,.btn.outline:hover{background:#fff6f7}
-.grid > button,.grid > .btn{width:100%}
+.grid > button{width:100%}
+button.outline,a.btn.outline{
+  background:#fff;
+  color:#9f1830;
+  border:1px solid #9f1830;
+}
+button.outline:hover,a.btn.outline:hover{background:#fff6f7}
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.toolbar > *{height:40px}
+.toolbar > button,.toolbar > a.btn{width:auto;min-width:148px;height:40px;padding:0 16px}
 .days{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:14px 0}
 .days label{flex-direction:row;align-items:center;gap:6px;color:#222;font-size:14px;width:auto}
 .days input{width:16px;height:16px;padding:0;flex:0 0 auto}
 .note{color:#666;font-size:13px;margin:10px 0 0}
 .banner{background:#fff6f7;border:1px solid #f0c9d0;color:#9f1830;border-radius:8px;padding:10px 12px;font-weight:600;margin:0 0 10px}
 .gross{font-size:18px;font-weight:700;margin:14px 0}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;table-layout:auto}
-th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
-th{background:#f7f7f7;color:#333;font-weight:600}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.sheet{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;table-layout:fixed}
+table.sheet th,table.sheet td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle;overflow:hidden}
+table.sheet th{background:#f7f7f7;color:#333;font-weight:600}
+table.sheet td.num,table.sheet th.num,table.hours td:nth-child(4),table.hours td:nth-child(5),table.hours td:nth-child(6){text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .stack{display:flex;flex-direction:column;gap:14px}
+.kiosk-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px}
+.kiosk-row span{flex:1 1 180px}
+.kiosk-row select{width:auto;flex:1 1 220px;max-width:360px}
+.kiosk-row button{width:auto;min-width:100px;flex:0 0 auto}
 @media (max-width:900px){
   .wrap{padding:12px}
   .card{padding:14px}
-  .grid.settings{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
-  label.wide{grid-column:span 1}
-  .toolbar > *{flex:1 1 148px}
+  .grid.settings,.grid.pay,.grid.kiosk,.grid.filters{grid-template-columns:1fr 1fr}
+  .grid .span2{grid-column:1 / -1}
+  .grid > button{grid-column:1 / -1}
+  .toolbar > button,.toolbar > a.btn{flex:1 1 148px}
 }
 </style>
 </head>
@@ -104,7 +116,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <a class="btn outline" id="period-xlsx" href="/api/time-clock/shifts.xlsx">Excel shifts</a>
 </div>
 <p class="gross" id="period-total"></p>
-<table>
+<table class="sheet">
+<colgroup><col style="width:16%"><col style="width:10%"><col style="width:8%"><col style="width:12%"><col style="width:10%"><col style="width:12%"><col style="width:10%"><col style="width:12%"><col style="width:10%"></colgroup>
 <thead><tr><th>Worker</th><th class="num">Regular h</th><th class="num">OT h</th><th class="num">Regular pay</th><th class="num">OT pay</th><th class="num">Adjustments</th><th class="num">Gross</th><th class="num">YTD gross</th><th>Status</th></tr></thead>
 <tbody id="stub-rows"></tbody>
 </table>
@@ -112,7 +125,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <div class="card">
 <h2>Worker pay</h2>
 <div class="grid pay">
-<label class="wide">Worker<select id="worker"><option value="">Select worker</option></select></label>
+<label>Worker<select id="worker"><option value="">Select worker</option></select></label>
 <label>Hourly rate<input id="rate" type="number" min="0" step="0.01" placeholder="20.00"></label>
 <label>Currency<input id="currency" value="USD" maxlength="3"></label>
 <label>Rate effective<input id="rate-from" type="date"></label>
@@ -120,15 +133,17 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 </div>
 <p class="note" id="rate-history"></p>
 <div class="grid pay">
-<label class="wide">Shift<select id="assign-shift"></select></label>
+<label>Shift<select id="assign-shift"></select></label>
 <label>Assignment effective<input id="assign-from" type="date"></label>
+<span></span>
+<span></span>
 <button type="button" id="save-assignment">Assign shift</button>
 </div>
 <p class="note" id="assignment-history"></p>
 <div class="grid pay">
 <label>Adjustment<select id="adj-kind"><option value="bonus">Bonus</option><option value="reimbursement">Reimbursement</option></select></label>
 <label>Amount<input id="adj-amount" type="number" min="0" step="0.01"></label>
-<label class="wide">Reason<input id="adj-reason" placeholder="Why this amount"></label>
+<label class="span2">Reason<input id="adj-reason" placeholder="Why this amount"></label>
 <button type="button" id="save-adjustment">Add adjustment</button>
 </div>
 <p class="note" id="stub-detail"></p>
@@ -144,22 +159,30 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 <h2>Time & Kiosk</h2>
 <p class="note">Timesheets, punch photos, and corrections stay here. The shop tablet is the only punch screen.</p>
 <div class="stack">
-<div class="grid">
+<div class="grid kiosk">
 <label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
-<label class="wide">Time zone<select id="kiosk-zone"></select></label>
+<label class="span2">Time zone<select id="kiosk-zone"></select></label>
+<span></span>
 <button type="button" id="activate-kiosk">Set up shop kiosk</button>
 </div>
-<div class="grid">
-<label class="wide">Phone punch time zone<select id="default-zone"></select></label>
+<div class="grid kiosk">
+<label class="span2">Phone punch time zone<select id="default-zone"></select></label>
+<span></span>
+<span></span>
 <button type="button" id="save-default-zone">Save phone time zone</button>
+</div>
+<div class="grid kiosk">
 <label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<span></span>
+<span></span>
+<span></span>
 <button type="button" id="save-retention">Save retention</button>
 </div>
 </div>
 <p class="note">Opening this on the tablet signs you out there and turns that device into the kiosk. You can also open /kiosk/setup on the tablet.</p>
-<p class="note" id="kiosk-list"></p>
-<div class="grid">
-<label class="wide">Employee<select id="filter-user"><option value="">All employees</option></select></label>
+<div class="note" id="kiosk-list"></div>
+<div class="grid filters">
+<label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
 <label>From<input type="date" id="filter-from"></label>
 <label>To<input type="date" id="filter-to"></label>
 <button type="button" id="apply">Show</button>
@@ -172,14 +195,16 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 </div>
 <div class="card">
 <h2>Scheduled and actual</h2>
-<table>
-<thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Scheduled</th><th>Actual</th><th>Paid</th><th></th></tr></thead>
+<table class="sheet hours">
+<colgroup><col style="width:12%"><col style="width:22%"><col style="width:16%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:14%"></colgroup>
+<thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th class="num">Scheduled</th><th class="num">Actual</th><th class="num">Paid</th><th></th></tr></thead>
 <tbody id="attendance-rows"></tbody>
 </table>
 </div>
 <div class="card">
 <h2>Punches</h2>
-<table>
+<table class="sheet">
+<colgroup><col style="width:18%"><col style="width:18%"><col style="width:16%"><col style="width:12%"><col style="width:18%"><col style="width:18%"></colgroup>
 <thead><tr><th>When</th><th>Employee</th><th>Action</th><th>Photo</th><th>Location</th><th></th></tr></thead>
 <tbody id="punch-rows"></tbody>
 </table>
@@ -460,10 +485,10 @@ async function loadKiosks() {
     const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
     const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + escTime(row.id) + '">Revoke</button>';
     const unlock = row.locked ? ' <button type="button" data-unlock="' + escTime(row.id) + '">Unlock</button>' : '';
-    return '<span>' + escTime(row.name) + ' · ' + state + ' · ' + escTime(row.timezone || '') + '</span>'
-      + ' <select data-kiosk-zone="' + escTime(row.id) + '" aria-label="Time zone for ' + escTime(row.name) + '"></select>'
-      + revoke + unlock;
-  }).join('<br>') : 'No kiosks registered.';
+    return '<div class="kiosk-row"><span>' + escTime(row.name) + ' · ' + state + '</span>'
+      + '<select data-kiosk-zone="' + escTime(row.id) + '" aria-label="Time zone for ' + escTime(row.name) + '"></select>'
+      + revoke + unlock + '</div>';
+  }).join('') : 'No kiosks registered.';
   if (window.kioskZoneCatalog) fillKioskZoneSelects(window.kioskZoneCatalog, rows);
 }
 function zoneOptions(body, selected) {
