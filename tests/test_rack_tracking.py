@@ -174,7 +174,16 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     assert b'id="wedge-rack"' not in page.data
     assert b'Keyboard scanner' not in page.data
     assert b'cdn.jsdelivr.net/npm/html5-qrcode' in page.data
-    assert b'>Scan rack<' in page.data
+    assert b'>Start camera<' in page.data
+    assert b'id="keep-scanning"' in page.data
+    assert b"facingMode: 'environment'" in page.data
+    assert b'fps: 10' in page.data
+    assert b'0.7' in page.data
+    assert b'useBarCodeDetectorIfSupported: false' in page.data
+    assert b'formatsToSupport' in page.data
+    assert b'navigator.vibrate(150)' in page.data
+    assert b'unlockBeep' in page.data
+    assert b'onCameraCode' in page.data
     assert b'id="customer"' in page.data
     sites = client.get('/api/racks/sites')
     assert sites.status_code == 200
