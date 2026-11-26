@@ -141,10 +141,12 @@ async function addScan(raw, options) {
     body: JSON.stringify({
       text: text,
       customer_id: DRIVER ? '' : chosenCustomer(),
-      already: scans.filter(row => row.result === 'ok').map(row => row.rack)
+      already: scans.filter(row => row.result === 'ok').map(row => row.rack),
+      scan_method: (options && options.method) || 'typed'
     })
   });
   const body = await res.json().catch(() => ({result: 'unknown', message: 'Could not check that rack', raw: text, rack: text.trim()}));
+  body.scan_method = (options && options.method) || 'typed';
   scans.push(body);
   beep(body.result === 'ok');
   render();
@@ -185,7 +187,7 @@ async function onCameraCode(text) {
   } else {
     await stopCamera();
   }
-  await addScan(code, {keepValue: true});
+  await addScan(code, {keepValue: true, method: 'camera'});
   if (keep && camera) {
     resumeTimer = setTimeout(function() {
       scanLock = false;
@@ -216,16 +218,21 @@ async function startCamera() {
   );
   document.getElementById('camera').textContent = 'Stop camera';
 }
+let typedAt = 0;
 input.addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    unlockBeep();
-    addScan(input.value);
-  }
+  if (!input.value) typedAt = Date.now();
+  if (!typedAt) typedAt = Date.now();
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  const method = (Date.now() - typedAt) <= 120 ? 'gun' : 'typed';
+  typedAt = 0;
+  unlockBeep();
+  addScan(input.value, {method: method});
 });
 document.getElementById('add-rack').addEventListener('click', () => {
+  typedAt = 0;
   unlockBeep();
-  addScan(input.value);
+  addScan(input.value, {method: 'typed'});
 });
 document.getElementById('camera').addEventListener('click', async () => {
   unlockBeep();
@@ -248,7 +255,11 @@ document.getElementById('confirm').addEventListener('click', async () => {
     body: JSON.stringify({
       customer_id: DRIVER ? '' : chosenCustomer(),
       truck_plate: document.getElementById('plate').value,
-      racks: racks
+      racks: racks,
+      methods: scans.filter(row => row.result === 'ok').reduce((map, row) => {
+        map[row.rack] = row.scan_method || 'typed';
+        return map;
+      }, {})
     })
   });
   const body = await res.json().catch(() => ({}));

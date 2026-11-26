@@ -234,12 +234,16 @@ def test_driver_pickup_warns_and_returns_the_rack(client):
     assert 'Not at a customer' in flagged.get_json()['message']
     home = load_racks()['1054']
     assert home['status'] == 'returned'
-    assert home['history'][-1]['action'] == 'picked_up'
-    assert home['history'][-1]['customer_id'] == 'harbor-glass'
-    assert home['history'][-1]['customer_name'] == 'Harbor Glass'
-    assert 'returned' in (home['history'][-1].get('note') or '').lower() or home['history'][-1]['note'] == 'Picked up and returned.'
-    assert home['history'][-1]['user'] == 'dana@oraglass.us'
-    assert home['history'][-1]['truck_plate'] == 'VAN-2'
+    pickup = next(item for item in home['history'] if item.get('action') == 'picked_up')
+    assert pickup['customer_id'] == 'harbor-glass'
+    assert pickup['customer_name'] == 'Harbor Glass'
+    assert pickup['location_before'] == 'Harbor Glass'
+    assert pickup['location_after'] == 'Ora Glass'
+    assert 'returned' in (pickup.get('note') or '').lower() or pickup['note'] == 'Picked up and returned.'
+    assert pickup['user'] == 'dana@oraglass.us'
+    assert pickup['truck_plate'] == 'VAN-2'
+    assert home['history'][-1]['action'] == 'scanned'
+    assert home['history'].index(pickup) < len(home['history']) - 1
     client.post('/logout')
     assert login(client, 'sales@harbor.example').status_code == 302
     assert client.get('/api/racks').get_json() == []
@@ -495,3 +499,130 @@ def test_backfill_auto_returns_a_rack_when_a_later_list_shows_up(client):
     assert reused['history'][-2]['at']
     quiet = client.get('/api/racks').get_json()
     assert len(next(row for row in quiet if row['number'] == '1054')['history']) == len(reused['history'])
+
+
+def test_a_phone_driver_scan_is_kept_and_the_detail_is_staff_only(client):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from security import hash_password
+    from storage import load_users, save_racks, save_users
+    _users()
+    save_racks({
+        '1054': {
+            'number': '1054', 'name': 'A1900', 'status': 'at_customer',
+            'customer_id': 'harbor-glass', 'customer_name': 'Harbor Glass',
+            'since': '2026-11-01', 'packing_number': 'XF1', 'history': [{
+                'at': '2026-11-01T18:00:00+00:00', 'action': 'delivered',
+                'user': 'admin@oraglass.us', 'user_name': 'Admin', 'user_role': 'admin',
+                'note': 'Delivered on S1.', 'customer_id': 'harbor-glass',
+                'customer_name': 'Harbor Glass',
+            }],
+        },
+    })
+    users = load_users()
+    users['3605550199'] = {
+        'email': '', 'name': 'Dana Driver', 'role': 'driver', 'phone': '3605550199',
+        'password_hash': hash_password('Validpass1'), 'active': True,
+        'must_change_password': False,
+    }
+    save_users(users)
+    assert login(client, '3605550199').status_code == 302
+    denied = client.get('/racks/1054')
+    assert denied.status_code == 302
+    assert '/racks/1054' not in denied.headers['Location']
+    assert b'id="rack-timeline"' not in denied.data
+    scanned = client.post('/api/racks/check', json={'text': '1054', 'scan_method': 'camera', 'already': []})
+    assert scanned.get_json()['result'] == 'ok'
+    again = client.post('/api/racks/check', json={'text': '9999', 'scan_method': 'typed', 'already': []})
+    assert again.get_json()['result'] == 'unknown'
+    assert '9999' not in load_racks()
+    client.post('/logout')
+    assert login(client, 'sales@harbor.example').status_code == 302
+    hidden = client.get('/racks/1054')
+    assert hidden.status_code == 302
+    assert b'id="rack-timeline"' not in hidden.data
+    assert b'overdue-racks' not in client.get('/dashboard').data
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    stored = load_racks()['1054']
+    assert [item.get('note') for item in stored['history']][0] == 'Delivered on S1.'
+    scan = stored['history'][-1]
+    assert scan['action'] == 'scanned'
+    assert scan['scan_method'] == 'camera'
+    assert scan['user'] == '3605550199'
+    assert scan['user_name'] == 'Dana Driver'
+    assert scan['user_role'] == 'driver'
+    assert scan['location_before'] == 'Harbor Glass'
+    assert scan['location_after'] == 'Harbor Glass'
+    assert scan['packing_number'] == 'XF1'
+    assert scan['at'].endswith('+00:00')
+    page = client.get('/racks/1054')
+    assert page.status_code == 200
+    assert b'id="rack-timeline"' in page.data
+    assert b'Dana Driver' in page.data
+    assert b'(Driver)' in page.data
+    assert b'Scanned by camera.' in page.data
+    assert b'Pacific' in page.data
+    assert b'Harbor Glass' in page.data
+    listed = client.get('/racks')
+    assert b'data-sort="trips"' in listed.data
+    assert b'data-sort="avg_days"' in listed.data
+    assert b'data-sort="days"' in listed.data
+    assert b'badge-overdue' in listed.data
+    assert b'Weekly overdue racks' in listed.data
+    assert b'It has not run yet' in listed.data
+    assert b'Customers are not emailed' in listed.data
+    body = next(row for row in client.get('/api/racks?status=overdue').get_json() if row['number'] == '1054')
+    assert body['overdue'] is True
+    assert body['trips'] >= 1
+    assert body['trip_open'] is True
+    assert body['days'] > 14
+    dash = client.get('/dashboard')
+    assert b'id="overdue-racks"' in dash.data
+    assert b'1054' in dash.data
+    pacific = ZoneInfo('America/Los_Angeles')
+    assert racks_mod().run_weekly_overdue_if_due(datetime(2026, 11, 23, 6, 59, tzinfo=pacific)) is None
+    record = racks_mod().run_weekly_overdue_if_due(datetime(2026, 11, 23, 7, 0, tzinfo=pacific))
+    assert record['week'] == '2026-11-23'
+    assert record['emailed'] is False
+    assert any(row['number'] == '1054' and row['packing_number'] == 'XF1' for row in record['rows'])
+    assert racks_mod().run_weekly_overdue_if_due(datetime(2026, 11, 23, 18, 0, tzinfo=pacific)) is None
+    shown = client.get('/racks').data
+    assert b'Last run' in shown
+    assert b'Pacific' in shown
+    nxt = racks_mod().run_weekly_overdue_if_due(datetime(2026, 11, 30, 7, 0, tzinfo=pacific))
+    assert nxt['week'] == '2026-11-30'
+    assert racks_mod().start_weekly_overdue_report() is None
+
+
+def racks_mod():
+    import racks
+    return racks
+
+
+def test_trip_stats_count_a_return_and_an_open_stay():
+    from datetime import date
+    import racks
+    row = {
+        'status': 'at_customer',
+        'customer_name': 'Harbor Glass',
+        'since': '2026-11-20',
+        'history': [
+            {'at': '2026-10-01T16:00:00+00:00', 'action': 'delivered', 'customer_name': 'Maple Glass'},
+            {'at': '2026-10-11T16:00:00+00:00', 'action': 'returned', 'customer_name': 'Maple Glass'},
+            {'at': '2026-11-20T16:00:00+00:00', 'action': 'delivered', 'customer_name': 'Harbor Glass'},
+            {'at': '2026-11-21T16:00:00+00:00', 'action': 'scanned', 'scan_method': 'gun',
+             'user_name': 'Dana Driver', 'user_role': 'driver', 'user': '3605550199'},
+        ],
+    }
+    stats = racks.lifetime_stats(row, date(2026, 11, 26))
+    assert stats['trips'] == 2
+    assert stats['trip_open'] is True
+    assert stats['total_days'] == 16
+    assert stats['avg_days'] == 8
+    assert stats['longest_days'] == 10
+    assert stats['current_days'] == 6
+    assert stats['current_location'] == 'Harbor Glass'
+    assert stats['last_scan_by'] == 'Dana Driver'
+    assert stats['last_scan_method'] == 'gun'
+    assert 'Pacific' in racks.pacific_label('2026-11-26T15:00:00+00:00')

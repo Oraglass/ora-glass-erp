@@ -1649,6 +1649,8 @@ def dashboard():
         show_resale=_customer_uses_resale(user),
         canada_tax_label=_canada_tax_label(user),
         review_count=_orders_awaiting_staff(user),
+        overdue_racks=_overdue_rack_panel(user),
+        overdue_report=_overdue_report(user),
     )
 
 
@@ -2335,7 +2337,30 @@ def racks_page():
     user = current_user()
     if not _rack_user_ok(user):
         return forbidden()
-    return render_template('racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin')
+    import racks as rack_book
+    report = rack_book.weekly_report_view() if user.get('role') == 'admin' else None
+    return render_template(
+        'racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin', report=report,
+    )
+
+
+@app.route('/racks/<rack_number>')
+@login_required
+def rack_detail(rack_number):
+    user = current_user()
+    if user.get('role') in {'driver', 'customer', 'shop'} or not staff_can_order(user):
+        return forbidden()
+    import racks as rack_book
+    rack_book.backfill_from_orders(load_orders(), user)
+    number = str(rack_number or '').strip()
+    row = rack_book.load_rows().get(number)
+    if not isinstance(row, dict):
+        return json_error('That rack was not found.', 404) if request.accept_mimetypes.best == 'application/json' else (
+            render_template('rack_detail.html', rack=None, missing=number), 404
+        )
+    shown = rack_book.present(row)
+    shown['number'] = number
+    return render_template('rack_detail.html', rack=shown, missing='')
 
 
 @app.route('/racks/scan')
@@ -2388,9 +2413,12 @@ def rack_check():
     data = json_body() or {}
     import racks as rack_book
     customer_id = '' if user.get('role') == 'driver' else clean_text(data.get('customer_id'), 80)
-    return jsonify(rack_book.check_scan(
+    verdict = rack_book.check_scan(
         rack_book.load_rows(), data.get('text'), customer_id, data.get('already') or [],
-    ))
+    )
+    if verdict.get('rack'):
+        rack_book.record_scan(verdict.get('rack'), user, data.get('scan_method'))
+    return jsonify(verdict)
 
 
 @app.route('/api/racks/pickup', methods=['POST'])
@@ -2413,6 +2441,7 @@ def rack_pickup():
     result = rack_book.confirm_pickup(
         data.get('racks') or [], customer_id, customer_name,
         clean_text(data.get('truck_plate'), 40), user,
+        methods=data.get('methods') if isinstance(data.get('methods'), dict) else {},
     )
     if not result['moved']:
         return json_error('None of those racks are at this customer.', 400)
@@ -14272,9 +14301,27 @@ def seed_command(links, base_url):
         click.echo(f'{email}  {base}/setup-password/{token}')
 
 
+def _overdue_rack_panel(user):
+    if not user or user.get('role') != 'admin':
+        return None
+    import racks as rack_book
+    rack_book.backfill_from_orders(load_orders(), user)
+    rows = rack_book.overdue_rows(rack_book.load_rows())
+    return {'count': len(rows), 'rows': rows[:8]}
+
+
+def _overdue_report(user):
+    if not user or user.get('role') != 'admin':
+        return None
+    import racks as rack_book
+    return rack_book.weekly_report_view()
+
+
 def _start_background_jobs():
     import quickbooks
+    import racks as rack_book
     quickbooks.start_weekly_open_import()
+    rack_book.start_weekly_overdue_report()
 
 
 _start_background_jobs()

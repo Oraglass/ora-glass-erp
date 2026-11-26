@@ -64,6 +64,24 @@
             Upload or review your company's certificate.
         </div>
         {% endif %}
+        {% if user.role == 'admin' %}
+        <div class="import-notice" id="overdue-racks">
+            {% if overdue_racks and overdue_racks.count %}
+            <a href="/racks?status=overdue">{{ overdue_racks.count }} rack{% if overdue_racks.count != 1 %}s{% endif %} overdue</a>
+            at a customer for more than 14 days.
+            <ul>
+            {% for row in overdue_racks.rows %}
+            <li><a href="/racks/{{ row.number }}">{{ row.number }}</a> {{ row.customer_name }} · {{ row.days }} days · {{ row.packing_number }}</li>
+            {% endfor %}
+            </ul>
+            {% else %}
+            No racks are overdue.
+            {% endif %}
+            {% if overdue_report %}
+            <p>Weekly report: {{ overdue_report.schedule }}. {% if overdue_report.ran %}Last run {{ overdue_report.at_label }}.{% else %}It has not run yet.{% endif %} Customers are not emailed.</p>
+            {% endif %}
+        </div>
+        {% endif %}
         {% if qbo_expired %}
         <div class="import-notice" id="qbo-expired">
             QuickBooks connection expired - Reconnect

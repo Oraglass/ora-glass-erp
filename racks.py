@@ -6,11 +6,29 @@ inventory when a driver scans the empty rack, an admin marks it returned, or a
 new packing list reuses it. Reuse records an auto-return, then packs it again.
 """
 
-from datetime import date, datetime, timezone
+import os
+import re
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from storage import atomic_write_json, lock_for, racks_path, read_json
 
 OVERDUE_DAYS = 14
+PACIFIC = ZoneInfo('America/Los_Angeles')
+WEEKLY_REPORT_HOUR = 7
+_WEEKLY_STARTED = False
+_ROLE_LABELS = {
+    'admin': 'Admin',
+    'driver': 'Driver',
+    'sales': 'Sales',
+    'employee': 'Employee',
+    'customer': 'Customer',
+    'shop': 'Shop',
+    'production': 'Production',
+    'viewer': 'Viewer',
+}
+_PACKED_NOTE = re.compile(r'^Packed on (.+)\.$')
+_REUSE_NOTE = re.compile(r'packing list (\S+)')
 AT_ORA = 'at_ora'
 PACKED = 'packed'
 AT_CUSTOMER = 'at_customer'
@@ -114,20 +132,104 @@ def _blank(number, name=''):
     }
 
 
+def _actor(user):
+    person = user or {}
+    login = person.get('email') or person.get('phone') or person.get('name') or ''
+    return login, person.get('name') or '', person.get('role') or ''
+
+
+def _scan_method(value):
+    text = str(value or '').strip().lower()
+    return text if text in {'camera', 'gun', 'typed'} else ''
+
+
+def _location_of(row):
+    status = (row or {}).get('status')
+    if status == AT_CUSTOMER:
+        return (row or {}).get('customer_name') or 'Customer'
+    return 'Ora Glass'
+
+
 def _event(action, user, moment, **extra):
+    login, name, role = _actor(user)
     row = {
         'at': _stamp(moment),
         'action': action,
-        'user': (user or {}).get('email') or (user or {}).get('name') or '',
+        'user': login,
+        'user_name': name,
+        'user_role': role,
         'customer_id': '',
         'customer_name': '',
+        'customer_before_id': '',
+        'customer_before_name': '',
+        'customer_after_id': '',
+        'customer_after_name': '',
+        'location_before': '',
+        'location_after': '',
         'order_id': None,
         'shipment_id': None,
         'shipment_number': '',
         'truck_plate': '',
+        'packing_number': '',
+        'scan_method': '',
         'note': '',
     }
     row.update(extra)
+    if row.get('scan_method'):
+        row['scan_method'] = _scan_method(row.get('scan_method'))
+    return _complete_event(row)
+
+
+def _complete_event(event):
+    """Fill the newer history fields. Existing notes and times stay as they are."""
+    row = dict(event or {})
+    note = str(row.get('note') or '')
+    if not row.get('packing_number'):
+        packed = _PACKED_NOTE.match(note)
+        reused = _REUSE_NOTE.search(note)
+        if packed:
+            row['packing_number'] = packed.group(1).strip()
+        elif reused:
+            row['packing_number'] = reused.group(1).strip()
+    action = row.get('action')
+    customer_id = row.get('customer_id') or ''
+    customer_name = row.get('customer_name') or ''
+    if action == 'delivered':
+        row['location_before'] = row.get('location_before') or 'Ora Glass'
+        row['location_after'] = row.get('location_after') or customer_name
+        row['customer_after_id'] = row.get('customer_after_id') or customer_id
+        row['customer_after_name'] = row.get('customer_after_name') or customer_name
+    elif action in {'returned', 'picked_up'}:
+        row['location_before'] = row.get('location_before') or customer_name
+        row['location_after'] = row.get('location_after') or 'Ora Glass'
+        row['customer_before_id'] = row.get('customer_before_id') or customer_id
+        row['customer_before_name'] = row.get('customer_before_name') or customer_name
+    elif action == 'packed':
+        row['location_after'] = row.get('location_after') or 'Ora Glass'
+        row['customer_after_id'] = row.get('customer_after_id') or customer_id
+        row['customer_after_name'] = row.get('customer_after_name') or customer_name
+    elif action == 'scanned':
+        place = row.get('location_before') or customer_name or 'Ora Glass'
+        row['location_before'] = row.get('location_before') or place
+        row['location_after'] = row.get('location_after') or row.get('location_before')
+    for key in (
+        'user_name', 'user_role', 'scan_method', 'packing_number',
+        'location_before', 'location_after',
+        'customer_before_id', 'customer_before_name',
+        'customer_after_id', 'customer_after_name',
+    ):
+        row.setdefault(key, '')
+    return row
+
+
+def _complete_history(row):
+    history = []
+    for item in (row or {}).get('history') or []:
+        if isinstance(item, dict):
+            history.append(_complete_event(item))
+        else:
+            history.append(item)
+    row['history'] = history
     return row
 
 
@@ -177,6 +279,9 @@ def _delivered_shipments(order):
 
 
 def _apply_customer(row, order, shipment, when, name, user, moment):
+    before_place = _location_of(row)
+    before_id = row.get('customer_id') or ''
+    before_name = row.get('customer_name') or ''
     if name:
         row['name'] = name
     row['status'] = AT_CUSTOMER
@@ -191,9 +296,16 @@ def _apply_customer(row, order, shipment, when, name, user, moment):
         'delivered', user, moment,
         customer_id=row['customer_id'],
         customer_name=row['customer_name'],
+        customer_before_id=before_id,
+        customer_before_name=before_name,
+        customer_after_id=row['customer_id'],
+        customer_after_name=row['customer_name'],
+        location_before=before_place,
+        location_after=row['customer_name'],
         order_id=row['order_id'],
         shipment_number=row['shipment_number'],
         truck_plate=row['truck_plate'],
+        packing_number=row.get('packing_number') or '',
         note=f"Delivered on {row['shipment_number'] or 'delivery'}.",
     ))
     return row
@@ -232,8 +344,13 @@ def _assign_packed(row, order, number, label, name, user, moment=None):
                 'returned', user, moment,
                 customer_id=previous_id,
                 customer_name=previous_name,
+                customer_before_id=previous_id,
+                customer_before_name=previous_name,
+                location_before=previous_name or 'Customer',
+                location_after='Ora Glass',
                 order_id=row.get('order_id'),
                 shipment_number=row.get('shipment_number') or '',
+                packing_number=label,
                 note=note,
             ))
         row['status'] = RETURNED
@@ -263,7 +380,12 @@ def _assign_packed(row, order, number, label, name, user, moment=None):
             'packed', user, moment,
             customer_id=row['customer_id'],
             customer_name=row['customer_name'],
+            customer_after_id=row['customer_id'],
+            customer_after_name=row['customer_name'],
+            location_before='Ora Glass',
+            location_after='Ora Glass',
             order_id=row['order_id'],
+            packing_number=label,
             note=f'Packed on {label}.',
         ))
     return row
@@ -432,6 +554,9 @@ def backfill_from_orders(orders, user=None):
         by_number.setdefault(event['number'], []).append(event)
 
     def change(racks):
+        for number, row in list(racks.items()):
+            if isinstance(row, dict):
+                racks[number] = _complete_history(row)
         created = []
         for number, rows in by_number.items():
             existing = racks.get(number)
@@ -458,6 +583,40 @@ def backfill_from_orders(orders, user=None):
                 existing = _play(existing, event, user)
             racks[number] = existing
         return created
+
+    return _mutate(change)
+
+
+def record_scan(raw, user, scan_method='', moment=None):
+    """Keep a scan on the rack. An unknown number does not create a rack."""
+    number = rack_number_from_scan(raw)
+    method = _scan_method(scan_method) or 'typed'
+    if not number:
+        return False
+
+    def change(racks):
+        row = racks.get(number)
+        if not isinstance(row, dict):
+            return False
+        place = _location_of(row)
+        row.setdefault('history', []).append(_event(
+            'scanned', user, moment,
+            customer_id=row.get('customer_id') or '',
+            customer_name=row.get('customer_name') or '',
+            customer_before_id=row.get('customer_id') or '',
+            customer_before_name=row.get('customer_name') or '',
+            customer_after_id=row.get('customer_id') or '',
+            customer_after_name=row.get('customer_name') or '',
+            location_before=place,
+            location_after=place,
+            order_id=row.get('order_id'),
+            shipment_number=row.get('shipment_number') or '',
+            packing_number=row.get('packing_number') or '',
+            scan_method=method,
+            note=f'Scanned by {method}.',
+        ))
+        racks[number] = row
+        return True
 
     return _mutate(change)
 
@@ -520,7 +679,7 @@ def check_scan(racks, raw, customer_id='', already=None):
     }
 
 
-def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, moment=None):
+def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, moment=None, methods=None):
     """Bring the scanned racks back to Ora Glass.
 
     An empty customer id uses the customer each rack is at now. The pickup is
@@ -531,6 +690,7 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
         cleaned = rack_number_from_scan(number)
         if cleaned and cleaned not in wanted:
             wanted.append(cleaned)
+    chosen = methods or {}
 
     def change(racks):
         moved = []
@@ -555,7 +715,13 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
                 'picked_up', user, moment,
                 customer_id=held_id,
                 customer_name=held_name,
+                customer_before_id=held_id,
+                customer_before_name=held_name,
+                location_before=held_name or 'Customer',
+                location_after='Ora Glass',
                 truck_plate=truck_plate or '',
+                packing_number=row.get('packing_number') or '',
+                scan_method=_scan_method(chosen.get(number)),
                 note='Picked up and returned.',
             ))
             racks[number] = row
@@ -586,8 +752,13 @@ def mark_returned(number, user, moment=None):
             'returned', user, moment,
             customer_id=previous_id,
             customer_name=previous_name,
+            customer_before_id=previous_id,
+            customer_before_name=previous_name,
+            location_before=previous_name or 'Customer',
+            location_after='Ora Glass',
             order_id=row.get('order_id'),
             shipment_number=row.get('shipment_number') or '',
+            packing_number=row.get('packing_number') or '',
             note='Marked returned.',
         ))
         racks[number] = row
@@ -609,13 +780,116 @@ def held_count(customer_id, racks=None):
     )
 
 
+def _event_date(value):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _stay_days(start, end):
+    if not start or not end:
+        return 0
+    return max(0, (end - start).days)
+
+
+def _round_days(total, count):
+    if not count:
+        return None
+    value = total / count
+    if value == int(value):
+        return int(value)
+    return round(value, 1)
+
+
+def pacific_label(stamp):
+    """Show a stored UTC time in Pacific."""
+    moment = _moment_from_clock(stamp)
+    if not moment:
+        text = str(stamp or '').strip()
+        return text
+    return moment.astimezone(PACIFIC).strftime('%Y-%m-%d %H:%M') + ' Pacific'
+
+
+def role_label(role):
+    text = str(role or '').strip()
+    return _ROLE_LABELS.get(text, text)
+
+
+def lifetime_stats(row, today=None):
+    """Trips are a delivery followed by a return. A rack still out is one open trip."""
+    today = today or date.today()
+    history = [item for item in (row or {}).get('history') or [] if isinstance(item, dict)]
+    history.sort(key=lambda item: str(item.get('at') or ''))
+    stays = []
+    start = None
+    for item in history:
+        action = item.get('action')
+        when = _event_date(item.get('at'))
+        if action == 'delivered' and when:
+            if start:
+                stays.append((start, when, True))
+            start = when
+        elif action in {'returned', 'picked_up'} and start and when:
+            stays.append((start, when, True))
+            start = None
+    open_trip = (row or {}).get('status') == AT_CUSTOMER
+    if open_trip:
+        current_start = _event_date((row or {}).get('since')) or start
+        if current_start:
+            stays.append((current_start, today, False))
+    measured = [( _stay_days(begin, end), closed) for begin, end, closed in stays]
+    total = sum(days for days, _closed in measured)
+    count = len(measured)
+    scans = [
+        item for item in history
+        if item.get('action') == 'scanned' or item.get('scan_method')
+    ]
+    last = scans[-1] if scans else {}
+    status = (row or {}).get('status')
+    if status == AT_CUSTOMER:
+        current_days = _days_since((row or {}).get('since'), today)
+        current_location = (row or {}).get('customer_name') or 'Customer'
+    else:
+        current_days = None
+        current_location = 'Ora Glass'
+    return {
+        'trips': count,
+        'trip_open': bool(open_trip and count),
+        'total_days': total,
+        'avg_days': _round_days(total, count),
+        'longest_days': max((days for days, _closed in measured), default=None),
+        'current_days': current_days,
+        'current_location': current_location,
+        'last_scan_at': last.get('at') or '',
+        'last_scan_label': pacific_label(last.get('at')) if last else '',
+        'last_scan_by': last.get('user_name') or last.get('user') or '',
+        'last_scan_role': role_label(last.get('user_role')),
+        'last_scan_method': last.get('scan_method') or '',
+    }
+
+
 def present(row, today=None):
     today = today or date.today()
     days = _days_since(row.get('since'), today) if row.get('status') == AT_CUSTOMER else None
     shown = dict(row)
+    history = []
+    for item in row.get('history') or []:
+        if not isinstance(item, dict):
+            continue
+        copy = _complete_event(item)
+        copy['at_label'] = pacific_label(copy.get('at'))
+        copy['role_label'] = role_label(copy.get('user_role'))
+        history.append(copy)
+    shown['history'] = history
     shown['status_label'] = STATUS_LABELS.get(row.get('status'), row.get('status') or '')
     shown['days'] = days
     shown['overdue'] = days is not None and days > OVERDUE_DAYS
+    shown.update(lifetime_stats(row, today))
+    shown['current_days'] = days
     return shown
 
 
@@ -623,6 +897,7 @@ def visible_rows(racks, user, status='', customer_id='', number='', today=None):
     """Staff see every rack. A customer sees the racks their company is holding."""
     role = (user or {}).get('role') or ''
     wanted = str(number or '').strip()
+    overdue_only = status == 'overdue'
     rows = []
     for number, row in (racks or {}).items():
         if not isinstance(row, dict):
@@ -634,15 +909,118 @@ def visible_rows(racks, user, status='', customer_id='', number='', today=None):
             if row.get('status') != AT_CUSTOMER or row.get('customer_id') != user.get('customer_id'):
                 continue
         else:
-            if status and row.get('status') != status:
+            if overdue_only:
+                pass
+            elif status and row.get('status') != status:
                 continue
             if customer_id and row.get('customer_id') != customer_id:
                 continue
         shown = present(row, today)
+        if overdue_only and not shown.get('overdue'):
+            continue
         shown['number'] = shown_number
         rows.append(shown)
     rows.sort(key=lambda row: str(row.get('number')))
     return rows
+
+
+def _report_path():
+    return os.path.join(os.path.dirname(racks_path()), 'rack_weekly_overdue.json')
+
+
+def _pacific_now(now=None):
+    if now is None:
+        return datetime.now(PACIFIC)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=PACIFIC)
+    return now.astimezone(PACIFIC)
+
+
+def overdue_rows(racks, today=None):
+    """Racks that have been at a customer for more than 14 days."""
+    found = []
+    for row in visible_rows(racks, {'role': 'admin'}, status='overdue', today=today):
+        found.append({
+            'number': row.get('number') or '',
+            'customer_id': row.get('customer_id') or '',
+            'customer_name': row.get('customer_name') or '',
+            'days': row.get('days'),
+            'delivered_on': str(row.get('since') or '')[:10],
+            'packing_number': row.get('packing_number') or '',
+        })
+    found.sort(key=lambda item: (-(item.get('days') or 0), item.get('number') or ''))
+    return found
+
+
+def weekly_overdue_due(now=None):
+    """True after 7:00 AM Pacific on Monday, until this week's report is stored."""
+    now = _pacific_now(now)
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=WEEKLY_REPORT_HOUR, minute=0, second=0, microsecond=0,
+    )
+    week = monday.date().isoformat()
+    if now < monday:
+        return False, week
+    guard = read_json(_report_path(), {})
+    if not isinstance(guard, dict):
+        guard = {}
+    return guard.get('week') != week, week
+
+
+def run_weekly_overdue_if_due(now=None):
+    """Write this week's overdue racks. At most once. Nothing is emailed."""
+    path = _report_path()
+    with lock_for(path):
+        due, week = weekly_overdue_due(now)
+        if not due:
+            return None
+        rows = overdue_rows(load_rows())
+        record = {
+            'week': week,
+            'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            'rows': rows,
+            'emailed': False,
+        }
+        atomic_write_json(path, record)
+        return record
+
+
+def weekly_report_view():
+    record = read_json(_report_path(), {})
+    if not isinstance(record, dict):
+        record = {}
+    at = str(record.get('at') or '')
+    return {
+        'at': at,
+        'at_label': pacific_label(at) if at else '',
+        'week': record.get('week') or '',
+        'rows': record.get('rows') or [],
+        'ran': bool(record.get('week')),
+        'schedule': 'Monday at 7:00 AM Pacific',
+    }
+
+
+def _weekly_overdue_loop():
+    import logging
+    import time
+    log = logging.getLogger('ora_glass.racks')
+    while True:
+        try:
+            run_weekly_overdue_if_due()
+        except Exception:
+            log.exception('Weekly overdue rack report failed.')
+        time.sleep(60)
+
+
+def start_weekly_overdue_report():
+    """Start the Monday report. Production only, on the one web process, same as the QuickBooks import."""
+    global _WEEKLY_STARTED
+    if _WEEKLY_STARTED or os.environ.get('APP_ENV') != 'production':
+        return None
+    _WEEKLY_STARTED = True
+    import threading
+    threading.Thread(target=_weekly_overdue_loop, name='rack-weekly-overdue', daemon=True).start()
+    return True
 
 
 def labels_pdf(rows):
