@@ -1599,25 +1599,35 @@ def shipment_lines(summary):
             'rack_line': '', 'list_lines': [], 'pcs_line': '', 'sqft_line': '',
             'weight_line': '', 'weight_missing': False,
         }
+    def _plain(text, suffixes):
+        value = str(text or '').strip()
+        for suffix in suffixes:
+            if value.endswith(suffix):
+                return value[:-len(suffix)].strip()
+        return value
+
     rows = []
     for row in summary.get('lists') or []:
         if not row.get('line') and not row.get('number'):
             continue
+        numbers = [str(number).strip() for number in (row.get('racks') or []) if str(number or '').strip()]
         rows.append({
             'number': row.get('number') or '',
-            'racks': row.get('racks_label') or '',
-            'pcs': row.get('pcs_text') or '',
-            'sqft': row.get('sqft_text') or '',
-            'weight': row.get('weight_text') or '',
+            'racks': ', '.join(numbers) or '-',
+            'pcs': _plain(row.get('pcs_text'), (' pcs',)),
+            'sqft': _plain(row.get('sqft_text'), (' sq ft',)),
+            'weight': _plain(row.get('weight_text'), (' lb',)),
+            'weight_missing': bool(row.get('weight_missing')),
         })
     return {
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
         'rows': rows,
         'total': {
             'racks': str(int(summary.get('rack_count') or 0)),
-            'pcs': summary.get('pcs_label') or '',
-            'sqft': summary.get('sqft_label') or '',
-            'weight': summary.get('weight_label') or '',
+            'pcs': _plain(summary.get('pcs_label'), (' pcs',)),
+            'sqft': _plain(summary.get('sqft_label'), (' sq ft',)),
+            'weight': _plain(summary.get('weight_label'), (' lb',)),
+            'weight_missing': bool(summary.get('weight_missing')),
         },
         'rack_line': f"Total racks: {int(summary.get('rack_count') or 0)}",
         'pcs_line': f"Total pcs: {summary['pcs_label']}" if summary.get('pcs_label') else '',

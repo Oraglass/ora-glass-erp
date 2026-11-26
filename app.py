@@ -1175,7 +1175,11 @@ def apply_customer_fields(customer, data, tiers, creating):
         ('phone', 40),
     ):
         if creating or field in data:
-            customer[field] = clean_text(data.get(field), limit)
+            value = clean_text(data.get(field), limit)
+            if field in {'address', 'city', 'state', 'zip'}:
+                import documents
+                value = documents.normalize_address_part(value)
+            customer[field] = value
     if creating or 'country' in data:
         country = clean_text(data.get('country') or customer.get('country') or 'United States', 80)
         lowered = country.lower()
@@ -2161,28 +2165,32 @@ def calculate():
 
 
 def _job_lines(value):
+    import documents
     if isinstance(value, list):
-        return [str(line).strip() for line in value if str(line).strip()]
-    text = str(value or '').replace('\r\n', '\n').replace('\r', '\n')
-    return [line.strip() for line in text.split('\n') if line.strip()]
+        raw = value
+    else:
+        raw = str(value or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    return [line for line in (documents.normalize_address_part(part) for part in raw) if line]
 
 
 def _address_lines(customer):
+    """Street, then city and region, then country. Empty pieces and a typed ``,,`` are left out."""
+    import documents
     if not customer:
         return []
-    lines = []
-    street = str(customer.get('address') or '').strip()
-    if street:
-        lines.append(street)
-    city = str(customer.get('city') or '').strip()
-    state = str(customer.get('state') or customer.get('province') or customer.get('us_state') or '').strip()
-    postal = str(customer.get('zip') or '').strip()
+    lines = documents.address_lines(customer.get('address'))
+    city = documents.normalize_address_part(customer.get('city'))
+    state = documents.normalize_address_part(
+        customer.get('state') or customer.get('province') or customer.get('us_state')
+    )
+    postal = documents.normalize_address_part(customer.get('zip'))
     place = ', '.join(part for part in (city, state) if part)
     if postal:
         place = f'{place} {postal}'.strip()
+    place = documents.normalize_address_part(place)
     if place:
         lines.append(place)
-    country = str(customer.get('country') or '').strip()
+    country = documents.normalize_address_part(customer.get('country'))
     if country and country not in {'United States', 'USA', 'US'}:
         lines.append(country)
     return lines
@@ -7355,7 +7363,8 @@ def _order_only_from_request(data, customers, tiers, user, suggested=None):
     customer['contact'] = clean_text(new_customer.get('contact'), 120)
     customer['email'] = clean_text(new_customer.get('email'), 200)
     customer['phone'] = clean_text(new_customer.get('phone'), 40)
-    customer['address'] = clean_text(new_customer.get('address'), 300)
+    import documents
+    customer['address'] = documents.normalize_address_part(clean_text(new_customer.get('address'), 300))
     country = clean_text(new_customer.get('country') or 'United States', 80)
     customer['country'] = 'Canada' if country.lower() in {'canada', 'ca'} else 'United States'
     terms_error = apply_payment_terms(customer, new_customer)
@@ -10295,9 +10304,11 @@ def _scaled_discount(order, portion, full):
 
 
 def _invoice_for_items(order, user, customer, items, summary, issuer, kind, shipment):
+    import documents
     days = payment_term_days(customer)
     invoice_day = datetime.now(ZoneInfo('America/Los_Angeles')).date()
     due = invoice_day + timedelta(days=days)
+    stamped = [documents.stamp_item_type(dict(row)) if isinstance(row, dict) else row for row in items or []]
     document = {
         'order_id': order.get('id'),
         'quote_id': order.get('quote_id'),
@@ -10307,7 +10318,7 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
         'shipment_number': shipment.get('number') or '',
         'shipment_id': shipment.get('id'),
         'currency': order.get('currency') or 'usd',
-        'items': items,
+        'items': stamped,
         'discount': summary.get('discount') or {'type': 'percent', 'value': 0},
         'discount_amount': summary.get('discount_amount', 0),
         'additional_discount_percent': summary.get('additional_discount_percent') or 0,
@@ -10750,6 +10761,7 @@ def _attach_invoice_summary(view):
         labeled.append(row)
     if view.get('tax_lines'):
         view['tax_lines'] = labeled
+    view['igu_lines'], view['service_lines'] = documents.split_invoice_lines(view)
     view['summary'] = documents.invoice_summary(view)
 
 
@@ -11860,13 +11872,23 @@ def _render_invoice_pdf(invoice):
     import documents
 
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=0.5 * inch, rightMargin=0.5 * inch, topMargin=0.45 * inch, bottomMargin=0.45 * inch)
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.55 * inch, bottomMargin=0.55 * inch,
+    )
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('InvTitle', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
     small_style = ParagraphStyle('InvSmall', parent=styles['Normal'], fontSize=8, leading=10)
-    cell_style = ParagraphStyle('InvCell', parent=styles['Normal'], fontSize=8, leading=10)
-    header_cell = ParagraphStyle('InvHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
+    cell_style = ParagraphStyle('InvCell', parent=styles['Normal'], fontSize=8, leading=11)
+    from reportlab.lib.enums import TA_RIGHT
+    num_style = ParagraphStyle('InvNum', parent=cell_style, alignment=TA_RIGHT)
+    head_left = ParagraphStyle('InvHeadL', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold', textColor=colors.black)
+    head_right = ParagraphStyle('InvHeadR', parent=head_left, alignment=TA_RIGHT)
     label_style = ParagraphStyle('InvLabel', parent=styles['Normal'], fontSize=9, leading=12)
+    money_style = ParagraphStyle('InvMoney', parent=cell_style, alignment=TA_RIGHT)
+    money_bold = ParagraphStyle('InvMoneyBold', parent=money_style, fontName='Helvetica-Bold')
+    label_bold = ParagraphStyle('InvLabelBold', parent=cell_style, fontName='Helvetica-Bold')
     logo_path = 'logo.png' if os.path.exists('logo.png') else None
     logo = Image(logo_path, width=1.2 * inch, height=0.8 * inch) if logo_path else Paragraph(
         '<font color="#C41E3A" size="18"><b>ORA</b></font><br/><font size="10">GLASS</font>', small_style,
@@ -11930,41 +11952,49 @@ def _render_invoice_pdf(invoice):
     table_rows = list(shipment.get('rows') or [])
     total = shipment.get('total') or {}
     if table_rows:
+        def ship_num(text, bold=False):
+            shown = escape(str(text if text is not None else ''))
+            if bold:
+                shown = f'<b>{shown}</b>'
+            return Paragraph(shown, num_style)
+
         head = [
-            Paragraph('<b>Packing list</b>', cell_style),
-            Paragraph('<b>Racks</b>', cell_style),
-            Paragraph('<b>Pcs</b>', cell_style),
-            Paragraph('<b>Sq ft</b>', cell_style),
-            Paragraph('<b>Weight</b>', cell_style),
+            Paragraph('Packing list', head_left),
+            Paragraph('Racks', head_right),
+            Paragraph('Pcs', head_right),
+            Paragraph('Sq ft', head_right),
+            Paragraph('Weight (lb)', head_right),
         ]
         body = [head]
         for row in table_rows:
             body.append([
                 Paragraph(escape(row.get('number') or ''), cell_style),
-                Paragraph(escape(row.get('racks') or ''), cell_style),
-                Paragraph(escape(row.get('pcs') or ''), cell_style),
-                Paragraph(escape(row.get('sqft') or ''), cell_style),
-                Paragraph(escape(row.get('weight') or ''), cell_style),
+                ship_num(row.get('racks')),
+                ship_num(row.get('pcs')),
+                ship_num(row.get('sqft')),
+                ship_num(row.get('weight')),
             ])
         body.append([
             Paragraph('<b>Total</b>', cell_style),
-            Paragraph(escape(str(total.get('racks') or '')), cell_style),
-            Paragraph(escape(str(total.get('pcs') or '')), cell_style),
-            Paragraph(escape(str(total.get('sqft') or '')), cell_style),
-            Paragraph(escape(str(total.get('weight') or '')), cell_style),
+            ship_num(total.get('racks'), bold=True),
+            ship_num(total.get('pcs'), bold=True),
+            ship_num(total.get('sqft'), bold=True),
+            ship_num(total.get('weight'), bold=True),
         ])
-        shipment_table = Table(body, colWidths=[1.6 * inch, 1.8 * inch, 1.1 * inch, 1.3 * inch, 1.5 * inch])
+        shipment_table = Table(body, colWidths=[1.8 * inch, 1.6 * inch, 1.1 * inch, 1.3 * inch, 1.5 * inch])
         shipment_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f5f5')),
             ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#dddddd')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('LEFTPADDING', (0, 0), (-1, -1), 4),
             ('RIGHTPADDING', (0, 0), (-1, -1), 4),
             ('TOPPADDING', (0, 0), (-1, -1), 3),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
         ]))
+        elements.append(Spacer(1, 10))
         elements.append(Paragraph('<b>Shipment</b>', label_style))
+        elements.append(Spacer(1, 4))
         elements.append(shipment_table)
         elements.append(Spacer(1, 8))
     extra_lines = []
@@ -11981,43 +12011,67 @@ def _render_invoice_pdf(invoice):
     if invoice.get('tax_free'):
         elements.append(Paragraph('Tax-free subtotal. No tax is added on this document.', label_style))
     elements.append(Spacer(1, 10))
-    table_data = [[
-        Paragraph('<b>Item</b>', header_cell),
-        Paragraph('<b>Qty</b>', header_cell),
-        Paragraph(f'<b>{currency}</b>', header_cell),
-    ]]
-    for item in invoice.get('items') or []:
-        description = _item_description(item)
-        quantity = '' if documents.is_charge_line(item) else item.get('pcs') or ''
-        table_data.append([
-            Paragraph(description, cell_style),
-            Paragraph(escape(str(quantity)), cell_style),
-            Paragraph(f"${money(item.get('total')):.2f}", cell_style),
-        ])
-    items_table = Table(table_data, colWidths=[5.2 * inch, 0.8 * inch, 1.3 * inch])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C41E3A')),
-        ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 4),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 3),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-    ]))
-    elements.append(items_table)
+    igu_lines = invoice.get('igu_lines')
+    service_lines = invoice.get('service_lines')
+    if igu_lines is None or service_lines is None:
+        igu_lines, service_lines = documents.split_invoice_lines(invoice)
+
+    def line_table(rows):
+        data = [[
+            Paragraph('Item', head_left),
+            Paragraph('Qty', head_right),
+            Paragraph(currency, head_right),
+        ]]
+        for item in rows:
+            quantity = item.get('display_qty')
+            if quantity in (None, ''):
+                quantity = documents.line_quantity(item)
+            data.append([
+                Paragraph(_item_description(item), cell_style),
+                Paragraph(escape(str(quantity)), num_style),
+                Paragraph(documents.format_invoice_money(item.get('total')), num_style),
+            ])
+        table = Table(data, colWidths=[5.2 * inch, 0.8 * inch, 1.3 * inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f5f5')),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#dddddd')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        return table
+
+    elements.append(line_table(igu_lines or []))
+    if service_lines:
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph('<b>Services</b>', label_style))
+        elements.append(Spacer(1, 4))
+        elements.append(line_table(service_lines))
     elements.append(Spacer(1, 10))
-    summary_rows = []
-    for row in invoice.get('summary') or documents.invoice_summary(invoice):
-        value = money(row.get('amount'))
-        shown = f"-${abs(value):.2f}" if value < 0 else f"${value:.2f}"
-        summary_rows.append([row.get('label') or '', shown])
-    summary = [[Paragraph(escape(label), cell_style), Paragraph(amount, cell_style)] for label, amount in summary_rows]
-    summary_table = Table(summary, colWidths=[5.5 * inch, 1.8 * inch])
-    summary_table.setStyle(TableStyle([
+    summary_data = []
+    grand_at = None
+    for index, row in enumerate(invoice.get('summary') or documents.invoice_summary(invoice)):
+        role = row.get('role') or ''
+        emphasis = role in {'grand', 'due'}
+        label_paragraph = Paragraph(escape(row.get('label') or ''), label_bold if emphasis else cell_style)
+        amount_paragraph = Paragraph(documents.format_invoice_money(row.get('amount')), money_bold if emphasis else money_style)
+        summary_data.append([label_paragraph, amount_paragraph])
+        if role == 'grand':
+            grand_at = index
+    summary_table = Table(summary_data, colWidths=[6.0 * inch, 1.3 * inch])
+    summary_style = [
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-        ('FONTNAME', (0, -3), (-1, -1), 'Helvetica-Bold'),
-        ('LINEABOVE', (0, -3), (-1, -3), 0.5, colors.black),
-    ]))
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+    ]
+    if grand_at is not None:
+        summary_style.append(('LINEABOVE', (0, grand_at), (-1, grand_at), 0.6, colors.black))
+    summary_table.setStyle(TableStyle(summary_style))
     elements.append(summary_table)
     elements.append(Spacer(1, 16))
     elements.append(Paragraph('<font size="7">Ora Glass Inc Terms And Conditions of Sale apply.</font>', small_style))

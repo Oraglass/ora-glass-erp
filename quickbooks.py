@@ -835,6 +835,12 @@ def preview_import():
     return preview
 
 
+def _clean_address(value):
+    """Same comma cleanup as a printed address. Sending it to QuickBooks does not rewrite the ERP record."""
+    import documents
+    return documents.normalize_address_part(value)
+
+
 def _customer_from_qbo(row, customer_id, tier='T2'):
     currency = str((row.get('CurrencyRef') or {}).get('value') or ('CAD' if _connection_key() == 'ca' else 'USD')).lower()
     if currency not in {'usd', 'cad'}:
@@ -847,10 +853,10 @@ def _customer_from_qbo(row, customer_id, tier='T2'):
         'id': customer_id,
         'name': row.get('DisplayName') or row.get('CompanyName') or customer_id,
         'domain': '',
-        'address': address.get('Line1') or '',
-        'city': address.get('City') or '',
-        'state': address.get('CountrySubDivisionCode') or '',
-        'zip': address.get('PostalCode') or '',
+        'address': _clean_address(address.get('Line1')),
+        'city': _clean_address(address.get('City')),
+        'state': _clean_address(address.get('CountrySubDivisionCode')),
+        'zip': _clean_address(address.get('PostalCode')),
         'phone': ((row.get('PrimaryPhone') or {}).get('FreeFormNumber')) or '',
         'email': ((row.get('PrimaryEmailAddr') or {}).get('Address')) or '',
         'country': 'Canada' if _connection_key() == 'ca' else 'United States',
@@ -2076,10 +2082,25 @@ def _stamp_invoice_warning(invoice, message):
         save_invoices(invoices)
 
 
+def _qbo_item_name(item, settings):
+    """Glass uses the IGU item. A service keeps its own QuickBooks item and is not folded into that amount."""
+    from documents import item_type
+    default_item = settings.get('default_item') or DEFAULT_ITEM
+    kind = str((item or {}).get('kind') or '')
+    if kind == 'irregular_surcharge':
+        return settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM
+    if kind == 'dwg_creation':
+        return settings.get('dwg_item') or DEFAULT_DWG_ITEM
+    if item_type(item) == 'service' or kind in {'fee', 'surcharge', 'charge', 'shipping', 'crane', 'delivery', 'service'}:
+        label = str((item or {}).get('name') or (item or {}).get('label') or 'Service').strip() or 'Service'
+        mapped = (settings.get('extra_items') or {}).get(label) or settings.get('service_item') or ''
+        return mapped or label
+    return default_item
+
+
 def _document_lines(invoice, tax_code=None):
     settings = load_settings()
     default_item = settings.get('default_item') or DEFAULT_ITEM
-    extras = settings.get('extra_items') or {}
     lines = []
     source = invoice.get('lines') or invoice.get('items') or []
     for item in source:
@@ -2091,19 +2112,14 @@ def _document_lines(invoice, tax_code=None):
         qty = item.get('qty') or item.get('pcs') or 1
         unit = item.get('unit_price') if item.get('unit_price') not in (None, '') else item.get('price_pc') or amount
         description = item.get('description') or item.get('name') or default_item
-        if item.get('kind') == 'irregular_surcharge':
-            item_name = settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM
-        elif item.get('kind') == 'dwg_creation':
-            item_name = settings.get('dwg_item') or DEFAULT_DWG_ITEM
-        else:
-            item_name = default_item
-        lines.append(_sales_line(description, qty, unit, amount, item_name, tax_code))
+        lines.append(_sales_line(description, qty, unit, amount, _qbo_item_name(item, settings), tax_code))
     for charge in invoice.get('extra_charges') or []:
         label = charge.get('label') or charge.get('name') or 'Extra'
         amount = money(charge.get('amount'))
         if amount <= 0:
             continue
-        lines.append(_sales_line(label, 1, amount, amount, extras.get(label) or default_item, tax_code))
+        service = {'name': label, 'label': label, 'item_type': 'service', 'kind': 'service'}
+        lines.append(_sales_line(label, 1, amount, amount, _qbo_item_name(service, settings), tax_code))
     if not lines and money(invoice.get('total')) > 0:
         total = money(invoice.get('total'))
         lines.append(_sales_line(default_item, 1, total, total, default_item, tax_code))
@@ -2184,10 +2200,10 @@ def push_customer(customer_id):
         'PrimaryEmailAddr': {'Address': customer.get('email') or ''},
         'PrimaryPhone': {'FreeFormNumber': customer.get('phone') or ''},
         'BillAddr': {
-            'Line1': customer.get('address') or '',
-            'City': customer.get('city') or '',
-            'CountrySubDivisionCode': customer.get('state') or '',
-            'PostalCode': customer.get('zip') or '',
+            'Line1': _clean_address(customer.get('address')),
+            'City': _clean_address(customer.get('city')),
+            'CountrySubDivisionCode': _clean_address(customer.get('state')),
+            'PostalCode': _clean_address(customer.get('zip')),
         },
         'CurrencyRef': {'value': currency},
     }
@@ -2524,10 +2540,10 @@ def push_document(invoice):
     customer = load_customers().get(invoice.get('customer_id') or '') or {}
     if ship_to:
         payload['ShipAddr'] = {
-            'Line1': customer.get('address') or '',
-            'City': customer.get('city') or '',
-            'CountrySubDivisionCode': customer.get('us_state') or customer.get('state') or '',
-            'PostalCode': customer.get('zip') or '',
+            'Line1': _clean_address(customer.get('address')),
+            'City': _clean_address(customer.get('city')),
+            'CountrySubDivisionCode': _clean_address(customer.get('us_state') or customer.get('state')),
+            'PostalCode': _clean_address(customer.get('zip')),
             'Country': 'USA',
         }
     term = _term_ref(invoice.get('payment_terms') or customer.get('payment_terms') or 'Net 30')

@@ -135,7 +135,18 @@ def apply_additional_discount(summary, percent):
 
 
 def price_summary(items, discount, charges):
-    subtotal = round(sum(money(item.get('total')) for item in items or []), 2)
+    """IGU subtotal is glass only. Service lines are added with the other extras, not discounted into the glass."""
+    from documents import item_type
+    glass = []
+    service_amount = 0.0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item_type(item) == 'service':
+            service_amount += money(item.get('total'))
+        else:
+            glass.append(item)
+    subtotal = round(sum(money(item.get('total')) for item in glass), 2)
     kind = (discount or {}).get('type') or 'percent'
     value = money((discount or {}).get('value') or 0)
     if kind not in {'percent', 'amount'}:
@@ -148,7 +159,7 @@ def price_summary(items, discount, charges):
     if amount - subtotal > 0.001:
         return None, 'Discount cannot exceed the IGU subtotal.'
     igu_total = round(subtotal - amount, 2)
-    extras = round(sum(money(charge.get('amount')) for charge in charges or []), 2)
+    extras = round(sum(money(charge.get('amount')) for charge in charges or []) + service_amount, 2)
     return {
         'igu_subtotal': subtotal,
         'discount': {'type': kind, 'value': value},
