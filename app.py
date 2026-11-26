@@ -7243,6 +7243,13 @@ def order_for_viewer(order, user, with_coverage=False):
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
+        'delivery_creates_invoice': not (
+            (order.get('remake') and not order.get('charge_customer'))
+            or order.get('legacy')
+            or order.get('shipments')
+            or order.get('invoice_id')
+        ),
+        'delivery_confirm': _delivery_confirm(order),
         'drawings': _public_drawings(order),
         'ship_province': order.get('ship_province') or '',
         'tax_label': order.get('tax_label') or '',
@@ -8818,6 +8825,28 @@ def _apply_prepayments_to_invoice(order_id, invoice_id, user):
     if changed:
         save_payments(payments)
     return payments
+
+
+def _delivery_billing_note(order):
+    """The invoice sentence for Mark delivered. Matches set_order_status."""
+    if order.get('remake') and not order.get('charge_customer'):
+        return 'No invoice is created. This remake is not charged to the customer.'
+    if order.get('legacy'):
+        return 'No invoice is created. Legacy jobs are not invoiced.'
+    if order.get('shipments'):
+        return 'Billing follows the shipments; existing invoice(s) are kept, no new invoice is created.'
+    if order.get('invoice_id'):
+        return 'The existing invoice is kept. No new invoice is created.'
+    return 'This creates an invoice.'
+
+
+def _delivery_confirm(order):
+    return (
+        'Mark this order as delivered? '
+        + _delivery_billing_note(order)
+        + ' Racks on this order start their customer stay timer now. '
+        + 'Further edits are limited to an administrator, and the invoice is not changed.'
+    )
 
 
 @app.route('/api/orders/<int:order_id>/status', methods=['POST'])

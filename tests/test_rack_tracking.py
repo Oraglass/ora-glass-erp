@@ -762,3 +762,38 @@ def test_packing_import_allocates_and_delivery_starts_the_stay(client):
     assert released['status'] == 'at_ora'
     assert released['history'][-1]['action'] == 'unallocated'
     assert racks.lifetime_stats(delivered, date(2026, 11, 11))['longest_days'] == 10
+
+
+def test_mark_delivered_confirm_matches_the_invoice_rules(client):
+    _users()
+    _order()
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    page = client.get('/orders/4').get_data(as_text=True)
+    assert 'order.delivery_confirm' in page
+    plain = client.get('/api/orders/4').get_json()
+    assert plain['delivery_creates_invoice'] is True
+    assert 'This creates an invoice.' in plain['delivery_confirm']
+    assert 'Racks on this order start their customer stay timer now.' in plain['delivery_confirm']
+    orders = load_orders()
+    orders[0]['shipments'] = [{'id': 1, 'number': 'S1'}]
+    save_orders(orders)
+    shipped = client.get('/api/orders/4').get_json()
+    assert shipped['delivery_creates_invoice'] is False
+    assert 'Billing follows the shipments; existing invoice(s) are kept, no new invoice is created.' in shipped['delivery_confirm']
+    orders[0]['shipments'] = []
+    orders[0]['invoice_id'] = 9
+    save_orders(orders)
+    kept = client.get('/api/orders/4').get_json()
+    assert 'The existing invoice is kept.' in kept['delivery_confirm']
+    assert 'This creates an invoice.' not in kept['delivery_confirm']
+    orders[0]['invoice_id'] = None
+    orders[0]['legacy'] = True
+    save_orders(orders)
+    legacy = client.get('/api/orders/4').get_json()
+    assert 'No invoice is created. Legacy jobs are not invoiced.' in legacy['delivery_confirm']
+    orders[0]['legacy'] = False
+    orders[0]['remake'] = True
+    orders[0]['charge_customer'] = False
+    save_orders(orders)
+    remake = client.get('/api/orders/4').get_json()
+    assert 'No invoice is created. This remake is not charged to the customer.' in remake['delivery_confirm']
