@@ -30,9 +30,9 @@ def _price(client, payload):
 
 
 def test_cad_and_usd_customers_get_a_price_on_both_calculators(client):
-    _company('cad@open.example', 'open-windows', 'Open Windows', 'Canada', 'BC')
+    _company('cad@maple.example', 'maple-glass', 'Maple Glass', 'Canada', 'BC')
     _company('usd@harbor.example', 'harbor-glass', 'Harbor Glass', 'United States', 'WA')
-    login(client, 'cad@open.example')
+    login(client, 'cad@maple.example')
     cad_page = client.get('/quotes')
     assert b'const lockedCurrency = "cad"' in cad_page.data
     assert b'selectedCurrency = lockedCurrency' in cad_page.data

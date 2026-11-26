@@ -32,7 +32,9 @@ def test_canadian_credit_currency_is_forced_and_migrated(client, caplog):
         loaded = load_customers()
     assert loaded['north']['credit_currency'] == 'cad'
     assert loaded['open-windows']['country'] == 'Canada'
-    assert loaded['open-windows']['credit_currency'] == 'cad'
+    assert loaded['open-windows']['credit_currency'] == 'usd'
+    assert loaded['open-windows']['accounts']['us']['currency'] == 'usd'
+    assert loaded['open-windows']['accounts']['us']['gst'] is False
     assert 'North Glass' in caplog.text
 
 

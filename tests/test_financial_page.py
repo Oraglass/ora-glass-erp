@@ -18,7 +18,7 @@ def test_financial_page_has_the_range_and_the_lists(client):
     assert 'id="fin-orders"' in page
     assert 'QuickBooks' in page
     assert 'Import open invoices from QuickBooks' in page
-    assert 'Each currency is shown on its own' in page
+    assert 'Each Ora Glass company and currency is shown on its own' in page
 
 
 def test_date_range_filters_the_lists_and_leaves_the_credit_cards(client):
@@ -144,6 +144,10 @@ def test_open_windows_cards_keep_the_limit_and_list_every_open_invoice(client):
     credit = client.get('/api/credit?customer_id=open-windows').get_json()
     books = {row['currency']: row for row in credit['by_currency']}
     assert credit['credit_currency'] == 'cad'
+    accounts = {row['entity'] + '-' + row['currency']: row for row in credit['by_account']}
+    assert accounts['us-usd']['open_receivables'] == 400000
+    assert accounts['ca-usd']['open_receivables'] == 100000
+    assert accounts['ca-cad']['balance'] == 2635.02
     assert credit['credit_limit'] == 10000
     assert books['usd']['open_receivables'] == money(400000 + 100000)
     assert books['cad']['open_receivables'] == 2635.02

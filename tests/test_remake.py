@@ -196,12 +196,18 @@ def test_canada_remake_always_bills_intercompany(client, monkeypatch):
     import quickbooks
     monkeypatch.setattr(quickbooks, 'FX_FETCH', lambda url: {'observations': [{'d': '2026-07-29', 'FXUSDCAD': {'v': '1.4000'}}]})
     order_id = _order(client)
-    customers = __import__('storage', fromlist=['load_customers']).load_customers()
-    customers['harbor-glass'].update({'name': 'Open Windows', 'country': 'Canada', 'credit_currency': 'cad'})
+    storage = __import__('storage', fromlist=['load_customers', 'save_customers'])
+    customers = storage.load_customers()
+    customers['harbor-glass'].update({'name': 'Open Windows', 'country': 'Canada', 'credit_currency': 'usd'})
+    storage.save_customers(customers)
+    customers = storage.load_customers()
+    import customer_accounts
+    assert customer_accounts.add_account(customers['harbor-glass'], 'ca') is None
     save_customers(customers)
     orders = load_orders()
     parent = next(row for row in orders if row['id'] == order_id)
     parent['currency'] = 'cad'
+    parent['issuer'] = 'ca'
     parent['company'] = 'Open Windows'
     save_orders(orders)
     charged = _remake(client, order_id, serial=2, qty=1, charge=True, reason='Customer damage')

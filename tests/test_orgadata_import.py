@@ -367,7 +367,7 @@ def test_preview_maps_planibel_to_clear_and_keeps_position_on_the_floor(client):
     body = uploaded.get_json()
     assert body['source'] == SOURCE_LABEL
     assert body['customer_id'] == 'open-windows'
-    assert body['currency'] == 'cad'
+    assert body['currency'] == 'usd'
     assert 'fx_rate' in body
     block = body['blocks'][0]
     assert block['lites'][1]['product'] == CLEAR
@@ -536,7 +536,7 @@ def test_alias_prices_the_build_and_a_missing_production_id_is_not_invented(clie
     assert quote['notes'] == 'Person in Charge: Alaleh Ashrafi'
     assert quote['status'] == 'draft'
     assert quote['type'] == 'size'
-    assert quote['currency'] == 'cad'
+    assert quote['currency'] == 'usd'
     assert quote['has_source_pdf'] is True
     assert quote['additional_discount_percent'] == 10
     assert quote['price_addon_percent'] == 10
@@ -569,7 +569,7 @@ def test_alias_prices_the_build_and_a_missing_production_id_is_not_invented(clie
     pdf = client.get(f"/api/quotes/{quote['id']}/source-pdf")
     assert pdf.status_code == 200
     assert pdf.data.startswith(b'%PDF')
-    assert any(line.get('name') == 'GST' for line in quote.get('tax_lines') or [])
+    assert not any(line.get('name') == 'GST' for line in quote.get('tax_lines') or [])
 
 
 def test_customer_fx_is_hidden_and_operations_see_only_their_quote(client):

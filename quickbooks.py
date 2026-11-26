@@ -991,6 +991,8 @@ def link_customer(qbo_id, customer_id):
         if other_id != customer_id and str(other.get('qbo_id') or '') == qbo_id:
             other.pop('qbo_id', None)
     customers[customer_id]['qbo_id'] = qbo_id
+    import customer_accounts
+    customer_accounts.remember_qbo_id(customers[customer_id], _connection_key(), qbo_id)
     save_customers(customers)
     name = customer_label(remote) or qbo_id
     company = customers[customer_id].get('name') or customer_id
