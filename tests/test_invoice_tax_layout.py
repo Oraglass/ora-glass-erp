@@ -19,9 +19,10 @@ def test_a_zero_percent_discount_is_left_off_the_totals():
         'applied': 0,
     }
     labels = [row['label'] for row in documents.invoice_summary(blank)]
-    assert labels == ['IGU subtotal', 'Grand total', 'Payments applied', 'Balance due']
+    assert labels == ['IGU subtotal', 'Subtotal', 'Grand total', 'Payments applied', 'Balance due']
     assert 'Discount (0.00%)' not in labels
     assert 'IGU total' not in labels
+    assert 'Services subtotal' not in labels
     credit = dict(blank, doc_type='credit_note')
     credit_labels = [row['label'] for row in documents.invoice_summary(credit)]
     assert 'Discount (0.00%)' not in credit_labels
@@ -29,7 +30,9 @@ def test_a_zero_percent_discount_is_left_off_the_totals():
     assert 'Unapplied credit' in credit_labels
     priced = dict(blank, discount={'type': 'percent', 'value': 5}, discount_amount=5, igu_total=95, total=95, balance=95)
     priced_labels = [row['label'] for row in documents.invoice_summary(priced)]
-    assert priced_labels[:3] == ['IGU subtotal', 'Discount (5.00%)', 'IGU total']
+    assert priced_labels[:3] == ['IGU subtotal', 'Discount (5.00%)', 'Subtotal']
+    assert 'IGU total' not in priced_labels
+    assert 'Services subtotal' not in priced_labels
 
 
 def test_packed_pieces_is_not_printed_as_a_note(client):
@@ -198,6 +201,7 @@ def test_canada_invoice_moves_gst_into_the_totals_and_keeps_pst_in_the_header(cl
     labels = [row['label'] for row in body['summary']]
     assert labels == [
         'IGU subtotal',
+        'Subtotal',
         'GST 5%',
         'PST 7%',
         'Grand total',
@@ -211,8 +215,9 @@ def test_canada_invoice_moves_gst_into_the_totals_and_keeps_pst_in_the_header(cl
     discounted['igu_total'] = 90
     shown = documents.invoice_summary(discounted)
     assert [row['label'] for row in shown if row['label'].startswith('Discount') or row['label'] == 'IGU total'] == [
-        'Discount (5.00%)', 'IGU total',
+        'Discount (5.00%)',
     ]
+    assert 'Services subtotal' not in [row['label'] for row in shown]
     text = pdf_text(client.get('/api/invoices/1/pdf').data)
     pst = text.find(b'PST:')
     subtotal = text.find(b'IGU subtotal')
