@@ -1,0 +1,3 @@
+RackDetail Total Total Pcs : 3
+RackCode RackName 1 Total SQ/FT : 75.29
+Total Weight : Approx. 463 LBS

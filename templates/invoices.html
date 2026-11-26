@@ -178,6 +178,9 @@ const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function confirmAction(message) {
+  return confirm(message);
+}
 function qboErrorHtml(message, href) {
   if (!message) return '';
   return '<a class="error" href="' + esc(href || '/settings/quickbooks') + '">' + esc(message) + '</a>';
@@ -286,6 +289,7 @@ function renderDetail(invoice) {
   if (modal) modal.hidden = false;
   const sendQbo = document.getElementById('send-qbo');
   if (sendQbo) sendQbo.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to send invoice ' + invoice.number + ' to QuickBooks?')) return;
     sendQbo.disabled = true;
     const res = await fetch('/api/invoices/' + invoice.id + '/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
@@ -295,6 +299,7 @@ function renderDetail(invoice) {
   });
   const rereadPacking = document.getElementById('reread-packing');
   if (rereadPacking) rereadPacking.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to re-read packing lists on invoice ' + invoice.number + '?')) return;
     rereadPacking.disabled = true;
     const res = await fetch('/api/invoices/' + invoice.id + '/packing-lists/reread', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
@@ -306,7 +311,7 @@ function renderDetail(invoice) {
   });
   const regenerateButton = document.getElementById('regenerate-doc');
   if (regenerateButton) regenerateButton.addEventListener('click', async () => {
-    if (!confirm('Regenerate this unpaid invoice? The current invoice is voided and replaced, including line add-ons. Pieces are not billed twice.')) return;
+    if (!confirmAction('Are you sure you want to regenerate invoice ' + invoice.number + '? The current invoice is voided and a new invoice number is created. Payments allocated to it are moved to the new invoice, and QuickBooks is updated to match. If QuickBooks rejects a step, the original invoice and its payments stay unchanged.')) return;
     const res = await fetch('/api/invoices/' + invoice.id + '/regenerate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not regenerate the invoice'); return; }
@@ -315,6 +320,7 @@ function renderDetail(invoice) {
   });
   const voidButton = document.getElementById('void-doc');
   if (voidButton) voidButton.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to void invoice ' + invoice.number + '? This voids the invoice in the ERP and in QuickBooks. Payments allocated to it must be moved to another open invoice or left as unapplied credit before QuickBooks is changed.')) return;
     const reason = prompt('Why void this document?');
     if (!reason) return;
     const send = (extra) => fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({reason}, extra || {}))});
@@ -336,6 +342,7 @@ function renderDetail(invoice) {
   });
   const apply = document.getElementById('apply-credit');
   if (apply) apply.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to apply this credit note to invoice ' + invoice.number + '?')) return;
     const res = await fetch('/api/invoices/' + invoice.id + '/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invoice_id: document.getElementById('apply-invoice').value, amount: document.getElementById('apply-amount').value})});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Not applied'); return; }
@@ -577,6 +584,7 @@ if (CAN_ISSUE) {
     form.scrollIntoView({block: 'start'});
   });
   document.getElementById('show-credit-form').addEventListener('click', () => {
+    if (!confirmAction('Are you sure you want to create a credit note?')) return;
     const form = document.getElementById('create-credit');
     form.hidden = false;
     form.scrollIntoView({block: 'start'});
@@ -613,6 +621,12 @@ if (CAN_ISSUE) {
   });
   document.getElementById('credit-form').addEventListener('submit', async (event) => {
     event.preventDefault();
+    const chosen = document.getElementById('cn-invoice').selectedOptions[0];
+    const invoiceNumber = chosen && chosen.value ? chosen.textContent.trim().split(/\s+/)[0] : '';
+    const creditQuestion = invoiceNumber
+      ? 'Are you sure you want to create a credit note for invoice ' + invoiceNumber + '?'
+      : 'Are you sure you want to create a credit note?';
+    if (!confirmAction(creditQuestion)) return;
     const orderId = document.getElementById('cn-order').value;
     const invoiceId = document.getElementById('cn-invoice').value;
     const res = await fetch('/api/invoices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
@@ -666,6 +680,7 @@ document.getElementById('payment-screen').addEventListener('change', event => {
 document.getElementById('payment-list').addEventListener('click', async (event) => {
   const send = event.target.closest('[data-send-qbo]');
   if (send) {
+    if (!confirmAction('Are you sure you want to send this payment to QuickBooks?')) return;
     const res = await fetch('/api/payments/' + send.getAttribute('data-send-qbo') + '/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not send the payment'); return; }
@@ -688,6 +703,7 @@ document.getElementById('payment-list').addEventListener('click', async (event) 
 const sendUnsynced = document.getElementById('send-unsynced-qbo');
 if (sendUnsynced) {
   sendUnsynced.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to send unsynced payments to QuickBooks?')) return;
     const res = await fetch('/api/payments/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not send the payments'); return; }
@@ -736,6 +752,7 @@ if (alloc) {
   alloc.addEventListener('click', async () => {
     const paymentId = document.getElementById('alloc-payment').value;
     if (!paymentId || !allocIds.length) { alert('Tick the invoices this payment covers.'); return; }
+    if (!confirmAction('Are you sure you want to allocate this payment to the selected invoices?')) return;
     const res = await fetch('/api/payments/' + paymentId + '/allocations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({invoice_ids: allocIds.map(id => Number(id))})
@@ -754,6 +771,7 @@ if (allocOrder) {
   allocOrder.addEventListener('click', async () => {
     const paymentId = document.getElementById('alloc-payment').value;
     if (!paymentId) return;
+    if (!confirmAction('Are you sure you want to allocate this payment to the order?')) return;
     const res = await fetch('/api/payments/' + paymentId + '/allocations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({allocations: [{

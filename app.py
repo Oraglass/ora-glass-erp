@@ -10844,6 +10844,13 @@ def _measured_packing_list(entry, order_id, force=False):
         row['measure_error'] = 'The saved packing-list file is empty.'
         return row
     import packing
+    if payload.startswith(b'%PDF') and not packing.pdf_has_text(payload):
+        row['measure_status'] = 'unread'
+        row['measure_error'] = (
+            'This packing list PDF has no text layer, so Total Pcs, Total SQ/FT, '
+            'and Total Weight could not be read.'
+        )
+        return row
     try:
         if payload.startswith(b'%PDF'):
             text_lines = packing.pdf_lines(payload)
