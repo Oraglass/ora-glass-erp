@@ -502,6 +502,9 @@ def _card(key, label, currency):
             'environment': environment(),
             'last_sync': settings.get('last_sync') or '',
             'last_cdc': settings.get('last_cdc') or '',
+            'last_cdc_error': settings.get('last_cdc_error') or '',
+            'last_webhook': settings.get('last_webhook') or '',
+            'last_webhook_error': settings.get('last_webhook_error') or '',
             'default_item': settings.get('default_item') or DEFAULT_ITEM,
             'irregular_item': settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM,
             'dwg_item': settings.get('dwg_item') or DEFAULT_DWG_ITEM,
@@ -537,6 +540,7 @@ def status_view():
         'connections': cards,
         'connection_expired': any(card['connection_expired'] for card in cards),
         'weekly_import': weekly_import_view(),
+        'pending': pending_view(),
     })
     return view
 
@@ -986,6 +990,7 @@ def link_customer(qbo_id, customer_id):
             other.pop('qbo_id', None)
     customers[customer_id]['qbo_id'] = qbo_id
     save_customers(customers)
+    drain_pending(qbo_id)
     name = customer_label(remote) or qbo_id
     company = customers[customer_id].get('name') or customer_id
     log('info', f'Linked QuickBooks customer {name} (id {qbo_id}, realm {realm}) to {company} ({customer_id}).')
@@ -1222,6 +1227,7 @@ def _apply_qbo_balance(invoice, row):
     applied = invoice_applied(invoice, payments)
     invoice['total'] = total
     invoice['subtotal'] = total
+    invoice['qbo_balance'] = balance
     invoice['opening_applied'] = round(max(0.0, total - balance - applied), 2)
     invoice['balance'] = invoice_balance(invoice, payments)
     invoice['status'] = invoice_status(invoice, payments)
@@ -1247,24 +1253,34 @@ def _import_one_open_invoice(row, customer_id):
     return _store_open_invoice(row, customer_id)
 
 
+def _doc_in_this_realm(invoice, doc_number, realm):
+    """A DocNumber matches only inside the same QuickBooks company."""
+    if not doc_number:
+        return False
+    number = str(invoice.get('number') or '').strip()
+    stored_doc = str(invoice.get('qbo_doc_number') or '').strip()
+    project = str(invoice.get('project') or '').strip() if invoice.get('source') == 'quickbooks' else ''
+    if doc_number not in {number, stored_doc, project}:
+        return False
+    stored_realm = str(invoice.get('qbo_realm_id') or '')
+    if stored_realm:
+        return stored_realm == str(realm)
+    issuer = str(invoice.get('issuer') or '')
+    return not issuer or issuer == _connection_key()
+
+
 def _invoice_already_known(row):
     qbo_id = str(row.get('Id') or '')
     doc_number = str(row.get('DocNumber') or '').strip()
+    realm = _active_realm()
     if qbo_id and find_link('invoice', qbo_id=qbo_id):
         return True
     for invoice in load_invoices():
-        if qbo_id and str(invoice.get('qbo_id') or '') == qbo_id:
+        if qbo_id and str(invoice.get('qbo_id') or '') == qbo_id and (
+            not invoice.get('qbo_realm_id') or str(invoice.get('qbo_realm_id')) == str(realm)
+        ):
             return True
-        if not doc_number:
-            continue
-        if str(invoice.get('number') or '').strip() == doc_number:
-            return True
-        if str(invoice.get('qbo_doc_number') or '').strip() == doc_number:
-            return True
-        if invoice.get('source') == 'quickbooks' and str(invoice.get('project') or '').strip() == doc_number:
-            return True
-    for link in load_links():
-        if link.get('kind') == 'invoice' and qbo_id and str(link.get('qbo_id') or '') == qbo_id:
+        if _doc_in_this_realm(invoice, doc_number, realm):
             return True
     return False
 
@@ -1363,6 +1379,39 @@ def weekly_open_import_due(now=None):
     return guard.get('week') != week, week
 
 
+def sweep_company_activity():
+    """Read invoices, credit memos, and payments for every linked customer. Nothing is posted."""
+    mismatches = []
+    if not connected():
+        return mismatches
+    for row in load_links():
+        if row.get('kind') != 'customer' or (row.get('connection') or 'us') != _connection_key():
+            continue
+        qbo_id = str(row.get('qbo_id') or '')
+        if not qbo_id.isdigit() or str(row.get('erp_id') or '') not in load_customers():
+            continue
+        invoices = query_all(f"select * from Invoice where CustomerRef = '{qbo_id}'")
+        credits = query_all(f"select * from CreditMemo where CustomerRef = '{qbo_id}'")
+        payments = query_all(f"select * from Payment where CustomerRef = '{qbo_id}'")
+        for remote in invoices:
+            _ingest_invoice(remote)
+        for remote in credits:
+            _ingest_credit(remote)
+        for remote in payments:
+            _ingest_payment(remote)
+        mismatches.extend(_reconcile_open_balances(row.get('erp_id'), invoices))
+    if mismatches:
+        log(
+            'error',
+            'QuickBooks balance mismatch for '
+            + ', '.join(
+                f"{item.get('number')} ({item.get('currency')} ERP {item.get('erp_balance')} vs QBO {item.get('qbo_balance')})"
+                for item in mismatches
+            ),
+        )
+    return mismatches
+
+
 def run_weekly_open_import_if_due(now=None):
     """Import open invoices for every linked customer in both companies, at most once each week.
 
@@ -1386,6 +1435,7 @@ def run_weekly_open_import_if_due(now=None):
             else:
                 try:
                     part = import_open_invoices()
+                    part['mismatches'] = sweep_company_activity()
                 except QuickBooksError as exc:
                     part = {
                         'invoices': 0,
@@ -1407,8 +1457,14 @@ def run_weekly_open_import_if_due(now=None):
                 'skipped': part.get('skipped') or 0,
                 'refreshed': part.get('refreshed') or 0,
                 'message': part.get('message') or '',
+                'mismatches': part.get('mismatches') or [],
             }
             for part in companies
+        ],
+        'mismatches': [
+            row
+            for part in companies
+            for row in (part.get('mismatches') or [])
         ],
     }
     _save('qbo_weekly_open_import.json', record)
@@ -1433,6 +1489,7 @@ def weekly_import_view():
         'week': record.get('week') or '',
         'message': record.get('message') or '',
         'companies': record.get('companies') or [],
+        'mismatches': record.get('mismatches') or [],
         'schedule': 'Monday at 6:00 AM Pacific',
     }
 
@@ -1542,23 +1599,23 @@ def _import_customer_activity(customer_id):
     payments = query_all(f"select * from Payment where CustomerRef = '{qbo_id}'")
     counts = {'invoices': 0, 'credits': 0, 'payments': 0}
     for row in invoices:
-        if _ingest_invoice(row):
+        if _ingest_invoice(row) is True:
             counts['invoices'] += 1
     for row in credits:
-        if _ingest_credit(row):
+        if _ingest_credit(row) is True:
             counts['credits'] += 1
     for row in payments:
-        if _ingest_payment(row):
+        if _ingest_payment(row) is True:
             counts['payments'] += 1
-    _reconcile_open_balances(customer_id, invoices)
+    counts['mismatches'] = _reconcile_open_balances(customer_id, invoices)
     return counts
 
 
 def _reconcile_open_balances(customer_id, qbo_invoices):
-    """If historical payments do not explain the open balance, record the difference once."""
+    """Compare ERP and QuickBooks balances. Real payments are imported; no synthetic payment is created."""
     payments = load_payments()
     invoices = load_invoices()
-    changed = False
+    mismatches = []
     for remote in qbo_invoices:
         link = find_link('invoice', qbo_id=remote.get('Id'))
         if not link:
@@ -1569,26 +1626,16 @@ def _reconcile_open_balances(customer_id, qbo_invoices):
         target = money(remote.get('Balance'))
         current = invoice_balance(local, payments)
         gap = round(current - target, 2)
-        if gap > 0.009:
-            append_payment({
+        if abs(gap) > 0.009:
+            mismatches.append({
                 'customer_id': customer_id,
-                'amount': gap,
+                'number': local.get('number') or '',
+                'issuer': local.get('issuer') or _connection_key(),
                 'currency': local.get('currency') or 'usd',
-                'method': 'wire',
-                'reference': 'QuickBooks history',
-                'date': remote.get('TxnDate') or _today(),
-                'notes': 'Imported so the open balance matches QuickBooks.',
-                'allocations': [{'target_type': 'invoice', 'target_id': local.get('id'), 'amount': gap}],
-                'voided': False,
-                'qbo_origin': True,
+                'erp_balance': current,
+                'qbo_balance': target,
             })
-            changed = True
-    if changed:
-        payments = load_payments()
-        for invoice in invoices:
-            invoice['balance'] = invoice_balance(invoice, payments)
-            invoice['status'] = invoice_status(invoice, payments)
-        save_invoices(invoices)
+    return mismatches
 
 
 def _today():
@@ -1599,116 +1646,331 @@ def _now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _ingest_invoice(row):
-    if find_link('invoice', qbo_id=row.get('Id')):
-        link = find_link('invoice', qbo_id=row.get('Id'))
-        link_rows = load_links()
-        for item in link_rows:
-            if item is link or (item.get('kind') == 'invoice' and item.get('qbo_id') == str(row.get('Id'))):
-                item['sync_token'] = str(row.get('SyncToken') or item.get('sync_token') or '0')
-        save_links(link_rows)
-        return False
-    customer = find_link('customer', qbo_id=(row.get('CustomerRef') or {}).get('value'))
-    if not customer:
-        return False
+def _qbo_currency(row):
     currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
-    total = money(row.get('TotalAmt'))
-    description = 'Insulated glass'
+    return currency if currency in {'usd', 'cad'} else 'usd'
+
+
+def _qbo_sales_lines(row):
+    """Sales lines and tax from a QuickBooks invoice or credit memo. Subtotals are not lines."""
+    items = []
     for line in row.get('Line') or []:
-        if line.get('Description'):
-            description = line['Description']
-            break
-    stored = append_invoice({
+        if line.get('DetailType') in {'SubTotalLineDetail', 'DiscountLineDetail'}:
+            continue
+        amount = money(line.get('Amount'))
+        if not line.get('Description') and amount == 0:
+            continue
+        sales = line.get('SalesItemLineDetail') or {}
+        try:
+            qty = float(sales.get('Qty') if sales.get('Qty') not in (None, '') else 1)
+        except (TypeError, ValueError):
+            qty = 1
+        if qty <= 0:
+            qty = 1
+        unit = sales.get('UnitPrice')
+        if unit in (None, ''):
+            unit = round(amount / qty, 2) if qty else amount
+        description = line.get('Description') or 'QuickBooks line'
+        items.append({
+            'description': description,
+            'name': description,
+            'qty': qty,
+            'pcs': qty,
+            'unit_price': money(unit),
+            'price_pc': money(unit),
+            'total': amount,
+        })
+    if not items and money(row.get('TotalAmt')):
+        total = money(row.get('TotalAmt'))
+        items.append({
+            'description': 'QuickBooks',
+            'name': 'QuickBooks',
+            'qty': 1,
+            'pcs': 1,
+            'unit_price': total,
+            'price_pc': total,
+            'total': total,
+        })
+    tax = money((row.get('TxnTaxDetail') or {}).get('TotalTax'))
+    return items, tax
+
+
+def load_pending():
+    rows = _load('qbo_pending.json', [])
+    return rows if isinstance(rows, list) else []
+
+
+def save_pending(rows):
+    _save('qbo_pending.json', rows)
+
+
+def queue_pending(kind, row):
+    """Hold a document whose QuickBooks customer is not linked yet. It is not dropped."""
+    realm = str(_active_realm() or '')
+    qbo_id = str(row.get('Id') or '')
+    if not qbo_id:
+        return
+    customer_ref = row.get('CustomerRef') or {}
+    kept = [
+        item for item in load_pending()
+        if not (
+            item.get('kind') == kind
+            and str(item.get('qbo_id') or '') == qbo_id
+            and str(item.get('realm_id') or '') == realm
+        )
+    ]
+    kept.append({
+        'kind': kind,
+        'qbo_id': qbo_id,
+        'realm_id': realm,
+        'connection': _connection_key(),
+        'doc_number': str(row.get('DocNumber') or ''),
+        'customer_qbo_id': str(customer_ref.get('value') or ''),
+        'customer_name': str(customer_ref.get('name') or ''),
+        'total': money(row.get('TotalAmt')),
+        'currency': _qbo_currency(row),
+        'at': _now(),
+        'payload': row,
+    })
+    save_pending(kept)
+    log(
+        'error',
+        f'QuickBooks {kind} {qbo_id} is waiting. Customer {customer_ref.get("value") or "unknown"} is not linked.',
+    )
+
+
+def drain_pending(customer_qbo_id=None):
+    """Ingest queued documents once their QuickBooks customer is linked."""
+    kept = []
+    ingested = 0
+    for item in load_pending():
+        if (item.get('connection') or 'us') != _connection_key():
+            kept.append(item)
+            continue
+        if customer_qbo_id and str(item.get('customer_qbo_id') or '') != str(customer_qbo_id):
+            kept.append(item)
+            continue
+        row = item.get('payload') or {}
+        kind = item.get('kind')
+        if kind == 'invoice':
+            result = _ingest_invoice(row)
+        elif kind == 'credit':
+            result = _ingest_credit(row)
+        elif kind == 'payment':
+            result = _ingest_payment(row)
+        else:
+            result = False
+        if result == 'pending':
+            kept.append(item)
+        else:
+            ingested += 1
+    save_pending(kept)
+    return ingested
+
+
+def pending_view():
+    return [
+        {
+            'kind': item.get('kind') or '',
+            'qbo_id': item.get('qbo_id') or '',
+            'realm_id': item.get('realm_id') or '',
+            'connection': item.get('connection') or '',
+            'doc_number': item.get('doc_number') or '',
+            'customer_qbo_id': item.get('customer_qbo_id') or '',
+            'customer_name': item.get('customer_name') or '',
+            'total': item.get('total') or 0,
+            'currency': item.get('currency') or '',
+            'at': item.get('at') or '',
+        }
+        for item in load_pending()
+    ]
+
+
+def _local_qbo_invoice(qbo_id, kind):
+    realm = str(_active_realm() or '')
+    qbo_id = str(qbo_id or '')
+    for invoice in load_invoices():
+        if str(invoice.get('qbo_id') or '') != qbo_id:
+            continue
+        stored_realm = str(invoice.get('qbo_realm_id') or '')
+        if stored_realm and stored_realm != realm:
+            continue
+        if kind == 'credit' and invoice.get('doc_type') != 'credit_note':
+            continue
+        if kind == 'invoice' and invoice.get('doc_type') == 'credit_note':
+            continue
+        return invoice
+    link = find_link('credit' if kind == 'credit' else 'invoice', qbo_id=qbo_id)
+    if not link:
+        return None
+    return next((row for row in load_invoices() if str(row.get('id')) == str(link.get('erp_id'))), None)
+
+
+def _save_invoice_row(invoice):
+    invoices = load_invoices()
+    for index, item in enumerate(invoices):
+        if item.get('id') == invoice.get('id'):
+            invoices[index] = invoice
+            save_invoices(invoices)
+            return
+    save_invoices(invoices)
+
+
+def _linked_allocations(row, txn_type):
+    allocations = []
+    for line in row.get('Line') or []:
+        for linked in line.get('LinkedTxn') or []:
+            if linked.get('TxnType') != txn_type:
+                continue
+            kind = 'invoice' if txn_type == 'Invoice' else 'credit'
+            link = find_link(kind, qbo_id=linked.get('TxnId'))
+            if not link:
+                continue
+            try:
+                target_id = int(link['erp_id'])
+            except (TypeError, ValueError):
+                continue
+            allocations.append({
+                'target_type': 'invoice' if txn_type == 'Invoice' else 'credit_note',
+                'target_id': target_id,
+                'amount': money(line.get('Amount')),
+            })
+    return allocations
+
+
+def _ingest_invoice(row):
+    if str(row.get('status') or '') in {'Deleted', 'Void'}:
+        _void_from_qbo('Invoice', row.get('Id'))
+        return True
+    customer_qbo = str((row.get('CustomerRef') or {}).get('value') or '')
+    customer = find_link('customer', qbo_id=customer_qbo)
+    if not customer:
+        queue_pending('invoice', row)
+        return 'pending'
+    realm = str(_active_realm() or '')
+    qbo_id = str(row.get('Id') or '')
+    doc_number = str(row.get('DocNumber') or '').strip() or qbo_id
+    existing = _local_qbo_invoice(qbo_id, 'invoice')
+    if not existing and doc_number:
+        for invoice in load_invoices():
+            if _doc_in_this_realm(invoice, doc_number, realm):
+                existing = invoice
+                break
+    if existing and not (existing.get('qbo_origin') or existing.get('source') == 'quickbooks'):
+        existing['qbo_id'] = qbo_id
+        existing['qbo_realm_id'] = realm
+        existing['qbo_doc_number'] = str(row.get('DocNumber') or existing.get('qbo_doc_number') or '')
+        existing['qbo_sync'] = 'synced'
+        if not existing.get('issuer'):
+            existing['issuer'] = _connection_key()
+        _apply_qbo_balance(existing, row)
+        upsert_link('invoice', existing['id'], qbo_id, row.get('SyncToken'), 'erp', realm_id=realm)
+        return False
+    items, tax = _qbo_sales_lines(row)
+    total = money(row.get('TotalAmt'))
+    fields = {
         'doc_type': 'invoice',
+        'kind': 'customer',
         'source': 'quickbooks',
         'qbo_origin': True,
+        'imported': True,
         'issuer': _connection_key(),
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
-        'project': row.get('DocNumber') or '',
-        'qbo_doc_number': str(row.get('DocNumber') or ''),
-        'currency': currency if currency in {'usd', 'cad'} else 'usd',
-        'lines': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],
-        'items': [{'description': description, 'qty': 1, 'unit_price': total, 'total': total, 'name': description, 'pcs': 1, 'price_pc': total}],
+        'project': '',
+        'number': doc_number,
+        'qbo_doc_number': str(row.get('DocNumber') or doc_number),
+        'qbo_id': qbo_id,
+        'qbo_realm_id': realm,
+        'qbo_sync': 'synced',
+        'currency': _qbo_currency(row),
+        'lines': items,
+        'items': items,
+        'tax_total': tax,
         'total': total,
-        'subtotal': total,
-        'balance': money(row.get('Balance') if row.get('Balance') is not None else total),
-        'status': 'unpaid',
+        'subtotal': round(max(0.0, total - tax), 2),
         'invoice_date': row.get('TxnDate') or _today(),
         'due_date': row.get('DueDate') or '',
         'payment_terms': 'Net 30',
         'voided': False,
-        'created_at': _now(),
         'created_by': 'quickbooks',
-    })
-    stored['status'] = invoice_status(stored, load_payments())
-    stored['balance'] = invoice_balance(stored, load_payments())
-    invoices = load_invoices()
-    for index, item in enumerate(invoices):
-        if item.get('id') == stored['id']:
-            invoices[index] = stored
-    save_invoices(invoices)
-    upsert_link('invoice', stored['id'], row.get('Id'), row.get('SyncToken'), 'qbo')
+    }
+    if existing:
+        existing.update(fields)
+        _apply_qbo_balance(existing, row)
+        upsert_link('invoice', existing['id'], qbo_id, row.get('SyncToken'), 'qbo', realm_id=realm)
+        return False
+    stored = append_invoice({**fields, 'created_at': _now(), 'balance': money(row.get('Balance') if row.get('Balance') is not None else total), 'status': 'unpaid'})
+    _apply_qbo_balance(stored, row)
+    upsert_link('invoice', stored['id'], qbo_id, row.get('SyncToken'), 'qbo', realm_id=realm)
     return True
 
 
 def _ingest_credit(row):
-    if find_link('credit', qbo_id=row.get('Id')):
-        return False
-    customer = find_link('customer', qbo_id=(row.get('CustomerRef') or {}).get('value'))
+    if str(row.get('status') or '') in {'Deleted', 'Void'}:
+        _void_from_qbo('CreditMemo', row.get('Id'))
+        return True
+    customer_qbo = str((row.get('CustomerRef') or {}).get('value') or '')
+    customer = find_link('customer', qbo_id=customer_qbo)
     if not customer:
-        return False
+        queue_pending('credit', row)
+        return 'pending'
+    realm = str(_active_realm() or '')
+    qbo_id = str(row.get('Id') or '')
+    doc_number = str(row.get('DocNumber') or '').strip() or qbo_id
+    items, tax = _qbo_sales_lines(row)
     total = money(row.get('TotalAmt'))
-    currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
-    stored = append_invoice({
+    applications = []
+    for item in _linked_allocations(row, 'Invoice'):
+        applications.append({
+            'invoice_id': item['target_id'],
+            'amount': item['amount'],
+            'voided': False,
+        })
+    fields = {
         'doc_type': 'credit_note',
         'source': 'quickbooks',
         'qbo_origin': True,
+        'imported': True,
         'issuer': _connection_key(),
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
-        'currency': currency if currency in {'usd', 'cad'} else 'usd',
-        'lines': [{'description': 'Credit memo', 'qty': 1, 'unit_price': total, 'total': total}],
-        'items': [{'description': 'Credit memo', 'qty': 1, 'unit_price': total, 'total': total}],
+        'number': doc_number,
+        'qbo_doc_number': str(row.get('DocNumber') or doc_number),
+        'qbo_id': qbo_id,
+        'qbo_realm_id': realm,
+        'qbo_sync': 'synced',
+        'currency': _qbo_currency(row),
+        'lines': items,
+        'items': items,
+        'tax_total': tax,
         'total': total,
         'reason': 'Imported from QuickBooks',
-        'applications': [],
+        'applications': applications,
         'status': 'open',
         'voided': False,
         'invoice_date': row.get('TxnDate') or _today(),
-        'created_at': _now(),
         'created_by': 'quickbooks',
-    })
-    upsert_link('credit', stored['id'], row.get('Id'), row.get('SyncToken'), 'qbo')
+    }
+    existing = _local_qbo_invoice(qbo_id, 'credit')
+    if existing:
+        existing.update(fields)
+        _save_invoice_row(existing)
+        upsert_link('credit', existing['id'], qbo_id, row.get('SyncToken'), 'qbo', realm_id=realm)
+        return False
+    stored = append_invoice({**fields, 'created_at': _now()})
+    upsert_link('credit', stored['id'], qbo_id, row.get('SyncToken'), 'qbo', realm_id=realm)
     return True
 
 
-def _ingest_payment(row):
-    if find_link('payment', qbo_id=row.get('Id')):
-        _remember_token('payment', row)
-        return False
-    customer = find_link('customer', qbo_id=(row.get('CustomerRef') or {}).get('value'))
-    if not customer:
-        return False
-    allocations = []
-    for line in row.get('Line') or []:
-        for linked in line.get('LinkedTxn') or []:
-            if linked.get('TxnType') != 'Invoice':
-                continue
-            invoice_link = find_link('invoice', qbo_id=linked.get('TxnId'))
-            if not invoice_link:
-                continue
-            allocations.append({
-                'target_type': 'invoice',
-                'target_id': int(invoice_link['erp_id']),
-                'amount': money(line.get('Amount')),
-            })
-    currency = str((row.get('CurrencyRef') or {}).get('value') or 'USD').lower()
-    stored = append_payment({
+def _payment_fields(row, customer, allocations):
+    realm = str(_active_realm() or '')
+    return {
         'customer_id': customer['erp_id'],
         'company': (load_customers().get(customer['erp_id']) or {}).get('name') or '',
         'amount': money(row.get('TotalAmt')),
-        'currency': currency if currency in {'usd', 'cad'} else 'usd',
+        'currency': _qbo_currency(row),
+        'issuer': _connection_key(),
         'method': 'wire',
         'reference': 'QuickBooks ' + str(row.get('Id')),
         'date': row.get('TxnDate') or _today(),
@@ -1716,9 +1978,37 @@ def _ingest_payment(row):
         'allocations': allocations,
         'voided': False,
         'qbo_origin': True,
-        'created_by': 'quickbooks',
-    })
-    upsert_link('payment', stored['id'], row.get('Id'), row.get('SyncToken'), 'qbo')
+        'source': 'quickbooks',
+        'qbo_id': str(row.get('Id') or ''),
+        'qbo_realm_id': realm,
+        'qbo_sync': 'synced',
+    }
+
+
+def _ingest_payment(row):
+    if str(row.get('status') or '') in {'Deleted', 'Void'}:
+        _void_from_qbo('Payment', row.get('Id'))
+        return True
+    customer_qbo = str((row.get('CustomerRef') or {}).get('value') or '')
+    customer = find_link('customer', qbo_id=customer_qbo)
+    if not customer:
+        queue_pending('payment', row)
+        return 'pending'
+    allocations = _linked_allocations(row, 'Invoice')
+    fields = _payment_fields(row, customer, allocations)
+    existing = find_link('payment', qbo_id=row.get('Id'))
+    if existing:
+        payments = load_payments()
+        for payment in payments:
+            if str(payment.get('id')) == str(existing.get('erp_id')):
+                payment.update(fields)
+        save_payments(payments)
+        _remember_token('payment', row)
+        _refresh_imported_balances(allocations)
+        return False
+    stored = append_payment(fields)
+    upsert_link('payment', stored['id'], row.get('Id'), row.get('SyncToken'), 'qbo', realm_id=_active_realm())
+    _refresh_imported_balances(allocations)
     payments = load_payments()
     invoices = load_invoices()
     for invoice in invoices:
@@ -1728,6 +2018,28 @@ def _ingest_payment(row):
         invoice['status'] = invoice_status(invoice, payments)
     save_invoices(invoices)
     return True
+
+
+def _refresh_imported_balances(allocations):
+    """A real QuickBooks payment replaces the unpaid portion, it is not added on top of it."""
+    ids = {item.get('target_id') for item in allocations or []}
+    if not ids:
+        return
+    payments = load_payments()
+    invoices = load_invoices()
+    changed = False
+    for invoice in invoices:
+        if invoice.get('id') not in ids or invoice.get('qbo_balance') in (None, ''):
+            continue
+        applied = invoice_applied(invoice, payments)
+        total = money(invoice.get('total'))
+        target = money(invoice.get('qbo_balance'))
+        invoice['opening_applied'] = round(max(0.0, total - target - applied), 2)
+        invoice['balance'] = invoice_balance(invoice, payments)
+        invoice['status'] = invoice_status(invoice, payments)
+        changed = True
+    if changed:
+        save_invoices(invoices)
 
 
 def _remember_token(kind, row):
@@ -2983,8 +3295,18 @@ def handle_webhook(payload):
             log('error', f"Ignored a QuickBooks webhook for realm {note.get('realmId')}.")
             continue
         with connection_scope(key):
-            for entity in ((note.get('dataChangeEvent') or {}).get('entities') or []):
-                _handle_event(entity.get('name'), str(entity.get('id') or ''), entity.get('operation') or 'Create')
+            settings = load_settings()
+            settings['last_webhook'] = _now()
+            settings['last_webhook_error'] = ''
+            save_settings(settings)
+            try:
+                for entity in ((note.get('dataChangeEvent') or {}).get('entities') or []):
+                    _handle_event(entity.get('name'), str(entity.get('id') or ''), entity.get('operation') or 'Create')
+            except QuickBooksError as exc:
+                settings = load_settings()
+                settings['last_webhook_error'] = str(exc)
+                save_settings(settings)
+                log('error', f'QuickBooks webhook failed: {exc}')
     return {'ok': True}
 
 
@@ -3033,6 +3355,7 @@ def _ingest_customer_change(row):
         customer['phone'] = ((row.get('PrimaryPhone') or {}).get('FreeFormNumber')) or customer.get('phone')
         customers[link['erp_id']] = customer
         save_customers(customers)
+        drain_pending(row.get('Id'))
         return
     from app import new_customer_id
     customers = load_customers()
@@ -3045,6 +3368,7 @@ def _ingest_customer_change(row):
         qbo_currency=(row.get('CurrencyRef') or {}).get('value'),
     )
     log('info', f"Added {row.get('DisplayName')} from QuickBooks.")
+    drain_pending(row.get('Id'))
 
 
 def _void_from_qbo(name, qbo_id):
@@ -3085,20 +3409,21 @@ def poll_cdc():
     count = 0
     for batch in data.get('CDCResponse') or []:
         for response in batch.get('QueryResponse') or []:
-            for row in response.get('Customer') or []:
-                _ingest_customer_change(row)
-                count += 1
-            for row in response.get('Invoice') or []:
-                _ingest_invoice(row)
-                count += 1
-            for row in response.get('CreditMemo') or []:
-                _ingest_credit(row)
-                count += 1
-            for row in response.get('Payment') or []:
-                _ingest_payment(row)
-                count += 1
+            for name, ingest in (
+                ('Customer', _ingest_customer_change),
+                ('Invoice', _ingest_invoice),
+                ('CreditMemo', _ingest_credit),
+                ('Payment', _ingest_payment),
+            ):
+                for row in response.get(name) or []:
+                    if str(row.get('status') or '') in {'Deleted', 'Void'}:
+                        _void_from_qbo(name, row.get('Id'))
+                    else:
+                        ingest(row)
+                    count += 1
     settings = load_settings()
     settings['last_cdc'] = _now()
+    settings['last_cdc_error'] = ''
     save_settings(settings)
     log('info', f'QuickBooks change poll read {count} records.')
     return {'count': count}
@@ -3123,3 +3448,37 @@ def maybe_poll():
                 settings = load_settings()
                 settings['last_cdc_epoch'] = time.time()
                 save_settings(settings)
+
+
+_CDC_STARTED = False
+
+
+def _cdc_loop():
+    """Read both companies every 15 minutes, including while the site is idle."""
+    while True:
+        for key, label, _currency in CONNECTIONS:
+            with connection_scope(key):
+                if not connected():
+                    continue
+                try:
+                    poll_cdc()
+                except Exception as exc:
+                    logger.exception('QuickBooks change poll failed for %s.', label)
+                    try:
+                        settings = load_settings()
+                        settings['last_cdc'] = _now()
+                        settings['last_cdc_error'] = str(exc)
+                        save_settings(settings)
+                        log('error', f'QuickBooks change poll failed: {exc}')
+                    except Exception:
+                        logger.exception('Could not store the QuickBooks poll error.')
+        time.sleep(CDC_INTERVAL)
+
+
+def start_cdc_loop():
+    """Start the in-process change poll. Production only, and only in the one gunicorn worker."""
+    global _CDC_STARTED
+    if _CDC_STARTED or os.environ.get('APP_ENV') != 'production':
+        return
+    _CDC_STARTED = True
+    threading.Thread(target=_cdc_loop, name='qbo-cdc', daemon=True).start()

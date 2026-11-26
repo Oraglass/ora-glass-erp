@@ -14332,6 +14332,7 @@ def seed_command(links, base_url):
 def _start_background_jobs():
     import quickbooks
     quickbooks.start_weekly_open_import()
+    quickbooks.start_cdc_loop()
 
 
 _start_background_jobs()
