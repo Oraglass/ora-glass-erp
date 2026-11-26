@@ -30,7 +30,17 @@ a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="color:#333">Racks</h2>
-<p class="note">{% if staff %}Every rack, and how long it has been at a customer. More than 14 days is highlighted.{% else %}Racks your company is holding.{% endif %}</p>
+<p class="note">{% if staff %}Every rack, and how long it has been at a customer. A rack is overdue after the number of days set on that company. The default is 14.{% else %}Racks your company is holding.{% endif %}</p>
+{% if customer_overdue and customer_overdue.count %}
+<div class="note" id="customer-overdue-racks" style="background:#fff4e5;border:1px solid #f0c9d0;border-radius:8px;padding:12px">
+<strong>{{ customer_overdue.count }} of your racks {{ 'have' if customer_overdue.count != 1 else 'has' }} been out longer than {{ customer_overdue.alert_after }} days.</strong>
+<ul>
+{% for row in customer_overdue.rows %}
+<li>{{ row.number }} · delivered {{ row.delivered_on }} · {{ row.days }} days · {{ row.packing_number }}</li>
+{% endfor %}
+</ul>
+</div>
+{% endif %}
 <p class="note" id="rack-focus" hidden></p>
 <div class="filters">
 {% if staff %}
@@ -110,7 +120,7 @@ function render(rows) {
     const returning = (ADMIN && row.status === 'at_customer')
       ? '<div><button type="button" class="btn secondary" data-return="' + esc(row.number) + '">Mark returned</button></div>'
       : '';
-    const badge = row.overdue ? '<span class="badge-overdue">Overdue</span>' : '';
+    const badge = row.overdue && (STAFF || row.alert_customer) ? '<span class="badge-overdue">Overdue</span>' : '';
     const rackCell = STAFF
       ? '<a href="/racks/' + encodeURIComponent(row.number) + '">' + esc(row.number) + '</a>'
       : esc(row.number);

@@ -64,11 +64,21 @@
             Upload or review your company's certificate.
         </div>
         {% endif %}
+        {% if customer_overdue and customer_overdue.count %}
+        <div class="import-notice" id="customer-overdue-racks">
+            {{ customer_overdue.count }} of your racks {{ 'have' if customer_overdue.count != 1 else 'has' }} been out longer than {{ customer_overdue.alert_after }} days.
+            <ul>
+            {% for row in customer_overdue.rows %}
+            <li>{{ row.number }} · delivered {{ row.delivered_on }} · {{ row.days }} days · {{ row.packing_number }}</li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
         {% if user.role == 'admin' %}
         <div class="import-notice" id="overdue-racks">
             {% if overdue_racks and overdue_racks.count %}
             <a href="/racks?status=overdue">{{ overdue_racks.count }} rack{% if overdue_racks.count != 1 %}s{% endif %} overdue</a>
-            at a customer for more than 14 days.
+            at a customer longer than that company's rack alert.
             <ul>
             {% for row in overdue_racks.rows %}
             <li><a href="/racks/{{ row.number }}">{{ row.number }}</a> {{ row.customer_name }} · {{ row.days }} days · {{ row.packing_number }}</li>

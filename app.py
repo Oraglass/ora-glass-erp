@@ -834,6 +834,11 @@ def _shown_fx_date(invoice):
     return str((invoice or {}).get('invoice_date') or '')[:10] or stored
 
 
+def _rack_alert_days(customer):
+    import racks as rack_book
+    return rack_book.alert_days(customer)
+
+
 def public_customer(customer_id, customer, tiers, user_count):
     return {
         'id': customer_id,
@@ -865,6 +870,8 @@ def public_customer(customer_id, customer, tiers, user_count):
         'tier_label': tier_label(customer.get('tier'), tiers),
         'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
         'minimum_sqf_per_piece': _percent(customer.get('minimum_sqf_per_piece'), 100000),
+        'rack_alert_days': _rack_alert_days(customer),
+        'show_overdue_racks': bool(customer.get('show_overdue_racks')),
         'status': customer.get('status') or 'active',
         'user_count': user_count,
     }
@@ -1257,6 +1264,19 @@ def apply_customer_fields(customer, data, tiers, creating):
         if status not in {'active', 'inactive'}:
             return 'Status must be active or inactive.'
         customer['status'] = status
+    if creating or 'rack_alert_days' in data:
+        raw = data.get('rack_alert_days', 14)
+        if isinstance(raw, bool) or isinstance(raw, float):
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        text = str(raw).strip()
+        if not text.isdigit():
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        days = int(text)
+        if days < 1:
+            return 'Rack alert after (days) must be a whole number of at least 1.'
+        customer['rack_alert_days'] = days
+    if creating or 'show_overdue_racks' in data:
+        customer['show_overdue_racks'] = bool(data.get('show_overdue_racks'))
     return None
 
 
@@ -1651,6 +1671,7 @@ def dashboard():
         review_count=_orders_awaiting_staff(user),
         overdue_racks=_overdue_rack_panel(user),
         overdue_report=_overdue_report(user),
+        customer_overdue=_customer_overdue_panel(user),
     )
 
 
@@ -2340,7 +2361,8 @@ def racks_page():
     import racks as rack_book
     report = rack_book.weekly_report_view() if user.get('role') == 'admin' else None
     return render_template(
-        'racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin', report=report,
+        'racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin',
+        report=report, customer_overdue=_customer_overdue_panel(user),
     )
 
 
@@ -2358,7 +2380,8 @@ def rack_detail(rack_number):
         return json_error('That rack was not found.', 404) if request.accept_mimetypes.best == 'application/json' else (
             render_template('rack_detail.html', rack=None, missing=number), 404
         )
-    shown = rack_book.present(row)
+    company = load_customers().get(row.get('customer_id') or '') or {}
+    shown = rack_book.present(row, alert_after=rack_book.alert_days(company))
     shown['number'] = number
     return render_template('rack_detail.html', rack=shown, missing='')
 
@@ -14299,6 +14322,22 @@ def seed_command(links, base_url):
     click.echo('Give each person their link. It works once, expires in 7 days, and is not stored in the clear.')
     for email, token in tokens.items():
         click.echo(f'{email}  {base}/setup-password/{token}')
+
+
+def _customer_overdue_panel(user):
+    """A customer's own overdue racks, and only when that company turned the alert on."""
+    if not user or user.get('role') != 'customer':
+        return None
+    customer_id = user.get('customer_id') or ''
+    customer = load_customers().get(customer_id) or {}
+    if not customer.get('show_overdue_racks'):
+        return None
+    import racks as rack_book
+    rows = [
+        row for row in rack_book.overdue_rows(rack_book.load_rows())
+        if row.get('customer_id') == customer_id
+    ]
+    return {'count': len(rows), 'rows': rows, 'alert_after': rack_book.alert_days(customer)}
 
 
 def _overdue_rack_panel(user):

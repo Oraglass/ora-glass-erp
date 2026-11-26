@@ -872,9 +872,22 @@ def lifetime_stats(row, today=None):
     }
 
 
-def present(row, today=None):
+def alert_days(customer):
+    """Days at a customer before a rack is overdue. Missing or invalid values stay at 14."""
+    raw = OVERDUE_DAYS if customer is None else (customer or {}).get('rack_alert_days', OVERDUE_DAYS)
+    if isinstance(raw, bool):
+        return OVERDUE_DAYS
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return OVERDUE_DAYS
+    return days if days >= 1 else OVERDUE_DAYS
+
+
+def present(row, today=None, alert_after=None):
     today = today or date.today()
     days = _days_since(row.get('since'), today) if row.get('status') == AT_CUSTOMER else None
+    limit = OVERDUE_DAYS if alert_after is None else alert_after
     shown = dict(row)
     history = []
     for item in row.get('history') or []:
@@ -887,14 +900,18 @@ def present(row, today=None):
     shown['history'] = history
     shown['status_label'] = STATUS_LABELS.get(row.get('status'), row.get('status') or '')
     shown['days'] = days
-    shown['overdue'] = days is not None and days > OVERDUE_DAYS
+    shown['alert_after'] = limit
+    shown['overdue'] = days is not None and days > limit
     shown.update(lifetime_stats(row, today))
     shown['current_days'] = days
     return shown
 
 
-def visible_rows(racks, user, status='', customer_id='', number='', today=None):
+def visible_rows(racks, user, status='', customer_id='', number='', today=None, customers=None):
     """Staff see every rack. A customer sees the racks their company is holding."""
+    if customers is None:
+        from storage import load_customers
+        customers = load_customers()
     role = (user or {}).get('role') or ''
     wanted = str(number or '').strip()
     overdue_only = status == 'overdue'
@@ -915,7 +932,9 @@ def visible_rows(racks, user, status='', customer_id='', number='', today=None):
                 continue
             if customer_id and row.get('customer_id') != customer_id:
                 continue
-        shown = present(row, today)
+        company = (customers or {}).get(row.get('customer_id') or '') or {}
+        shown = present(row, today, alert_after=alert_days(company))
+        shown['alert_customer'] = bool(company.get('show_overdue_racks'))
         if overdue_only and not shown.get('overdue'):
             continue
         shown['number'] = shown_number
@@ -936,10 +955,10 @@ def _pacific_now(now=None):
     return now.astimezone(PACIFIC)
 
 
-def overdue_rows(racks, today=None):
-    """Racks that have been at a customer for more than 14 days."""
+def overdue_rows(racks, today=None, customers=None):
+    """Racks past that customer's own alert. A company with no setting still uses 14 days."""
     found = []
-    for row in visible_rows(racks, {'role': 'admin'}, status='overdue', today=today):
+    for row in visible_rows(racks, {'role': 'admin'}, status='overdue', today=today, customers=customers):
         found.append({
             'number': row.get('number') or '',
             'customer_id': row.get('customer_id') or '',

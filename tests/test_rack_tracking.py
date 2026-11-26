@@ -626,3 +626,68 @@ def test_trip_stats_count_a_return_and_an_open_stay():
     assert stats['last_scan_by'] == 'Dana Driver'
     assert stats['last_scan_method'] == 'gun'
     assert 'Pacific' in racks.pacific_label('2026-11-26T15:00:00+00:00')
+
+
+def test_each_company_sets_its_own_rack_alert_and_customer_view(client):
+    from datetime import date, timedelta
+    from storage import save_racks
+    _users()
+    write_user('seller@oraglass.us', 'sales')
+    today = date.today()
+    save_racks({
+        '1054': {
+            'number': '1054', 'status': 'at_customer', 'customer_id': 'harbor-glass',
+            'customer_name': 'Harbor Glass', 'since': (today - timedelta(days=10)).isoformat(),
+            'packing_number': 'XF1', 'history': [],
+        },
+        '2002': {
+            'number': '2002', 'status': 'at_customer', 'customer_id': 'maple',
+            'customer_name': 'Maple Glass', 'since': (today - timedelta(days=20)).isoformat(),
+            'packing_number': 'XF2', 'history': [],
+        },
+    })
+    assert login(client, 'seller@oraglass.us').status_code == 302
+    blocked = client.put('/api/customers/harbor-glass', json={'rack_alert_days': 7, 'show_overdue_racks': True})
+    assert blocked.status_code == 403
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    page = client.get('/customers')
+    assert b'Rack alert after (days)' in page.data
+    assert b'Show overdue rack alert to customer' in page.data
+    rejected = client.put('/api/customers/harbor-glass', json={'rack_alert_days': 0})
+    assert rejected.status_code == 400
+    assert 'at least 1' in rejected.get_json()['error']
+    saved = client.put('/api/customers/harbor-glass', json={'rack_alert_days': 7, 'show_overdue_racks': True})
+    assert saved.status_code == 200
+    company = next(row for row in client.get('/api/customers').get_json() if row['id'] == 'harbor-glass')
+    assert company['rack_alert_days'] == 7
+    assert company['show_overdue_racks'] is True
+    maple = next(row for row in client.get('/api/customers').get_json() if row['id'] == 'maple')
+    assert maple['rack_alert_days'] == 14
+    assert maple['show_overdue_racks'] is False
+    overdue = {row['number'] for row in client.get('/api/racks?status=overdue').get_json()}
+    assert overdue == {'1054', '2002'}
+    quiet = client.put('/api/customers/maple', json={'rack_alert_days': 30})
+    assert quiet.status_code == 200
+    overdue = {row['number'] for row in client.get('/api/racks?status=overdue').get_json()}
+    assert overdue == {'1054'}
+    report = racks_mod().overdue_rows(load_racks())
+    assert {row['number'] for row in report} == {'1054'}
+    assert report[0]['packing_number'] == 'XF1'
+    client.post('/logout')
+    assert login(client, 'sales@harbor.example').status_code == 302
+    home = client.get('/dashboard')
+    assert b'id="customer-overdue-racks"' in home.data
+    assert b'1054' in home.data
+    assert b'XF1' in home.data
+    assert b'2002' not in home.data
+    assert b'id="overdue-racks"' not in home.data
+    holding = client.get('/racks')
+    assert b'id="customer-overdue-racks"' in holding.data
+    assert b'1054' in holding.data
+    assert b'2002' not in holding.data
+    client.post('/logout')
+    assert login(client, 'other@maple.example').status_code == 302
+    maple_home = client.get('/dashboard')
+    assert b'id="customer-overdue-racks"' not in maple_home.data
+    assert b'1054' not in maple_home.data
