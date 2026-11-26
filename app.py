@@ -1516,6 +1516,12 @@ def inject_user():
             dict(item, label=f"{item['label']} ({review_count})") if item.get('id') == 'orders' else item
             for item in nav
         ]
+    stale_packed_count = len(_stale_packed_rows(user)) if user and staff_can_order(user) else 0
+    if stale_packed_count and not review_count:
+        nav = [
+            dict(item, label=f"{item['label']} ({stale_packed_count} packed)") if item.get('id') == 'orders' else item
+            for item in nav
+        ]
     if user and staff_can_order(user):
         import racks as rack_book
         open_damage = rack_book.open_damage_count()
@@ -1763,6 +1769,9 @@ def dashboard():
         show_resale=_customer_uses_resale(user),
         canada_tax_label=_canada_tax_label(user),
         review_count=_orders_awaiting_staff(user),
+        stale_packed=_stale_packed_rows(user),
+        stale_packed_days=_stale_packed_days(),
+        is_admin=user.get('role') == 'admin',
         overdue_racks=_overdue_rack_panel(user),
         overdue_report=_overdue_report(user),
         customer_overdue=_customer_overdue_panel(user),
@@ -2967,7 +2976,56 @@ def orders():
         glass_names=[item.get('name') for item in glass],
         spacer_names=[item.get('name') for item in spacers],
         irregular_rate=load_pricing_settings()['irregular_shape_surcharge'],
+        stale_packed_count=len(_stale_packed_rows(user)) if staff_can_order(user) else 0,
+        stale_packed_days=_stale_packed_days(),
     )
+
+
+@app.route('/api/orders/stale-packed', methods=['GET'])
+@module_required('orders')
+def stale_packed_list():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    return jsonify({
+        'days': _stale_packed_days(),
+        'orders': _stale_packed_rows(user),
+        'check': __import__('packed_reminders').check_view(),
+    })
+
+
+@app.route('/api/orders/<int:order_id>/stale-packed/dismiss', methods=['POST'])
+@module_required('orders')
+def dismiss_stale_packed(order_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    import packed_reminders
+
+    def mutator(order):
+        updated, error = packed_reminders.dismiss(dict(order), user, data.get('reason'))
+        if error:
+            return None, error
+        return updated, None
+
+    saved, error = update_order(order_id, mutator)
+    if error == 'Not found':
+        return json_error('Not found', 404)
+    if error:
+        return json_error(error, 400)
+    return jsonify({'id': saved.get('id'), 'dismissed': True})
+
+
+@app.route('/api/settings/stale-packed-days', methods=['POST'])
+@admin_required
+def save_stale_packed_days():
+    data = json_body() or {}
+    import packed_reminders
+    saved, error = packed_reminders.save_threshold(data.get('days'))
+    if error:
+        return json_error(error, 400)
+    return jsonify({'days': saved})
 
 
 @app.route('/orders/<int:order_id>')
@@ -9562,6 +9620,8 @@ def _attach_packing_list(order, parsed, user, filename, stored):
     before = order.get('pack_status') or ''
     progress = packing.packing_progress(order)
     order['pack_status'] = progress['status']
+    import packed_reminders
+    packed_reminders.apply_pack_status(order, progress['status'])
     label = parsed.get('number') or parsed.get('rack') or filename or 'Packing list'
     changes = []
     if replaced:
@@ -10142,6 +10202,8 @@ def reassign_legacy_packing(order_id, list_id):
         import packing
         progress = packing.packing_progress(updated)
         updated['pack_status'] = progress['status']
+        import packed_reminders
+        packed_reminders.apply_pack_status(updated, progress['status'])
         return updated, None
 
     left, error = update_order(order_id, take_off_legacy)
@@ -10208,6 +10270,8 @@ def remove_packing_list(order_id, list_id):
         import packing
         progress = packing.packing_progress(updated)
         updated['pack_status'] = progress['status']
+        import packed_reminders
+        packed_reminders.apply_pack_status(updated, progress['status'])
         _stamp_log(updated, user, [{
             'field': 'packing list',
             'action': 'removed',
@@ -14962,6 +15026,18 @@ def seed_command(links, base_url):
         click.echo(f'{email}  {base}/setup-password/{token}')
 
 
+def _stale_packed_days():
+    import packed_reminders
+    return packed_reminders.threshold_days()
+
+
+def _stale_packed_rows(user):
+    if not user or not staff_can_order(user):
+        return []
+    import packed_reminders
+    return packed_reminders.stale_orders(load_orders(), threshold=packed_reminders.threshold_days())
+
+
 def _customer_overdue_panel(user):
     """A customer's own overdue racks, and only when that company turned the alert on."""
     if not user or user.get('role') != 'customer':
@@ -14995,10 +15071,12 @@ def _overdue_report(user):
 
 
 def _start_background_jobs():
+    import packed_reminders
     import quickbooks
     import racks as rack_book
     quickbooks.start_weekly_open_import()
     quickbooks.start_cdc_loop()
+    packed_reminders.start_daily_check()
     rack_book.start_weekly_overdue_report()
 
 
