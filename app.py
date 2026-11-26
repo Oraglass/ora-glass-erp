@@ -173,9 +173,12 @@ from timeclock import (
     as_utc,
     clock_status,
     live_hours,
-    pacific_clock,
-    pacific_date,
-    pacific_label,
+    DEFAULT_ZONE,
+    local_clock,
+    local_date,
+    local_label,
+    normalize_zone,
+    zone_choices,
     replay,
     stamp,
     summarize,
@@ -12666,16 +12669,24 @@ def _punch_snapshot(punch):
         'no_location': bool(punch.get('no_location')),
         'no_photo': bool(punch.get('no_photo', True)),
         'kiosk_id': punch.get('kiosk_id'),
+        'timezone': punch.get('timezone') or '',
     }
+
+
+def _punch_zone(punch):
+    return normalize_zone((punch or {}).get('timezone')) or DEFAULT_ZONE
 
 
 def _punch_view(punch):
     view = _punch_snapshot(punch)
+    zone = _punch_zone(punch)
     view.update({
         'id': punch.get('id'),
         'user': punch.get('user'),
         'action_label': PUNCH_LABELS.get(punch.get('action'), punch.get('action')),
-        'pacific': pacific_label(punch.get('at')),
+        'timezone': zone,
+        'local': local_label(punch.get('at'), zone),
+        'pacific': local_label(punch.get('at'), zone),
         'corrected': bool(punch.get('corrections')),
         'original': punch.get('original'),
         'corrections': punch.get('corrections') or [],
@@ -12695,19 +12706,28 @@ def _punches_for(account):
 def _own_clock(user):
     rows = _punches_for(_punch_owner(user))
     status, since = clock_status(rows)
-    today = pacific_date(datetime.now(timezone.utc))
+    zone = _phone_zone()
+    shifts = []
+    try:
+        shifts = replay(rows)
+    except ValueError:
+        shifts = []
+    if shifts and shifts[-1].get('out') is None and shifts[-1].get('zone'):
+        zone = shifts[-1]['zone']
+    today = local_date(datetime.now(timezone.utc), zone)
     history_start = today - timedelta(days=13)
     week_start = today - timedelta(days=today.weekday())
     days, _period = summarize(rows, history_start, today)
     _week_days, week_hours = summarize(rows, week_start, today)
     history = [
         _punch_view(row) for row in sorted(rows, key=lambda row: (row.get('at') or '', row.get('id') or 0), reverse=True)
-        if pacific_date(row.get('at')) >= history_start
+        if local_date(row.get('at'), row.get('timezone')) >= history_start
     ]
     return {
         'status': status,
         'since': stamp(since) if since else None,
-        'since_pacific': pacific_clock(since) if since else None,
+        'since_pacific': local_clock(since, zone) if since else None,
+        'timezone': zone,
         'today_hours': live_hours(rows, today, today),
         'week_hours': week_hours,
         'days': days,
@@ -12898,15 +12918,34 @@ def _kiosk_cookie(response, token):
     return response
 
 
+def _kiosk_zone(kiosk):
+    """Existing tablets with no zone stored stay on America/Vancouver."""
+    return normalize_zone((kiosk or {}).get('timezone')) or DEFAULT_ZONE
+
+
+def _phone_zone():
+    return normalize_zone(load_time_settings().get('default_timezone')) or DEFAULT_ZONE
+
+
 def _public_kiosk(kiosk):
     return {
         'id': kiosk.get('id'),
         'name': kiosk.get('name') or '',
+        'timezone': _kiosk_zone(kiosk),
         'created_at': kiosk.get('created_at'),
         'created_by': kiosk.get('created_by'),
         'revoked': bool(kiosk.get('revoked')),
         'locked': bool(kiosk.get('locked')),
     }
+
+
+@app.route('/api/time-zones', methods=['GET'])
+@login_required
+def time_zones():
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    common, zones = zone_choices()
+    return jsonify({'default': DEFAULT_ZONE, 'common': common, 'zones': zones})
 
 
 @app.route('/api/time-clock/kiosks', methods=['GET'])
@@ -12917,6 +12956,29 @@ def list_kiosks():
     return jsonify([_public_kiosk(row) for row in load_kiosks()])
 
 
+@app.route('/api/time-clock/kiosks/<int:kiosk_id>', methods=['PUT'])
+@login_required
+def update_kiosk(kiosk_id):
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    data = json_body() or {}
+    zone = normalize_zone(data.get('timezone'))
+    if zone is None:
+        return json_error('Choose a time zone from the list.', 400)
+    kiosks = load_kiosks()
+    found = None
+    for row in kiosks:
+        if row.get('id') == kiosk_id:
+            row['timezone'] = zone
+            if 'name' in data:
+                row['name'] = clean_text(data.get('name'), 80) or row.get('name') or 'Shop tablet'
+            found = row
+    if not found:
+        return json_error('Not found', 404)
+    save_kiosks(kiosks)
+    return jsonify(_public_kiosk(found))
+
+
 @app.route('/api/time-clock/kiosks', methods=['POST'])
 @login_required
 def activate_kiosk():
@@ -12925,11 +12987,15 @@ def activate_kiosk():
         return json_error('Access denied', 403)
     data = json_body() or {}
     name = clean_text(data.get('name') or 'Shop tablet', 80) or 'Shop tablet'
+    if 'timezone' in data and str(data.get('timezone') or '').strip() and normalize_zone(data.get('timezone')) is None:
+        return json_error('Choose a time zone from the list.', 400)
+    zone = normalize_zone(data.get('timezone')) or DEFAULT_ZONE
     token = secrets.token_urlsafe(32)
     kiosks = load_kiosks()
     kiosk = {
         'id': max([row.get('id') or 0 for row in kiosks] or [0]) + 1,
         'name': name,
+        'timezone': zone,
         'token_hash': _token_hash(token),
         'created_at': stamp(datetime.now(timezone.utc)),
         'created_by': actor.get('email') or '',
@@ -13035,7 +13101,7 @@ def _purge_old_photos():
 
 def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, accuracy):
     moment = stamp(datetime.now(timezone.utc))
-    locked = _payroll_lock(key, moment)
+    locked = _payroll_lock(key, moment, zone=_kiosk_zone(kiosk))
     if locked:
         return locked
     existing = _punches_for(key)
@@ -13055,6 +13121,7 @@ def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, a
         'no_location': no_location,
         'no_photo': True,
         'kiosk_id': kiosk.get('id'),
+        'timezone': _kiosk_zone(kiosk),
     }
     stored = append_punch({
         'user': key,
@@ -13080,9 +13147,11 @@ def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, a
         'employee_number': user.get('employee_number') or '',
         'action': action,
         'action_label': PUNCH_LABELS.get(action, action),
-        'pacific': pacific_label(moment),
+        'timezone': _kiosk_zone(kiosk),
+        'local': local_label(moment, _kiosk_zone(kiosk)),
+        'pacific': local_label(moment, _kiosk_zone(kiosk)),
         'status': status,
-        'since_pacific': pacific_clock(since) if since else None,
+        'since_pacific': local_clock(since, _kiosk_zone(kiosk)) if since else None,
         'no_photo': bool(stored.get('no_photo')),
         'kiosk_id': kiosk.get('id'),
     })
@@ -13091,7 +13160,11 @@ def _record_kiosk_punch(kiosk, user, key, action, note, photo_bytes, lat, lng, a
 @app.route('/kiosk')
 def kiosk():
     device = _kiosk_from_request()
-    return render_template('kiosk.html', kiosk=_public_kiosk(device) if device else None)
+    return render_template(
+        'kiosk.html',
+        kiosk=_public_kiosk(device) if device else None,
+        server_now=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    )
 
 
 @app.route('/api/kiosk/workers', methods=['GET'])
@@ -13122,12 +13195,14 @@ def kiosk_identify():
     if error:
         return error
     status, since = clock_status(_punches_for(key))
-    today = pacific_date(datetime.now(timezone.utc))
+    zone = _kiosk_zone(device)
+    today = local_date(datetime.now(timezone.utc), zone)
     return jsonify({
         'name': user.get('name') or '',
         'employee_number': user.get('employee_number') or '',
         'status': status,
-        'since_pacific': pacific_clock(since) if since else None,
+        'timezone': zone,
+        'since_pacific': local_clock(since, zone) if since else None,
         'today_hours': live_hours(_punches_for(key), today, today),
     })
 
@@ -13184,16 +13259,22 @@ def time_clock_settings():
         _purge_old_photos()
         return jsonify(load_time_settings())
     data = json_body() or {}
-    try:
-        days = int(data.get('photo_retention_days'))
-    except (TypeError, ValueError):
-        return json_error('Photo retention must be a number of days.', 400)
-    if days < 90:
-        return json_error('Photos are kept for at least 90 days.', 400)
-    if days > 3650:
-        return json_error('Photo retention is too long.', 400)
     current = load_time_settings()
-    current['photo_retention_days'] = days
+    if 'photo_retention_days' in data:
+        try:
+            days = int(data.get('photo_retention_days'))
+        except (TypeError, ValueError):
+            return json_error('Photo retention must be a number of days.', 400)
+        if days < 90:
+            return json_error('Photos are kept for at least 90 days.', 400)
+        if days > 3650:
+            return json_error('Photo retention is too long.', 400)
+        current['photo_retention_days'] = days
+    if 'default_timezone' in data:
+        zone = normalize_zone(data.get('default_timezone'))
+        if zone is None:
+            return json_error('Choose a time zone from the list.', 400)
+        current['default_timezone'] = zone
     save_time_settings(current)
     return jsonify(load_time_settings())
 
@@ -13273,7 +13354,7 @@ def create_punch():
             return json_error('Location is out of range.', 400)
         no_location = False
     moment = stamp(datetime.now(timezone.utc))
-    locked = _payroll_lock(_punch_owner(user), moment)
+    locked = _payroll_lock(_punch_owner(user), moment, zone=_phone_zone())
     if locked:
         return locked
     existing = _punches_for(_punch_owner(user))
@@ -13292,6 +13373,7 @@ def create_punch():
         'no_location': no_location,
         'no_photo': True,
         'kiosk_id': None,
+        'timezone': _phone_zone(),
     }
     append_punch({
         'user': _punch_owner(user),
@@ -13319,7 +13401,7 @@ def _timesheet_rows(user_email, start, end):
         punches = [row for row in punches if row.get('user') == user_email]
     selected = []
     for row in punches:
-        day = pacific_date(row.get('at'))
+        day = local_date(row.get('at'), row.get('timezone'))
         if start and day < start:
             continue
         if end and day > end:
@@ -13390,7 +13472,7 @@ def correct_punch(punch_id):
     moments = [existing.get('at')]
     if data.get('at_pacific'):
         moments.append(data.get('at_pacific'))
-    locked = _payroll_lock(existing.get('user'), *moments)
+    locked = _payroll_lock(existing.get('user'), *moments, zone=_punch_zone(existing))
     if locked:
         return locked
 
@@ -13403,9 +13485,10 @@ def correct_punch(punch_id):
             updated['action'] = action
         if 'note' in data:
             updated['note'] = clean_text(data.get('note'), 300)
-        if data.get('at_pacific'):
+        local_time = data.get('at_local') or data.get('at_pacific')
+        if local_time:
             try:
-                updated['at'] = stamp(as_utc(data.get('at_pacific'), naive_is_pacific=True))
+                updated['at'] = stamp(as_utc(local_time, naive_zone=_punch_zone(punch)))
             except ValueError:
                 return None, 'That time is not valid.'
         if not updated.get('original'):
@@ -13451,11 +13534,11 @@ def export_time_csv():
     punches, days, period_hours = _timesheet_rows(email, _date_arg('from'), _date_arg('to'))
     buffer = StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(['id', 'user', 'action', 'at_utc', 'at_pacific', 'note', 'lat', 'lng', 'accuracy', 'no_location', 'corrected'])
+    writer.writerow(['id', 'user', 'action', 'at_utc', 'at_local', 'timezone', 'note', 'lat', 'lng', 'accuracy', 'no_location', 'corrected'])
     for row in punches:
         view = _punch_view(row)
         writer.writerow([
-            view['id'], view['user'], view['action'], view['at'], view['pacific'], view['note'],
+            view['id'], view['user'], view['action'], view['at'], view['local'], view['timezone'], view['note'],
             '' if view['lat'] is None else view['lat'], '' if view['lng'] is None else view['lng'],
             '' if view['accuracy'] is None else view['accuracy'], 'yes' if view['no_location'] else 'no',
             'yes' if view['corrected'] else 'no',
@@ -13504,12 +13587,14 @@ def _timesheet_pdf(name, email, start, end, punches, days, period_hours):
     head = ParagraphStyle('TsHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
     logo_path = 'logo.png' if os.path.exists('logo.png') else None
     logo = Image(logo_path, width=1.2 * inch, height=0.8 * inch) if logo_path else Paragraph('ORA GLASS', title)
+    zones = sorted({_punch_zone(row) for row in punches}) or [DEFAULT_ZONE]
     period = f"{start.isoformat() if start else 'start'} to {end.isoformat() if end else 'today'}"
+    zone_line = ', '.join(zones)
     elements = []
     header = Table([[
         logo,
         Paragraph('<b>Timesheet</b><br/><font size="8">2312 Leatherwood Pl.<br/>Lynden, WA 98264, USA</font>', title),
-        Paragraph(f"<font size='8'><b>{escape(name)}</b><br/>{escape(email)}<br/>{escape(period)}<br/>Pacific time</font>", small),
+        Paragraph(f"<font size='8'><b>{escape(name)}</b><br/>{escape(email)}<br/>{escape(period)}<br/>{escape(zone_line)}</font>", small),
     ]], colWidths=[1.5 * inch, 3.1 * inch, 2.7 * inch])
     header.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
     elements.append(header)
@@ -13543,7 +13628,7 @@ def _timesheet_pdf(name, email, start, end, punches, days, period_hours):
         view = _punch_view(row)
         place = 'No location' if view['no_location'] else f"{view['lat']}, {view['lng']}"
         punch_data.append([
-            Paragraph(escape(view['pacific']), cell),
+            Paragraph(escape(view['local'] + ' ' + view['timezone']), cell),
             Paragraph(escape(view['action_label']), cell),
             Paragraph(escape(view['note']), cell),
             Paragraph(escape(place), cell),
@@ -13564,24 +13649,27 @@ def _timesheet_pdf(name, email, start, end, punches, days, period_hours):
     return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='timesheet.pdf')
 
 
-def _as_payroll_day(value):
+def _as_payroll_day(value, zone=None):
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     text = str(value or '')
     naive = 'Z' not in text and '+' not in text[10:]
+    chosen = zone or DEFAULT_ZONE
     try:
-        return pacific_date(as_utc(value, naive_is_pacific=naive))
+        if naive:
+            return local_date(as_utc(value, naive_zone=chosen), chosen)
+        return local_date(as_utc(value), chosen)
     except (TypeError, ValueError):
         return None
 
 
-def _payroll_lock(worker, *moments):
+def _payroll_lock(worker, *moments, zone=None):
     """Approved gross-pay periods stay fixed until someone reopens them."""
     if not worker:
         return None
     stubs = load_paystubs()
     for moment in moments:
-        day = _as_payroll_day(moment)
+        day = _as_payroll_day(moment, zone)
         if not day:
             continue
         for stub in stubs:
@@ -13740,7 +13828,7 @@ def _period_from_request():
         except ValueError:
             return None, None, json_error('Period start is not a date.', 400)
     else:
-        day = pacific_date(datetime.now(timezone.utc))
+        day = local_date(datetime.now(timezone.utc), _phone_zone())
     start, end = period_containing(day, settings)
     return (start, end), settings, None
 
@@ -13812,6 +13900,8 @@ def save_payroll_settings():
         return json_error(error, 400)
     current = load_time_settings()
     before = normalize_payroll_settings(current)
+    if 'default_timezone' not in data:
+        settings['default_timezone'] = before.get('default_timezone') or DEFAULT_ZONE
     current.update(settings)
     save_time_settings(current)
     _payroll_audit(actor, 'settings', 'payroll', before, settings)
@@ -14283,6 +14373,9 @@ def _payroll_pdf(stubs, start, end, summary):
                 small,
             ))
         elements.append(Spacer(1, 8))
+        zones = stub.get('timezones') or []
+        if zones:
+            elements.append(Paragraph('Time zone: ' + escape(', '.join(zones)), small))
         elements.append(Paragraph('Gross pay (before taxes). This is not official tax withholding.', small))
     elif summary:
         elements.append(Spacer(1, 8))

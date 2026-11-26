@@ -18,6 +18,9 @@ body{min-height:100vh}
 .top{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#9f1830;color:#fff}
 .top img{height:48px;background:#fff;border-radius:8px;padding:4px 8px}
 .top h1{margin:0;font-size:22px;font-weight:600}
+.clockbox{text-align:right}
+.clockbox .time{font-size:28px;font-weight:700;letter-spacing:1px}
+.clockbox .zone{font-size:13px;opacity:.9;margin-top:2px}
 .stage{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;padding:20px 24px 28px;min-height:calc(100vh - 80px)}
 .panel{background:#fff;border-radius:18px;padding:18px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 .display{font-size:40px;letter-spacing:4px;text-align:center;min-height:64px;border-bottom:2px solid #eee;margin-bottom:12px}
@@ -53,6 +56,10 @@ video{width:100%;max-height:280px;background:#111;border-radius:14px;object-fit:
 <div class="top">
 <img src="{{ url_for('static', filename='logo.png') }}" alt="Ora Glass">
 <h1 id="kiosk-title">{{ kiosk.name }}</h1>
+<div class="clockbox">
+<div class="time" id="shop-clock"></div>
+<div class="zone" id="shop-zone">{{ kiosk.timezone }}</div>
+</div>
 </div>
 <div id="idle" class="stage">
 <div class="panel">
@@ -195,7 +202,7 @@ async function punch(action) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) { document.getElementById('punch-error').textContent = body.error || 'Punch was not saved'; return; }
   document.getElementById('confirm-action').textContent = body.action_label;
-  document.getElementById('confirm-who').textContent = body.name + ' · ' + body.pacific;
+  document.getElementById('confirm-who').textContent = body.name + ' · ' + (body.local || body.pacific) + ' ' + (body.timezone || '');
   document.getElementById('confirm').classList.add('show');
   setTimeout(resetAll, CONFIRM_MS);
 }
@@ -235,6 +242,18 @@ document.getElementById('do-in').addEventListener('click', () => punch('in'));
 document.getElementById('do-out').addEventListener('click', () => punch('out'));
 document.getElementById('do-break-start').addEventListener('click', () => punch('break_start'));
 document.getElementById('do-break-end').addEventListener('click', () => punch('break_end'));
+const SERVER_MS = Date.parse({{ server_now|tojson }});
+const KIOSK_ZONE = {{ kiosk.timezone|tojson }};
+const CLOCK_SKEW = SERVER_MS - Date.now();
+function paintClock() {
+  const now = new Date(Date.now() + CLOCK_SKEW);
+  const time = new Intl.DateTimeFormat('en-CA', {
+    timeZone: KIOSK_ZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  }).format(now);
+  document.getElementById('shop-clock').textContent = time;
+}
+paintClock();
+setInterval(paintClock, 1000);
 buildKeys();
 showDigits();
 loadNames();
