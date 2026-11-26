@@ -15,6 +15,12 @@ label{display:block;font-size:16px;color:#333;margin-top:12px}
 input,select{display:block;width:100%;margin-top:6px;font-size:22px;padding:14px;border:1px solid #ccc;border-radius:12px}
 .keep{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:16px;color:#333}
 .keep input{display:inline-block;width:22px;height:22px;margin:0;padding:0}
+.damage-box{margin:8px 0 14px;padding:12px;background:#fff7ed;border-radius:12px}
+.damage-box input[type=file]{font-size:16px;padding:10px}
+.previews{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.previews figure{margin:0;width:96px}
+.previews img{width:96px;height:96px;object-fit:cover;border-radius:8px;display:block}
+.previews button{margin-top:4px;width:100%;font-size:14px;padding:6px;border:1px solid #ccc;border-radius:8px;background:#fff}
 #scan-input{font-size:32px;padding:18px}
 .btn{display:block;width:100%;background:#C41E3A;color:#fff;border:0;border-radius:12px;font-size:22px;font-weight:700;padding:18px 16px;margin-top:12px;cursor:pointer}
 .btn.secondary{background:#fff;color:#333;border:1px solid #ccc}
@@ -120,7 +126,17 @@ function render() {
   });
   let html = groups.map(group => {
     const heading = groups.length > 1 ? '<h3>' + esc(group.name) + '</h3>' : '';
-    const rows = group.rows.map(row => '<div class="row ok"><strong>' + esc(row.rack) + '</strong><span>' + esc(row.customer_name || group.name) + '</span></div>').join('');
+    const rows = group.rows.map(row => {
+      const photos = (row.files || []).map((file, index) => '<figure><img src="' + esc(file.url) + '" alt="Damage photo"><button type="button" data-remove-photo="' + esc(row.rack) + '" data-index="' + index + '">Remove</button></figure>').join('');
+      const box = row.damaged ? '' : ' hidden';
+      return '<div class="row ok"><strong>' + esc(row.rack) + '</strong><span>' + esc(row.customer_name || group.name) + '</span></div>'
+        + '<label class="keep"><input type="checkbox" data-damaged="' + esc(row.rack) + '"' + (row.damaged ? ' checked' : '') + '> Damaged</label>'
+        + '<div class="damage-box"' + box + ' data-damage-box="' + esc(row.rack) + '">'
+        + '<label>Add photos of damage<input type="file" accept="image/*" capture="environment" multiple data-photos="' + esc(row.rack) + '"></label>'
+        + '<div class="previews">' + photos + '</div>'
+        + '<label>Note<input data-note="' + esc(row.rack) + '" maxlength="240" placeholder="Optional" value="' + esc(row.note || '') + '"></label>'
+        + '</div>';
+    }).join('');
     return heading + rows;
   }).join('');
   html += flagged.map(row => {
@@ -129,6 +145,49 @@ function render() {
   }).join('');
   list.innerHTML = html;
 }
+function scanByRack(number) {
+  return scans.find(row => row.result === 'ok' && row.rack === number);
+}
+list.addEventListener('change', event => {
+  const box = event.target.closest('[data-damaged]');
+  if (box) {
+    const row = scanByRack(box.getAttribute('data-damaged'));
+    if (!row) return;
+    row.damaged = box.checked;
+    if (!row.damaged) {
+      (row.files || []).forEach(file => { if (file.url) URL.revokeObjectURL(file.url); });
+      row.files = [];
+      row.note = '';
+    }
+    render();
+    return;
+  }
+  const picker = event.target.closest('[data-photos]');
+  if (!picker) return;
+  const row = scanByRack(picker.getAttribute('data-photos'));
+  if (!row) return;
+  row.files = row.files || [];
+  Array.from(picker.files || []).forEach(file => {
+    row.files.push({file: file, url: URL.createObjectURL(file)});
+  });
+  render();
+});
+list.addEventListener('click', event => {
+  const button = event.target.closest('[data-remove-photo]');
+  if (!button) return;
+  const row = scanByRack(button.getAttribute('data-remove-photo'));
+  if (!row || !row.files) return;
+  const index = Number(button.getAttribute('data-index'));
+  const removed = row.files.splice(index, 1)[0];
+  if (removed && removed.url) URL.revokeObjectURL(removed.url);
+  render();
+});
+list.addEventListener('input', event => {
+  const note = event.target.closest('[data-note]');
+  if (!note) return;
+  const row = scanByRack(note.getAttribute('data-note'));
+  if (row) row.note = note.value;
+});
 function chosenCustomer() {
   const select = document.getElementById('customer');
   return select ? select.value : '';
@@ -249,19 +308,27 @@ document.getElementById('camera').addEventListener('click', async () => {
   }
 });
 document.getElementById('confirm').addEventListener('click', async () => {
-  const racks = scans.filter(row => row.result === 'ok').map(row => row.rack);
-  const res = await fetch('/api/racks/pickup', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      customer_id: DRIVER ? '' : chosenCustomer(),
-      truck_plate: document.getElementById('plate').value,
-      racks: racks,
-      methods: scans.filter(row => row.result === 'ok').reduce((map, row) => {
-        map[row.rack] = row.scan_method || 'typed';
-        return map;
-      }, {})
-    })
+  const ready = scans.filter(row => row.result === 'ok');
+  const form = new FormData();
+  form.append('customer_id', DRIVER ? '' : chosenCustomer());
+  form.append('truck_plate', document.getElementById('plate').value);
+  form.append('racks', JSON.stringify(ready.map(row => row.rack)));
+  form.append('methods', JSON.stringify(ready.reduce((map, row) => {
+    map[row.rack] = row.scan_method || 'typed';
+    return map;
+  }, {})));
+  const damaged = ready.filter(row => row.damaged);
+  form.append('damaged', JSON.stringify(damaged.map(row => row.rack)));
+  form.append('notes', JSON.stringify(damaged.reduce((map, row) => {
+    map[row.rack] = row.note || '';
+    return map;
+  }, {})));
+  damaged.forEach(row => {
+    (row.files || []).forEach(item => {
+      form.append('photos-' + row.rack, item.file, item.file.name || 'damage.jpg');
+    });
   });
+  const res = await fetch('/api/racks/pickup', {method: 'POST', body: form});
   const body = await res.json().catch(() => ({}));
   const message = document.getElementById('message');
   if (!res.ok) { message.textContent = body.error || 'The pickup was not saved'; return; }

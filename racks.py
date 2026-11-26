@@ -33,12 +33,16 @@ AT_ORA = 'at_ora'
 PACKED = 'packed'
 AT_CUSTOMER = 'at_customer'
 RETURNED = 'returned'
+DAMAGED = 'damaged'
 STATUS_LABELS = {
     AT_ORA: 'At Ora Glass',
     PACKED: 'Packed / allocated to customer',
     AT_CUSTOMER: 'At customer',
     RETURNED: 'Returned',
+    DAMAGED: 'Damaged',
 }
+MAX_DAMAGE_PHOTOS = 8
+MAX_DAMAGE_EDGE = 1600
 
 
 def _now(moment):
@@ -788,7 +792,7 @@ def check_scan(racks, raw, customer_id='', already=None):
     }
 
 
-def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, moment=None, methods=None):
+def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, moment=None, methods=None, damage=None):
     """Bring the scanned racks back to Ora Glass.
 
     An empty customer id uses the customer each rack is at now. The pickup is
@@ -800,6 +804,7 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
         if cleaned and cleaned not in wanted:
             wanted.append(cleaned)
     chosen = methods or {}
+    flagged = damage if isinstance(damage, dict) else {}
 
     def change(racks):
         moved = []
@@ -812,7 +817,19 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
             row = racks[number]
             held_id = row.get('customer_id') or customer_id
             held_name = row.get('customer_name') or customer_name
-            row['status'] = RETURNED
+            info = flagged.get(number) if isinstance(flagged.get(number), dict) else None
+            damaged = info is not None
+            note = str((info or {}).get('note') or '').strip()
+            photos = [
+                {'id': str(photo.get('id'))}
+                for photo in ((info or {}).get('photos') or [])
+                if isinstance(photo, dict) and photo.get('id')
+            ]
+            row['status'] = DAMAGED if damaged else RETURNED
+            if damaged:
+                row['damaged'] = True
+                row['damage_note'] = note
+                row['damage_photos'] = photos
             row['customer_id'] = ''
             row['customer_name'] = ''
             row['since'] = ''
@@ -820,6 +837,9 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
             row['shipment_id'] = None
             row['shipment_number'] = ''
             row['truck_plate'] = ''
+            summary = 'Picked up damaged.' if damaged else 'Picked up and returned.'
+            if damaged and note:
+                summary = summary + ' ' + note
             row.setdefault('history', []).append(_event(
                 'picked_up', user, moment,
                 customer_id=held_id,
@@ -831,7 +851,10 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
                 truck_plate=truck_plate or '',
                 packing_number=row.get('packing_number') or '',
                 scan_method=_scan_method(chosen.get(number)),
-                note='Picked up and returned.',
+                note=summary,
+                damaged=damaged,
+                damage_note=note if damaged else '',
+                photos=photos,
             ))
             racks[number] = row
             moved.append(number)
@@ -874,6 +897,96 @@ def mark_returned(number, user, moment=None):
         return dict(row)
 
     return _mutate(change)
+
+
+def clear_damage(number, user, moment=None):
+    """An admin clears the damaged flag. The pickup photos stay on the history event."""
+    number = str(number or '').strip()
+    if not number:
+        return None
+
+    def change(racks):
+        row = racks.get(number)
+        if not isinstance(row, dict):
+            return None
+        if row.get('status') != DAMAGED and not row.get('damaged'):
+            return None
+        reported = {}
+        for item in reversed(row.get('history') or []):
+            if isinstance(item, dict) and item.get('damaged'):
+                reported = item
+                break
+        if row.get('status') == DAMAGED:
+            row['status'] = RETURNED
+        row['damaged'] = False
+        row['damage_note'] = ''
+        row['damage_photos'] = []
+        row.setdefault('history', []).append(_event(
+            'damage_cleared', user, moment,
+            customer_id=reported.get('customer_id') or '',
+            customer_name=reported.get('customer_name') or '',
+            customer_before_id=reported.get('customer_id') or '',
+            customer_before_name=reported.get('customer_name') or '',
+            location_before='Ora Glass',
+            location_after='Ora Glass',
+            packing_number=row.get('packing_number') or '',
+            note='Cleared the damaged flag.',
+        ))
+        racks[number] = row
+        return dict(row)
+
+    return _mutate(change)
+
+
+def photo_root():
+    folder = os.path.join(os.path.dirname(racks_path()), 'rack-photos')
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _safe_rack_number(number):
+    text = rack_number_from_scan(number)
+    if text and re.fullmatch(r'[A-Za-z0-9_-]{1,40}', text):
+        return text
+    return ''
+
+
+def damage_photo_path(number, photo_id):
+    rack = _safe_rack_number(number)
+    token = str(photo_id or '')
+    if not rack or not re.fullmatch(r'[0-9a-f]{32}', token):
+        return ''
+    root = os.path.realpath(photo_root())
+    path = os.path.realpath(os.path.join(root, rack, token + '.jpg'))
+    if not path.startswith(root + os.sep):
+        return ''
+    return path
+
+
+def store_damage_photo(number, raw):
+    """Save one damage photo as a JPEG no wider or taller than 1600px."""
+    rack = _safe_rack_number(number)
+    if not rack or not raw or len(raw) > 12_000_000:
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        image = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert('RGB')
+    except Exception:
+        return None
+    image.thumbnail((MAX_DAMAGE_EDGE, MAX_DAMAGE_EDGE))
+    import uuid
+    photo_id = uuid.uuid4().hex
+    folder = os.path.join(photo_root(), rack)
+    os.makedirs(folder, exist_ok=True)
+    image.save(os.path.join(folder, photo_id + '.jpg'), 'JPEG', quality=80, optimize=True)
+    return {'id': photo_id}
+
+
+def discard_damage_photo(number, photo_id):
+    path = damage_photo_path(number, photo_id)
+    if path and os.path.isfile(path):
+        os.remove(path)
 
 
 def load_rows():
@@ -1005,9 +1118,21 @@ def present(row, today=None, alert_after=None):
         copy = _complete_event(item)
         copy['at_label'] = pacific_label(copy.get('at'))
         copy['role_label'] = role_label(copy.get('user_role'))
+        copy['photos'] = [
+            {'id': str(photo.get('id'))}
+            for photo in (copy.get('photos') or [])
+            if isinstance(photo, dict) and photo.get('id')
+        ]
         history.append(copy)
     shown['history'] = history
     shown['status_label'] = STATUS_LABELS.get(row.get('status'), row.get('status') or '')
+    shown['damaged'] = bool(row.get('damaged')) or row.get('status') == DAMAGED
+    shown['damage_note'] = row.get('damage_note') or ''
+    shown['damage_photos'] = [
+        {'id': str(photo.get('id'))}
+        for photo in (row.get('damage_photos') or [])
+        if isinstance(photo, dict) and photo.get('id')
+    ] if shown['damaged'] else []
     shown['days'] = days
     shown['alert_after'] = limit
     shown['overdue'] = days is not None and days > limit
@@ -1024,6 +1149,7 @@ def visible_rows(racks, user, status='', customer_id='', number='', today=None, 
     role = (user or {}).get('role') or ''
     wanted = str(number or '').strip()
     overdue_only = status == 'overdue'
+    damaged_only = status == 'damaged'
     rows = []
     for number, row in (racks or {}).items():
         if not isinstance(row, dict):
@@ -1037,6 +1163,9 @@ def visible_rows(racks, user, status='', customer_id='', number='', today=None, 
         else:
             if overdue_only:
                 pass
+            elif damaged_only:
+                if row.get('status') != DAMAGED and not row.get('damaged'):
+                    continue
             elif status and row.get('status') != status:
                 continue
             if customer_id and row.get('customer_id') != customer_id:
@@ -1080,6 +1209,33 @@ def overdue_rows(racks, today=None, customers=None):
     return found
 
 
+def damaged_rows(racks):
+    """Racks a driver marked damaged. The customer is the one on that pickup."""
+    found = []
+    for number, row in (racks or {}).items():
+        if not isinstance(row, dict):
+            continue
+        if row.get('status') != DAMAGED and not row.get('damaged'):
+            continue
+        reported = {}
+        for item in reversed(row.get('history') or []):
+            if isinstance(item, dict) and item.get('damaged'):
+                reported = item
+                break
+        photos = row.get('damage_photos') or reported.get('photos') or []
+        found.append({
+            'number': str(row.get('number') or number),
+            'customer_id': reported.get('customer_id') or row.get('customer_id') or '',
+            'customer_name': reported.get('customer_name') or row.get('customer_name') or '',
+            'note': row.get('damage_note') or reported.get('damage_note') or '',
+            'reported_by': reported.get('user_name') or reported.get('user') or '',
+            'at': reported.get('at') or '',
+            'photos': len([photo for photo in photos if isinstance(photo, dict) and photo.get('id')]),
+        })
+    found.sort(key=lambda item: item.get('number') or '')
+    return found
+
+
 def weekly_overdue_due(now=None):
     """True after 7:00 AM Pacific on Monday, until this week's report is stored."""
     now = _pacific_now(now)
@@ -1107,6 +1263,7 @@ def run_weekly_overdue_if_due(now=None):
             'week': week,
             'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             'rows': rows,
+            'damaged': damaged_rows(load_rows()),
             'emailed': False,
         }
         atomic_write_json(path, record)
@@ -1123,6 +1280,7 @@ def weekly_report_view():
         'at_label': pacific_label(at) if at else '',
         'week': record.get('week') or '',
         'rows': record.get('rows') or [],
+        'damaged': record.get('damaged') or [],
         'ran': bool(record.get('week')),
         'schedule': 'Monday at 7:00 AM Pacific',
     }

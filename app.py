@@ -2383,7 +2383,9 @@ def rack_detail(rack_number):
     company = load_customers().get(row.get('customer_id') or '') or {}
     shown = rack_book.present(row, alert_after=rack_book.alert_days(company))
     shown['number'] = number
-    return render_template('rack_detail.html', rack=shown, missing='')
+    return render_template(
+        'rack_detail.html', rack=shown, missing='', admin=user.get('role') == 'admin',
+    )
 
 
 @app.route('/racks/scan')
@@ -2444,13 +2446,38 @@ def rack_check():
     return jsonify(verdict)
 
 
+def _pickup_field(data, key):
+    value = data.get(key)
+    if isinstance(value, (list, dict)):
+        return value
+    text = str(value or '').strip()
+    if not text:
+        return [] if key != 'notes' and key != 'methods' else {}
+    if text[:1] in '[{':
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (list, dict)):
+            return parsed
+    if key in {'notes', 'methods'}:
+        return {}
+    return [part.strip() for part in text.split(',') if part.strip()]
+
+
+def _discard_damage_photos(pending):
+    import racks as rack_book
+    for number, photo_id in pending:
+        rack_book.discard_damage_photo(number, photo_id)
+
+
 @app.route('/api/racks/pickup', methods=['POST'])
 @login_required
 def rack_pickup():
     user = current_user()
     if not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
-    data = json_body() or {}
+    data = (json_body() or {}) if request.is_json else request.form
     if user.get('role') == 'driver':
         customer_id = ''
         customer_name = ''
@@ -2461,14 +2488,88 @@ def rack_pickup():
             return json_error('Choose the customer.', 400)
         customer_name = customer.get('name') or ''
     import racks as rack_book
+    racks = _pickup_field(data, 'racks')
+    methods = _pickup_field(data, 'methods')
+    notes = _pickup_field(data, 'notes')
+    if not isinstance(notes, dict):
+        notes = {}
+    if not isinstance(methods, dict):
+        methods = {}
+    damage = {}
+    pending = []
+    for raw_number in _pickup_field(data, 'damaged') or []:
+        number = rack_book.rack_number_from_scan(raw_number)
+        if not number or number in damage:
+            continue
+        uploads = request.files.getlist('photos-' + number) if request.files else []
+        if len(uploads) > rack_book.MAX_DAMAGE_PHOTOS:
+            _discard_damage_photos(pending)
+            return json_error('Each rack can have up to 8 damage photos.', 400)
+        photos = []
+        for upload in uploads:
+            raw = upload.read()
+            if not raw:
+                continue
+            saved = rack_book.store_damage_photo(number, raw)
+            if not saved:
+                _discard_damage_photos(pending)
+                return json_error('Add a photo the phone can read. Use an image.', 400)
+            pending.append((number, saved['id']))
+            photos.append(saved)
+        damage[number] = {'note': clean_text(notes.get(number), 240), 'photos': photos}
     result = rack_book.confirm_pickup(
-        data.get('racks') or [], customer_id, customer_name,
+        racks, customer_id, customer_name,
         clean_text(data.get('truck_plate'), 40), user,
-        methods=data.get('methods') if isinstance(data.get('methods'), dict) else {},
+        methods=methods, damage=damage,
     )
+    moved = set(result.get('moved') or [])
+    for number, photo_id in pending:
+        if number not in moved:
+            rack_book.discard_damage_photo(number, photo_id)
     if not result['moved']:
         return json_error('None of those racks are at this customer.', 400)
     return jsonify(result)
+
+
+@app.route('/api/racks/<rack_number>/clear-damage', methods=['POST'])
+@login_required
+def clear_rack_damage(rack_number):
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can clear the damaged flag.', 403)
+    import racks as rack_book
+    row = rack_book.clear_damage(rack_number, user)
+    if not row:
+        return json_error('That rack is not marked damaged.', 400)
+    return jsonify(rack_book.present(row))
+
+
+@app.route('/api/racks/<rack_number>/photos/<photo_id>', methods=['GET'])
+@login_required
+def rack_damage_photo(rack_number, photo_id):
+    user = current_user()
+    if not staff_can_order(user) or user.get('role') == 'driver':
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    number = rack_book.rack_number_from_scan(rack_number)
+    row = rack_book.load_rows().get(number) if number else None
+    known = set()
+    if isinstance(row, dict):
+        for item in row.get('history') or []:
+            if not isinstance(item, dict):
+                continue
+            for photo in item.get('photos') or []:
+                if isinstance(photo, dict) and photo.get('id'):
+                    known.add(str(photo.get('id')))
+        for photo in row.get('damage_photos') or []:
+            if isinstance(photo, dict) and photo.get('id'):
+                known.add(str(photo.get('id')))
+    if str(photo_id) not in known:
+        return json_error('That photo was not found.', 404)
+    path = rack_book.damage_photo_path(number, photo_id)
+    if not path or not os.path.isfile(path):
+        return json_error('That photo was not found.', 404)
+    return send_file(path, mimetype='image/jpeg')
 
 
 @app.route('/api/racks/<rack_number>/return', methods=['POST'])

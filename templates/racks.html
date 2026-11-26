@@ -19,6 +19,8 @@ td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
 .num{text-align:right}
 .overdue{background:#fff4e5}
 .badge-overdue{display:inline-block;margin-left:6px;background:#9f1239;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.badge-damaged{display:inline-block;margin-left:6px;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.damaged{background:#fff7ed}
 .note{color:#555;font-size:14px;margin-top:8px}
 .report{margin-top:16px;border-top:1px solid #eee;padding-top:12px}
 th.sortable{cursor:pointer}
@@ -50,6 +52,7 @@ a{color:#C41E3A}
 <option value="at_ora">At Ora Glass</option>
 <option value="at_customer">At customer</option>
 <option value="returned">Returned</option>
+<option value="damaged">Damaged</option>
 <option value="overdue">Overdue</option>
 </select>
 <select id="rack-customer" aria-label="Customer"><option value="">All customers</option></select>
@@ -78,6 +81,20 @@ a{color:#C41E3A}
 {% endfor %}
 </tbody>
 </table>
+{% endif %}
+<h3 id="damaged-racks">Damaged racks</h3>
+<p class="note">Included in the Monday report with the overdue racks.</p>
+{% if report.damaged %}
+<table>
+<thead><tr><th>Rack</th><th>Customer</th><th>Note</th><th>Reported by</th><th class="num">Photos</th></tr></thead>
+<tbody>
+{% for row in report.damaged %}
+<tr><td><a href="/racks/{{ row.number }}">{{ row.number }}</a></td><td>{{ row.customer_name }}</td><td>{{ row.note }}</td><td>{{ row.reported_by }}</td><td class="num">{{ row.photos }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% elif report.ran %}
+<p class="note">None were damaged.</p>
 {% endif %}
 </div>
 {% endif %}
@@ -121,6 +138,10 @@ function render(rows) {
       ? '<div><button type="button" class="btn secondary" data-return="' + esc(row.number) + '">Mark returned</button></div>'
       : '';
     const badge = row.overdue && (STAFF || row.alert_customer) ? '<span class="badge-overdue">Overdue</span>' : '';
+    const damaged = row.damaged ? '<span class="badge-damaged">Damaged</span>' : '';
+    const clearing = (ADMIN && row.damaged)
+      ? '<div><button type="button" class="btn secondary" data-clear-damage="' + esc(row.number) + '">Clear damaged</button></div>'
+      : '';
     const rackCell = STAFF
       ? '<a href="/racks/' + encodeURIComponent(row.number) + '">' + esc(row.number) + '</a>'
       : esc(row.number);
@@ -128,7 +149,8 @@ function render(rows) {
       ? '<td class="num">' + esc(row.trips) + (row.trip_open ? ', 1 open' : '') + '</td><td class="num">' + (row.avg_days == null ? '' : esc(row.avg_days)) + '</td><td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td>'
       : '<td class="num">' + (row.days == null ? '' : esc(row.days)) + '</td>';
     const past = STAFF ? '' : '<td>' + (history ? '<ul>' + history + '</ul>' : '') + '</td>';
-    return '<tr class="' + (row.overdue ? 'overdue' : '') + '"><td>' + rackCell + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + badge + returning + '</td><td>' + esc(row.customer_name || '') + '</td>' + stats + '<td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td>' + past + '</tr>';
+    const tone = row.damaged ? 'damaged' : (row.overdue ? 'overdue' : '');
+    return '<tr class="' + tone + '"><td>' + rackCell + '</td><td>' + esc(row.name || '') + '</td><td>' + esc(row.status_label) + badge + damaged + returning + clearing + '</td><td>' + esc(row.customer_name || '') + '</td>' + stats + '<td>' + esc(row.shipment_number || '') + '</td><td>' + esc(row.truck_plate || '') + '</td>' + past + '</tr>';
   }).join('');
 }
 async function load() {
@@ -169,6 +191,21 @@ if (STAFF) {
   document.getElementById('rack-filter').addEventListener('click', load);
 }
 document.getElementById('rack-list').addEventListener('click', async (event) => {
+  const clear = event.target.closest('[data-clear-damage]');
+  if (clear && ADMIN) {
+    const number = clear.getAttribute('data-clear-damage');
+    if (!window.confirm('Clear the damaged flag on rack ' + number + '?')) return;
+    clear.disabled = true;
+    const cleared = await fetch('/api/racks/' + encodeURIComponent(number) + '/clear-damage', {method: 'POST'});
+    const payload = await cleared.json().catch(() => ({}));
+    if (!cleared.ok) {
+      clear.disabled = false;
+      alert(payload.error || 'Could not clear the damaged flag');
+      return;
+    }
+    load();
+    return;
+  }
   const button = event.target.closest('[data-return]');
   if (!button || !ADMIN) return;
   const number = button.getAttribute('data-return');

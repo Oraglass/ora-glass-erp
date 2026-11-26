@@ -797,3 +797,143 @@ def test_mark_delivered_confirm_matches_the_invoice_rules(client):
     save_orders(orders)
     remake = client.get('/api/orders/4').get_json()
     assert 'No invoice is created. This remake is not charged to the customer.' in remake['delivery_confirm']
+
+
+def _jpeg(width, height):
+    from io import BytesIO
+    from PIL import Image
+    buf = BytesIO()
+    Image.new('RGB', (width, height), (20, 40, 180)).save(buf, 'JPEG', quality=90)
+    buf.seek(0)
+    return buf
+
+
+def test_driver_damage_photos_are_kept_and_an_admin_can_clear_them(client):
+    from datetime import datetime
+    from io import BytesIO
+    from zoneinfo import ZoneInfo
+    from PIL import Image
+    from security import hash_password
+    from storage import load_users, save_racks, save_users
+    _users()
+    save_racks({
+        '1054': {
+            'number': '1054', 'name': 'A1900', 'status': 'at_customer',
+            'customer_id': 'harbor-glass', 'customer_name': 'Harbor Glass',
+            'since': '2026-11-01', 'packing_number': 'XF1', 'history': [],
+        },
+        '2002': {
+            'number': '2002', 'name': 'A1900', 'status': 'at_customer',
+            'customer_id': 'harbor-glass', 'customer_name': 'Harbor Glass',
+            'since': '2026-11-02', 'history': [],
+        },
+    })
+    users = load_users()
+    users['3605550199'] = {
+        'email': '', 'name': 'Dana Driver', 'role': 'driver', 'phone': '3605550199',
+        'password_hash': hash_password('Validpass1'), 'active': True,
+        'must_change_password': False,
+    }
+    save_users(users)
+    assert login(client, '3605550199').status_code == 302
+    page = client.get('/racks/scan')
+    assert page.status_code == 200
+    assert b'data-damaged' in page.data
+    assert b'Add photos of damage' in page.data
+    assert b'accept="image/*"' in page.data
+    assert b'capture="environment"' in page.data
+    assert b'multiple' in page.data
+    assert b'data-remove-photo' in page.data
+    assert b'data-note' in page.data
+    rejected = client.post('/api/racks/pickup', data={
+        'racks': '["1054"]',
+        'damaged': '["1054"]',
+        'notes': '{}',
+        'methods': '{}',
+        'photos-1054': (BytesIO(b'not a photo'), 'note.txt'),
+    })
+    assert rejected.status_code == 400
+    assert load_racks()['1054']['status'] == 'at_customer'
+    picked = client.post('/api/racks/pickup', data={
+        'racks': '["1054"]',
+        'damaged': '["1054"]',
+        'notes': '{"1054": "Bent corner"}',
+        'methods': '{"1054": "camera"}',
+        'truck_plate': 'VAN-9',
+        'photos-1054': (_jpeg(2400, 900), 'bent.jpg'),
+    })
+    assert picked.status_code == 200, picked.get_json()
+    plain = client.post('/api/racks/pickup', json={
+        'racks': ['2002'], 'damaged': ['2002'], 'notes': {}, 'methods': {'2002': 'typed'},
+    })
+    assert plain.status_code == 200, plain.get_json()
+    stored = load_racks()['1054']
+    assert stored['status'] == 'damaged'
+    assert stored['damaged'] is True
+    assert stored['damage_note'] == 'Bent corner'
+    event = stored['history'][-1]
+    assert event['action'] == 'picked_up'
+    assert event['damaged'] is True
+    assert event['user'] == '3605550199'
+    assert event['user_role'] == 'driver'
+    assert event['customer_id'] == 'harbor-glass'
+    assert event['customer_name'] == 'Harbor Glass'
+    assert 'Bent corner' in event['note']
+    photo_id = event['photos'][0]['id']
+    import racks as rack_book
+    with Image.open(rack_book.damage_photo_path('1054', photo_id)) as image:
+        assert image.format == 'JPEG'
+        assert image.size == (1600, 600)
+    bare = load_racks()['2002']
+    assert bare['status'] == 'damaged'
+    assert bare['damage_photos'] == []
+    assert bare['history'][-1]['note'] == 'Picked up damaged.'
+    blocked = client.get(f'/api/racks/1054/photos/{photo_id}')
+    assert blocked.status_code != 200
+    client.post('/logout')
+    assert login(client, 'sales@harbor.example').status_code == 302
+    refused = client.post('/api/racks/1054/clear-damage')
+    assert refused.status_code == 403
+    assert load_racks()['1054']['status'] == 'damaged'
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    photo = client.get(f'/api/racks/1054/photos/{photo_id}')
+    assert photo.status_code == 200
+    assert photo.mimetype == 'image/jpeg'
+    listed = next(row for row in client.get('/api/racks?status=damaged').get_json() if row['number'] == '1054')
+    assert listed['status_label'] == 'Damaged'
+    assert listed['damaged'] is True
+    detail = client.get('/racks/1054')
+    assert b'badge-damaged' in detail.data
+    assert b'id="damage-gallery"' in detail.data
+    assert b'Bent corner' in detail.data
+    assert photo_id.encode() in detail.data
+    assert b'Clear damaged' in detail.data
+    inventory = client.get('/racks')
+    assert b'badge-damaged' in inventory.data
+    assert b'id="damaged-racks"' in inventory.data
+    pacific = ZoneInfo('America/Los_Angeles')
+    record = rack_book.run_weekly_overdue_if_due(datetime(2026, 11, 23, 7, 0, tzinfo=pacific))
+    damaged = next(row for row in record['damaged'] if row['number'] == '1054')
+    assert damaged['customer_name'] == 'Harbor Glass'
+    assert damaged['note'] == 'Bent corner'
+    assert damaged['reported_by'] == 'Dana Driver'
+    assert damaged['photos'] == 1
+    shown = client.get('/racks').data
+    assert b'Included in the Monday report' in shown
+    assert b'Bent corner' in shown
+    assert b'Dana Driver' in shown
+    cleared = client.post('/api/racks/1054/clear-damage')
+    assert cleared.status_code == 200
+    after = load_racks()['1054']
+    assert after['status'] == 'returned'
+    assert after.get('damaged') is False
+    assert after['history'][-1]['action'] == 'damage_cleared'
+    assert after['history'][-1]['note'] == 'Cleared the damaged flag.'
+    assert after['history'][-1]['user'] == 'admin@oraglass.us'
+    assert after['history'][-2]['photos'][0]['id'] == photo_id
+    quiet = client.get('/racks/1054')
+    assert b'id="damage-gallery"' not in quiet.data
+    assert b'Cleared the damaged flag.' in quiet.data
+    assert photo_id.encode() in quiet.data
+    assert client.get(f'/api/racks/1054/photos/{photo_id}').status_code == 200
