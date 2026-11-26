@@ -146,7 +146,7 @@ function cardBody(card, status) {
   } else {
     head = '<p class="ok"><strong>' + esc(card.company_name || card.label) + '</strong> · realm ' + esc(card.realm_id) + ' · ' + esc(String(card.currency || '').toUpperCase()) + ' · ' + esc(card.environment) + '</p>'
       + '<p class="note">Last sync: ' + esc(card.last_sync || 'not yet') + '</p>'
-      + '<p class="note">Sync now reads changes since the last poll. Invoices already in QuickBooks stay out of the ERP until you import them.</p>'
+      + '<p class="note">Sync now reads changes since the last poll. New and edited QuickBooks invoices, payments, and credit memos are recorded here. A document whose customer is not linked waits in Pending QBO documents.</p>'
       + '<p><button type="button" data-action="sync" data-connection="' + esc(key) + '">Sync now</button> <button type="button" class="secondary" data-action="disconnect" data-connection="' + esc(key) + '">Disconnect</button></p>';
   }
   const taxChoice = key === 'ca'
@@ -156,7 +156,9 @@ function cardBody(card, status) {
   const log = visibleLog(card);
   const logHtml = log.length ? '<table><tbody>' + log.map(row => '<tr><td>' + esc(row.at) + '</td><td class="' + (row.level === 'error' ? 'error' : '') + '">' + esc(row.message) + '</td></tr>').join('') + '</tbody></table>' : 'No sync activity yet.';
   const intercompany = key === 'us' ? '<h2>Ora Glass (Canada) Inc in this company</h2><p class="note">Intercompany invoices bill this QuickBooks customer in USD. Match the existing customer, or create it.</p><div class="row"><label>QuickBooks customer id<input data-field="intercompany" data-connection="us" value="' + esc(card.intercompany_qbo_id || '') + '"></label><button type="button" data-action="match-intercompany">Match by name</button><button type="button" class="secondary" data-action="save-intercompany">Save id</button><button type="button" class="secondary" data-action="create-intercompany">Create customer</button></div><p class="note" id="intercompany-note"></p>' : '';
-  return '<div class="card" data-connection="' + esc(key) + '"><header class="company-header"><h2>' + esc(title) + '</h2><p class="realm">Realm ' + esc(realm) + '</p></header>' + head
+  const activity = '<p class="note">Last webhook: ' + esc(card.last_webhook || 'none') + (card.last_webhook_error ? ' · ' + esc(card.last_webhook_error) : '') + '</p>'
+    + '<p class="note">Last change poll: ' + esc(card.last_cdc || 'none') + (card.last_cdc_error ? ' · ' + esc(card.last_cdc_error) : '') + '</p>';
+  return '<div class="card" data-connection="' + esc(key) + '"><header class="company-header"><h2>' + esc(title) + '</h2><p class="realm">Realm ' + esc(realm) + '</p></header>' + head + activity
     + '<h2>Item mapping</h2><p class="note">' + (key === 'ca'
       ? 'Invoice lines use the QuickBooks item below. Canadian invoices use the ship-to tax code chosen below. A code on the customer is used only when Override is ticked. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.'
       : 'Invoice lines use the QuickBooks item below. US invoices use the tax code saved on the customer. Exports and a verified resale certificate are not taxed. Extra charges such as delivery or crane can use a different item. One mapping per line, written as Label = Item name.') + '</p>'
@@ -185,16 +187,35 @@ function renderWeekly(status) {
   const job = (status && status.weekly_import) || {};
   const box = document.getElementById('weekly-import');
   if (!box) return;
-  const schedule = 'Open invoices import automatically every Monday at 6:00 AM Pacific for every linked customer in both companies.';
+  const schedule = 'Open invoices import automatically every Monday at 6:00 AM Pacific for every linked customer in both companies. The same run also reads payments and credit memos.';
+  const mismatches = (job.mismatches || []).map(row => row.number + ' ' + String(row.currency || '').toUpperCase() + ' ERP ' + row.erp_balance + ' vs QuickBooks ' + row.qbo_balance);
+  const gap = mismatches.length ? ' Balance mismatches: ' + mismatches.join('; ') + '.' : '';
   if (job.at_label || job.at) {
-    box.textContent = schedule + ' Last run ' + (job.at_label || job.at) + '. ' + (job.message || '');
+    box.textContent = schedule + ' Last run ' + (job.at_label || job.at) + '. ' + (job.message || '') + gap;
   } else {
     box.textContent = schedule + ' It has not run yet.';
   }
 }
+function renderPending(status) {
+  let box = document.getElementById('qbo-pending');
+  if (!box) {
+    box = document.createElement('p');
+    box.id = 'qbo-pending';
+    box.className = 'note';
+    const host = document.getElementById('weekly-import');
+    if (host && host.parentNode) host.parentNode.insertBefore(box, host.nextSibling);
+  }
+  const rows = (status && status.pending) || [];
+  if (!rows.length) {
+    box.textContent = 'Pending QBO documents: none.';
+    return;
+  }
+  box.textContent = 'Pending QBO documents: ' + rows.map(row => (row.doc_number || row.qbo_id) + ' ' + String(row.currency || '').toUpperCase() + ' ' + row.kind + ' for QuickBooks customer ' + (row.customer_name || row.customer_qbo_id)).join('; ') + '. They are recorded when that customer is linked.';
+}
 function render(status) {
   STATUS = status;
   renderWeekly(status);
+  renderPending(status);
   const selected = companyKey();
   const tabs = '<div class="qbo-tabs" role="tablist">'
     + '<button type="button" class="qbo-tab' + (selected === 'us' ? ' active' : '') + '" role="tab" data-tab="us" aria-selected="' + (selected === 'us') + '">Ora Glass Inc (US)</button>'

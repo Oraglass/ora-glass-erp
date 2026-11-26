@@ -608,6 +608,7 @@ def irregular_surcharge_line(description, pcs, rate):
     label = f"Irregular shape surcharge – {description or 'Glass'}"
     return {
         'kind': SURCHARGE_KIND,
+        'item_type': 'service',
         'name': label,
         'description': label,
         'pcs': pieces,
@@ -662,6 +663,7 @@ def dwg_creation_line(line_id, rate):
     amount = _surcharge_rate(rate, DEFAULT_DWG_FEE)
     return {
         'kind': DWG_KIND,
+        'item_type': 'service',
         'name': 'DWG drawing creation',
         'description': 'DWG drawing creation',
         'drawing_for': line_id,

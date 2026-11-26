@@ -87,15 +87,15 @@ def test_open_windows_is_an_export_and_intercompany_is_untaxed(client, monkeypat
     write_user('admin@oraglass.us', 'admin')
     write_user('support@open-windows.ca', 'customer', customer_id='open-windows', customer_name='Open Windows')
     assert load_customers()['open-windows']['country'] == 'Canada'
-    assert load_customers()['open-windows']['credit_currency'] == 'cad'
+    assert load_customers()['open-windows']['credit_currency'] == 'usd'
     assert login(client, 'admin@oraglass.us').status_code == 302
     fake = TaxTransport()
     try:
         _connect_us(client, fake)
         exported = _invoice(client, 'open-windows')
         assert exported.status_code == 200, exported.get_json()
-        assert exported.get_json()['issuer'] == 'ca'
-        assert exported.get_json()['currency'] == 'cad'
+        assert exported.get_json()['issuer'] == 'us'
+        assert exported.get_json()['currency'] == 'usd'
         assert _posted(fake) == []
         customers = load_customers()
         customers['ora-glass-canada'] = {

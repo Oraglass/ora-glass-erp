@@ -20,6 +20,11 @@ from quoting import DRAWING_NOTE, area_sqf
 
 COMPANY_ADDRESS = '2312 Leatherwood Pl,<br/>Lynden, WA 98264,USA'
 TERMS = 'Ora Glass Inc Terms And Conditions of Sale apply.'
+_COMMA_RUN = re.compile(r'(?:\s*,\s*){2,}')
+SERVICE_KINDS = frozenset({
+    'irregular_surcharge', 'dwg_creation', 'fee', 'surcharge', 'charge',
+    'shipping', 'crane', 'delivery', 'service',
+})
 GREY = colors.HexColor('#D9D9D9')
 PAGE_WIDTH = 7.7 * inch
 
@@ -504,9 +509,15 @@ def _header(document, styles):
     customer_tax = _customer_tax_id(document)
     if customer_tax:
         sold.append(customer_tax)
-    sold.extend(escape(str(line)) for line in document.get('sold_to') or [] if str(line).strip())
+    for line in document.get('sold_to') or []:
+        cleaned = normalize_address_part(line)
+        if cleaned:
+            sold.append(escape(cleaned))
     job = [f'<b>Job Name:</b> {escape(str(document.get("project") or ""))}']
-    job.extend(escape(str(line)) for line in document.get('job_address') or [] if str(line).strip())
+    for line in document.get('job_address') or []:
+        cleaned = normalize_address_part(line)
+        if cleaned:
+            job.append(escape(cleaned))
     parties = Table(
         [[Paragraph('<br/>'.join(sold), styles['small']), Paragraph('<br/>'.join(job), styles['small'])]],
         colWidths=[3.85 * inch, 3.85 * inch],
@@ -775,6 +786,105 @@ def header_address_block(document):
     return block
 
 
+def normalize_address_part(value):
+    """Collapse a typed ``,,`` and drop a part that is only commas or spaces.
+
+    One real comma stays, so ``Vancouver, BC`` is unchanged. Leading and trailing
+    commas are removed. This does not rewrite stored customers; callers use it
+    when they print or when they save a new value.
+    """
+    text = _COMMA_RUN.sub(', ', str(value or ''))
+    return text.strip().strip(',').strip()
+
+
+def address_lines(*parts):
+    """Address lines with empty pieces and leftover separators left out."""
+    lines = []
+    for part in parts:
+        raw = str(part or '').replace('\r\n', '\n').replace('\r', '\n')
+        for line in raw.split('\n'):
+            cleaned = normalize_address_part(line)
+            if cleaned:
+                lines.append(cleaned)
+    return lines
+
+
+def item_type(item):
+    """``igu`` for glass. ``service`` for surcharges and later fees such as crane or delivery.
+
+    An explicit item_type wins. Existing surcharge lines have no field, so their
+    kind classifies them as a service without rewriting the stored invoice.
+    """
+    if not isinstance(item, dict):
+        return 'igu'
+    explicit = str(item.get('item_type') or '').strip().lower()
+    if explicit in {'igu', 'service'}:
+        return explicit
+    kind = str(item.get('kind') or '').strip().lower()
+    if kind in SERVICE_KINDS or is_charge_line(item):
+        return 'service'
+    return 'igu'
+
+
+def stamp_item_type(item):
+    """Set item_type on a new line. A line that already has one is left as saved."""
+    if isinstance(item, dict) and not str(item.get('item_type') or '').strip():
+        item['item_type'] = item_type(item)
+    return item
+
+
+def line_quantity(item):
+    """Piece count. A service with no quantity prints as 1, or the linked quantity when it has one."""
+    raw = (item or {}).get('pcs')
+    if raw in (None, '', '-'):
+        raw = (item or {}).get('qty')
+    try:
+        count = int(float(raw))
+    except (TypeError, ValueError):
+        count = 0
+    if item_type(item) == 'service':
+        return count if count > 0 else 1
+    return count if count > 0 else ''
+
+
+def format_invoice_money(amount):
+    """$2,516.95, with a leading minus when the amount is negative."""
+    from billing import money
+    value = money(amount)
+    sign = '-' if value < 0 else ''
+    return f'{sign}${abs(value):,.2f}'
+
+
+def split_invoice_lines(invoice):
+    """Glass lines, then service lines. Order-level extras are services and are not copied onto the glass lines."""
+    igu = []
+    services = []
+    for item in (invoice or {}).get('items') or []:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row['item_type'] = item_type(item)
+        row['display_qty'] = line_quantity(item)
+        if row['item_type'] == 'service':
+            services.append(row)
+        else:
+            igu.append(row)
+    for charge in (invoice or {}).get('extra_charges') or []:
+        if not isinstance(charge, dict):
+            continue
+        label = str(charge.get('label') or charge.get('name') or 'Service').strip() or 'Service'
+        services.append({
+            'name': label,
+            'item_type': 'service',
+            'kind': 'service',
+            'pcs': 1,
+            'qty': 1,
+            'display_qty': 1,
+            'total': charge.get('amount'),
+        })
+    return igu, services
+
+
 def invoice_party(invoice):
     """Customer block shared by the invoice page and the PDF. Empty lines are left out."""
     rows = []
@@ -782,7 +892,7 @@ def invoice_party(invoice):
     if name:
         rows.append({'key': 'customer', 'text': name})
     for line in (invoice or {}).get('customer_address') or []:
-        text = str(line or '').strip()
+        text = normalize_address_part(line)
         if text:
             rows.append({'key': 'address', 'text': text})
     gst = str((invoice or {}).get('customer_gst_number') or '').strip()
@@ -810,31 +920,24 @@ def invoice_party(invoice):
 
 
 def tax_line_label(line, document):
-    """Tax row in the invoice totals. GST and HST carry the seller's GST number."""
+    """Tax row in the invoice totals: the tax name and rate only.
+
+    The seller's GST number stays in the Canada header. The customer's PST or
+    QST number stays in the customer block. Neither is repeated on this line.
+    """
+    del document
     name = str((line or {}).get('name') or 'Tax').strip() or 'Tax'
     rate = str((line or {}).get('rate') or '').strip()
-    label = f'{name} {rate}%'.strip()
-    kind = name.upper()
-    number = ''
-    if kind in {'GST', 'HST'}:
-        gst = str((document or {}).get('seller_gst_number') or '').strip()
-        if gst:
-            number = f'GST# {gst}'
-    elif kind in {'PST', 'RST'}:
-        pst = str((document or {}).get('pst_number') or '').strip()
-        if pst:
-            number = f'PST# {pst}'
-    elif kind == 'QST':
-        qst = str((document or {}).get('qst_number') or '').strip()
-        if qst:
-            number = f'QST# {qst}'
-    if number:
-        return f'{label} ({number})'
-    return label
+    return f'{name} {rate}%'.strip()
 
 
 def invoice_summary(invoice):
-    """Totals shared by the invoice page and the PDF, tax sitting above the grand total."""
+    """Totals shared by the invoice page and the PDF.
+
+    Glass is the IGU subtotal. Surcharges and other service lines, including
+    future shipping or crane charges, are a separate Services subtotal. That
+    row is omitted when there are no service lines. Tax stays a name and a rate.
+    """
     from billing import money
 
     def amount(value):
@@ -845,22 +948,23 @@ def invoice_summary(invoice):
         discount_label = f"{amount(discount.get('value')):.2f}%"
     else:
         discount_label = 'fixed'
-    items = (invoice or {}).get('items') or (invoice or {}).get('lines') or []
-    service = any(
-        isinstance(row, dict) and (row.get('kind') == 'service' or row.get('item_type') == 'service')
-        for row in items
-    )
-    if service:
-        subtotal_label = 'Services'
-    elif (invoice or {}).get('tax_free'):
-        subtotal_label = 'Tax-free subtotal'
+    igu_lines, service_lines = split_invoice_lines(invoice)
+    if (invoice or {}).get('items') or (invoice or {}).get('extra_charges'):
+        igu_amount = round(sum(amount(row.get('total')) for row in igu_lines), 2)
+        services_amount = round(sum(amount(row.get('total')) for row in service_lines), 2)
     else:
-        subtotal_label = 'IGU subtotal'
-    rows = [
-        {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('service_total') or (invoice or {}).get('igu_subtotal'))},
-        {'label': f'Discount ({discount_label})', 'amount': -amount((invoice or {}).get('discount_amount'))},
-    ]
+        igu_amount = amount((invoice or {}).get('igu_subtotal') or (invoice or {}).get('subtotal'))
+        services_amount = 0.0
+    discount_amount = amount((invoice or {}).get('discount_amount'))
+    # A 0% or $0 discount must not print as "Discount (0.00%) $-0.00".
+    if abs(discount_amount) < 0.005:
+        discount_amount = 0.0
     extra_discount = amount((invoice or {}).get('additional_discount_amount'))
+    if abs(extra_discount) < 0.005:
+        extra_discount = 0.0
+    rows = [{'label': 'IGU subtotal', 'amount': igu_amount, 'role': 'igu'}]
+    if discount_amount:
+        rows.append({'label': f'Discount ({discount_label})', 'amount': -discount_amount, 'role': 'discount'})
     if extra_discount:
         try:
             extra_percent = float((invoice or {}).get('additional_discount_percent') or 0)
@@ -869,28 +973,27 @@ def invoice_summary(invoice):
         rows.append({
             'label': f'Additional discount ({extra_percent:g}%)',
             'amount': -extra_discount,
+            'role': 'discount',
         })
-    if not service:
-        igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
-        rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
-    for charge in (invoice or {}).get('extra_charges') or []:
-        if not isinstance(charge, dict):
-            continue
-        rows.append({'label': charge.get('label') or 'Extra', 'amount': amount(charge.get('amount'))})
+    if service_lines and abs(services_amount) >= 0.005:
+        rows.append({'label': 'Services subtotal', 'amount': services_amount, 'role': 'services'})
+    pretax = round(igu_amount - discount_amount - extra_discount + services_amount, 2)
+    rows.append({'label': 'Subtotal', 'amount': pretax, 'role': 'subtotal'})
     for line in (invoice or {}).get('tax_lines') or []:
         if not isinstance(line, dict):
             continue
         rows.append({
-            'label': line.get('label') or tax_line_label(line, invoice),
+            'label': tax_line_label(line, invoice),
             'amount': amount(line.get('amount')),
+            'role': 'tax',
         })
-    rows.append({'label': 'Grand total', 'amount': amount((invoice or {}).get('total'))})
+    rows.append({'label': 'Grand total', 'amount': amount((invoice or {}).get('total')), 'role': 'grand'})
     if (invoice or {}).get('doc_type') == 'credit_note':
-        rows.append({'label': 'Applied to invoices', 'amount': amount((invoice or {}).get('applied'))})
-        rows.append({'label': 'Unapplied credit', 'amount': amount((invoice or {}).get('balance'))})
+        rows.append({'label': 'Applied to invoices', 'amount': amount((invoice or {}).get('applied')), 'role': 'payments'})
+        rows.append({'label': 'Unapplied credit', 'amount': amount((invoice or {}).get('balance')), 'role': 'due'})
     else:
-        rows.append({'label': 'Payments applied', 'amount': amount((invoice or {}).get('applied'))})
-        rows.append({'label': 'Balance due', 'amount': amount((invoice or {}).get('balance'))})
+        rows.append({'label': 'Payments applied', 'amount': amount((invoice or {}).get('applied')), 'role': 'payments'})
+        rows.append({'label': 'Balance due', 'amount': amount((invoice or {}).get('balance')), 'role': 'due'})
     return rows
 
 

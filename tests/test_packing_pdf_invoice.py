@@ -180,6 +180,95 @@ def test_adrian_packing_list_layout_stores_the_printed_weight():
         assert row['weight_unit'] == unit, line
 
 
+def test_overprinted_and_deduped_total_lines():
+    """Bold labels are each glyph four times. dedupe_chars removes the copies."""
+    from pathlib import Path
+    import packing
+    over = Path('tests/fixtures/xf261123002_overprinted.txt').read_text(encoding='utf-8').splitlines()
+    deduped = Path('tests/fixtures/xf261123002_deduped.txt').read_text(encoding='utf-8').splitlines()
+    assert over[:2] == [
+        'RackDetail Total TTTToooottttaaaallll PPPPccccssss :::: 3333',
+        'TTTToooottttaaaallll SSSSQQQQ////FFFFTTTT :::: 77775555....22229999',
+    ]
+    assert deduped == [
+        'RackDetail Total Total Pcs : 3',
+        'RackCode RackName 1 Total SQ/FT : 75.29',
+        'Total Weight : Approx. 463 LBS',
+    ]
+    parsed = packing.parse_packing_lines(over)
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    clean = packing.parse_packing_lines(deduped)
+    assert clean['total_pcs'] == 3
+    assert clean['total_sqft'] == 75.29
+    assert clean['weight'] == 463
+    assert clean['weight_unit'] == 'LBS'
+    doubled = packing.parse_packing_lines(['TToottaall PPccss :: 33', 'TToottaall SSQQ//FFTT :: 7755..2299'])
+    assert doubled['total_pcs'] == 3
+    assert doubled['total_sqft'] == 75.29
+    assert packing.parse_packing_lines(['Total Pcs : 11', 'Total Weight : Appx. 1200 lb'])['total_pcs'] == 11
+    assert packing.parse_packing_lines(['Total Pcs : 11', 'Total Weight : Appx. 1200 lb'])['weight'] == 1200
+
+
+def test_pdfplumber_text_of_xf261123002_collapses_repeated_glyphs():
+    """pdfplumber reads each totals glyph four times on Adrian's packing list."""
+    from pathlib import Path
+    import packing
+    text = Path('tests/fixtures/xf261123002_pdfplumber.txt').read_text(encoding='utf-8')
+    assert 'TTTToooottttaaaallll WWWWeeeeiiiigggghhhhtttt' in text
+    assert 'PPPPccccssss' in text
+    assert '77775555....22229999' in text
+    parsed = packing.parse_packing_lines(text.splitlines())
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['date'] == '2026-11-23'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+    tight = packing.parse_packing_lines([
+        'Sales Delivery: XF261123002 Date: 11/23/2026',
+        'TotalPcs: 3',
+        'TotalSQ/FT:75.29',
+        'TotalWeight：Approx. 463 LBS',
+        '5016 L3000*920*2200(THK:550)',
+    ])
+    assert tight['total_pcs'] == 3
+    assert tight['total_sqft'] == 75.29
+    assert tight['weight'] == 463
+
+
+def test_real_xf261123002_pdf_reads_without_pdftotext(monkeypatch):
+    import subprocess
+    from pathlib import Path
+    import packing
+    real_run = subprocess.run
+
+    def refuse_pdftotext(*args, **kwargs):
+        blob = ' '.join(str(part) for part in args)
+        if 'pdftotext' in blob:
+            raise AssertionError('pdftotext was called')
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', refuse_pdftotext)
+    payload = Path('tests/fixtures/XF261123002.pdf').read_bytes()
+    assert packing.pdf_has_text(payload) is True
+    lines = '\n'.join(packing.pdf_lines(payload))
+    assert 'RackDetail Total Total Pcs : 3' in lines
+    assert 'RackCode RackName 1 Total SQ/FT : 75.29' in lines
+    assert 'Total Weight : Approx. 463 LBS' in lines
+    assert 'TTTToooottttaaaallll' not in lines
+    parsed = packing.parse_packing_pdf(payload)
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+
+
 def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description():
     import packing
     parsed = packing.parse_packing_lines(HIGHQ_LIST.splitlines())
@@ -282,6 +371,9 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     invoices = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
     assert len(invoices) == 1
     assert invoices[0]['kind'] == 'intercompany'
+    assert invoices[0].get('shipment_notes') == ''
+    assert invoices[0].get('shipment_source') == 'packed'
+    assert b'Packed pieces' not in pdf_text(client.get(f"/api/invoices/{invoices[0]['id']}/pdf").data)
     assert invoices[0]['issuer'] == 'us'
     assert invoices[0]['currency'] == 'usd'
     assert invoices[0]['company'] == 'Ora Glass (Canada) Inc'
@@ -311,6 +403,8 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     bills = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
     customer_bill = next(row for row in bills if row['kind'] == 'customer')
     assert customer_bill['issuer'] == 'ca'
+    assert customer_bill.get('shipment_notes') == ''
+    assert customer_bill.get('shipment_source') == 'packed'
     assert customer_bill['currency'] == 'cad'
     assert any(charge.get('label') == 'Delivery' for charge in customer_bill.get('extra_charges') or [])
     assert sum(line.get('pcs') or 0 for line in customer_bill['items'] if isinstance(line.get('pcs'), int)) == 13

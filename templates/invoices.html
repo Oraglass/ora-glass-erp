@@ -19,6 +19,16 @@ td{padding:10px;border-bottom:1px solid #eee}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:6px}
 .weight-missing{color:#9f1239;font-weight:600}
+#invoice-shipment{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}
+#invoice-shipment th,#invoice-shipment td{border:1px solid #ddd;padding:6px 8px}
+#invoice-shipment th{background:#f5f5f5;font-weight:600}
+#invoice-shipment td.num,#invoice-shipment th.num{text-align:right}
+#invoice-shipment tr.total td{font-weight:700}
+#invoice-shipment caption{caption-side:top;text-align:left;font-weight:700;padding:0 0 6px}
+#invoice-services{margin-top:14px}
+#invoice-services caption{caption-side:top;text-align:left;font-weight:700;padding:0 0 6px}
+#invoice-totals tr.grand td{border-top:1px solid #333;font-weight:700}
+#invoice-totals tr.due td{font-weight:700}
 .error,a.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.unpaid{background:#fff3cd;color:#856404}
@@ -47,6 +57,11 @@ h2,h3{color:#333}
 <h2>Invoices</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <div class="filters">
+<select id="filter-issuer" aria-label="Issued by">
+<option value="">All issuers</option>
+<option value="us">Ora Glass Inc · USD</option>
+<option value="ca">Ora Glass (Canada) Inc · CAD</option>
+</select>
 {% if staff_view %}<select id="filter-invoice-customer"><option value="">All customers</option></select>{% endif %}
 <input type="date" id="filter-invoice-from" aria-label="From date">
 <input type="date" id="filter-invoice-to" aria-label="To date">
@@ -72,8 +87,9 @@ h2,h3{color:#333}
 </div>
 <table>
 <thead><tr><th>Number</th><th>Type</th><th>Issued by</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
-<tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
+<tbody id="invoice-list"><tr><td colspan="10" style="color:#666">Loading...</td></tr></tbody>
 </table>
+<p class="note" id="invoice-summary"></p>
 </div>
 {% if can_issue %}
 <div class="card" id="create-invoice" hidden>
@@ -119,6 +135,11 @@ h2,h3{color:#333}
 {% if can_record %}
 <form id="payment-form">
 <div class="row">
+<select id="pay-issuer" aria-label="Issued by">
+<option value="">All issuers</option>
+<option value="us">Ora Glass Inc · USD</option>
+<option value="ca">Ora Glass (Canada) Inc · CAD</option>
+</select>
 <select id="pay-customer" required aria-label="Customer"></select>
 <input type="date" id="pay-date" required aria-label="Payment date">
 <input type="number" id="pay-amount" min="0.01" step="0.01" placeholder="Amount" required aria-label="Amount">
@@ -178,54 +199,157 @@ const FOCUS = {{ focus_id|tojson if focus_id is defined else 'null' }};
 function esc(value) {
   return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function confirmAction(message) {
+  return confirm(message);
+}
 function qboErrorHtml(message, href) {
   if (!message) return '';
   return '<a class="error" href="' + esc(href || '/settings/quickbooks') + '">' + esc(message) + '</a>';
 }
+function formatDollars(amount) {
+  const value = Number(amount) || 0;
+  const sign = value < 0 ? '-' : '';
+  const body = Math.abs(value).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return sign + '$' + body;
+}
 function summaryMoney(currency, amount) {
-  const negative = Number(amount) < 0;
-  return esc(String(currency || '').toUpperCase()) + ' ' + (negative ? '-' : '') + '$' + Math.abs(Number(amount) || 0).toFixed(2);
+  return formatDollars(amount);
 }
 function invoiceSummary(invoice) {
-  const rows = invoice.summary || [];
+  const source = invoice.summary || [];
+  const applied = source.some(row => {
+    const label = String(row.label || '');
+    const isDiscount = label.indexOf('Discount') === 0 || label.indexOf('Additional discount') === 0;
+    return isDiscount && Math.abs(Number(row.amount) || 0) >= 0.005;
+  });
+  const rows = source.filter(row => {
+    const label = String(row.label || '');
+    const value = Math.abs(Number(row.amount) || 0);
+    if ((label.indexOf('Discount') === 0 || label.indexOf('Additional discount') === 0) && value < 0.005) return false;
+    if (!applied && (label === 'IGU total' || label === 'Total before extras')) return false;
+    return true;
+  });
   if (!rows.length) return '';
-  return '<table class="totals" id="invoice-totals">' + rows.map(row => '<tr><td>' + esc(row.label) + '</td><td class="num">' + summaryMoney(invoice.currency, row.amount) + '</td></tr>').join('') + '</table>';
+  return '<table class="totals" id="invoice-totals">' + rows.map(row => {
+    const role = row.role === 'grand' ? ' class="grand"' : (row.role === 'due' ? ' class="due"' : '');
+    return '<tr' + role + '><td>' + esc(row.label) + '</td><td class="num">' + summaryMoney(invoice.currency, row.amount) + '</td></tr>';
+  }).join('') + '</table>';
 }
 function money(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
 }
+let customerRows = [];
+function selectedIssuer() {
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  const payIssuer = document.getElementById('pay-issuer');
+  const panel = document.getElementById('invoice-panel');
+  if (panel && !panel.hidden && invoiceIssuer) return invoiceIssuer.value;
+  if (payIssuer && payIssuer.value) return payIssuer.value;
+  return (invoiceIssuer && invoiceIssuer.value) || '';
+}
 function query() {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams(location.search);
+  ['customer_id', 'issuer', 'from', 'to', 'status', 'type'].forEach(key => params.delete(key));
   if (STAFF) {
-    const customer = document.getElementById('filter-invoice-customer').value;
-    if (customer) params.set('customer_id', customer);
+    const customer = document.getElementById('filter-invoice-customer');
+    if (customer && customer.value) params.set('customer_id', customer.value);
   }
+  const issuer = selectedIssuer();
   const from = document.getElementById('filter-invoice-from').value;
   const to = document.getElementById('filter-invoice-to').value;
   const status = document.getElementById('filter-invoice-status').value;
   const type = document.getElementById('filter-invoice-type').value;
+  if (issuer) params.set('issuer', issuer);
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (status) params.set('status', status);
   if (type) params.set('type', type);
   return params;
 }
+function rememberFilters() {
+  const params = query();
+  const next = params.toString();
+  history.replaceState({}, '', location.pathname + (next ? '?' + next : ''));
+  document.querySelectorAll('.fin-tabs a').forEach(link => { link.search = next ? '?' + next : ''; });
+}
+function customersForIssuer(issuer) {
+  if (!issuer) return customerRows;
+  return customerRows.filter(row => (row.accounts || []).indexOf(issuer) >= 0);
+}
+function fillCustomerSelects() {
+  const issuer = selectedIssuer();
+  const rows = customersForIssuer(issuer);
+  const filter = document.getElementById('filter-invoice-customer');
+  const pay = document.getElementById('pay-customer');
+  const previousFilter = filter ? filter.value : '';
+  const previousPay = pay ? pay.value : '';
+  if (filter) {
+    filter.innerHTML = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    if (rows.some(row => row.id === previousFilter)) filter.value = previousFilter;
+  }
+  if (pay) {
+    pay.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    if (rows.some(row => row.id === previousPay)) pay.value = previousPay;
+  }
+  const currency = document.getElementById('pay-currency');
+  if (currency) {
+    if (issuer === 'us' || issuer === 'ca') {
+      currency.value = issuer === 'ca' ? 'cad' : 'usd';
+      currency.disabled = true;
+    } else {
+      currency.disabled = false;
+    }
+  }
+}
+function applyQuery() {
+  const params = new URLSearchParams(location.search);
+  const issuer = params.get('issuer') || '';
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  const payIssuer = document.getElementById('pay-issuer');
+  if (invoiceIssuer && (issuer === '' || issuer === 'us' || issuer === 'ca')) invoiceIssuer.value = issuer;
+  if (payIssuer && (issuer === '' || issuer === 'us' || issuer === 'ca')) payIssuer.value = issuer;
+  const from = document.getElementById('filter-invoice-from');
+  const to = document.getElementById('filter-invoice-to');
+  const status = document.getElementById('filter-invoice-status');
+  const type = document.getElementById('filter-invoice-type');
+  if (from && params.get('from')) from.value = params.get('from');
+  if (to && params.get('to')) to.value = params.get('to');
+  if (status && params.get('status')) status.value = params.get('status');
+  if (type && params.get('type')) type.value = params.get('type');
+  fillCustomerSelects();
+  const customer = params.get('customer_id') || '';
+  const filter = document.getElementById('filter-invoice-customer');
+  const pay = document.getElementById('pay-customer');
+  if (filter && [...filter.options].some(option => option.value === customer)) filter.value = customer;
+  if (pay && customer && [...pay.options].some(option => option.value === customer)) pay.value = customer;
+}
 async function loadCustomers() {
-  if (!STAFF) return [];
+  if (!STAFF) { applyQuery(); return []; }
   const res = await fetch('/api/order-customers');
   if (!res.ok) return [];
-  const rows = await res.json();
-  const options = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
-  const filter = document.getElementById('filter-invoice-customer');
-  if (filter) filter.innerHTML = options;
-  const pay = document.getElementById('pay-customer');
-  if (pay) pay.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
-  return rows;
+  customerRows = await res.json();
+  applyQuery();
+  return customerRows;
+}
+function renderInvoiceSummary(rows) {
+  const box = document.getElementById('invoice-summary');
+  if (!box) return;
+  const totals = {};
+  rows.forEach(row => {
+    if (row.voided || row.doc_type === 'credit_note') return;
+    const code = String(row.currency || 'usd').toLowerCase();
+    if (!totals[code]) totals[code] = {total: 0, balance: 0};
+    totals[code].total += Number(row.total) || 0;
+    totals[code].balance += Number(row.balance) || 0;
+  });
+  const codes = Object.keys(totals).sort();
+  box.textContent = codes.length ? 'Totals by currency: ' + codes.map(code => code.toUpperCase() + ' $' + totals[code].total.toFixed(2) + ' · balance $' + totals[code].balance.toFixed(2)).join('    ') : '';
 }
 function renderInvoices(rows) {
   const body = document.getElementById('invoice-list');
+  renderInvoiceSummary(rows);
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="9" style="color:#666">No invoices found</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" style="color:#666">No invoices found</td></tr>';
     return;
   }
   body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '" data-invoice="' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.issuer_label || '') + ' · ' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
@@ -241,20 +365,23 @@ function renderDetail(invoice) {
   const box = document.getElementById('invoice-detail');
   const modal = document.getElementById('invoice-modal');
   if (!invoice) { closeInvoiceModal(false); return; }
-  const lines = (invoice.items || []).map(item => '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.pcs) + '</td><td class="num">' + money(invoice.currency, item.total) + '</td></tr>').join('');
-  const charges = (invoice.extra_charges || []).map(charge => '<tr><td>' + esc(charge.label) + '</td><td></td><td class="num">' + money(invoice.currency, charge.amount) + '</td></tr>').join('');
+  const iguLines = invoice.igu_lines || (invoice.items || []).filter(item => item.item_type !== 'service');
+  const serviceLines = invoice.service_lines || [];
+  const lineRow = item => '<tr><td>' + esc(item.name) + '</td><td class="num">' + esc(item.display_qty != null && item.display_qty !== '' ? item.display_qty : (item.pcs || '')) + '</td><td class="num">' + formatDollars(item.total) + '</td></tr>';
+  const lines = iguLines.map(lineRow).join('');
+  const serviceBlock = serviceLines.length ? '<table id="invoice-services"><caption>Services</caption><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">' + esc(String(invoice.currency || '').toUpperCase()) + '</th></tr></thead><tbody>' + serviceLines.map(lineRow).join('') + '</tbody></table>' : '';
   const fxLine = invoice.fx_rate ? '<p class="note">FXUSDCAD ' + esc(invoice.fx_rate) + ' on ' + esc(invoice.fx_date || '') + (invoice.cad_total != null ? ' · CAD $' + Number(invoice.cad_total).toFixed(2) : '') + '</p>' : '';
   const shipment = (invoice.packing && invoice.packing.shipment) || null;
-  const packingLines = shipment ? (shipment.list_lines || []).map(line => {
-    const missing = String(line).indexOf('not found') >= 0;
-    return '<li' + (missing ? ' class="weight-missing"' : '') + '>' + esc(line) + '</li>';
-  }).join('') : '';
-  const totalLine = (id, text) => {
-    if (!text) return '';
-    const missing = String(text).indexOf('not found') >= 0;
-    return '<p class="note' + (missing ? ' weight-missing' : '') + '" id="' + id + '">' + esc(text) + '</p>';
+  const shipmentRows = shipment ? (shipment.rows || []) : [];
+  const shipmentTotal = shipment ? (shipment.total || {}) : {};
+  const weightCell = (text, missing, id) => {
+    const flag = missing || String(text || '') === 'weight not found';
+    return '<td class="num' + (flag ? ' weight-missing' : '') + '"' + (id ? ' id="' + id + '"' : '') + '>' + esc(text || '') + '</td>';
   };
-  const packingNote = shipment && ((shipment.list_lines || []).length || shipment.rack_line) ? (packingLines ? '<ul id="invoice-rack-lists">' + packingLines + '</ul>' : '') + totalLine('invoice-racks', shipment.rack_line) + totalLine('invoice-pcs', shipment.pcs_line) + totalLine('invoice-sqft', shipment.sqft_line) + totalLine('invoice-weight', shipment.weight_line) : '';
+  const shipmentBody = shipmentRows.map(row => '<tr><td>' + esc(row.number) + '</td><td class="num">' + esc(row.racks) + '</td><td class="num">' + esc(row.pcs) + '</td><td class="num">' + esc(row.sqft) + '</td>' + weightCell(row.weight, row.weight_missing) + '</tr>').join('');
+  const packingNote = shipmentRows.length ? '<table id="invoice-shipment"><caption>Shipment</caption><thead><tr><th>Packing list</th><th class="num">Racks</th><th class="num">Pcs</th><th class="num">Sq ft</th><th class="num">Weight (lb)</th></tr></thead><tbody>' + shipmentBody + '<tr class="total" id="invoice-shipment-total"><td>Total</td><td class="num" id="invoice-racks">' + esc(shipmentTotal.racks || '') + '</td><td class="num" id="invoice-pcs">' + esc(shipmentTotal.pcs || '') + '</td><td class="num" id="invoice-sqft">' + esc(shipmentTotal.sqft || '') + '</td>' + weightCell(shipmentTotal.weight, shipmentTotal.weight_missing, 'invoice-weight') + '</tr></tbody></table>' : '';
+  const shipmentNote = String(invoice.shipment_notes || '').trim();
+  const noteLine = shipmentNote && shipmentNote !== 'Packed pieces' ? '<p class="note" id="invoice-notes"><b>Notes:</b> ' + esc(shipmentNote) + '</p>' : '';
   const customs = invoice.kind === 'intercompany' && invoice.customs ? '<p class="note" id="invoice-customs">HTS ' + esc(invoice.customs.hts) + '<br>Origin: ' + esc(invoice.customs.origin) + '</p>' : '';
   const fxForm = CAN_ISSUE && invoice.kind === 'intercompany' && !invoice.voided ? '<div class="row"><input id="fx-rate" type="number" min="0.0001" step="0.0001" value="' + esc(invoice.fx_rate || '') + '" aria-label="Exchange rate"><button type="button" class="btn" id="save-fx">Save exchange rate</button></div>' : '';
   const gst = invoice.seller_gst_number ? 'GST# ' + invoice.seller_gst_number : '';
@@ -269,14 +396,15 @@ function renderDetail(invoice) {
   box.innerHTML = '<h3 id="invoice-modal-title" style="margin-top:0">' + esc(invoice.number) + ' <span class="badge ' + esc(invoice.status) + '">' + esc(invoice.status_label) + '</span></h3>'
     + '<p class="note">' + esc(invoice.issuer_label || '') + headerGst + ' · ' + esc(String(invoice.currency || '').toUpperCase()) + ((invoice.tax_lines || []).length ? '' : (invoice.tax_label ? ' · ' + esc(invoice.tax_label) : '')) + '</p>'
     + partyNote
-    + fxLine + fxForm + packingNote + customs
+    + fxLine + fxForm + noteLine + packingNote + customs
     + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
     + (invoice.regenerate_warning ? '<p class="error" id="regenerate-warning">' + esc(invoice.regenerate_warning) + '</p>' : '')
     + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + qboErrorHtml(invoice.qbo_error, invoice.qbo_settings_url) + '</p>' : '')
     + (IS_ADMIN && !invoice.voided && invoice.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" id="send-qbo">Send to QuickBooks</button>' : '')
     + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + qboErrorHtml(invoice.qbo_warning, invoice.qbo_warning_url || invoice.qbo_settings_url) + '</p>' : '')
     + '<p class="note"><a href="/api/invoices/' + esc(invoice.id) + '/pdf">Download PDF</a></p>'
-    + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
+    + '<table id="invoice-items"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">' + esc(String(invoice.currency || '').toUpperCase()) + '</th></tr></thead><tbody>' + lines + '</tbody></table>'
+    + serviceBlock
     + invoiceSummary(invoice)
     + (invoice.reason ? '<p class="note">Reason: ' + esc(invoice.reason) + '</p>' : '')
     + (IS_ADMIN && invoice.order_id ? '<button type="button" class="btn secondary" id="reread-packing">Re-read packing lists</button>' : '')
@@ -286,6 +414,7 @@ function renderDetail(invoice) {
   if (modal) modal.hidden = false;
   const sendQbo = document.getElementById('send-qbo');
   if (sendQbo) sendQbo.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to send invoice ' + invoice.number + ' to QuickBooks?')) return;
     sendQbo.disabled = true;
     const res = await fetch('/api/invoices/' + invoice.id + '/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
@@ -295,6 +424,7 @@ function renderDetail(invoice) {
   });
   const rereadPacking = document.getElementById('reread-packing');
   if (rereadPacking) rereadPacking.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to re-read packing lists on invoice ' + invoice.number + '?')) return;
     rereadPacking.disabled = true;
     const res = await fetch('/api/invoices/' + invoice.id + '/packing-lists/reread', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
@@ -306,7 +436,7 @@ function renderDetail(invoice) {
   });
   const regenerateButton = document.getElementById('regenerate-doc');
   if (regenerateButton) regenerateButton.addEventListener('click', async () => {
-    if (!confirm('Regenerate this unpaid invoice? The current invoice is voided and replaced, including line add-ons. Pieces are not billed twice.')) return;
+    if (!confirmAction('Are you sure you want to regenerate invoice ' + invoice.number + '? The current invoice is voided and a new invoice number is created. Payments allocated to it are moved to the new invoice, and QuickBooks is updated to match. If QuickBooks rejects a step, the original invoice and its payments stay unchanged.')) return;
     const res = await fetch('/api/invoices/' + invoice.id + '/regenerate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not regenerate the invoice'); return; }
@@ -315,6 +445,7 @@ function renderDetail(invoice) {
   });
   const voidButton = document.getElementById('void-doc');
   if (voidButton) voidButton.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to void invoice ' + invoice.number + '? This voids the invoice in the ERP and in QuickBooks. Payments allocated to it must be moved to another open invoice or left as unapplied credit before QuickBooks is changed.')) return;
     const reason = prompt('Why void this document?');
     if (!reason) return;
     const send = (extra) => fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({reason}, extra || {}))});
@@ -336,6 +467,7 @@ function renderDetail(invoice) {
   });
   const apply = document.getElementById('apply-credit');
   if (apply) apply.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to apply this credit note to invoice ' + invoice.number + '?')) return;
     const res = await fetch('/api/invoices/' + invoice.id + '/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invoice_id: document.getElementById('apply-invoice').value, amount: document.getElementById('apply-amount').value})});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Not applied'); return; }
@@ -352,6 +484,7 @@ function renderDetail(invoice) {
   });
 }
 async function loadInvoices() {
+  rememberFilters();
   const res = await fetch('/api/invoices?' + query().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   if (!res.ok) return;
@@ -475,7 +608,8 @@ async function loadOpenInvoices() {
     renderPickers();
     return;
   }
-  const params = new URLSearchParams({customer_id: customer.value, currency: currency.value, issuer: currency.value === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'});
+  const issuer = selectedIssuer() || (currency.value === 'cad' ? 'ca' : 'us');
+  const params = new URLSearchParams({customer_id: customer.value, currency: issuer === 'ca' ? 'cad' : 'usd', issuer: issuer, balance: 'open', type: 'invoice'});
   const res = await fetch('/api/invoices?' + params.toString());
   openInvoices = res.ok ? await res.json() : [];
   const visible = new Set(openInvoices.map(row => String(row.id)));
@@ -492,7 +626,7 @@ async function loadAllocInvoices() {
   }
   const params = new URLSearchParams({
     customer_id: payment.customer_id, currency: payment.currency,
-    issuer: payment.currency === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'
+    issuer: payment.issuer || (payment.currency === 'cad' ? 'ca' : 'us'), balance: 'open', type: 'invoice'
   });
   const res = await fetch('/api/invoices?' + params.toString());
   allocInvoices = res.ok ? await res.json() : [];
@@ -504,8 +638,12 @@ async function loadPayments() {
   const params = new URLSearchParams();
   if (STAFF) {
     const customer = document.getElementById('filter-invoice-customer');
-    if (customer && customer.value) params.set('customer_id', customer.value);
+    const pay = document.getElementById('pay-customer');
+    const chosen = (customer && customer.value) || (pay && pay.value) || '';
+    if (chosen) params.set('customer_id', chosen);
   }
+  const issuer = selectedIssuer();
+  if (issuer) params.set('issuer', issuer);
   const res = await fetch('/api/payments?' + params.toString());
   if (!res.ok) return;
   renderPayments(await res.json());
@@ -536,9 +674,14 @@ async function loadCredit() {
   if (!res.ok) return;
   const credit = await res.json();
   if (payCurrency && payCurrency.dataset.locked !== '1' && credit.currency) payCurrency.value = credit.currency;
-  let summary = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit);
-  if (credit.credit_currency === credit.currency) summary += '. Available ' + money(credit.currency, credit.available_credit);
-  summary += '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '. Unapplied credits ' + money(credit.currency, credit.unapplied_credits) + '. Balance ' + money(credit.currency, credit.balance) + '.';
+  const issuer = selectedIssuer();
+  const books = (credit.by_account || []).filter(row => !issuer || row.entity === issuer);
+  let summary = credit.company || '';
+  if (books.length) {
+    summary += (summary ? ' ' : '') + books.map(row => row.label + ' ' + String(row.currency || '').toUpperCase() + ': open ' + money(row.currency, row.open_receivables) + ', balance ' + money(row.currency, row.balance)).join(' · ');
+  } else {
+    summary += ' open receivables ' + money(credit.currency, credit.open_receivables) + ', balance ' + money(credit.currency, credit.balance);
+  }
   document.getElementById('credit-summary').textContent = summary;
   loadOpenInvoices();
 }
@@ -577,6 +720,7 @@ if (CAN_ISSUE) {
     form.scrollIntoView({block: 'start'});
   });
   document.getElementById('show-credit-form').addEventListener('click', () => {
+    if (!confirmAction('Are you sure you want to create a credit note?')) return;
     const form = document.getElementById('create-credit');
     form.hidden = false;
     form.scrollIntoView({block: 'start'});
@@ -613,6 +757,12 @@ if (CAN_ISSUE) {
   });
   document.getElementById('credit-form').addEventListener('submit', async (event) => {
     event.preventDefault();
+    const chosen = document.getElementById('cn-invoice').selectedOptions[0];
+    const invoiceNumber = chosen && chosen.value ? chosen.textContent.trim().split(/\s+/)[0] : '';
+    const creditQuestion = invoiceNumber
+      ? 'Are you sure you want to create a credit note for invoice ' + invoiceNumber + '?'
+      : 'Are you sure you want to create a credit note?';
+    if (!confirmAction(creditQuestion)) return;
     const orderId = document.getElementById('cn-order').value;
     const invoiceId = document.getElementById('cn-invoice').value;
     const res = await fetch('/api/invoices', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
@@ -632,10 +782,29 @@ if (CAN_ISSUE) {
   loadOrders();
 }
 document.getElementById('invoice-filter').addEventListener('click', () => { loadInvoices(); loadPayments(); loadCredit(); });
+const filterIssuer = document.getElementById('filter-issuer');
+if (filterIssuer) filterIssuer.addEventListener('change', () => {
+  const payIssuer = document.getElementById('pay-issuer');
+  if (payIssuer) payIssuer.value = filterIssuer.value;
+  fillCustomerSelects();
+  loadInvoices();
+  loadPayments();
+  loadCredit();
+});
+const payIssuer = document.getElementById('pay-issuer');
+if (payIssuer) payIssuer.addEventListener('change', () => {
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  if (invoiceIssuer) invoiceIssuer.value = payIssuer.value;
+  fillCustomerSelects();
+  loadInvoices();
+  loadPayments();
+  loadCredit();
+});
 const filterCustomer = document.getElementById('filter-invoice-customer');
 if (filterCustomer) filterCustomer.addEventListener('change', () => {
   const pay = document.getElementById('pay-customer');
-  if (pay) pay.value = filterCustomer.value;
+  if (pay && [...pay.options].some(option => option.value === filterCustomer.value)) pay.value = filterCustomer.value;
+  rememberFilters();
   const currency = document.getElementById('pay-currency');
   if (currency) delete currency.dataset.locked;
   pickedIds = [];
@@ -666,6 +835,7 @@ document.getElementById('payment-screen').addEventListener('change', event => {
 document.getElementById('payment-list').addEventListener('click', async (event) => {
   const send = event.target.closest('[data-send-qbo]');
   if (send) {
+    if (!confirmAction('Are you sure you want to send this payment to QuickBooks?')) return;
     const res = await fetch('/api/payments/' + send.getAttribute('data-send-qbo') + '/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not send the payment'); return; }
@@ -688,6 +858,7 @@ document.getElementById('payment-list').addEventListener('click', async (event) 
 const sendUnsynced = document.getElementById('send-unsynced-qbo');
 if (sendUnsynced) {
   sendUnsynced.addEventListener('click', async () => {
+    if (!confirmAction('Are you sure you want to send unsynced payments to QuickBooks?')) return;
     const res = await fetch('/api/payments/quickbooks', {method: 'POST'});
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { alert(body.error || 'Could not send the payments'); return; }
@@ -736,6 +907,7 @@ if (alloc) {
   alloc.addEventListener('click', async () => {
     const paymentId = document.getElementById('alloc-payment').value;
     if (!paymentId || !allocIds.length) { alert('Tick the invoices this payment covers.'); return; }
+    if (!confirmAction('Are you sure you want to allocate this payment to the selected invoices?')) return;
     const res = await fetch('/api/payments/' + paymentId + '/allocations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({invoice_ids: allocIds.map(id => Number(id))})
@@ -754,6 +926,7 @@ if (allocOrder) {
   allocOrder.addEventListener('click', async () => {
     const paymentId = document.getElementById('alloc-payment').value;
     if (!paymentId) return;
+    if (!confirmAction('Are you sure you want to allocate this payment to the order?')) return;
     const res = await fetch('/api/payments/' + paymentId + '/allocations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({allocations: [{

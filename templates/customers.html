@@ -194,6 +194,11 @@ td.actions{width:11rem}
 </div>
 </div>
 {% endif %}
+<div id="account-panel" hidden>
+<p class="help" style="margin-bottom:8px">Each Ora Glass company has its own currency, tax, balance, and QuickBooks customer. A Canada invoice cannot use the US account.</p>
+<table id="account-table"><thead><tr><th>Company</th><th>Currency</th><th>Tax</th><th>Balance</th><th>QuickBooks customer</th></tr></thead><tbody></tbody></table>
+<button class="btn btn-secondary" type="button" id="add-canada-account">Add Ora Glass (Canada) Inc account</button>
+</div>
 <div class="form-row">
 <div class="form-group"><label for="c-credit-limit">Credit limit</label><input type="number" id="c-credit-limit" min="0" step="0.01" value="0"></div>
 <div class="form-group"><label for="c-credit-currency">Credit currency</label>
@@ -312,7 +317,23 @@ function openModal(customer) {
   if (rackShow) rackShow.checked = customer ? !!customer.show_overdue_racks : false;
   document.getElementById('c-status').value = customer ? (customer.status || 'active') : 'active';
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
+  renderAccounts(customer);
   document.getElementById('customer-modal').classList.add('active');
+}
+function renderAccounts(customer) {
+  const panel = document.getElementById('account-panel');
+  const body = document.querySelector('#account-table tbody');
+  const add = document.getElementById('add-canada-account');
+  if (!panel) return;
+  if (!customer) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  const rows = customer.accounts || [];
+  body.innerHTML = rows.map(row => '<tr><td>' + esc(row.label) + '</td><td>' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + (row.gst ? 'GST' : 'No GST') + '</td><td>' + esc(String(row.currency || '').toUpperCase()) + ' $' + Number(row.balance || 0).toFixed(2) + '</td><td>' + esc(row.qbo_id || 'Not linked') + '</td></tr>').join('');
+  add.hidden = rows.some(row => row.entity === 'ca');
+  add.dataset.id = customer.id;
 }
 function payload() {
   const body = {
@@ -480,6 +501,18 @@ document.getElementById('c-terms').addEventListener('change', () => {
 });
 document.getElementById('close-customer').addEventListener('click', () => {
   document.getElementById('customer-modal').classList.remove('active');
+});
+document.getElementById('add-canada-account').addEventListener('click', async () => {
+  const id = document.getElementById('add-canada-account').dataset.id;
+  if (!id) return;
+  if (!confirm('Add an Ora Glass (Canada) Inc account in CAD? This does not create a QuickBooks customer.')) return;
+  const saved = await api('/api/customers/' + encodeURIComponent(id) + '/accounts', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({entity: 'ca'})
+  });
+  if (!saved) return;
+  const index = customers.findIndex(row => row.id === id);
+  if (index >= 0) customers[index] = saved;
+  renderAccounts(saved);
 });
 document.getElementById('save-customer').addEventListener('click', async () => {
   const id = document.getElementById('c-id').value;

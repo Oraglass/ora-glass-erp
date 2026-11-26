@@ -733,6 +733,14 @@ def load_customers():
     except Exception:
         import logging
         logging.getLogger('ora_glass.currency').exception('Could not align Canadian credit currencies')
+    try:
+        import customer_accounts
+        for customer in data.values():
+            if isinstance(customer, dict) and customer_accounts.ensure_accounts(customer):
+                changed = True
+    except Exception:
+        import logging
+        logging.getLogger('ora_glass.currency').exception('Could not attach customer accounts')
     if changed:
         save_customers(data)
     try:

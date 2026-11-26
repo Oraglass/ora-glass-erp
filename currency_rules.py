@@ -155,6 +155,8 @@ def migrate_customer_currencies(customers):
             if customer.get('country') != 'Canada':
                 customer['country'] = 'Canada'
                 changed.append((customer_id, customer.get('name') or customer_id, 'country'))
+            # The existing Ora Glass Inc account stays USD. A Canada account is added separately.
+            continue
         if not quickbooks.is_canadian(customer):
             continue
         current = str(customer.get('credit_currency') or 'usd').lower()

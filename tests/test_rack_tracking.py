@@ -1078,8 +1078,7 @@ def test_damage_reports_list_repair_and_charge(client, monkeypatch):
     assert invoice['items'][0]['description'] == 'Weld the rack base'
     assert invoice['igu_subtotal'] == 0
     labels = [row['label'] for row in documents.invoice_summary(invoice)]
-    assert 'Services' in labels
-    assert not any('IGU' in label for label in labels)
+    assert 'Services subtotal' in labels
     assert pushed and pushed[0]['id'] == invoice['id']
     closed = load_racks()['2002']
     assert closed['status'] == 'returned'
@@ -1090,13 +1089,13 @@ def test_damage_reports_list_repair_and_charge(client, monkeypatch):
     pdf = client.get(f"/api/invoices/{invoice['id']}/pdf")
     assert pdf.status_code == 200
     text = pdf_text(pdf.data)
-    assert b'Services' in text
+    assert b'Services subtotal' in text
     assert b'Weld the rack base' in text
-    assert b'IGU' not in text
     monkeypatch.setattr(quickbooks, '_item_id', lambda name: 'svc')
     lines = quickbooks._document_lines({
         'items': invoice['items'], 'total': invoice['total'],
     }, 'NON')
-    assert lines[0]['SalesItemLineDetail']['ItemRef']['name'] == 'Services'
+    assert lines[0]['SalesItemLineDetail']['ItemRef']['name'] == 'Weld the rack base'
+    assert lines[0]['SalesItemLineDetail']['ItemRef']['name'] != 'Insulated Glass Units'
     again = client.post(f"/api/racks/damage-reports/{maple['id']}/repaired")
     assert again.status_code == 400

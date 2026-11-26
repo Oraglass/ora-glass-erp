@@ -25,11 +25,15 @@ _CUSTOMER = re.compile(r'Customer\s*:\s*(.+)', re.I)
 _PROJECT = re.compile(r'Project\s*:\s*(.+)', re.I)
 _PO = re.compile(r'(?:P\.?\s*O\.?|Purchase Order)\s*#?\s*:\s*(.+)', re.I)
 _SERIAL_LINE = re.compile(r'(?:serial|s/?n|sn)\s*[:#]?\s*(\d+)\s*$', re.I)
-_PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
-_SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
+_PCS = re.compile(r'Total\s*Pcs\s*:?\s*(\d+)', re.I)
+_SQFT = re.compile(r'Total\s*SQ\s*/?\s*FT\s*:?\s*([\d.]+)', re.I)
 _WEIGHT_WORD = r'(?:Approx(?:imate)?|Appx|Appr)'
 _WEIGHT = re.compile(
     rf'(?:Total\s*)?Weight\b[^:\n]{{0,80}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    re.I,
+)
+_WEIGHT_TIGHT = re.compile(
+    rf'Total\s*Weight\s*:?\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
     re.I,
 )
 _WEIGHT_OPEN = re.compile(
@@ -136,8 +140,105 @@ def _normalize_measure_line(line):
         .replace('\u00a0', ' ')
         .replace('\u3000', ' ')
         .replace('：', ':')
+        .replace('﹕', ':')
         .replace('，', ',')
     )
+
+
+_LABEL_CORES = {
+    'total', 'pcs', 'sq', 'ft', 'sq/ft', 'sqft', 'weight',
+    'approx', 'approximate', 'appx', 'appr',
+    'lbs', 'lb', 'kg', 'kgs', 'pound', 'pounds', 'kilo', 'kilos',
+    'kilogram', 'kilograms',
+}
+
+
+def _char_runs(token):
+    runs = []
+    index = 0
+    length = len(token)
+    while index < length:
+        end = index + 1
+        while end < length and token[end] == token[index]:
+            end += 1
+        runs.append((token[index], end - index))
+        index = end
+    return runs
+
+
+def _collapse_runs(token, factor):
+    parts = []
+    for char, run in _char_runs(token):
+        if run % factor != 0:
+            return None
+        parts.append(char * (run // factor))
+    return ''.join(parts)
+
+
+def _is_label_token(token):
+    core = token.strip().strip('.:').casefold()
+    if not core:
+        return token.strip() in {':', '：'}
+    if core in _LABEL_CORES:
+        return True
+    return re.fullmatch(r'total\s*(?:pcs|weight|sq\s*/?\s*ft)', core) is not None
+
+
+def _label_stretch_factor(token):
+    """2, 3, or 4 when this token is a bold label drawn once per copy.
+
+    'TTTToooottttaaaallll' is Total printed four times. A rack size such as
+    1200 or 11 is left alone, because those tokens are not labels.
+    """
+    runs = _char_runs(token)
+    if not runs or any(run < 2 for _char, run in runs):
+        return None
+    for factor in (4, 3, 2):
+        if any(run < factor or run % factor != 0 for _char, run in runs):
+            continue
+        collapsed = _collapse_runs(token, factor)
+        if collapsed and _is_label_token(collapsed):
+            return factor
+    return None
+
+
+def _collapse_label_tokens(text):
+    """Collapse repeated letters inside Total / Pcs / Weight tokens.
+
+    The amount printed beside a repeated label is repeated the same number of
+    times, so '3333' beside 'PPPPccccssss' becomes 3. Digits on a normal line
+    are not changed.
+    """
+    pieces = re.findall(r'\s+|\S+', text)
+    factors = [
+        _label_stretch_factor(piece)
+        for piece in pieces
+        if not piece.isspace() and _label_stretch_factor(piece)
+    ]
+    if not factors:
+        return text
+    factor = max(factors)
+    collapsed = []
+    for piece in pieces:
+        if piece.isspace():
+            collapsed.append(piece)
+            continue
+        runs = _char_runs(piece)
+        if runs and all(run >= factor and run % factor == 0 for _char, run in runs):
+            flattened = _collapse_runs(piece, factor)
+            collapsed.append(flattened if flattened is not None else piece)
+        else:
+            collapsed.append(piece)
+    return ''.join(collapsed)
+
+
+def _prepare_packing_line(line):
+    """Collapse repeated label glyphs and accept 'TotalWeight' or 'Total Weight:'."""
+    text = _collapse_label_tokens(_normalize_measure_line(line))
+    text = re.sub(r'(?i)total\s*pcs\b', 'Total Pcs', text)
+    text = re.sub(r'(?i)total\s*sq\s*/?\s*ft\b', 'Total SQ/FT', text)
+    text = re.sub(r'(?i)total\s*weight\b', 'Total Weight', text)
+    return text
 
 
 def _store_weight(header, amount, unit):
@@ -172,8 +273,8 @@ def _feed_weight(line, header, pending):
     """
     if header.get('weight') is not None:
         return False, False
-    text = _normalize_measure_line(line).strip()
-    found = _WEIGHT.search(text)
+    text = _prepare_packing_line(line).strip()
+    found = _WEIGHT.search(text) or _WEIGHT_TIGHT.search(text)
     if found:
         _store_weight(header, found.group(1), found.group(2))
         return False, False
@@ -212,7 +313,7 @@ def measures_by_number(lines):
     current = ''
     pending = False
     for raw in lines or []:
-        line = str(raw or '').strip()
+        line = _prepare_packing_line(raw).strip()
         if not line:
             continue
         delivery = _DELIVERY.search(line)
@@ -247,7 +348,7 @@ def weights_by_number(lines):
     current = ''
     pending = False
     for raw in lines or []:
-        line = str(raw or '').strip()
+        line = _prepare_packing_line(raw).strip()
         if not line:
             continue
         delivery = _DELIVERY.search(line)
@@ -394,7 +495,11 @@ def _parse_id_qty_lines(cleaned):
 
 def parse_packing_lines(lines):
     """Turn packing-list text lines into a header and glass rows."""
-    cleaned = [str(line or '').strip() for line in lines if str(line or '').strip()]
+    cleaned = []
+    for line in lines or []:
+        prepared = _prepare_packing_line(line).strip()
+        if prepared:
+            cleaned.append(prepared)
     if any(_ID_QTY.match(line) for line in cleaned):
         return _parse_id_qty_lines(cleaned)
     header = {
@@ -595,8 +700,44 @@ def _lines_from_words(page):
     return lines
 
 
+def _lines_beside_labels(page):
+    """Read a total whose amount sits in another text object on the same row.
+
+    The label and the number are separate words. Their y positions can differ
+    by a few points, so a single text line misses the amount.
+    """
+    words = page.extract_words(use_text_flow=True, keep_blank_chars=False) or []
+    if not words:
+        return []
+    ordered = sorted(words, key=lambda word: (float(word.get('top') or 0), float(word.get('x0') or 0)))
+    emitted = []
+    seen = set()
+    for index, word in enumerate(ordered):
+        top = float(word.get('top') or 0)
+        x0 = float(word.get('x0') or 0)
+        chunk = [word]
+        for other in ordered[index + 1:]:
+            other_x = float(other.get('x0') or 0)
+            if other_x + 1 < x0:
+                continue
+            if abs(float(other.get('top') or 0) - top) > 6:
+                continue
+            if other_x - float(chunk[-1].get('x1') or other_x) > 180:
+                break
+            chunk.append(other)
+            if len(chunk) >= 8:
+                break
+        prepared = _prepare_packing_line(' '.join(str(item.get('text') or '') for item in chunk)).strip()
+        if not prepared or prepared in seen:
+            continue
+        if _PCS.search(prepared) or _SQFT.search(prepared) or _WEIGHT.search(prepared) or _WEIGHT_TIGHT.search(prepared):
+            seen.add(prepared)
+            emitted.append(prepared)
+    return emitted
+
+
 def _measure_score(lines):
-    text = '\n'.join(str(line or '') for line in lines or [])
+    text = '\n'.join(_prepare_packing_line(line) for line in lines or [])
     score = 0
     if _WEIGHT.search(text) or _WEIGHT_OPEN.search(text):
         score += 4
@@ -621,17 +762,31 @@ def _best_page_lines(candidates):
     return best
 
 
+def _page_text_layer(page):
+    """Drop the extra copies a bold label draws on top of itself.
+
+    The factory packing list overprints Total Pcs, Total SQ/FT, and Total
+    Weight four times. pdfplumber then reads 'TTTToooottttaaaallll'. dedupe_chars
+    keeps one copy of each glyph before extract_text or extract_words runs.
+    """
+    try:
+        return page.dedupe_chars()
+    except Exception:
+        return page
+
+
 def pdf_lines(payload):
     """Text lines from a packing-list PDF.
 
     pdfplumber reads the file itself. Render does not have the pdftotext
-    binary, so this never shells out. The word rows match pdftotext -layout
-    closely enough to keep Total Pcs, Total SQ/FT, and Total Weight together.
+    binary, so this never shells out. Bold labels are deduped first, then the
+    word rows keep Total Pcs, Total SQ/FT, and Total Weight together.
     """
     import pdfplumber
     collected = []
     with pdfplumber.open(io.BytesIO(payload)) as document:
         for page in document.pages:
+            page = _page_text_layer(page)
             candidates = []
             try:
                 candidates.append(_lines_from_words(page))
@@ -645,8 +800,22 @@ def pdf_lines(payload):
                 candidates.append((page.extract_text(layout=True) or '').splitlines())
             except Exception:
                 pass
+            try:
+                candidates.append(_lines_beside_labels(page))
+            except Exception:
+                pass
             collected.extend(_best_page_lines(candidates))
     return collected
+
+
+def pdf_has_text(payload):
+    """False when the page is only vectors or a scanned image."""
+    import pdfplumber
+    try:
+        with pdfplumber.open(io.BytesIO(payload)) as document:
+            return any(page.chars for page in document.pages)
+    except Exception:
+        return False
 
 
 def parse_packing_pdf(payload):
@@ -1430,8 +1599,36 @@ def shipment_lines(summary):
             'rack_line': '', 'list_lines': [], 'pcs_line': '', 'sqft_line': '',
             'weight_line': '', 'weight_missing': False,
         }
+    def _plain(text, suffixes):
+        value = str(text or '').strip()
+        for suffix in suffixes:
+            if value.endswith(suffix):
+                return value[:-len(suffix)].strip()
+        return value
+
+    rows = []
+    for row in summary.get('lists') or []:
+        if not row.get('line') and not row.get('number'):
+            continue
+        numbers = [str(number).strip() for number in (row.get('racks') or []) if str(number or '').strip()]
+        rows.append({
+            'number': row.get('number') or '',
+            'racks': ', '.join(numbers) or '-',
+            'pcs': _plain(row.get('pcs_text'), (' pcs',)),
+            'sqft': _plain(row.get('sqft_text'), (' sq ft',)),
+            'weight': _plain(row.get('weight_text'), (' lb',)),
+            'weight_missing': bool(row.get('weight_missing')),
+        })
     return {
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
+        'rows': rows,
+        'total': {
+            'racks': str(int(summary.get('rack_count') or 0)),
+            'pcs': _plain(summary.get('pcs_label'), (' pcs',)),
+            'sqft': _plain(summary.get('sqft_label'), (' sq ft',)),
+            'weight': _plain(summary.get('weight_label'), (' lb',)),
+            'weight_missing': bool(summary.get('weight_missing')),
+        },
         'rack_line': f"Total racks: {int(summary.get('rack_count') or 0)}",
         'pcs_line': f"Total pcs: {summary['pcs_label']}" if summary.get('pcs_label') else '',
         'sqft_line': f"Total sq ft: {summary['sqft_label']}" if summary.get('sqft_label') else '',
