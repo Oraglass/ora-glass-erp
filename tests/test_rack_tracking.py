@@ -937,3 +937,152 @@ def test_driver_damage_photos_are_kept_and_an_admin_can_clear_them(client):
     assert b'Cleared the damaged flag.' in quiet.data
     assert photo_id.encode() in quiet.data
     assert client.get(f'/api/racks/1054/photos/{photo_id}').status_code == 200
+
+
+def test_damage_reports_list_repair_and_charge(client, monkeypatch):
+    from security import hash_password
+    from storage import load_invoices, load_users, save_customers, save_racks, save_users
+    import documents
+    import quickbooks
+    from tests.test_quote_export import pdf_text
+    _users()
+    customers = {
+        'harbor-glass': {
+            'id': 'harbor-glass', 'name': 'Harbor Glass', 'status': 'active', 'tier': 'T2',
+            'country': 'United States', 'credit_currency': 'usd', 'credit_approved': True,
+            'payment_terms': 'Net 30',
+        },
+        'maple': {
+            'id': 'maple', 'name': 'Maple Glass', 'status': 'active', 'tier': 'T2',
+            'country': 'Canada', 'province': 'BC', 'credit_currency': 'cad',
+            'payment_terms': 'Net 30',
+        },
+    }
+    save_customers(customers)
+    save_racks({
+        '1054': {
+            'number': '1054', 'name': 'A1900', 'status': 'at_customer',
+            'customer_id': 'harbor-glass', 'customer_name': 'Harbor Glass',
+            'since': '2026-11-01', 'order_id': 4, 'shipment_id': 9,
+            'shipment_number': 'S9', 'packing_number': 'XF1', 'history': [],
+        },
+        '2002': {
+            'number': '2002', 'name': 'A1900', 'status': 'at_customer',
+            'customer_id': 'maple', 'customer_name': 'Maple Glass',
+            'since': '2026-11-02', 'order_id': 8, 'shipment_number': 'S2', 'history': [],
+        },
+    })
+    users = load_users()
+    users['3605550199'] = {
+        'email': '', 'name': 'Dana Driver', 'role': 'driver', 'phone': '3605550199',
+        'password_hash': hash_password('Validpass1'), 'active': True,
+        'must_change_password': False,
+    }
+    save_users(users)
+    write_user('rep@oraglass.us', 'sales')
+    assert login(client, '3605550199').status_code == 302
+    denied = client.get('/racks/damage')
+    assert denied.status_code == 302
+    picked = client.post('/api/racks/pickup', json={
+        'racks': ['1054', '2002'],
+        'damaged': ['1054', '2002'],
+        'notes': {'1054': 'Bent corner', '2002': 'Cracked base'},
+        'methods': {'1054': 'camera', '2002': 'typed'},
+    })
+    assert picked.status_code == 200, picked.get_json()
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    listed = client.get('/api/racks/damage-reports').get_json()
+    assert {row['rack'] for row in listed} == {'1054', '2002'}
+    harbor = next(row for row in listed if row['rack'] == '1054')
+    assert harbor['status'] == 'open'
+    assert harbor['status_label'] == 'To be repaired'
+    assert harbor['customer_id'] == 'harbor-glass'
+    assert harbor['customer_name'] == 'Harbor Glass'
+    assert harbor['order_id'] == 4
+    assert harbor['shipment_number'] == 'S9'
+    assert harbor['note'] == 'Bent corner'
+    assert harbor['driver'] == '3605550199'
+    assert harbor['driver_name'] == 'Dana Driver'
+    assert harbor['event_id']
+    assert harbor['photos'] == []
+    day = harbor['at'][:10]
+    filtered = client.get(f'/api/racks/damage-reports?status=open&customer_id=harbor-glass&rack=1054&from={day}&to={day}').get_json()
+    assert [row['rack'] for row in filtered] == ['1054']
+    page = client.get(f'/racks/damage?status=open&rack=1054&from={day}&to={day}')
+    assert page.status_code == 200
+    assert b'id="damage-reports"' in page.data
+    assert b'To be repaired' in page.data
+    assert b'Bent corner' in page.data
+    assert b'Cracked base' not in page.data
+    assert b'Mark this report repaired, no cost? This clears the damaged flag.' in page.data
+    assert b'Charge the customer and close this report? This creates a repair invoice.' in page.data
+    assert b'2 open damage reports' in client.get('/racks').data
+    assert b'id="open-damage-reports"' in client.get('/racks').data
+    client.post('/logout')
+    assert login(client, 'rep@oraglass.us').status_code == 302
+    blocked = client.post(f"/api/racks/damage-reports/{harbor['id']}/charge", json={'amount': 40, 'description': 'Rack repair'})
+    assert blocked.status_code == 403
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    repaired = client.post(f"/api/racks/damage-reports/{harbor['id']}/repaired")
+    assert repaired.status_code == 200, repaired.get_json()
+    assert repaired.get_json()['status_label'] == 'Repaired, no cost'
+    rack = load_racks()['1054']
+    assert rack['status'] == 'returned'
+    assert rack.get('damaged') is False
+    assert rack['history'][-1]['action'] == 'damage_repaired'
+    assert rack['history'][-1]['note'] == 'Repaired, no cost.'
+    assert rack['history'][-1]['user'] == 'admin@oraglass.us'
+    assert b'1 open damage report' in client.get('/racks').data
+    pushed = []
+
+    def fake_push(invoice):
+        pushed.append(invoice)
+        return {'Id': 'qbo-1'}
+
+    monkeypatch.setattr(quickbooks, 'push_document', fake_push)
+    maple = next(row for row in client.get('/api/racks/damage-reports?rack=2002').get_json())
+    charged = client.post(
+        f"/api/racks/damage-reports/{maple['id']}/charge",
+        json={'amount': 85, 'description': 'Weld the rack base'},
+    )
+    assert charged.status_code == 200, charged.get_json()
+    body = charged.get_json()
+    assert body['status'] == 'charged'
+    assert body['status_label'] == 'Charge customer'
+    invoice = next(row for row in load_invoices() if row.get('id') == body['invoice_id'])
+    assert invoice['number'] == body['invoice_number']
+    assert invoice['customer_id'] == 'maple'
+    assert invoice['issuer'] == 'ca'
+    assert invoice['currency'] == 'cad'
+    assert invoice['order_id'] == 8
+    assert invoice['shipment_number'] == 'S2'
+    assert invoice['source'] == 'repair'
+    assert invoice['items'][0]['kind'] == 'service'
+    assert invoice['items'][0]['item_type'] == 'service'
+    assert invoice['items'][0]['description'] == 'Weld the rack base'
+    assert invoice['igu_subtotal'] == 0
+    labels = [row['label'] for row in documents.invoice_summary(invoice)]
+    assert 'Services' in labels
+    assert not any('IGU' in label for label in labels)
+    assert pushed and pushed[0]['id'] == invoice['id']
+    closed = load_racks()['2002']
+    assert closed['status'] == 'returned'
+    assert closed.get('damaged') is False
+    assert closed['history'][-1]['action'] == 'damage_charged'
+    assert invoice['number'] in closed['history'][-1]['note']
+    assert closed['history'][-1]['customer_name'] == 'Maple Glass'
+    pdf = client.get(f"/api/invoices/{invoice['id']}/pdf")
+    assert pdf.status_code == 200
+    text = pdf_text(pdf.data)
+    assert b'Services' in text
+    assert b'Weld the rack base' in text
+    assert b'IGU' not in text
+    monkeypatch.setattr(quickbooks, '_item_id', lambda name: 'svc')
+    lines = quickbooks._document_lines({
+        'items': invoice['items'], 'total': invoice['total'],
+    }, 'NON')
+    assert lines[0]['SalesItemLineDetail']['ItemRef']['name'] == 'Services'
+    again = client.post(f"/api/racks/damage-reports/{maple['id']}/repaired")
+    assert again.status_code == 400

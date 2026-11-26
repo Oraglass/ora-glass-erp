@@ -33,6 +33,10 @@ a{color:#C41E3A}
 <div class="container"><div class="card">
 <h2 style="color:#333">Racks</h2>
 <p class="note">{% if staff %}Every rack, and how long it has been at a customer. A rack is overdue after the number of days set on that company. The default is 14.{% else %}Racks your company is holding.{% endif %}</p>
+{% if staff %}
+<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports</a></p>
+<p class="note" id="open-damage-reports">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</p>
+{% endif %}
 {% if customer_overdue and customer_overdue.count %}
 <div class="note" id="customer-overdue-racks" style="background:#fff4e5;border:1px solid #f0c9d0;border-radius:8px;padding:12px">
 <strong>{{ customer_overdue.count }} of your racks {{ 'have' if customer_overdue.count != 1 else 'has' }} been out longer than {{ customer_overdue.alert_after }} days.</strong>

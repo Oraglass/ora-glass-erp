@@ -8,10 +8,11 @@ re-reading the packing list adjusts that allocation.
 
 import os
 import re
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from storage import atomic_write_json, lock_for, racks_path, read_json
+from storage import atomic_write_json, damage_reports_path, lock_for, racks_path, read_json
 
 OVERDUE_DAYS = 14
 PACIFIC = ZoneInfo('America/Los_Angeles')
@@ -43,6 +44,14 @@ STATUS_LABELS = {
 }
 MAX_DAMAGE_PHOTOS = 8
 MAX_DAMAGE_EDGE = 1600
+REPORT_OPEN = 'open'
+REPORT_REPAIRED = 'repaired'
+REPORT_CHARGED = 'charged'
+REPORT_LABELS = {
+    REPORT_OPEN: 'To be repaired',
+    REPORT_REPAIRED: 'Repaired, no cost',
+    REPORT_CHARGED: 'Charge customer',
+}
 
 
 def _now(moment):
@@ -809,6 +818,7 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
     def change(racks):
         moved = []
         skipped = []
+        reports = []
         for number in wanted:
             verdict = check_scan(racks, number, customer_id, moved)
             if verdict['result'] != 'ok':
@@ -817,6 +827,9 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
             row = racks[number]
             held_id = row.get('customer_id') or customer_id
             held_name = row.get('customer_name') or customer_name
+            held_order = row.get('order_id')
+            held_shipment = row.get('shipment_id')
+            held_shipment_number = row.get('shipment_number') or ''
             info = flagged.get(number) if isinstance(flagged.get(number), dict) else None
             damaged = info is not None
             note = str((info or {}).get('note') or '').strip()
@@ -840,7 +853,8 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
             summary = 'Picked up damaged.' if damaged else 'Picked up and returned.'
             if damaged and note:
                 summary = summary + ' ' + note
-            row.setdefault('history', []).append(_event(
+            event_id = uuid.uuid4().hex if damaged else ''
+            event = _event(
                 'picked_up', user, moment,
                 customer_id=held_id,
                 customer_name=held_name,
@@ -848,6 +862,9 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
                 customer_before_name=held_name,
                 location_before=held_name or 'Customer',
                 location_after='Ora Glass',
+                order_id=held_order,
+                shipment_id=held_shipment,
+                shipment_number=held_shipment_number,
                 truck_plate=truck_plate or '',
                 packing_number=row.get('packing_number') or '',
                 scan_method=_scan_method(chosen.get(number)),
@@ -855,12 +872,41 @@ def confirm_pickup(numbers, customer_id, customer_name, truck_plate, user, momen
                 damaged=damaged,
                 damage_note=note if damaged else '',
                 photos=photos,
-            ))
+                event_id=event_id,
+            )
+            row.setdefault('history', []).append(event)
             racks[number] = row
             moved.append(number)
-        return {'moved': moved, 'skipped': skipped}
+            if damaged:
+                login, name, role = _actor(user)
+                reports.append({
+                    'status': REPORT_OPEN,
+                    'rack': number,
+                    'customer_id': held_id,
+                    'customer_name': held_name,
+                    'order_id': held_order,
+                    'shipment_id': held_shipment,
+                    'shipment_number': held_shipment_number,
+                    'note': note,
+                    'photos': photos,
+                    'driver': login,
+                    'driver_name': name,
+                    'driver_role': role,
+                    'at': event.get('at') or '',
+                    'event_id': event_id,
+                    'packing_number': row.get('packing_number') or '',
+                    'invoice_id': None,
+                    'invoice_number': '',
+                    'closed_at': '',
+                    'closed_by': '',
+                })
+        return {'moved': moved, 'skipped': skipped, 'reports': reports}
 
-    return _mutate(change)
+    result = _mutate(change)
+    drafts = (result or {}).get('reports') or []
+    if drafts:
+        result['reports'] = _store_damage_reports(drafts)
+    return result
 
 
 def mark_returned(number, user, moment=None):
@@ -899,8 +945,8 @@ def mark_returned(number, user, moment=None):
     return _mutate(change)
 
 
-def clear_damage(number, user, moment=None):
-    """An admin clears the damaged flag. The pickup photos stay on the history event."""
+def clear_damage(number, user, moment=None, note='Cleared the damaged flag.', action='damage_cleared', customer_id='', customer_name=''):
+    """Clear the damaged flag and log who did it. Pickup photos stay on the history event."""
     number = str(number or '').strip()
     if not number:
         return None
@@ -909,7 +955,7 @@ def clear_damage(number, user, moment=None):
         row = racks.get(number)
         if not isinstance(row, dict):
             return None
-        if row.get('status') != DAMAGED and not row.get('damaged'):
+        if row.get('status') != DAMAGED and not row.get('damaged') and action == 'damage_cleared':
             return None
         reported = {}
         for item in reversed(row.get('history') or []):
@@ -921,21 +967,141 @@ def clear_damage(number, user, moment=None):
         row['damaged'] = False
         row['damage_note'] = ''
         row['damage_photos'] = []
+        held_id = customer_id or reported.get('customer_id') or ''
+        held_name = customer_name or reported.get('customer_name') or ''
         row.setdefault('history', []).append(_event(
-            'damage_cleared', user, moment,
-            customer_id=reported.get('customer_id') or '',
-            customer_name=reported.get('customer_name') or '',
-            customer_before_id=reported.get('customer_id') or '',
-            customer_before_name=reported.get('customer_name') or '',
+            action, user, moment,
+            customer_id=held_id,
+            customer_name=held_name,
+            customer_before_id=held_id,
+            customer_before_name=held_name,
             location_before='Ora Glass',
             location_after='Ora Glass',
             packing_number=row.get('packing_number') or '',
-            note='Cleared the damaged flag.',
+            note=note,
         ))
         racks[number] = row
         return dict(row)
 
     return _mutate(change)
+
+
+def _store_damage_reports(drafts):
+    path = damage_reports_path()
+    with lock_for(path):
+        rows = read_json(path, [])
+        if not isinstance(rows, list):
+            rows = []
+        next_id = max((int(item.get('id') or 0) for item in rows if isinstance(item, dict)), default=0) + 1
+        stored = []
+        for draft in drafts:
+            row = dict(draft)
+            row['id'] = next_id
+            next_id += 1
+            row['status'] = REPORT_OPEN
+            rows.append(row)
+            stored.append(row)
+        atomic_write_json(path, rows)
+        return stored
+
+
+def load_damage_reports():
+    from storage import load_damage_reports as load_rows
+    rows = load_rows()
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def damage_report(report_id):
+    try:
+        wanted = int(report_id)
+    except (TypeError, ValueError):
+        return None
+    return next((row for row in load_damage_reports() if row.get('id') == wanted), None)
+
+
+def present_damage_report(row):
+    shown = dict(row or {})
+    shown['status_label'] = REPORT_LABELS.get(shown.get('status'), shown.get('status') or '')
+    shown['at_label'] = pacific_label(shown.get('at'))
+    shown['open'] = shown.get('status') == REPORT_OPEN
+    shown['photos'] = [
+        {'id': str(photo.get('id'))}
+        for photo in (shown.get('photos') or [])
+        if isinstance(photo, dict) and photo.get('id')
+    ]
+    return shown
+
+
+def filter_damage_reports(rows, status='', customer_id='', rack='', start='', end=''):
+    wanted_status = str(status or '').strip()
+    wanted_customer = str(customer_id or '').strip()
+    wanted_rack = rack_number_from_scan(rack) if rack else ''
+    start_day = str(start or '').strip()[:10]
+    end_day = str(end or '').strip()[:10]
+    found = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if wanted_status and row.get('status') != wanted_status:
+            continue
+        if wanted_customer and row.get('customer_id') != wanted_customer:
+            continue
+        if wanted_rack and str(row.get('rack') or '') != wanted_rack:
+            continue
+        day = str(row.get('at') or '')[:10]
+        if start_day and day and day < start_day:
+            continue
+        if end_day and day and day > end_day:
+            continue
+        found.append(present_damage_report(row))
+    found.sort(key=lambda item: (str(item.get('at') or ''), item.get('id') or 0), reverse=True)
+    return found
+
+
+def open_damage_count():
+    return sum(1 for row in load_damage_reports() if row.get('status') == REPORT_OPEN)
+
+
+def close_damage_report(report_id, user, outcome, moment=None, invoice_id=None, invoice_number=''):
+    """Close an open damage report and clear the rack's damaged flag."""
+    if outcome not in {REPORT_REPAIRED, REPORT_CHARGED}:
+        return None, 'Choose repaired or charge.'
+    try:
+        wanted = int(report_id)
+    except (TypeError, ValueError):
+        return None, 'That report was not found.'
+    path = damage_reports_path()
+    with lock_for(path):
+        rows = read_json(path, [])
+        if not isinstance(rows, list):
+            rows = []
+        report = next((row for row in rows if isinstance(row, dict) and row.get('id') == wanted), None)
+        if not report:
+            return None, 'That report was not found.'
+        if report.get('status') != REPORT_OPEN:
+            return None, 'That report is already closed.'
+        report['status'] = outcome
+        report['closed_at'] = _stamp(moment)
+        login, _name, _role = _actor(user)
+        report['closed_by'] = login
+        if outcome == REPORT_CHARGED:
+            report['invoice_id'] = invoice_id
+            report['invoice_number'] = invoice_number or ''
+        atomic_write_json(path, rows)
+    if outcome == REPORT_REPAIRED:
+        note = 'Repaired, no cost.'
+        action = 'damage_repaired'
+    else:
+        number = invoice_number or 'the repair invoice'
+        note = f'Charged the customer. Invoice {number}.'
+        action = 'damage_charged'
+    clear_damage(
+        report.get('rack'), user, moment,
+        note=note, action=action,
+        customer_id=report.get('customer_id') or '',
+        customer_name=report.get('customer_name') or '',
+    )
+    return present_damage_report(report), None
 
 
 def photo_root():

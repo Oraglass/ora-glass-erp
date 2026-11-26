@@ -292,6 +292,25 @@ def racks_path():
     return os.path.join(data_dir(), 'racks.json')
 
 
+def damage_reports_path():
+    return os.path.join(data_dir(), 'damage_reports.json')
+
+
+def load_damage_reports():
+    path = damage_reports_path()
+    with lock_for(path):
+        data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def save_damage_reports(rows):
+    if not isinstance(rows, list):
+        raise TypeError('damage reports must be a list')
+    path = damage_reports_path()
+    with lock_for(path):
+        atomic_write_json(path, rows)
+
+
 def load_racks():
     path = racks_path()
     with lock_for(path):

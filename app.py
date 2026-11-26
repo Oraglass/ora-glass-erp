@@ -2363,6 +2363,44 @@ def racks_page():
     return render_template(
         'racks.html', staff=staff_can_order(user), admin=user.get('role') == 'admin',
         report=report, customer_overdue=_customer_overdue_panel(user),
+        open_damage_reports=rack_book.open_damage_count() if staff_can_order(user) else 0,
+    )
+
+
+@app.route('/racks/damage')
+@login_required
+def damage_reports_page():
+    user = current_user()
+    if not staff_can_order(user):
+        return forbidden()
+    import racks as rack_book
+    status = clean_text(request.args.get('status'), 20)
+    customer_id = clean_text(request.args.get('customer_id'), 80)
+    rack = clean_text(request.args.get('rack'), 40)
+    start = clean_text(request.args.get('from'), 10)
+    end = clean_text(request.args.get('to'), 10)
+    rows = rack_book.filter_damage_reports(
+        rack_book.load_damage_reports(),
+        status=status, customer_id=customer_id, rack=rack, start=start, end=end,
+    )
+    customers = [
+        {'id': key, 'name': customer.get('name') or key}
+        for key, customer in load_customers().items()
+        if isinstance(customer, dict) and not customer.get('books_entity')
+    ]
+    customers.sort(key=lambda row: row['name'].lower())
+    return render_template(
+        'damage_reports.html',
+        reports=rows,
+        customers=customers,
+        filters={'status': status, 'customer_id': customer_id, 'rack': rack, 'from': start, 'to': end},
+        open_damage_reports=rack_book.open_damage_count(),
+        can_invoice=can_issue_invoices(user),
+        statuses=[
+            {'id': 'open', 'label': 'To be repaired'},
+            {'id': 'repaired', 'label': 'Repaired, no cost'},
+            {'id': 'charged', 'label': 'Charge customer'},
+        ],
     )
 
 
@@ -2542,6 +2580,150 @@ def clear_rack_damage(rack_number):
     if not row:
         return json_error('That rack is not marked damaged.', 400)
     return jsonify(rack_book.present(row))
+
+
+def _repair_invoice(customer, user, amount, description, order_id=None, shipment_number=''):
+    """A one-line service invoice in the customer's company and currency."""
+    import quickbooks
+    if quickbooks.is_canadian(customer):
+        issuer = 'ca'
+        currency = _required_currency(customer)
+    else:
+        issuer = 'us'
+        currency = _shown_credit_currency(customer)
+    if currency not in CURRENCIES:
+        currency = 'cad' if issuer == 'ca' else 'usd'
+    total = money(amount)
+    line = {
+        'description': description,
+        'name': description,
+        'qty': 1,
+        'pcs': 1,
+        'unit_price': total,
+        'price_pc': total,
+        'total': total,
+        'kind': 'service',
+        'item_type': 'service',
+    }
+    today = datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    days = payment_term_days(customer)
+    document = {
+        'doc_type': 'invoice',
+        'source': 'repair',
+        'order_id': order_id,
+        'quote_id': None,
+        'customer_id': customer.get('id'),
+        'company': customer.get('name') or '',
+        'project': 'Rack repair',
+        'shipment_number': shipment_number or '',
+        'currency': currency,
+        'lines': [line],
+        'items': [line],
+        'discount': {'type': 'percent', 'value': 0},
+        'discount_amount': 0,
+        'extra_charges': [],
+        'igu_subtotal': 0,
+        'igu_total': 0,
+        'extras_total': 0,
+        'service_total': total,
+        'subtotal': total,
+        'pretax_total': total,
+        'tax_free': issuer != 'ca',
+        'total': total,
+        'invoice_date': today.isoformat(),
+        'due_date': (today + timedelta(days=days)).isoformat(),
+        'payment_terms': customer.get('payment_terms') or 'Net 30',
+        'payment_terms_days': days,
+        'status': 'unpaid',
+        'balance': total,
+        'voided': False,
+        'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'created_by': user.get('email') or user.get('phone') or '',
+        'issuer': issuer,
+        'kind': 'customer',
+    }
+    if issuer == 'ca':
+        _apply_canada_tax(document, customer, customer.get('province'))
+    else:
+        document.update(_tax_number_snapshot(customer))
+    document['audit'] = [_audit(user, 'created', 'repair invoice')]
+    stored = append_invoice(document)
+    _qbo('push_document', stored)
+    return stored
+
+
+@app.route('/api/racks/damage-reports', methods=['GET'])
+@login_required
+def damage_report_list():
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    rows = rack_book.filter_damage_reports(
+        rack_book.load_damage_reports(),
+        status=clean_text(request.args.get('status'), 20),
+        customer_id=clean_text(request.args.get('customer_id'), 80),
+        rack=clean_text(request.args.get('rack'), 40),
+        start=clean_text(request.args.get('from'), 10),
+        end=clean_text(request.args.get('to'), 10),
+    )
+    return jsonify(rows)
+
+
+@app.route('/api/racks/damage-reports/<int:report_id>/repaired', methods=['POST'])
+@login_required
+def damage_report_repaired(report_id):
+    user = current_user()
+    if not staff_can_order(user):
+        return json_error('Access denied', 403)
+    import racks as rack_book
+    saved, error = rack_book.close_damage_report(report_id, user, rack_book.REPORT_REPAIRED)
+    if error:
+        return json_error(error, 400)
+    return jsonify(saved)
+
+
+@app.route('/api/racks/damage-reports/<int:report_id>/charge', methods=['POST'])
+@login_required
+def damage_report_charge(report_id):
+    user = current_user()
+    if not can_issue_invoices(user):
+        return json_error('You do not have permission to issue invoices.', 403)
+    data = json_body() or {}
+    description = clean_text(data.get('description'), 200)
+    if not description:
+        return json_error('Enter a description.', 400)
+    try:
+        amount = money(data.get('amount'))
+    except (TypeError, ValueError):
+        return json_error('Enter an amount.', 400)
+    if amount <= 0:
+        return json_error('The amount must be greater than zero.', 400)
+    import racks as rack_book
+    report = rack_book.damage_report(report_id)
+    if not report:
+        return json_error('That report was not found.', 400)
+    if report.get('status') != rack_book.REPORT_OPEN:
+        return json_error('That report is already closed.', 400)
+    customer = load_customers().get(report.get('customer_id') or '')
+    if not customer:
+        return json_error('That customer was not found.', 400)
+    customer = dict(customer)
+    customer['id'] = report.get('customer_id')
+    invoice = _repair_invoice(
+        customer, user, amount, description,
+        order_id=report.get('order_id'),
+        shipment_number=report.get('shipment_number') or '',
+    )
+    saved, error = rack_book.close_damage_report(
+        report_id, user, rack_book.REPORT_CHARGED,
+        invoice_id=invoice.get('id'), invoice_number=invoice.get('number') or '',
+    )
+    if error:
+        return json_error(error, 400)
+    saved['invoice_id'] = invoice.get('id')
+    saved['invoice_number'] = invoice.get('number') or ''
+    return jsonify(saved)
 
 
 @app.route('/api/racks/<rack_number>/photos/<photo_id>', methods=['GET'])

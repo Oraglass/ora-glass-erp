@@ -845,9 +845,19 @@ def invoice_summary(invoice):
         discount_label = f"{amount(discount.get('value')):.2f}%"
     else:
         discount_label = 'fixed'
-    subtotal_label = 'Tax-free subtotal' if (invoice or {}).get('tax_free') else 'IGU subtotal'
+    items = (invoice or {}).get('items') or (invoice or {}).get('lines') or []
+    service = any(
+        isinstance(row, dict) and (row.get('kind') == 'service' or row.get('item_type') == 'service')
+        for row in items
+    )
+    if service:
+        subtotal_label = 'Services'
+    elif (invoice or {}).get('tax_free'):
+        subtotal_label = 'Tax-free subtotal'
+    else:
+        subtotal_label = 'IGU subtotal'
     rows = [
-        {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('igu_subtotal'))},
+        {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('service_total') or (invoice or {}).get('igu_subtotal'))},
         {'label': f'Discount ({discount_label})', 'amount': -amount((invoice or {}).get('discount_amount'))},
     ]
     extra_discount = amount((invoice or {}).get('additional_discount_amount'))
@@ -860,8 +870,9 @@ def invoice_summary(invoice):
             'label': f'Additional discount ({extra_percent:g}%)',
             'amount': -extra_discount,
         })
-    igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
-    rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
+    if not service:
+        igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
+        rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
     for charge in (invoice or {}).get('extra_charges') or []:
         if not isinstance(charge, dict):
             continue

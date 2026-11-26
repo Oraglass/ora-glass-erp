@@ -2095,6 +2095,8 @@ def _document_lines(invoice, tax_code=None):
             item_name = settings.get('irregular_item') or DEFAULT_IRREGULAR_ITEM
         elif item.get('kind') == 'dwg_creation':
             item_name = settings.get('dwg_item') or DEFAULT_DWG_ITEM
+        elif item.get('kind') == 'service' or item.get('item_type') == 'service':
+            item_name = settings.get('service_item') or 'Services'
         else:
             item_name = default_item
         lines.append(_sales_line(description, qty, unit, amount, item_name, tax_code))
