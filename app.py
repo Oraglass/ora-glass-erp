@@ -11865,6 +11865,8 @@ def _render_invoice_pdf(invoice):
     title_style = ParagraphStyle('InvTitle', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', alignment=1)
     small_style = ParagraphStyle('InvSmall', parent=styles['Normal'], fontSize=8, leading=10)
     cell_style = ParagraphStyle('InvCell', parent=styles['Normal'], fontSize=8, leading=10)
+    from reportlab.lib.enums import TA_RIGHT
+    num_style = ParagraphStyle('InvNum', parent=cell_style, alignment=TA_RIGHT)
     header_cell = ParagraphStyle('InvHead', parent=styles['Normal'], fontSize=8, fontName='Helvetica-Bold', textColor=colors.white)
     label_style = ParagraphStyle('InvLabel', parent=styles['Normal'], fontSize=9, leading=12)
     logo_path = 'logo.png' if os.path.exists('logo.png') else None
@@ -11930,34 +11932,40 @@ def _render_invoice_pdf(invoice):
     table_rows = list(shipment.get('rows') or [])
     total = shipment.get('total') or {}
     if table_rows:
+        def ship_num(text, bold=False):
+            shown = escape(str(text or ''))
+            if bold:
+                shown = f'<b>{shown}</b>'
+            return Paragraph(shown, num_style)
+
         head = [
             Paragraph('<b>Packing list</b>', cell_style),
-            Paragraph('<b>Racks</b>', cell_style),
-            Paragraph('<b>Pcs</b>', cell_style),
-            Paragraph('<b>Sq ft</b>', cell_style),
-            Paragraph('<b>Weight</b>', cell_style),
+            Paragraph('<b>Rack</b>', num_style),
+            Paragraph('<b>Pcs</b>', num_style),
+            Paragraph('<b>Sq ft</b>', num_style),
+            Paragraph('<b>Weight (lb)</b>', num_style),
         ]
         body = [head]
         for row in table_rows:
             body.append([
                 Paragraph(escape(row.get('number') or ''), cell_style),
-                Paragraph(escape(row.get('racks') or ''), cell_style),
-                Paragraph(escape(row.get('pcs') or ''), cell_style),
-                Paragraph(escape(row.get('sqft') or ''), cell_style),
-                Paragraph(escape(row.get('weight') or ''), cell_style),
+                ship_num(row.get('rack')),
+                ship_num(row.get('pcs')),
+                ship_num(row.get('sqft')),
+                ship_num(row.get('weight')),
             ])
         body.append([
             Paragraph('<b>Total</b>', cell_style),
-            Paragraph(escape(str(total.get('racks') or '')), cell_style),
-            Paragraph(escape(str(total.get('pcs') or '')), cell_style),
-            Paragraph(escape(str(total.get('sqft') or '')), cell_style),
-            Paragraph(escape(str(total.get('weight') or '')), cell_style),
+            ship_num(total.get('rack'), bold=True),
+            ship_num(total.get('pcs'), bold=True),
+            ship_num(total.get('sqft'), bold=True),
+            ship_num(total.get('weight'), bold=True),
         ])
-        shipment_table = Table(body, colWidths=[1.6 * inch, 1.8 * inch, 1.1 * inch, 1.3 * inch, 1.5 * inch])
+        shipment_table = Table(body, colWidths=[1.7 * inch, 1.5 * inch, 1.1 * inch, 1.3 * inch, 1.5 * inch])
         shipment_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f5f5')),
             ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#dddddd')),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('LEFTPADDING', (0, 0), (-1, -1), 4),
             ('RIGHTPADDING', (0, 0), (-1, -1), 4),

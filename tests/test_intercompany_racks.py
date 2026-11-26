@@ -85,10 +85,10 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
         'weight_line': 'Total weight: 261 lb',
         'weight_missing': False,
         'rows': [
-            {'number': 'XF261123001', 'racks': 'Rack 1054', 'pcs': '11 pcs', 'sqft': '116.52 sq ft', 'weight': '171 lb'},
-            {'number': 'XF261123002', 'racks': 'Rack 2002, Rack 2003', 'pcs': '2 pcs', 'sqft': '20.5 sq ft', 'weight': '90 lb'},
+            {'number': 'XF261123001', 'rack': '1054', 'pcs': '11', 'sqft': '116.52', 'weight': '171', 'weight_missing': False},
+            {'number': 'XF261123002', 'rack': '2002, 2003', 'pcs': '2', 'sqft': '20.5', 'weight': '90', 'weight_missing': False},
         ],
-        'total': {'racks': '3', 'pcs': '13', 'sqft': '137.02', 'weight': '261 lb'},
+        'total': {'rack': '3', 'pcs': '13', 'sqft': '137.02', 'weight': '261', 'weight_missing': False},
     }
     assert packing['lists'] == [
         {
@@ -118,14 +118,16 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
     assert body['seller_gst_number'] == tax_numbers.SELLER_GST_INITIAL
     pdf = pdf_text(client.get('/api/invoices/53/pdf').data)
     assert b'Shipment' in pdf
+    assert b'Packing list' in pdf
+    assert b'Weight \\(lb\\)' in pdf
     assert b'XF261123001' in pdf
-    assert b'Rack 1054' in pdf
-    assert b'11 pcs' in pdf
-    assert b'171 lb' in pdf
+    assert b'1054' in pdf
+    assert b'116.52' in pdf
+    assert b'171' in pdf
     assert b'XF261123002' in pdf
-    assert b'Rack 2002, Rack 2003' in pdf
+    assert b'2002, 2003' in pdf
     assert b'Total' in pdf
-    assert b'261 lb' in pdf
+    assert b'261' in pdf
     assert f'GST# {tax_numbers.SELLER_GST_INITIAL}'.encode() in pdf
     assert b'Ora Glass Inc.' in pdf
     assert f'HTS {packing_book.INTERCOMPANY_HTS}'.encode() in pdf
@@ -173,8 +175,8 @@ def test_canada_customer_invoice_matches_the_intercompany_shipment(client):
     customer_pdf = pdf_text(client.get('/api/invoices/1/pdf').data)
     intercompany_pdf = pdf_text(client.get('/api/invoices/53/pdf').data)
     for line in (
-        b'Shipment', b'Total', b'XF261123001', b'Rack 1054', b'11 pcs', b'171 lb',
-        b'XF261123002', b'Rack 2002, Rack 2003', b'261 lb',
+        b'Shipment', b'Total', b'Weight \\(lb\\)', b'XF261123001', b'1054', b'116.52', b'171',
+        b'XF261123002', b'2002, 2003', b'261',
     ):
         assert line in customer_pdf
         assert line in intercompany_pdf
@@ -229,17 +231,17 @@ def test_canada_customer_invoice_shows_gst_under_the_header(client):
         'weight_line': 'Total weight: 171 lb',
         'weight_missing': False,
         'rows': [
-            {'number': 'XF261123001', 'racks': 'Rack 1054', 'pcs': '11 pcs', 'sqft': '116.52 sq ft', 'weight': '171 lb'},
+            {'number': 'XF261123001', 'rack': '1054', 'pcs': '11', 'sqft': '116.52', 'weight': '171', 'weight_missing': False},
         ],
-        'total': {'racks': '1', 'pcs': '11', 'sqft': '116.52', 'weight': '171 lb'},
+        'total': {'rack': '1', 'pcs': '11', 'sqft': '116.52', 'weight': '171', 'weight_missing': False},
     }
     assert b'Shipment' in pdf
+    assert b'Weight \\(lb\\)' in pdf
     assert b'Total' in pdf
     assert b'XF261123001' in pdf
-    assert b'Rack 1054' in pdf
-    assert b'11 pcs' in pdf
-    assert b'116.52 sq ft' in pdf
-    assert b'171 lb' in pdf
+    assert b'1054' in pdf
+    assert b'116.52' in pdf
+    assert b'171' in pdf
     page = open('templates/invoices.html', encoding='utf-8').read()
     assert 'id="invoice-header-gst"' in page
     assert 'id="invoice-bill-gst"' in page
@@ -391,9 +393,8 @@ def test_existing_invoice_backfills_weight_from_the_highq_pdf(client, data_dir):
     pdf = pdf_text(client.get('/api/invoices/54/pdf').data)
     assert b'Shipment' in pdf
     assert b'XF261123002' in pdf
-    assert b'Rack 5016' in pdf
-    assert b'2 pcs' in pdf
-    assert b'1200 lb' in pdf
+    assert b'5016' in pdf
+    assert b'1200' in pdf
     assert b'Total' in pdf
 
 
@@ -452,11 +453,11 @@ def test_xf261123002_layout_backfills_463_lb(client, data_dir):
     assert stored['total_sqft'] == 75.29
     pdf = pdf_text(client.get('/api/invoices/55/pdf').data)
     assert b'Shipment' in pdf
+    assert b'Weight \\(lb\\)' in pdf
     assert b'XF261123002' in pdf
-    assert b'Rack 5016' in pdf
-    assert b'3 pcs' in pdf
-    assert b'75.29 sq ft' in pdf
-    assert b'463 lb' in pdf
+    assert b'5016' in pdf
+    assert b'75.29' in pdf
+    assert b'463' in pdf
     assert b'Total' in pdf
     assert f'HTS {packing_book.INTERCOMPANY_HTS}'.encode() in pdf
 
@@ -527,14 +528,15 @@ def test_regenerated_invoice_uses_the_weight_printed_on_the_packing_list(client,
     for invoice_id in (55, 1):
         pdf = pdf_text(client.get(f'/api/invoices/{invoice_id}/pdf').data)
         assert b'Shipment' in pdf
+        assert b'Weight \\(lb\\)' in pdf
         assert b'Total' in pdf
         assert b'XF261123002' in pdf
-        assert b'Rack 5016' in pdf
-        assert b'1200 lb' in pdf
+        assert b'5016' in pdf
+        assert b'1200' in pdf
         assert b'XF261123001' in pdf
-        assert b'Rack 1054' in pdf
-        assert b'171 lb' in pdf
-        assert b'1371 lb' in pdf
+        assert b'1054' in pdf
+        assert b'171' in pdf
+        assert b'1371' in pdf
         assert b'weight not found' not in pdf
     intercompany_pdf = pdf_text(client.get('/api/invoices/55/pdf').data)
     customer_pdf = pdf_text(client.get('/api/invoices/1/pdf').data)
@@ -570,6 +572,9 @@ def test_a_packing_list_with_no_printed_weight_is_flagged(client):
     assert packing['shipment']['pcs_line'] == 'Total pcs: pcs not found'
     assert packing['shipment']['sqft_line'] == 'Total sq ft: sq ft not found'
     assert packing['shipment']['weight_line'] == 'Total weight: weight not found'
+    assert packing['shipment']['rows'][0]['weight'] == 'weight not found'
+    assert packing['shipment']['rows'][0]['weight_missing'] is True
+    assert packing['shipment']['total']['weight'] == 'weight not found'
     assert packing['weight_missing'] is True
     assert packing['lists'][0]['weight_missing'] is True
     pdf = pdf_text(client.get('/api/invoices/55/pdf').data)

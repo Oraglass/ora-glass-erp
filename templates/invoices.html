@@ -19,6 +19,11 @@ td{padding:10px;border-bottom:1px solid #eee}
 a{color:#C41E3A}
 .note{color:#666;font-size:13px;margin-top:6px}
 .weight-missing{color:#9f1239;font-weight:600}
+#invoice-shipment{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+#invoice-shipment th,#invoice-shipment td{border:1px solid #ddd;padding:6px 8px}
+#invoice-shipment th{background:#f5f5f5;font-weight:600}
+#invoice-shipment tr.total td{font-weight:700}
+#invoice-shipment caption{caption-side:top;text-align:left;font-weight:700;padding-bottom:4px}
 .error,a.error{color:#9f1239}
 .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge.unpaid{background:#fff3cd;color:#856404}
@@ -262,9 +267,12 @@ function renderDetail(invoice) {
   const shipment = (invoice.packing && invoice.packing.shipment) || null;
   const shipmentRows = shipment ? (shipment.rows || []) : [];
   const shipmentTotal = shipment ? (shipment.total || {}) : {};
-  const missingClass = (text) => String(text || '').indexOf('not found') >= 0 ? ' class="weight-missing"' : '';
-  const shipmentBody = shipmentRows.map(row => '<tr><td>' + esc(row.number) + '</td><td>' + esc(row.racks) + '</td><td' + missingClass(row.pcs) + '>' + esc(row.pcs) + '</td><td' + missingClass(row.sqft) + '>' + esc(row.sqft) + '</td><td' + missingClass(row.weight) + '>' + esc(row.weight) + '</td></tr>').join('');
-  const packingNote = shipmentRows.length ? '<table id="invoice-shipment"><thead><tr><th colspan="5">Shipment</th></tr><tr><th>Packing list</th><th>Racks</th><th>Pcs</th><th>Sq ft</th><th>Weight</th></tr></thead><tbody>' + shipmentBody + '<tr id="invoice-shipment-total"><td>Total</td><td id="invoice-racks">' + esc(shipmentTotal.racks || '') + '</td><td id="invoice-pcs"' + missingClass(shipmentTotal.pcs) + '>' + esc(shipmentTotal.pcs || '') + '</td><td id="invoice-sqft"' + missingClass(shipmentTotal.sqft) + '>' + esc(shipmentTotal.sqft || '') + '</td><td id="invoice-weight"' + missingClass(shipmentTotal.weight) + '>' + esc(shipmentTotal.weight || '') + '</td></tr></tbody></table>' : '';
+  const weightCell = (text, missing, id) => {
+    const flag = missing || String(text || '') === 'weight not found';
+    return '<td class="num' + (flag ? ' weight-missing' : '') + '"' + (id ? ' id="' + id + '"' : '') + '>' + esc(text || '') + '</td>';
+  };
+  const shipmentBody = shipmentRows.map(row => '<tr><td>' + esc(row.number) + '</td><td class="num">' + esc(row.rack) + '</td><td class="num">' + esc(row.pcs) + '</td><td class="num">' + esc(row.sqft) + '</td>' + weightCell(row.weight, row.weight_missing) + '</tr>').join('');
+  const packingNote = shipmentRows.length ? '<table id="invoice-shipment"><caption>Shipment</caption><thead><tr><th>Packing list</th><th class="num">Rack</th><th class="num">Pcs</th><th class="num">Sq ft</th><th class="num">Weight (lb)</th></tr></thead><tbody>' + shipmentBody + '<tr class="total" id="invoice-shipment-total"><td>Total</td><td class="num" id="invoice-racks">' + esc(shipmentTotal.rack || '') + '</td><td class="num" id="invoice-pcs">' + esc(shipmentTotal.pcs || '') + '</td><td class="num" id="invoice-sqft">' + esc(shipmentTotal.sqft || '') + '</td>' + weightCell(shipmentTotal.weight, shipmentTotal.weight_missing, 'invoice-weight') + '</tr></tbody></table>' : '';
   const shipmentNote = String(invoice.shipment_notes || '').trim();
   const noteLine = shipmentNote && shipmentNote !== 'Packed pieces' ? '<p class="note" id="invoice-notes"><b>Notes:</b> ' + esc(shipmentNote) + '</p>' : '';
   const customs = invoice.kind === 'intercompany' && invoice.customs ? '<p class="note" id="invoice-customs">HTS ' + esc(invoice.customs.hts) + '<br>Origin: ' + esc(invoice.customs.origin) + '</p>' : '';
