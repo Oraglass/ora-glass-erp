@@ -79,16 +79,19 @@ def test_two_packing_lists_sum_weight_and_list_each_racks(client):
             'XF261123002: Rack 2002, Rack 2003 · 90 lb',
         ],
         'weight_line': 'Total weight: 261 lb',
+        'weight_missing': False,
     }
     assert packing['lists'] == [
         {
             'id': 1, 'number': 'XF261123001', 'racks': ['1054'], 'racks_label': 'Rack 1054',
             'weight': 171, 'weight_unit': 'LBS', 'weight_text': '171 lb',
+            'weight_missing': False,
             'line': 'XF261123001: Rack 1054 · 171 lb',
         },
         {
             'id': 2, 'number': 'XF261123002', 'racks': ['2002', '2003'], 'racks_label': 'Rack 2002, Rack 2003',
             'weight': 90, 'weight_unit': 'LBS', 'weight_text': '90 lb',
+            'weight_missing': False,
             'line': 'XF261123002: Rack 2002, Rack 2003 · 90 lb',
         },
     ]
@@ -199,6 +202,7 @@ def test_canada_customer_invoice_shows_gst_under_the_header(client):
         'rack_line': 'Racks: 1',
         'list_lines': ['XF261123001: Rack 1054 · 171 lb'],
         'weight_line': 'Total weight: 171 lb',
+        'weight_missing': False,
     }
     assert b'Racks: 1' in pdf
     assert b'XF261123001: Rack 1054 \\267 171 lb' in pdf
@@ -208,7 +212,7 @@ def test_canada_customer_invoice_shows_gst_under_the_header(client):
     assert 'id="invoice-bill-gst"' in page
 
 
-def test_mixed_weight_units_stay_separate(client):
+def test_kilograms_on_a_packing_list_are_shown_in_pounds(client):
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
     _order()
@@ -221,7 +225,10 @@ def test_mixed_weight_units_stay_separate(client):
         {'name': 'Glass', 'serial': 2, 'pcs': 2, 'total': 40},
     ])])
     packing = client.get('/api/invoices/53').get_json()['packing']
-    assert packing['weight_label'] == '171 lb + 40 kg'
+    assert packing['lists'][1]['weight'] == 40
+    assert packing['lists'][1]['weight_unit'] == 'KG'
+    assert packing['lists'][1]['line'] == 'XF261123002: Rack 2002, Rack 2003 · 88.18 lb'
+    assert packing['weight_label'] == '259.18 lb'
 
 
 def test_saved_packing_file_supplies_weight_for_an_older_invoice(client, data_dir):
@@ -295,7 +302,9 @@ def test_upload_stores_the_packing_list_weight_and_racks(client):
     packing = client.get('/api/invoices/7').get_json()['packing']
     assert packing['rack_count'] == 2
     assert packing['lists'][0]['racks'] == ['1054', '2002']
-    assert packing['weight_label'] == '48.5 kg'
+    assert packing['lists'][0]['weight'] == 48.5
+    assert packing['lists'][0]['weight_unit'] == 'KG'
+    assert packing['weight_label'] == '106.92 lb'
 
 
 def test_existing_invoice_backfills_weight_from_the_highq_pdf(client, data_dir):
@@ -345,21 +354,27 @@ def test_existing_invoice_backfills_weight_from_the_highq_pdf(client, data_dir):
     assert b'Total weight: 1200 lb' in pdf
 
 
-def test_regenerated_invoice_computes_weight_when_the_list_has_none(client):
-    """INV-0055 and CA-INV-0001: racks are stored, weight is not, so the pieces supply it.
+# The amount sits on the rack line, which is how a two-column packing-list PDF extracts.
+XF261123002_LIST = """
+Sales Delivery: XF261123002         Date:   11/24/2026
+Sold To: HighQ                                             Job Name: PO1
+Total Weight :
+5016 A1900*1220*1800(THK:400*2)                                   Appx. 1,200 lb
+(1)    2
+24 36
+609.6 mm 914.4 mm
+"""
 
-    48 x 36 in is 12 sq ft. Two pieces of 4 mm glass are 12 x 4 x 0.512 x 2 = 49.152 lb.
-    One 24 x 36 in piece of 6 mm glass is 6 x 6 x 0.512 = 18.432 lb.
-    0.512 lb/sq ft/mm is about 2.5 kg/m² per mm.
-    """
+
+def test_regenerated_invoice_uses_the_weight_printed_on_the_packing_list(client, data_dir):
+    """INV-0055 and CA-INV-0001 stored the racks and not the weight. The saved files have it."""
+    from tests.test_packing_pdf_invoice import HIGHQ_LIST
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
-    first = _glass()
-    first['spec'] = {'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'width': 48, 'height': 36, 'unit': 'in'}
-    first['pcs'] = 2
-    second = _glass()
-    second['spec'] = {'glass1': 'Clear Glass 6mm', 'temper1': 'n/a', 'width': 24, 'height': 36, 'unit': 'in'}
-    second['pcs'] = 1
+    folder = data_dir / 'packing_files' / '1'
+    folder.mkdir(parents=True)
+    (folder / 'xf2.txt').write_text(XF261123002_LIST, encoding='utf-8')
+    (folder / 'xf1.txt').write_text(HIGHQ_LIST, encoding='utf-8')
     save_orders([{
         'id': 1,
         'quote_id': 18,
@@ -368,23 +383,23 @@ def test_regenerated_invoice_computes_weight_when_the_list_has_none(client):
         'project': 'Misc',
         'status': 'sent',
         'currency': 'cad',
-        'items': [first, second],
+        'items': [_glass(), _glass()],
         'packing_lists': [
             {
                 'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
-                'racks': ['5016'],
+                'racks': ['5016'], 'stored': 'xf2.txt',
                 'lines': [{'serial': 1, 'qty': 2}],
             },
             {
                 'id': 1, 'current': True, 'number': 'XF261123001', 'rack': '1054',
-                'racks': ['1054'],
-                'lines': [{'serial': 2, 'qty': 1}],
+                'racks': ['1054'], 'stored': 'xf1.txt',
+                'lines': [{'serial': 2, 'qty': 4}],
             },
         ],
     }])
     items = [
         {'name': 'Glass', 'serial': 1, 'pcs': 2, 'total': 40},
-        {'name': 'Glass', 'serial': 2, 'pcs': 1, 'total': 20},
+        {'name': 'Glass', 'serial': 2, 'pcs': 4, 'total': 20},
     ]
     save_invoices([
         _invoice(55, 'INV-0055', items),
@@ -394,8 +409,8 @@ def test_regenerated_invoice_computes_weight_when_the_list_has_none(client):
         ),
     ])
     expected_lines = [
-        'XF261123002: Rack 5016 · 49.15 lb',
-        'XF261123001: Rack 1054 · 18.43 lb',
+        'XF261123002: Rack 5016 · 1200 lb',
+        'XF261123001: Rack 1054 · 171 lb',
     ]
     intercompany = client.get('/api/invoices/55').get_json()
     customer = client.get('/api/invoices/1').get_json()
@@ -403,12 +418,48 @@ def test_regenerated_invoice_computes_weight_when_the_list_has_none(client):
         shipment = body['packing']['shipment']
         assert shipment['rack_line'] == 'Racks: 2'
         assert shipment['list_lines'] == expected_lines
-        assert shipment['weight_line'] == 'Total weight: 67.58 lb'
-        assert all('lb' in line and '·' in line for line in shipment['list_lines'])
-        assert '  lb' not in shipment['weight_line']
+        assert shipment['weight_line'] == 'Total weight: 1371 lb'
+        assert shipment['weight_missing'] is False
+    stored = {row['number']: row for row in load_orders()[0]['packing_lists']}
+    assert stored['XF261123002']['weight'] == 1200
+    assert stored['XF261123002']['weight_unit'] == 'LBS'
+    assert stored['XF261123001']['weight'] == 171
+    assert stored['XF261123001']['weight_unit'] == 'LBS'
     for invoice_id in (55, 1):
         pdf = pdf_text(client.get(f'/api/invoices/{invoice_id}/pdf').data)
         assert b'Racks: 2' in pdf
-        assert b'XF261123002: Rack 5016 \\267 49.15 lb' in pdf
-        assert b'XF261123001: Rack 1054 \\267 18.43 lb' in pdf
-        assert b'Total weight: 67.58 lb' in pdf
+        assert b'XF261123002: Rack 5016 \\267 1200 lb' in pdf
+        assert b'XF261123001: Rack 1054 \\267 171 lb' in pdf
+        assert b'Total weight: 1371 lb' in pdf
+        assert b'weight not found' not in pdf
+
+
+def test_a_packing_list_with_no_printed_weight_is_flagged(client):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_orders([{
+        'id': 1,
+        'quote_id': 18,
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'],
+            'lines': [{'serial': 1, 'qty': 2, 'width_in': 48, 'height_in': 36}],
+        }],
+    }])
+    save_invoices([_invoice(55, 'INV-0055', [
+        {'name': 'Glass', 'serial': 1, 'pcs': 2, 'total': 40},
+    ])])
+    packing = client.get('/api/invoices/55').get_json()['packing']
+    assert packing['shipment']['list_lines'] == ['XF261123002: Rack 5016 · weight not found']
+    assert packing['shipment']['weight_line'] == 'Total weight: weight not found'
+    assert packing['weight_missing'] is True
+    assert packing['lists'][0]['weight_missing'] is True
+    pdf = pdf_text(client.get('/api/invoices/55/pdf').data)
+    assert b'weight not found' in pdf
+    assert b'49.' not in pdf
+    page = open('templates/invoices.html', encoding='utf-8').read()
+    assert 'weight-missing' in page

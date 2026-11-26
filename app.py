@@ -8848,6 +8848,7 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         ] or ([str(parsed.get('rack')).strip()] if str(parsed.get('rack') or '').strip() else []),
         'weight': parsed.get('weight'),
         'weight_unit': parsed.get('weight_unit') or '',
+        'weight_missing': parsed.get('weight') in (None, ''),
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -10587,6 +10588,9 @@ def _store_packing_measures(order_id, measured):
         if entry.get('weight') in (None, '') and fresh.get('weight') not in (None, ''):
             entry['weight'] = fresh.get('weight')
             entry['weight_unit'] = fresh.get('weight_unit') or ''
+            entry['weight_missing'] = False
+        elif entry.get('weight') in (None, '') and fresh.get('weight_missing'):
+            entry['weight_missing'] = True
         if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
             entry['racks'] = list(fresh.get('racks') or [])
             if not entry.get('rack'):

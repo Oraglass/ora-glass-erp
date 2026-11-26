@@ -29,17 +29,23 @@ _PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
 _SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
 _WEIGHT_WORD = r'(?:Approx(?:imate)?|Appx|Appr)'
 _WEIGHT = re.compile(
-    rf'(?:Total\s*)?Weight\b[^:\n]{{0,24}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    rf'(?:Total\s*)?Weight\b[^:\n]{{0,80}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
     re.I,
 )
 _WEIGHT_OPEN = re.compile(
-    rf'(?:Total\s*)?Weight\b[^:\n]{{0,24}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?$',
+    rf'(?:Total\s*)?Weight\b[^:\n]{{0,80}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?$',
     re.I,
 )
-_WEIGHT_ONLY = re.compile(
-    rf'^(?:(?P<approx>{_WEIGHT_WORD})\.?\s*)?(?P<amount>[\d,]+(?:\.\d+)?)(?:\s*(?P<unit>[A-Za-z]+))?$',
+_PRINTED_WEIGHT = re.compile(
+    rf'(?:{_WEIGHT_WORD}\.?\s*)(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>[A-Za-z]+)?',
     re.I,
 )
+_UNIT_WEIGHT = re.compile(
+    r'(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>lbs?|kgs?|pounds?|kilos?|kilograms?)\b',
+    re.I,
+)
+# One kilogram as printed on a packing list, in pounds.
+_LB_PER_KG = 2.2046226218
 _INCHES = re.compile(
     r'^(\d+)(?:\s+(\d+)\s*/\s*(\d+))?\s+(\d+)(?:\s+(\d+)\s*/\s*(\d+))?$'
 )
@@ -149,32 +155,65 @@ def _store_weight(header, amount, unit):
     header['weight_unit'] = _weight_unit(unit or 'LBS')
 
 
+def _weight_after_label(text):
+    """A printed amount on a line that follows 'Total Weight :'.
+
+    A PDF extract often puts the rack on that same line, so the line is not
+    only the amount: '5016 A1900*... Appx. 1200 lb'.
+    """
+    printed = _PRINTED_WEIGHT.search(text)
+    if printed:
+        unit = printed.group('unit') or ''
+        if not unit or _weight_unit(unit) in {'LBS', 'KG'}:
+            return printed.group('amount'), unit
+    measured = _UNIT_WEIGHT.search(text)
+    if measured:
+        return measured.group('amount'), measured.group('unit')
+    return None
+
+
 def _feed_weight(line, header, pending):
-    """Read Total Weight from this line, or from the value printed on the next line.
+    """Read Total Weight from this line, or from the value printed just after it.
 
     The HighQ packing list puts 'Total Weight :' in the totals column and
-    'Approx. 171 LBS' (or 'Appx. 1200 lb') beside or just under it. A PDF
-    extract often gives those as two lines. Returns (consumed, still_pending).
+    'Approx. 171 LBS' (or 'Appx. 1200 lb') beside or just under it. Layout
+    extraction often leaves the label on one line and the amount on the next,
+    on the same line as the rack. Returns (consumed, still_pending).
     """
     if header.get('weight') is not None:
         return False, False
     text = _normalize_measure_line(line).strip()
-    if pending:
-        value = _WEIGHT_ONLY.fullmatch(text)
-        unit = value.group('unit') if value else ''
-        known = _weight_unit(unit) in {'LBS', 'KG'} if unit else False
-        if value and (known or value.group('approx') or pending == 'approx'):
-            _store_weight(header, value.group('amount'), unit)
-            return True, False
-        pending = False
     found = _WEIGHT.search(text)
     if found:
         _store_weight(header, found.group(1), found.group(2))
         return False, False
+    if pending:
+        later = _weight_after_label(text)
+        if later:
+            _store_weight(header, later[0], later[1])
+            return True, False
+        if _DELIVERY.search(text) or pending >= 12:
+            return False, False
+        return False, pending + 1
     if _WEIGHT_OPEN.search(text):
-        said_approx = 'approx' if re.search(_WEIGHT_WORD, text, re.I) else True
-        return False, said_approx
+        return False, 1
     return False, False
+
+
+def weight_pounds(amount, unit):
+    """The printed weight in pounds. Kilograms are converted. Pounds stay as printed."""
+    number = float(amount)
+    if _weight_unit(unit) == 'KG':
+        return number * _LB_PER_KG
+    return number
+
+
+def _note_missing_weight(header, warnings):
+    """A list with glass rows and no printed weight is flagged, not estimated."""
+    if header.get('weight') is not None:
+        return False
+    warnings.append('Weight not found.')
+    return True
 
 
 def weights_by_number(lines):
@@ -305,6 +344,7 @@ def _parse_id_qty_lines(cleaned):
         warnings.append(
             f"The packing list says {header['total_pcs']} pieces but the rows add up to {parsed_pcs}."
         )
+    missing_weight = bool(rows) and _note_missing_weight(header, warnings)
     return {
         'number': header['number'],
         'date': header['date'],
@@ -317,6 +357,7 @@ def _parse_id_qty_lines(cleaned):
         'racks': list(header.get('racks') or []),
         'weight': header.get('weight'),
         'weight_unit': header.get('weight_unit') or '',
+        'weight_missing': missing_weight,
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,
@@ -474,6 +515,7 @@ def parse_packing_lines(lines):
         warnings.append(
             f"The packing list says {header['total_sqft']} sq ft but the rows add up to {round(parsed_sqft, 2)}."
         )
+    missing_weight = bool(rows) and _note_missing_weight(header, warnings)
     return {
         'number': header['number'],
         'date': header['date'],
@@ -486,6 +528,7 @@ def parse_packing_lines(lines):
         'racks': list(header.get('racks') or []),
         'weight': header.get('weight'),
         'weight_unit': header.get('weight_unit') or '',
+        'weight_missing': missing_weight,
         'total_pcs': header['total_pcs'],
         'total_sqft': header['total_sqft'],
         'parsed_pcs': parsed_pcs,
@@ -1163,83 +1206,12 @@ def _serial_qty(rows):
     return totals
 
 
-def _weight_factor():
-    """Pounds per square foot per millimetre. 0.512 is about 2.5 kg/m² per mm."""
-    try:
-        from pricing_catalog import formula_number
-        return float(formula_number('glass_lb_per_sqf_mm', 0.512) or 0.512)
-    except Exception:
-        return 0.512
-
-
-def _items_by_serial(order):
-    """Glass lines keyed by the production serial printed on a packing list."""
-    found = {}
-    serial = 1
-    for item in (order or {}).get('items') or []:
-        if not isinstance(item, dict) or item.get('kind') in {'irregular_surcharge', 'dwg_creation'}:
-            continue
-        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
-        sized = spec.get('width') not in (None, '') and spec.get('height') not in (None, '')
-        if not sized and item.get('sqf') in (None, '', 0, '0'):
-            continue
-        found[serial] = item
-        serial += 1
-    return found
-
-
-def estimated_weight_lb(order, entry):
-    """Weight of the packed pieces when the list has no printed weight.
-
-    Area times glass thickness, at about 2.5 kg per square metre per millimetre,
-    converted to pounds with the same factor the quote and order PDFs use.
-    """
-    from documents import area_sqf, component_thickness_mm, line_weight
-    factor = _weight_factor()
-    items = _items_by_serial(order)
-    total = 0.0
-    counted = False
-    for line in (entry or {}).get('lines') or []:
-        if not isinstance(line, dict):
-            continue
-        try:
-            qty = int(line.get('qty') or 0)
-        except (TypeError, ValueError):
-            qty = 0
-        if qty <= 0:
-            continue
-        try:
-            serial = int(line.get('serial'))
-        except (TypeError, ValueError):
-            serial = None
-        item = items.get(serial) if serial is not None else None
-        if item:
-            one = dict(item)
-            one['pcs'] = 1
-            piece = line_weight(one, factor)
-            if piece > 0:
-                total += piece * qty
-                counted = True
-                continue
-        thickness = component_thickness_mm(line.get('description') or '')
-        area = 0.0
-        if line.get('width_mm') not in (None, '') and line.get('height_mm') not in (None, ''):
-            area = area_sqf(line.get('width_mm'), line.get('height_mm'), 'mm')
-        elif line.get('width_in') not in (None, '') and line.get('height_in') not in (None, ''):
-            area = area_sqf(line.get('width_in'), line.get('height_in'), 'in')
-        if area > 0 and thickness > 0 and factor > 0:
-            total += area * thickness * factor * qty
-            counted = True
-    if not counted or total <= 0:
-        return None
-    return total
-
-
-def summarize_packing(entries, order=None):
-    """Rack count, racks on each list, and weight summed in each list's units."""
+def summarize_packing(entries):
+    """Rack count, racks on each list, and the printed weight in pounds."""
     racks = []
     lists = []
-    totals = {}
+    total_lb = 0.0
+    found_weight = False
     for entry in entries or []:
         numbers = racks_on_list(entry)
         for number in numbers:
@@ -1252,23 +1224,22 @@ def summarize_packing(entries, order=None):
                 amount = float(entry.get('weight'))
             except (TypeError, ValueError):
                 amount = None
-        if amount is None and order is not None:
-            estimated = estimated_weight_lb(order, entry)
-            if estimated is not None:
-                amount = estimated
-                unit = unit or 'LBS'
-        if amount is not None:
-            key = unit or 'LBS'
-            totals[key] = round(totals.get(key, 0.0) + amount, 2)
         shown_weight = None
+        weight_text = 'weight not found'
+        missing = True
         if amount is not None:
+            missing = False
+            found_weight = True
             shown_weight = int(round(amount)) if abs(amount - round(amount)) < 0.005 else round(amount, 2)
-        weight_text = format_weight(shown_weight, unit) if shown_weight is not None else ''
+            pounds = weight_pounds(amount, unit)
+            total_lb = round(total_lb + pounds, 2)
+            shown_lb = int(round(pounds)) if abs(pounds - round(pounds)) < 0.005 else round(pounds, 2)
+            weight_text = format_weight(shown_lb, 'LBS') or 'weight not found'
+            if not weight_text or weight_text == 'weight not found':
+                missing = True
         racks_label = format_rack_numbers(numbers)
         number = entry.get('number') or 'Packing list'
-        line = f'{number}: {racks_label}'
-        if weight_text:
-            line = f'{line} · {weight_text}'
+        line = f'{number}: {racks_label} · {weight_text}'
         lists.append({
             'id': entry.get('id'),
             'number': entry.get('number') or '',
@@ -1277,15 +1248,22 @@ def summarize_packing(entries, order=None):
             'weight': shown_weight,
             'weight_unit': unit,
             'weight_text': weight_text,
+            'weight_missing': missing,
             'line': line,
         })
+    if found_weight:
+        weight_label = format_weight(
+            int(round(total_lb)) if abs(total_lb - round(total_lb)) < 0.005 else round(total_lb, 2),
+            'LBS',
+        )
+    else:
+        weight_label = 'weight not found' if lists else ''
     summary = {
         'rack_count': len(racks),
         'racks': racks,
         'lists': lists,
-        'weight_label': ' + '.join(
-            text for text in (format_weight(amount, unit) for unit, amount in totals.items()) if text
-        ),
+        'weight_label': weight_label,
+        'weight_missing': any(row.get('weight_missing') for row in lists),
     }
     summary['shipment'] = shipment_lines(summary)
     return summary
@@ -1299,6 +1277,7 @@ def shipment_lines(summary):
         'rack_line': f"Racks: {int(summary.get('rack_count') or 0)}",
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
         'weight_line': f"Total weight: {summary['weight_label']}" if summary.get('weight_label') else '',
+        'weight_missing': bool(summary.get('weight_missing')),
     }
 
 
@@ -1348,7 +1327,7 @@ def packing_for_intercompany(order, invoice, invoices):
         if document.get('id') == target:
             chosen = used
             break
-    return summarize_packing(chosen, order)
+    return summarize_packing(chosen)
 
 
 def parse_packing_upload(filename, payload):
