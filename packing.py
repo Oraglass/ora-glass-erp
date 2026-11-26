@@ -1599,25 +1599,44 @@ def shipment_lines(summary):
             'rack_line': '', 'list_lines': [], 'pcs_line': '', 'sqft_line': '',
             'weight_line': '', 'weight_missing': False,
         }
+    def _plain(value, missing):
+        if value in (None, ''):
+            return missing
+        return format_quantity(value)
+
+    def _pounds(row):
+        if row.get('weight_missing') or row.get('weight') in (None, ''):
+            return 'weight not found'
+        text = str(row.get('weight_text') or '')
+        if text.endswith(' lb'):
+            return text[:-3].strip()
+        return _plain(weight_pounds(row.get('weight'), row.get('weight_unit')), 'weight not found')
+
     rows = []
     for row in summary.get('lists') or []:
         if not row.get('line') and not row.get('number'):
             continue
+        racks = [str(number).strip() for number in (row.get('racks') or []) if str(number or '').strip()]
         rows.append({
             'number': row.get('number') or '',
-            'racks': row.get('racks_label') or '',
-            'pcs': row.get('pcs_text') or '',
-            'sqft': row.get('sqft_text') or '',
-            'weight': row.get('weight_text') or '',
+            'rack': ', '.join(racks) or '-',
+            'pcs': _plain(row.get('pcs'), 'pcs not found'),
+            'sqft': _plain(row.get('sqft'), 'sq ft not found'),
+            'weight': _pounds(row),
+            'weight_missing': bool(row.get('weight_missing')),
         })
+    weight_total = str(summary.get('weight_label') or '')
+    if weight_total.endswith(' lb'):
+        weight_total = weight_total[:-3].strip()
     return {
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
         'rows': rows,
         'total': {
-            'racks': str(int(summary.get('rack_count') or 0)),
+            'rack': str(int(summary.get('rack_count') or 0)),
             'pcs': summary.get('pcs_label') or '',
             'sqft': summary.get('sqft_label') or '',
-            'weight': summary.get('weight_label') or '',
+            'weight': weight_total,
+            'weight_missing': bool(summary.get('weight_missing')),
         },
         'rack_line': f"Total racks: {int(summary.get('rack_count') or 0)}",
         'pcs_line': f"Total pcs: {summary['pcs_label']}" if summary.get('pcs_label') else '',
