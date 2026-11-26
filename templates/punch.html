@@ -86,7 +86,7 @@ th,td{padding:8px;text-align:left;border-bottom:1px solid #eee}
 <div class="history">
 <h2>Last 2 weeks</h2>
 <table>
-<thead><tr><th>When (Pacific)</th><th>Action</th><th>Hours</th></tr></thead>
+<thead><tr><th>When</th><th>Action</th><th>Hours</th></tr></thead>
 <tbody id="history"><tr><td colspan="3">Loading…</td></tr></tbody>
 </table>
 </div>
@@ -116,7 +116,7 @@ function render(data) {
   const punches = data.history || [];
   const body = document.getElementById('history');
   if (!punches.length) { body.innerHTML = '<tr><td colspan="3">No punches yet</td></tr>'; return; }
-  body.innerHTML = punches.map(row => '<tr><td>' + row.pacific + '</td><td>' + row.action_label + (row.no_location ? ' · no location' : '') + '</td><td></td></tr>').join('')
+  body.innerHTML = punches.map(row => '<tr><td>' + (row.local || row.pacific) + (row.timezone ? ' ' + row.timezone : '') + '</td><td>' + row.action_label + (row.no_location ? ' · no location' : '') + '</td><td></td></tr>').join('')
     + rows.map(day => '<tr><td colspan="2"><b>' + day.date + (day.missing_out ? ' · missing punch-out' : '') + '</b></td><td>' + Number(day.hours).toFixed(2) + '</td></tr>').join('');
 }
 async function load() {

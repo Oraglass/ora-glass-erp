@@ -434,6 +434,8 @@ def load_time_settings():
     if days < 90:
         days = 90
     data['photo_retention_days'] = days
+    from timeclock import DEFAULT_ZONE, normalize_zone
+    data['default_timezone'] = normalize_zone(data.get('default_timezone')) or DEFAULT_ZONE
     return data
 
 

@@ -3,7 +3,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from timeclock import PACIFIC, pacific_date, replay
+from timeclock import DEFAULT_ZONE, local_date, normalize_zone, replay, zone_info
 
 CENT = Decimal('0.01')
 HOUR = Decimal('0.01')
@@ -62,6 +62,7 @@ def normalize_settings(raw):
         'overtime_threshold_hours': q_hours(threshold),
         'pay_frequency': frequency,
         'period_anchor': anchor.isoformat(),
+        'default_timezone': normalize_zone(raw.get('default_timezone')) or DEFAULT_ZONE,
     }
 
 
@@ -122,30 +123,31 @@ def _hhmm(value):
     return hour, minute
 
 
-def shift_bounds(day, shift):
+def shift_bounds(day, shift, zone=None):
     sh, sm = _hhmm(shift.get('start'))
     eh, em = _hhmm(shift.get('end'))
-    start = datetime(day.year, day.month, day.day, sh, sm, tzinfo=PACIFIC)
-    end = datetime(day.year, day.month, day.day, eh, em, tzinfo=PACIFIC)
+    tz = zone_info(zone)[0]
+    start = datetime(day.year, day.month, day.day, sh, sm, tzinfo=tz)
+    end = datetime(day.year, day.month, day.day, eh, em, tzinfo=tz)
     if end <= start:
         end += timedelta(days=1)
     return start, end
 
 
-def break_window(day, shift):
+def break_window(day, shift, zone=None):
     minutes = int(shift.get('unpaid_break_minutes') or 0)
     if minutes <= 0:
         return None
-    start, end = shift_bounds(day, shift)
+    start, end = shift_bounds(day, shift, zone)
     midpoint = start + (end - start) / 2
     half = timedelta(minutes=minutes) / 2
     return midpoint - half, midpoint + half
 
 
-def scheduled_hours(day, shift):
+def scheduled_hours(day, shift, zone=None):
     if not shift:
         return Decimal('0')
-    start, end = shift_bounds(day, shift)
+    start, end = shift_bounds(day, shift, zone)
     minutes = Decimal(str((end - start).total_seconds())) / Decimal('60')
     minutes -= Decimal(int(shift.get('unpaid_break_minutes') or 0))
     if minutes < 0:
@@ -209,7 +211,8 @@ def attendance_range(punches, assignments, shifts_by_id, settings, start, end):
     day = start
     while day <= end:
         shift = shift_for_day(assignments, shifts_by_id, day)
-        day_spans = [span for span in spans if pacific_date(span['in']) == day]
+        day_spans = [span for span in spans if local_date(span['in'], span.get('zone')) == day]
+        zone_name = (day_spans[0].get('zone') if day_spans else None) or settings.get('default_timezone') or DEFAULT_ZONE
         closed = [span for span in day_spans if span.get('out')]
         missing_out = any(span.get('out') is None for span in day_spans)
         actual_seconds = 0.0
@@ -223,7 +226,7 @@ def attendance_range(punches, assignments, shifts_by_id, settings, start, end):
         actual_seconds = max(0.0, actual_seconds)
         paid_seconds = actual_seconds
         if shift and closed and not used_break_punches:
-            window = break_window(day, shift)
+            window = break_window(day, shift, zone_name)
             if window:
                 for span in closed:
                     if span['in'] <= window[0] and span['out'] >= window[1]:
@@ -236,7 +239,7 @@ def attendance_range(punches, assignments, shifts_by_id, settings, start, end):
         late_minutes = 0
         early_minutes = 0
         if shift and day_spans:
-            shift_start, shift_end = shift_bounds(day, shift)
+            shift_start, shift_end = shift_bounds(day, shift, zone_name)
             first_in = day_spans[0]['in']
             if first_in > shift_start + grace:
                 late_minutes = int((first_in - shift_start).total_seconds() // 60)
@@ -244,7 +247,7 @@ def attendance_range(punches, assignments, shifts_by_id, settings, start, end):
                 last_out = closed[-1]['out']
                 if last_out + grace < shift_end:
                     early_minutes = int((shift_end - last_out).total_seconds() // 60)
-        scheduled = scheduled_hours(day, shift)
+        scheduled = scheduled_hours(day, shift, zone_name)
         missed_shift = bool(shift) and not day_spans
         flags = []
         if missing_out:
@@ -266,6 +269,7 @@ def attendance_range(punches, assignments, shifts_by_id, settings, start, end):
             'missed_shift': missed_shift,
             'flags': flags,
             'shift_name': (shift or {}).get('name') or '',
+            'timezone': zone_name,
         })
         day += timedelta(days=1)
     return rows
@@ -393,4 +397,5 @@ def build_stub(worker, period_start, period_end, days, rates, adjustments, setti
         'missing_rate': missing_rate,
         'mixed_currency': mixed,
         'label': GROSS_LABEL,
+        'timezones': sorted({row.get('timezone') for row in days or [] if row.get('timezone')}),
     }

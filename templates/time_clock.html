@@ -7,30 +7,45 @@
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#222}
-.wrap{max-width:1100px;margin:0 auto;padding:16px}
-.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px}
-h1,h2{margin:0 0 10px;color:#333;font-size:20px}
-.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
-label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:4px}
-input,select,button{font:14px 'Segoe UI',Arial,sans-serif;padding:8px;border:1px solid #ddd;border-radius:6px}
-button,.btn{background:#9f1830;color:#fff;border:0;cursor:pointer;text-decoration:none;display:inline-block}
-.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+.wrap{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.card{background:#fff;border-radius:10px;padding:20px;width:100%;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+h1,h2{margin:0 0 12px;color:#333;font-size:20px}
+.grid{display:grid;gap:12px 14px;align-items:end}
+.grid.kiosk{grid-template-columns:minmax(180px,1fr) minmax(220px,1.6fr) 200px}
+.grid.filters{grid-template-columns:minmax(200px,1.6fr) minmax(150px,1fr) minmax(150px,1fr) 140px}
+.grid .span2{grid-column:span 2}
+label{font-size:12px;color:#666;display:flex;flex-direction:column;gap:6px;min-width:0}
+input,select,button,a.btn{font:14px 'Segoe UI',Arial,sans-serif;height:40px;min-height:40px;padding:0 12px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#222;width:100%;box-sizing:border-box}
+button,a.btn{background:#9f1830;color:#fff;border:1px solid #9f1830;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;line-height:1;white-space:nowrap}
+.grid > button{width:100%}
+button.outline,a.btn.outline{background:#fff;color:#9f1830;border:1px solid #9f1830}
+button.outline:hover,a.btn.outline:hover{background:#fff6f7}
+.links{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+.links > a.btn{width:auto;min-width:148px;height:40px;padding:0 16px}
+.links a:not(.btn){width:auto;height:auto;border:0;background:transparent;color:#9f1830;font-weight:600;align-self:center;padding:0}
+.stack{display:flex;flex-direction:column;gap:14px}
+.kiosk-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px}
+.kiosk-row span{flex:1 1 180px}
+.kiosk-row button{width:auto;min-width:100px;flex:0 0 auto}
+.note{color:#666;font-size:13px;margin:10px 0 0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
+th{background:#f7f7f7;color:#333;font-weight:600}
 .flag{color:#9f1830;font-weight:600}
 .thumb{width:72px;height:54px;object-fit:cover;border-radius:6px;display:block}
-.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer}
+.thumb-btn{background:#fff;border:0;padding:0;cursor:pointer;width:auto;height:auto}
 #photo-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:30}
 #photo-lightbox.open{display:flex}
 #photo-lightbox img{max-width:90vw;max-height:90vh;border-radius:8px}
-.note{color:#666;font-size:13px}
 .correct{display:none;background:#fafafa;padding:8px;border-radius:8px;margin-top:6px}
 .correct.open{display:grid;gap:6px}
-@media (max-width:640px){
-  table,thead,tbody,tr,th,td{display:block}
-  thead{display:none}
-  tr{padding:8px 0;border-bottom:1px solid #eee}
-  td{border:0;padding:2px 0}
+.correct input,.correct select,.correct button{width:100%}
+@media (max-width:900px){
+  .wrap{padding:12px}
+  .card{padding:14px}
+  .grid.kiosk,.grid.filters{grid-template-columns:1fr 1fr}
+  .grid > button{grid-column:1 / -1}
+  .links > a.btn{flex:1 1 148px}
 }
 </style>
 </head>
@@ -40,24 +55,31 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="wrap">
 <div class="card">
 <h1>Time Clock</h1>
-<div class="filters" id="kiosk-tools">
+<div class="stack" id="kiosk-tools">
+<div class="grid kiosk">
 <label>Tablet name<input id="kiosk-name" value="Shop tablet"></label>
+<label>Time zone<select id="kiosk-zone"></select></label>
 <button type="button" id="activate-kiosk">Activate this device as kiosk</button>
+</div>
+<div class="grid kiosk">
 <label>Keep photos (days)<input id="retention-days" type="number" min="90" value="90"></label>
+<span></span>
 <button type="button" id="save-retention">Save retention</button>
 </div>
+</div>
 <p class="note">Photos are kept at least 90 days and are visible only to administrators and staff who can manage time.</p>
-<p class="note" id="kiosk-list"></p>
-<p class="note">Times are shown in Pacific. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
-<div class="filters">
+<div class="note" id="kiosk-list"></div>
+<p class="note">Times are shown in the time zone stored on each punch. Hours deduct breaks. A missing punch-out is flagged and is not counted until it is corrected.</p>
+<div class="grid filters">
 <label>Employee<select id="filter-user"><option value="">All employees</option></select></label>
 <label>From<input type="date" id="filter-from"></label>
 <label>To<input type="date" id="filter-to"></label>
 <button type="button" id="apply">Show</button>
 </div>
 <div class="links">
-<a class="btn" id="csv-link" href="#">Export CSV</a>
-<a class="btn" id="pdf-link" href="#">PDF timesheet</a>
+<a class="btn outline" id="csv-link" href="#">Export CSV</a>
+<a class="btn outline" id="pdf-link" href="#">PDF timesheet</a>
+<a class="btn outline" id="xlsx-link" href="#">Excel shifts</a>
 <a href="{{ url_for('punch') }}">Punch page</a>
 {% if can_payroll %}<a href="{{ url_for('payroll_page') }}">Payroll</a>{% endif %}
 </div>
@@ -120,13 +142,14 @@ function render(data) {
     const photo = row.has_photo
       ? '<button type="button" class="thumb-btn" data-photo="' + esc(row.id) + '"><img class="thumb" alt="Punch photo" src="/api/time-clock/photos/' + esc(row.id) + '"></button>'
       : '<span class="flag">No photo</span>';
-    return '<tr><td>' + esc(row.pacific) + '</td><td>' + esc(row.name || row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + photo + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
+    return '<tr><td>' + esc(row.local || row.pacific) + (row.timezone ? ' ' + esc(row.timezone) : '') + '</td><td>' + esc(row.name || row.user) + '</td><td>' + esc(row.action_label) + (row.corrected ? ' · corrected' : '') + (row.note ? '<br>' + esc(row.note) : '') + '</td><td>' + photo + '</td><td>' + esc(loc) + '</td><td><button type="button" data-correct="' + esc(row.id) + '">Correct</button><form class="correct" data-form="' + esc(row.id) + '"><input type="datetime-local" name="at_pacific" aria-label="Pacific time"><select name="action"><option value="in">Punch in</option><option value="out">Punch out</option><option value="break_start">Break start</option><option value="break_end">Break end</option></select><input name="note" placeholder="Note"><input name="reason" placeholder="Reason (required)" required><button type="submit">Save correction</button></form></td></tr>';
   }).join('') || '<tr><td colspan="6">No punches</td></tr>';
 }
 async function load() {
   const params = rangeQuery();
   document.getElementById('csv-link').href = '/api/time-clock/export.csv?' + params.toString();
   document.getElementById('pdf-link').href = '/api/time-clock/timesheet.pdf?' + params.toString();
+  document.getElementById('xlsx-link').href = '/api/time-clock/shifts.xlsx?' + params.toString();
   const res = await fetch('/api/time-clock?' + params.toString());
   if (res.status === 401) { window.location = '/login'; return; }
   if (!res.ok) { alert('Could not load timesheets'); return; }
@@ -167,7 +190,10 @@ document.getElementById('activate-kiosk').addEventListener('click', async () => 
   if (!confirm('Activate this device as the shop time clock? You will be signed out on this tablet.')) return;
   const res = await fetch('/api/time-clock/kiosks', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: document.getElementById('kiosk-name').value})
+    body: JSON.stringify({
+      name: document.getElementById('kiosk-name').value,
+      timezone: document.getElementById('kiosk-zone').value
+    })
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) { alert(body.error || 'Could not activate the kiosk'); return; }
@@ -206,9 +232,15 @@ async function loadKiosks() {
     const state = row.revoked ? 'Revoked' : (row.locked ? 'Locked' : 'Active');
     const revoke = row.revoked ? '' : ' <button type="button" data-revoke="' + esc(row.id) + '">Revoke</button>';
     const unlock = row.locked ? ' <button type="button" data-unlock="' + esc(row.id) + '">Unlock</button>' : '';
-    return '<span>' + esc(row.name) + ' · ' + state + '</span>' + revoke + unlock;
-  }).join('<br>') : 'No kiosks registered.';
+    return '<div class="kiosk-row"><span>' + esc(row.name) + ' · ' + state + ' · ' + esc(row.timezone || '') + '</span>' + revoke + unlock + '</div>';
+  }).join('') : 'No kiosks registered.';
 }
+fetch('/api/time-zones').then(res => res.ok ? res.json() : null).then(body => {
+  if (!body) return;
+  const select = document.getElementById('kiosk-zone');
+  const rest = body.zones.filter(zone => body.common.indexOf(zone) < 0);
+  select.innerHTML = body.common.concat(rest).map(zone => '<option value="' + zone + '"' + (zone === body.default ? ' selected' : '') + '>' + zone.replace(/_/g, ' ') + '</option>').join('');
+});
 load();
 loadKiosks();
 </script>

@@ -1,13 +1,63 @@
-"""Punch state and payroll hours. Times are stored in UTC and counted on Pacific dates."""
+"""Punch state and payroll hours.
+
+Punches are stored in UTC from the server clock. The calendar day, the clock
+on the screen, and overtime use the time zone stored with the punch: the
+kiosk's zone, or the company default for a phone punch. That default is
+America/Vancouver, which matches the previous Pacific day.
+"""
 
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 
-PACIFIC = ZoneInfo('America/Los_Angeles')
+DEFAULT_ZONE = 'America/Vancouver'
+PACIFIC = ZoneInfo(DEFAULT_ZONE)
 ACTIONS = ('in', 'out', 'break_start', 'break_end')
+COMMON_ZONES = (
+    'America/Vancouver',
+    'America/Edmonton',
+    'America/Winnipeg',
+    'America/Toronto',
+    'America/Halifax',
+    'America/St_Johns',
+    'America/Los_Angeles',
+    'America/Denver',
+    'America/Phoenix',
+    'America/Chicago',
+    'America/New_York',
+    'America/Anchorage',
+    'Pacific/Honolulu',
+)
 
 
-def as_utc(value, naive_is_pacific=False):
+def normalize_zone(name):
+    """A real IANA name, or None when the caller sent something that is not one.
+
+    A blank value means the default, America/Vancouver.
+    """
+    text = str(name or '').strip()
+    if not text:
+        return DEFAULT_ZONE
+    try:
+        ZoneInfo(text)
+    except Exception:
+        return None
+    return text
+
+
+def zone_info(name=None):
+    chosen = normalize_zone(name) or DEFAULT_ZONE
+    return ZoneInfo(chosen), chosen
+
+
+def zone_choices():
+    """Common North American zones first, then every other IANA zone."""
+    available = set(available_timezones())
+    common = [name for name in COMMON_ZONES if normalize_zone(name) == name]
+    rest = sorted(name for name in available if name not in common)
+    return common, common + rest
+
+
+def as_utc(value, naive_is_pacific=False, naive_zone=None):
     if isinstance(value, datetime):
         moment = value
     else:
@@ -16,7 +66,10 @@ def as_utc(value, naive_is_pacific=False):
             text = text[:-1] + '+00:00'
         moment = datetime.fromisoformat(text)
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=PACIFIC if naive_is_pacific else timezone.utc)
+        if naive_zone:
+            moment = moment.replace(tzinfo=zone_info(naive_zone)[0])
+        else:
+            moment = moment.replace(tzinfo=PACIFIC if naive_is_pacific else timezone.utc)
     return moment.astimezone(timezone.utc)
 
 
@@ -24,16 +77,28 @@ def stamp(moment):
     return as_utc(moment).replace(microsecond=0).isoformat()
 
 
+def local_date(moment, zone=None):
+    return as_utc(moment).astimezone(zone_info(zone)[0]).date()
+
+
+def local_clock(moment, zone=None):
+    return as_utc(moment).astimezone(zone_info(zone)[0]).strftime('%H:%M')
+
+
+def local_label(moment, zone=None):
+    return as_utc(moment).astimezone(zone_info(zone)[0]).strftime('%Y-%m-%d %H:%M')
+
+
 def pacific_date(moment):
-    return as_utc(moment).astimezone(PACIFIC).date()
+    return local_date(moment, DEFAULT_ZONE)
 
 
 def pacific_clock(moment):
-    return as_utc(moment).astimezone(PACIFIC).strftime('%H:%M')
+    return local_clock(moment, DEFAULT_ZONE)
 
 
 def pacific_label(moment):
-    return as_utc(moment).astimezone(PACIFIC).strftime('%Y-%m-%d %H:%M')
+    return local_label(moment, DEFAULT_ZONE)
 
 
 def _hours(start, end):
@@ -54,6 +119,7 @@ def replay(punches):
             current = {
                 'in': moment,
                 'in_id': punch.get('id'),
+                'zone': normalize_zone(punch.get('timezone')) or DEFAULT_ZONE,
                 'breaks': [],
                 'open_break': None,
                 'out': None,
@@ -116,7 +182,7 @@ def summarize(punches, start=None, end=None, now=None):
     shifts = replay(punches)
     days = {}
     for shift in shifts:
-        day = pacific_date(shift['in'])
+        day = local_date(shift['in'], shift.get('zone'))
         if start and day < start:
             continue
         if end and day > end:
@@ -138,7 +204,7 @@ def live_hours(punches, start, end, now=None):
     now = as_utc(now or datetime.now(timezone.utc))
     total = 0.0
     for shift in replay(punches):
-        day = pacific_date(shift['in'])
+        day = local_date(shift['in'], shift.get('zone'))
         if day < start or day > end:
             continue
         amount = shift_hours(shift, now=now, live=True)
