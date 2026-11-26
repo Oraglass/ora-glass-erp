@@ -24,6 +24,11 @@
         .module p { font-size: 13px; color: #666; }
         .import-notice { background: #fff6f7; border: 1px solid #f0c9d0; color: #9f1830; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; }
         .import-notice a { color: #9f1830; font-weight: 600; }
+        .badge { display: inline-block; background: #9f1830; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 12px; font-weight: 700; }
+        .stale-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; color: #333; }
+        .stale-table th, .stale-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0c9d0; }
+        .stale-table input { padding: 6px; border: 1px solid #ddd; border-radius: 4px; }
+        .stale-table button, .import-notice button { margin-left: 6px; background: #fff; color: #9f1830; border: 1px solid #9f1830; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -64,6 +69,39 @@
             Upload or review your company's certificate.
         </div>
         {% endif %}
+        {% if stale_packed %}
+        <div class="import-notice" id="stale-packed-orders">
+            <strong><span class="badge" id="stale-packed-badge">{{ stale_packed|length }}</span> packed {{ 'order is' if stale_packed|length == 1 else 'orders are' }} not shipped or delivered.</strong>
+            <p>Packed for more than {{ stale_packed_days }} days. Invoicing can be missed when the status is not updated. No email is sent.</p>
+            <table class="stale-table">
+                <thead><tr><th>Order</th><th>Customer</th><th>Packed</th><th>Days</th><th>Dismiss</th></tr></thead>
+                <tbody>
+                {% for row in stale_packed %}
+                <tr>
+                    <td><a href="/orders/{{ row.id }}">{{ row.id }}{% if row.project %} · {{ row.project }}{% endif %}</a></td>
+                    <td>{{ row.company }}</td>
+                    <td>{{ row.packed_on }}</td>
+                    <td>{{ row.days }}</td>
+                    <td>
+                        <input data-stale-reason="{{ row.id }}" aria-label="Reason for order {{ row.id }}" placeholder="Reason" maxlength="300">
+                        <button type="button" data-stale-dismiss="{{ row.id }}">Dismiss</button>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% if is_admin %}
+        <form class="import-notice" id="stale-packed-setting">
+            <label>Remind when packed longer than
+                <input id="stale-packed-days" name="days" type="number" min="1" max="3650" value="{{ stale_packed_days }}">
+                days
+            </label>
+            <button type="submit">Save</button>
+            <p>Default 30. Customers are not emailed.</p>
+        </form>
+        {% endif %}
         {% if qbo_expired %}
         <div class="import-notice" id="qbo-expired">
             QuickBooks connection expired - Reconnect
@@ -85,7 +123,7 @@
             {% endif %}
             {% if 'orders' in modules %}
             <a href="/orders" class="module">
-                <h3>Orders</h3>
+                <h3>Orders{% if stale_packed %} <span class="badge">{{ stale_packed|length }}</span>{% endif %}</h3>
                 <p>View and track orders</p>
             </a>
             {% endif %}
@@ -148,5 +186,49 @@
             {% endif %}
         </div>
     </div>
+    <script>
+    document.querySelectorAll('[data-stale-dismiss]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const id = button.getAttribute('data-stale-dismiss');
+        const reason = (document.querySelector('[data-stale-reason="' + id + '"]') || {}).value || '';
+        if (!String(reason).trim()) {
+          alert('Enter a reason.');
+          return;
+        }
+        if (!window.confirm('Dismiss the packed reminder for order ' + id + '?')) return;
+        button.disabled = true;
+        const res = await fetch('/api/orders/' + id + '/stale-packed/dismiss', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({reason: reason})
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          button.disabled = false;
+          alert(payload.error || 'Could not dismiss this reminder');
+          return;
+        }
+        window.location.reload();
+      });
+    });
+    const setting = document.getElementById('stale-packed-setting');
+    if (setting) {
+      setting.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const days = document.getElementById('stale-packed-days').value;
+        const res = await fetch('/api/settings/stale-packed-days', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({days: days})
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(payload.error || 'Could not save the reminder');
+          return;
+        }
+        window.location.reload();
+      });
+    }
+    </script>
 </body>
 </html>

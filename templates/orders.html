@@ -101,6 +101,9 @@ details.section > summary h3{display:inline}
 <div id="order-detail"></div>
 {% else %}
 <h2 style="color:#333">Production orders</h2>
+{% if staff_view and stale_packed_count is defined and stale_packed_count %}
+<p class="note" id="stale-packed-alert" style="background:#fff6f7;border:1px solid #f0c9d0;color:#9f1830;border-radius:8px;padding:12px"><a href="/dashboard#stale-packed-orders">{{ stale_packed_count }} packed {{ 'order has' if stale_packed_count == 1 else 'orders have' }} been packed for more than {{ stale_packed_days }} days and {{ 'is' if stale_packed_count == 1 else 'are' }} not shipped or delivered.</a> No email is sent.</p>
+{% endif %}
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <p class="note" id="price-note"></p>
 <div class="filters">
