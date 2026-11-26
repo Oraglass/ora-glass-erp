@@ -118,6 +118,7 @@ from payroll import (
     period_containing,
     q_money,
     validate_settings as validate_payroll_settings,
+    week_bounds,
     weeks_covering,
 )
 from storage import (
@@ -173,12 +174,14 @@ from timeclock import (
     as_utc,
     clock_status,
     live_hours,
+    shift_hours,
     DEFAULT_ZONE,
     local_clock,
     local_date,
     local_label,
     normalize_zone,
     zone_choices,
+    zone_info,
     replay,
     stamp,
     summarize,
@@ -13551,6 +13554,199 @@ def export_time_csv():
     payload = buffer.getvalue().encode('utf-8')
     return send_file(
         BytesIO(payload), mimetype='text/csv', as_attachment=True, download_name='timesheet.csv',
+    )
+
+
+def _wall_time(moment, zone):
+    """Clock time in the punch zone, as a naive datetime Excel can store."""
+    if moment is None:
+        return None
+    return as_utc(moment).astimezone(zone_info(zone)[0]).replace(tzinfo=None, microsecond=0)
+
+
+def _shift_source(punch, kiosks):
+    if not punch or not punch.get('kiosk_id'):
+        return 'Phone'
+    kiosk = kiosks.get(punch.get('kiosk_id')) or {}
+    name = kiosk.get('name') or f"Kiosk {punch.get('kiosk_id')}"
+    return name if str(name).lower().startswith('kiosk') else f'Kiosk {name}'
+
+
+def _shift_editors(punches):
+    names = []
+    for punch in punches:
+        for change in (punch or {}).get('corrections') or []:
+            who = str(change.get('by') or '').strip()
+            if who and who not in names:
+                names.append(who)
+    if not names:
+        return 'No'
+    return 'Yes, ' + ', '.join(names)
+
+
+def _export_shift_rows(punches, start, end, settings):
+    """One record per shift whose clock-in falls in the filter. Overtime uses the weekly threshold, including earlier hours that week."""
+    from decimal import Decimal
+    settings = normalize_payroll_settings(settings)
+    threshold = Decimal(str(settings['overtime_threshold_hours']))
+    by_user = {}
+    by_id = {}
+    for row in punches or []:
+        by_user.setdefault(row.get('user'), []).append(row)
+        by_id[row.get('id')] = row
+    rows = []
+    for account, owned in by_user.items():
+        try:
+            shifts = replay(owned)
+        except ValueError:
+            continue
+        remaining = {}
+        for shift in shifts:
+            zone = shift.get('zone') or DEFAULT_ZONE
+            day = local_date(shift['in'], zone)
+            week, _end = week_bounds(day, settings['work_week_start'])
+            worked = shift_hours(shift, live=False)
+            regular = overtime = None
+            if worked is not None:
+                left = remaining.get(week, threshold)
+                regular = min(Decimal(str(worked)), max(Decimal('0'), left))
+                overtime = Decimal(str(worked)) - regular
+                remaining[week] = left - regular
+            if start and day < start:
+                continue
+            if end and day > end:
+                continue
+            related = [by_id.get(shift.get('in_id'))]
+            related.append(by_id.get(shift.get('out_id')))
+            break_seconds = 0.0
+            for began, ended in shift['breaks']:
+                break_seconds += max(0.0, (ended - began).total_seconds())
+            rows.append({
+                'user': account,
+                'date': day,
+                'zone': zone,
+                'clock_in': _wall_time(shift['in'], zone),
+                'clock_out': _wall_time(shift.get('out'), zone),
+                'break': timedelta(seconds=int(round(break_seconds))),
+                'hours': None if worked is None else float(worked),
+                'regular': None if regular is None else float(regular),
+                'overtime': None if overtime is None else float(overtime),
+                'source': _shift_source(related[0], {}),
+                'edited': _shift_editors([item for item in related if item]),
+                'in_punch': related[0],
+            })
+    return rows
+
+
+def _shifts_workbook(punches, users, kiosks, start, end):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    kiosk_by_id = {row.get('id'): row for row in kiosks or []}
+    settings = load_time_settings()
+    raw_rows = _export_shift_rows(punches, start, end, settings)
+    for row in raw_rows:
+        row['source'] = _shift_source(row.pop('in_punch'), kiosk_by_id)
+    raw_rows.sort(key=lambda row: (row['date'], (users.get(row['user']) or {}).get('name') or row['user'] or '', row['clock_in'] or datetime.min))
+    zones = sorted({row['zone'] for row in raw_rows}) or [DEFAULT_ZONE]
+    start_label = start.isoformat() if start else 'start'
+    end_label = end.isoformat() if end else 'today'
+    title = f'Shifts {start_label} to {end_label} · {", ".join(zones)}'
+    headers = [
+        'Worker', 'Employee #', 'Date', 'Clock in', 'Clock out', 'Break',
+        'Hours worked', 'Regular hours', 'Overtime hours', 'Kiosk/phone', 'Edited',
+    ]
+    book = Workbook()
+    sheet = book.active
+    sheet.title = 'Shifts'
+    sheet['A1'] = title
+    sheet['A1'].font = Font(bold=True, size=14)
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    header_fill = PatternFill('solid', fgColor='F5F5F5')
+    for index, label in enumerate(headers, start=1):
+        cell = sheet.cell(2, index, label)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='left')
+    for offset, row in enumerate(raw_rows):
+        record = users.get(row['user']) or {}
+        values = [
+            record.get('name') or row['user'] or '',
+            record.get('employee_number') or '',
+            row['date'],
+            row['clock_in'],
+            row['clock_out'],
+            row['break'],
+            row['hours'],
+            row['regular'],
+            row['overtime'],
+            row['source'],
+            row['edited'],
+        ]
+        for index, value in enumerate(values, start=1):
+            sheet.cell(offset + 3, index, value)
+        sheet.cell(offset + 3, 3).number_format = 'YYYY-MM-DD'
+        sheet.cell(offset + 3, 4).number_format = 'YYYY-MM-DD HH:MM'
+        sheet.cell(offset + 3, 5).number_format = 'YYYY-MM-DD HH:MM'
+        sheet.cell(offset + 3, 6).number_format = '[h]:mm'
+        for column in (7, 8, 9):
+            sheet.cell(offset + 3, column).number_format = '0.00'
+    sheet.freeze_panes = 'A3'
+    sheet.auto_filter.ref = f'A2:{get_column_letter(len(headers))}{max(2, sheet.max_row)}'
+    widths = [22, 14, 14, 20, 20, 12, 16, 16, 16, 22, 28]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+    summary = book.create_sheet('Summary')
+    summary['A1'] = title
+    summary['A1'].font = Font(bold=True, size=14)
+    summary_headers = ['Worker', 'Employee #', 'Shifts', 'Regular hours', 'Overtime hours', 'Total hours']
+    summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
+    for index, label in enumerate(summary_headers, start=1):
+        cell = summary.cell(2, index, label)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+    totals = {}
+    for row in raw_rows:
+        bucket = totals.setdefault(row['user'], {'shifts': 0, 'regular': 0.0, 'overtime': 0.0, 'hours': 0.0})
+        bucket['shifts'] += 1
+        bucket['regular'] += row['regular'] or 0
+        bucket['overtime'] += row['overtime'] or 0
+        bucket['hours'] += row['hours'] or 0
+    ordered = sorted(totals, key=lambda key: ((users.get(key) or {}).get('name') or key or '').lower())
+    for offset, account in enumerate(ordered):
+        record = users.get(account) or {}
+        bucket = totals[account]
+        summary.cell(offset + 3, 1, record.get('name') or account or '')
+        summary.cell(offset + 3, 2, record.get('employee_number') or '')
+        summary.cell(offset + 3, 3, bucket['shifts'])
+        summary.cell(offset + 3, 4, round(bucket['regular'], 2)).number_format = '0.00'
+        summary.cell(offset + 3, 5, round(bucket['overtime'], 2)).number_format = '0.00'
+        summary.cell(offset + 3, 6, round(bucket['hours'], 2)).number_format = '0.00'
+    summary.freeze_panes = 'A3'
+    for index, width in enumerate([22, 14, 12, 16, 16, 14], start=1):
+        summary.column_dimensions[get_column_letter(index)].width = width
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+@app.route('/api/time-clock/shifts.xlsx', methods=['GET'])
+@login_required
+def export_time_xlsx():
+    if not can_manage_time(current_user()):
+        return json_error('Access denied', 403)
+    email = normalize_email(request.args.get('user'))
+    punches = load_punches()
+    if email:
+        punches = [row for row in punches if row.get('user') == email]
+    payload = _shifts_workbook(punches, load_users(), load_kiosks(), _date_arg('from'), _date_arg('to'))
+    return send_file(
+        BytesIO(payload),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='shifts.xlsx',
     )
 
 

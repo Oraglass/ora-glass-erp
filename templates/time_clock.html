@@ -59,6 +59,7 @@ th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:to
 <div class="links">
 <a class="btn" id="csv-link" href="#">Export CSV</a>
 <a class="btn" id="pdf-link" href="#">PDF timesheet</a>
+<a class="btn" id="xlsx-link" href="#">Excel shifts</a>
 <a href="{{ url_for('punch') }}">Punch page</a>
 {% if can_payroll %}<a href="{{ url_for('payroll_page') }}">Payroll</a>{% endif %}
 </div>
@@ -128,6 +129,7 @@ async function load() {
   const params = rangeQuery();
   document.getElementById('csv-link').href = '/api/time-clock/export.csv?' + params.toString();
   document.getElementById('pdf-link').href = '/api/time-clock/timesheet.pdf?' + params.toString();
+  document.getElementById('xlsx-link').href = '/api/time-clock/shifts.xlsx?' + params.toString();
   const res = await fetch('/api/time-clock?' + params.toString());
   if (res.status === 401) { window.location = '/login'; return; }
   if (!res.ok) { alert('Could not load timesheets'); return; }

@@ -133,3 +133,95 @@ def test_dst_boundaries_follow_the_punch_zone():
     ], [], settings)
     assert stub['timezones'] == ['America/Toronto']
     assert stub['regular_hours'] == '8.00'
+
+
+def test_shift_workbook_uses_excel_times_and_the_same_filters(client):
+    from datetime import timedelta
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from storage import save_kiosks, save_punches
+    write_user('admin@oraglass.us', 'admin')
+    write_user('lead@oraglass.us', 'employee')
+    write_user('clerk@oraglass.us', 'employee')
+    from storage import load_users, save_users
+    users = load_users()
+    users['lead@oraglass.us']['manage_time'] = True
+    users['sam-shop@oraglass.us'] = {
+        'email': 'sam-shop@oraglass.us',
+        'name': 'Sam Shop',
+        'role': 'shop',
+        'employee_number': '441',
+        'active': True,
+    }
+    save_users(users)
+    save_kiosks([{'id': 3, 'name': 'East tablet', 'timezone': 'America/Toronto', 'revoked': False}])
+    monday = datetime(2026, 3, 2).date()
+    punches = []
+    next_id = 1
+    for offset in range(6):
+        day = monday + timedelta(days=offset)
+        start = datetime(day.year, day.month, day.day, 8, 0, tzinfo=__import__('zoneinfo').ZoneInfo('America/Toronto'))
+        end = start + timedelta(hours=8)
+        punches.append({
+            'id': next_id, 'user': 'sam-shop@oraglass.us', 'action': 'in',
+            'at': start.astimezone(timezone.utc).isoformat(), 'timezone': 'America/Toronto',
+            'kiosk_id': 3, 'corrections': [],
+        })
+        next_id += 1
+        out = {
+            'id': next_id, 'user': 'sam-shop@oraglass.us', 'action': 'out',
+            'at': end.astimezone(timezone.utc).isoformat(), 'timezone': 'America/Toronto',
+            'kiosk_id': 3, 'corrections': [],
+        }
+        if offset == 0:
+            out['corrections'] = [{'by': 'lead@oraglass.us', 'reason': 'Clock was fast'}]
+        punches.append(out)
+        next_id += 1
+    save_punches(punches)
+    assert login(client, 'clerk@oraglass.us').status_code == 302
+    assert client.get('/api/time-clock/shifts.xlsx').status_code == 403
+    client.post('/logout')
+    assert login(client, 'lead@oraglass.us').status_code == 302
+    denied_page = client.get('/payroll')
+    assert b'timesheet-xlsx' in denied_page.data or b'xlsx-link' in denied_page.data or b'Excel shifts' in client.get('/time-clock').data
+    workbook = client.get('/api/time-clock/shifts.xlsx?user=sam-shop@oraglass.us&from=2026-03-02&to=2026-03-06')
+    assert workbook.status_code == 200
+    assert 'spreadsheet' in workbook.mimetype
+    book = load_workbook(BytesIO(workbook.data))
+    assert book.sheetnames == ['Shifts', 'Summary']
+    shifts = book['Shifts']
+    assert shifts.freeze_panes == 'A3'
+    assert shifts['A1'].value.startswith('Shifts 2026-03-02 to 2026-03-06')
+    assert 'America/Toronto' in shifts['A1'].value
+    assert [shifts.cell(2, col).value for col in range(1, 12)] == [
+        'Worker', 'Employee #', 'Date', 'Clock in', 'Clock out', 'Break',
+        'Hours worked', 'Regular hours', 'Overtime hours', 'Kiosk/phone', 'Edited',
+    ]
+    assert shifts.max_row == 7
+    assert shifts['A3'].value == 'Sam Shop'
+    assert shifts['B3'].value == '441'
+    assert shifts['C3'].value.date() == monday
+    assert isinstance(shifts['D3'].value, datetime)
+    assert shifts['D3'].value.hour == 8 and shifts['D3'].value.tzinfo is None
+    assert isinstance(shifts['E3'].value, datetime)
+    assert isinstance(shifts['F3'].value, timedelta)
+    assert shifts['G3'].value == 8
+    assert shifts['H3'].value == 8
+    assert shifts['I3'].value == 0
+    assert shifts['J3'].value == 'Kiosk East tablet'
+    assert shifts['K3'].value == 'Yes, lead@oraglass.us'
+    assert shifts['K4'].value == 'No'
+    assert shifts.column_dimensions['D'].width >= 18
+    later = client.get('/api/time-clock/shifts.xlsx?from=2026-03-07&to=2026-03-07')
+    saturday = load_workbook(BytesIO(later.data))['Shifts']
+    assert saturday.max_row == 3
+    assert saturday['H3'].value == 0
+    assert saturday['I3'].value == 8
+    summary = book['Summary']
+    assert summary.freeze_panes == 'A3'
+    assert summary['A1'].value == shifts['A1'].value
+    assert summary['A3'].value == 'Sam Shop'
+    assert summary['C3'].value == 5
+    assert summary['D3'].value == 40
+    assert summary['E3'].value == 0
+    assert summary['F3'].value == 40
