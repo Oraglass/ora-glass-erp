@@ -38,8 +38,8 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="next" value="{{ next_url or '' }}">
             <div class="form-group">
-                <label>Email</label>
-                <input type="email" name="email" required autofocus autocomplete="username">
+                <label>Email or phone number</label>
+                <input type="text" name="email" required autofocus autocomplete="username">
             </div>
             <div class="form-group">
                 <label>Password</label>
@@ -47,7 +47,7 @@
             </div>
             <button type="submit" class="btn">Sign In</button>
         </form>
-        <p class="hint">Sign in with your email address. First-time users should open the setup link from an administrator.</p>
+        <p class="hint">Sign in with your email address or driver phone number. First-time users should open the setup link from an administrator. Drivers use the temporary password they were given and change it at first sign-in.</p>
         <p class="legal"><a href="{{ url_for('eula') }}">EULA</a><a href="{{ url_for('privacy') }}">Privacy</a></p>
     </div>
 </body>

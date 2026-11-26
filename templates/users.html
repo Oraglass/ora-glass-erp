@@ -74,7 +74,7 @@ td.actions{width:15.5rem;vertical-align:middle}
 <input type="hidden" id="u-original">
 <div class="form-group"><label>Name</label><input type="text" id="u-name"></div>
 <div class="form-group" id="email-group"><label>Email</label><input type="email" id="u-email" autocomplete="off"></div>
-<div class="form-group" id="password-group"><label>Temporary password</label><input type="password" id="u-password" autocomplete="new-password"><p class="help">Optional. Leave blank to create a one-time setup link instead. If you set one, the user must change it at first sign-in.</p></div>
+<div class="form-group" id="password-group"><label>Temporary password</label><input type="password" id="u-password" autocomplete="new-password"><p class="help" id="password-help">Optional. Leave blank to create a one-time setup link instead. If you set one, the user must change it at first sign-in.</p></div>
 <div class="form-group" id="shop-fields" style="display:none">
 <label for="u-employee-number">Employee number</label>
 <input type="text" id="u-employee-number" autocomplete="off" maxlength="20">
@@ -303,6 +303,20 @@ function syncRoleExtras() {
   document.getElementById('manage-time-group').style.display = employee ? 'block' : 'none';
   document.getElementById('manage-payroll-group').style.display = employee ? 'block' : 'none';
   document.getElementById('password-group').style.display = shop ? 'none' : 'block';
+  const loginLabel = document.querySelector('#email-group label');
+  const loginField = document.getElementById('u-email');
+  const passwordHelp = document.getElementById('password-help');
+  if (driver) {
+    loginLabel.textContent = 'Phone number';
+    loginField.type = 'tel';
+    loginField.placeholder = '360-555-0199';
+    passwordHelp.textContent = 'Required for a new driver. They must change it at first sign-in. A setup link needs an email, so a driver cannot use one.';
+  } else {
+    loginLabel.textContent = 'Email';
+    loginField.type = 'email';
+    loginField.placeholder = '';
+    passwordHelp.textContent = 'Optional. Leave blank to create a one-time setup link instead. If you set one, the user must change it at first sign-in.';
+  }
   document.getElementById('u-company').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
   document.getElementById('u-tier').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
   document.getElementById('allowed-tiers').closest('.form-group').style.display = (shop || driver) ? 'none' : 'block';
@@ -317,7 +331,8 @@ function tierFormError() {
   const allowed = new Set(collectAllowed());
   const chosen = document.getElementById('u-tier').value;
   const company = currentCompany();
-  if (document.getElementById('u-role').value === 'shop') return '';
+  const roleNow = document.getElementById('u-role').value;
+  if (roleNow === 'shop' || roleNow === 'driver') return '';
   if (!allowed.size) return 'Choose at least one allowed tier.';
   if (chosen) {
     if (!allowed.has(chosen)) return 'This user\'s tier must be one of the allowed tiers.';
@@ -366,7 +381,7 @@ function render() {
   tbody.innerHTML = rows.map(user => {
     const account = user.account || user.email;
     const key = esc(account);
-    const email = esc(user.email || user.employee_number || account);
+    const email = esc(user.phone || user.email || user.employee_number || account);
     const self = account === CURRENT_EMAIL;
     const del = self ? '' : '<button class="act act-danger" type="button" data-action="delete" data-email="' + key + '">Delete</button>';
     const actions = CAN_MANAGE
@@ -464,8 +479,8 @@ async function openEdit(user) {
   document.getElementById('user-modal-title').textContent = 'Edit User';
   document.getElementById('u-original').value = user.account || user.email;
   document.getElementById('u-name').value = user.name || '';
-  document.getElementById('u-email').value = user.email || '';
-  document.getElementById('u-email').disabled = user.role !== 'shop';
+  document.getElementById('u-email').value = user.role === 'driver' ? (user.phone || user.email || '') : (user.email || '');
+  document.getElementById('u-email').disabled = user.role !== 'shop' && user.role !== 'driver';
   document.getElementById('u-password').value = '';
   document.getElementById('password-group').style.display = 'none';
   document.getElementById('u-role').value = user.role;
@@ -540,13 +555,20 @@ document.getElementById('save-user').addEventListener('click', async () => {
   const problem = tierFormError();
   if (problem) { alert(problem); return; }
   const original = document.getElementById('u-original').value;
+  const role = document.getElementById('u-role').value;
+  const loginValue = document.getElementById('u-email').value;
+  if (!original && role === 'driver' && !document.getElementById('u-password').value) {
+    alert('A temporary password is required for a driver.');
+    return;
+  }
   if (original) {
     const data = await api('/api/users/' + encodeURIComponent(original), {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         name: document.getElementById('u-name').value,
-        role: document.getElementById('u-role').value,
+        phone: role === 'driver' ? loginValue : '',
+        role: role,
         customer_id: document.getElementById('u-company').value,
         tier_override: document.getElementById('u-tier').value,
         allowed_tiers: collectAllowed(),
@@ -573,7 +595,8 @@ document.getElementById('save-user').addEventListener('click', async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         name: document.getElementById('u-name').value,
-        email: document.getElementById('u-email').value,
+        email: role === 'driver' ? '' : loginValue,
+        phone: role === 'driver' ? loginValue : '',
         password: document.getElementById('u-password').value,
         temporary: true,
         role: document.getElementById('u-role').value,

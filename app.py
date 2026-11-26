@@ -519,6 +519,62 @@ def shop_account_key(number):
     return 'shop:' + normalize_employee_number(number)
 
 
+def normalize_phone(value):
+    """Digits only. Spaces, dashes, and brackets are ignored, and a leading +1 is dropped."""
+    text = re.sub(r'[\s\-()\[\]]', '', str(value or '').strip())
+    if text.startswith('+1'):
+        text = text[2:]
+    elif text.startswith('+'):
+        return ''
+    if len(text) == 11 and text.startswith('1') and text.isdigit():
+        text = text[1:]
+    if text.isdigit() and 10 <= len(text) <= 15:
+        return text
+    return ''
+
+
+def _login_names(value):
+    text = normalize_email(value)
+    names = set()
+    if text:
+        names.add(text)
+    phone = normalize_phone(value)
+    if phone:
+        names.add(phone)
+    return names
+
+
+def login_taken(value, users, except_key=None):
+    """True when this email or phone number is already a login."""
+    wanted = _login_names(value)
+    if not wanted:
+        return False
+    for key, user in (users or {}).items():
+        if except_key is not None and key == except_key:
+            continue
+        row = user or {}
+        if wanted & _login_names(key) or wanted & _login_names(row.get('email')) or wanted & _login_names(row.get('phone')):
+            return True
+    return False
+
+
+def find_login(raw, users):
+    """Match an email or a driver phone number. The stored account key is returned."""
+    text = str(raw or '').strip()
+    email = normalize_email(text)
+    if email and email in users:
+        return email, users[email]
+    phone = normalize_phone(text)
+    if phone and phone in users:
+        return phone, users[phone]
+    if not phone:
+        return None, None
+    for key, user in users.items():
+        if normalize_phone((user or {}).get('phone')) == phone:
+            return key, user
+    return None, None
+
+
 def find_shop_by_number(number, users=None):
     number = normalize_employee_number(number)
     users = load_users() if users is None else users
@@ -854,6 +910,7 @@ def public_user(user, customers, tiers):
         'allow_phone_punch': bool(user.get('allow_phone_punch')),
         'pin_locked': bool(user.get('pin_locked')),
         'account': user.get('account') or user.get('email'),
+        'phone': user.get('phone') or '',
     }
 
 
@@ -1395,33 +1452,34 @@ def login():
             return redirect(url_for('rack_scan'))
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
-        email = normalize_email(request.form.get('email'))
+        submitted = request.form.get('email') or ''
         password = request.form.get('password') or ''
         ip = request.remote_addr or ''
         next_url = safe_next(request.form.get('next') or request.args.get('next')) or ''
-        if login_limiter.is_limited(email, ip):
+        login_key = normalize_email(submitted) or normalize_phone(submitted)
+        if login_limiter.is_limited(login_key, ip):
             flash('Too many login attempts. Try again in a few minutes.', 'error')
             return render_template('login.html', next_url=next_url), 429
         users = load_users()
-        user = users.get(email)
+        account, user = find_login(submitted, users)
         if not user or not verify_password(user.get('password_hash'), password):
-            login_limiter.record_failure(email, ip)
-            logger.info('Failed login for %s', email or '(blank)')
+            login_limiter.record_failure(login_key, ip)
+            logger.info('Failed login for %s', login_key or '(blank)')
             flash('Invalid credentials', 'error')
             return render_template('login.html', next_url=next_url)
         if not user.get('active', True):
-            login_limiter.record_failure(email, ip)
+            login_limiter.record_failure(login_key, ip)
             flash('This account is disabled.', 'error')
             return render_template('login.html', next_url=next_url)
         if user.get('role') == 'customer':
             customer = load_customers().get(user.get('customer_id') or '')
             if not customer or customer.get('status') == 'inactive':
-                login_limiter.record_failure(email, ip)
+                login_limiter.record_failure(login_key, ip)
                 flash('This account is disabled.', 'error')
                 return render_template('login.html', next_url=next_url)
-        login_limiter.clear(email, ip)
+        login_limiter.clear(login_key, ip)
         session.clear()
-        session['user'] = email
+        session['user'] = account
         session.permanent = True
         if user.get('must_change_password'):
             return redirect(url_for('change_password'))
@@ -1501,10 +1559,13 @@ def change_password():
             flash(message, 'error')
             return render_template('change_password.html', must_change=bool(user.get('must_change_password')))
         users = load_users()
-        users[user['email']]['password_hash'] = hash_password(password)
-        users[user['email']]['must_change_password'] = False
+        account = session.get('user')
+        users[account]['password_hash'] = hash_password(password)
+        users[account]['must_change_password'] = False
         save_users(users)
         flash('Password updated.', 'success')
+        if users[account].get('role') == 'driver':
+            return redirect(url_for('rack_scan'))
         return redirect(url_for('dashboard'))
     return render_template('change_password.html', must_change=bool(user.get('must_change_password')))
 
@@ -2283,7 +2344,7 @@ def rack_scan():
     user = current_user()
     if not _rack_user_ok(user, scan=True):
         return forbidden()
-    return render_template('rack_scan.html')
+    return render_template('rack_scan.html', driver=user.get('role') == 'driver')
 
 
 @app.route('/api/racks', methods=['GET'])
@@ -2307,7 +2368,7 @@ def rack_list():
 @login_required
 def rack_sites():
     user = current_user()
-    if not _rack_user_ok(user, scan=True):
+    if user.get('role') == 'driver' or not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
     rows = [
         {'id': customer_id, 'name': customer.get('name') or customer_id}
@@ -2326,9 +2387,9 @@ def rack_check():
         return json_error('Access denied', 403)
     data = json_body() or {}
     import racks as rack_book
+    customer_id = '' if user.get('role') == 'driver' else clean_text(data.get('customer_id'), 80)
     return jsonify(rack_book.check_scan(
-        rack_book.load_rows(), data.get('text'),
-        clean_text(data.get('customer_id'), 80), data.get('already') or [],
+        rack_book.load_rows(), data.get('text'), customer_id, data.get('already') or [],
     ))
 
 
@@ -2339,13 +2400,18 @@ def rack_pickup():
     if not _rack_user_ok(user, scan=True):
         return json_error('Access denied', 403)
     data = json_body() or {}
-    customer_id = clean_text(data.get('customer_id'), 80)
-    customer = load_customers().get(customer_id) if customer_id else None
-    if not customer:
-        return json_error('Choose the customer.', 400)
+    if user.get('role') == 'driver':
+        customer_id = ''
+        customer_name = ''
+    else:
+        customer_id = clean_text(data.get('customer_id'), 80)
+        customer = load_customers().get(customer_id) if customer_id else None
+        if not customer:
+            return json_error('Choose the customer.', 400)
+        customer_name = customer.get('name') or ''
     import racks as rack_book
     result = rack_book.confirm_pickup(
-        data.get('racks') or [], customer_id, customer.get('name') or '',
+        data.get('racks') or [], customer_id, customer_name,
         clean_text(data.get('truck_plate'), 40), user,
     )
     if not result['moved']:
@@ -3483,6 +3549,39 @@ def _add_shop_worker(data):
     return jsonify(payload)
 
 
+def _add_driver(data):
+    """A driver signs in with a phone number and a temporary password. Setup links need an email."""
+    name = clean_text(data.get('name'), 120)
+    if not name:
+        return json_error('Name is required.', 400)
+    raw = data.get('phone') if 'phone' in data else data.get('username', data.get('email'))
+    users = load_users()
+    if login_taken(raw, users):
+        return json_error('That phone number is already in use.', 409)
+    phone = normalize_phone(raw)
+    if not phone:
+        return json_error('Enter a phone number.', 400)
+    if login_taken(phone, users):
+        return json_error('That phone number is already in use.', 409)
+    password = data.get('password') or ''
+    if not str(password).strip():
+        return json_error('A temporary password is required for a driver.', 400)
+    ok, message = password_is_strong(password)
+    if not ok:
+        return json_error(message, 400)
+    record = new_user(
+        email='', name=name, role='driver',
+        password_hash=hash_password(password), must_change_password=True,
+    )
+    record['phone'] = phone
+    record['account'] = phone
+    record['modules'] = []
+    record['customer_id'] = None
+    users[phone] = record
+    save_users(users)
+    return jsonify({'success': True, 'email': '', 'phone': phone, 'account': phone})
+
+
 @app.route('/api/users', methods=['POST'])
 @admin_required
 def add_user():
@@ -3492,11 +3591,13 @@ def add_user():
     role, _preset = normalize_role(clean_text(data.get('role'), 20))
     if role == 'shop':
         return _add_shop_worker(data)
+    if role == 'driver' and not valid_email(data.get('email')):
+        return _add_driver(data)
     email = normalize_email(data.get('email'))
     if not valid_email(email):
         return json_error('A valid email is required.', 400)
     users = load_users()
-    if email in users:
+    if login_taken(email, users):
         return json_error('A user with that email already exists.', 409)
     name = clean_text(data.get('name'), 120)
     if not name:
@@ -3609,6 +3710,23 @@ def update_user(email):
         pin_error = _apply_shop_fields(user, data, users, current_key=email)
         if pin_error:
             return json_error(pin_error, 400)
+    if user.get('role') == 'driver' and ('phone' in data or 'username' in data):
+        raw = str(data.get('phone') if 'phone' in data else data.get('username') or '').strip()
+        if valid_email(raw) and normalize_email(raw) == normalize_email(user.get('email') or ''):
+            pass
+        elif raw:
+            if login_taken(raw, users, except_key=email):
+                return json_error('That phone number is already in use.', 409)
+            phone = normalize_phone(raw)
+            if not phone:
+                return json_error('Enter a phone number.', 400)
+            if login_taken(phone, users, except_key=email):
+                return json_error('That phone number is already in use.', 409)
+            user['phone'] = phone
+            if not valid_email(user.get('email')) and phone != email:
+                user['account'] = phone
+                users.pop(email, None)
+                email = phone
     if 'active' in data:
         active = bool(data.get('active'))
         if user.get('role') == 'admin' and not active and active_admin_count(users) <= 1:
@@ -3649,6 +3767,8 @@ def invite_user(email):
         return json_error('Not found', 404)
     if user.get('role') == 'shop' and not valid_email(user.get('email')):
         return json_error('Add an email before sending a setup link.', 400)
+    if user.get('role') == 'driver' and not valid_email(user.get('email')):
+        return json_error('Drivers sign in with a phone number and a temporary password.', 400)
     token = attach_invite(user)
     users[email] = user
     save_users(users)
