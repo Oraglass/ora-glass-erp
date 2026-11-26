@@ -145,60 +145,96 @@ def _normalize_measure_line(line):
     )
 
 
-def _glyph_repeat_factor(text):
-    """How many times this PDF repeats each glyph.
+_LABEL_CORES = {
+    'total', 'pcs', 'sq', 'ft', 'sq/ft', 'sqft', 'weight',
+    'approx', 'approximate', 'appx', 'appr',
+    'lbs', 'lb', 'kg', 'kgs', 'pound', 'pounds', 'kilo', 'kilos',
+    'kilogram', 'kilograms',
+}
 
-    The production packing list draws the totals column so pdfplumber reads
-    every letter four times: 'TTTToooottttaaaallll WWWWeeeeiiiigggghhhhtttt'.
-    A real double letter, such as the two p's in Approx, becomes a run of eight.
-    """
-    from collections import Counter
-    counts = Counter()
+
+def _char_runs(token):
+    runs = []
     index = 0
-    length = len(text)
+    length = len(token)
     while index < length:
         end = index + 1
-        while end < length and text[end] == text[index]:
+        while end < length and token[end] == token[index]:
             end += 1
-        run = end - index
-        if run >= 2 and not text[index].isspace():
-            counts[run] += 1
+        runs.append((token[index], end - index))
         index = end
-    if not counts:
-        return 1
-    factor, hits = counts.most_common(1)[0]
-    total = sum(counts.values())
-    # Two identical characters are normal (1200, 00, a double letter). The
-    # broken totals column repeats every glyph four times, so only that
-    # stretch is collapsed.
-    if factor >= 4 and hits >= 4 and hits / total >= 0.6:
-        return factor
-    return 1
+    return runs
 
 
-def _collapse_stretched_glyphs(text):
-    factor = _glyph_repeat_factor(text)
-    if factor <= 1:
-        return text
+def _collapse_runs(token, factor):
     parts = []
-    index = 0
-    length = len(text)
-    while index < length:
-        end = index + 1
-        while end < length and text[end] == text[index]:
-            end += 1
-        run = end - index
-        if not text[index].isspace() and run >= factor and run % factor == 0:
-            parts.append(text[index] * (run // factor))
-        else:
-            parts.append(text[index:end])
-        index = end
+    for char, run in _char_runs(token):
+        if run % factor != 0:
+            return None
+        parts.append(char * (run // factor))
     return ''.join(parts)
 
 
+def _is_label_token(token):
+    core = token.strip().strip('.:').casefold()
+    if not core:
+        return token.strip() in {':', '：'}
+    if core in _LABEL_CORES:
+        return True
+    return re.fullmatch(r'total\s*(?:pcs|weight|sq\s*/?\s*ft)', core) is not None
+
+
+def _label_stretch_factor(token):
+    """2, 3, or 4 when this token is a bold label drawn once per copy.
+
+    'TTTToooottttaaaallll' is Total printed four times. A rack size such as
+    1200 or 11 is left alone, because those tokens are not labels.
+    """
+    runs = _char_runs(token)
+    if not runs or any(run < 2 for _char, run in runs):
+        return None
+    for factor in (4, 3, 2):
+        if any(run < factor or run % factor != 0 for _char, run in runs):
+            continue
+        collapsed = _collapse_runs(token, factor)
+        if collapsed and _is_label_token(collapsed):
+            return factor
+    return None
+
+
+def _collapse_label_tokens(text):
+    """Collapse repeated letters inside Total / Pcs / Weight tokens.
+
+    The amount printed beside a repeated label is repeated the same number of
+    times, so '3333' beside 'PPPPccccssss' becomes 3. Digits on a normal line
+    are not changed.
+    """
+    pieces = re.findall(r'\s+|\S+', text)
+    factors = [
+        _label_stretch_factor(piece)
+        for piece in pieces
+        if not piece.isspace() and _label_stretch_factor(piece)
+    ]
+    if not factors:
+        return text
+    factor = max(factors)
+    collapsed = []
+    for piece in pieces:
+        if piece.isspace():
+            collapsed.append(piece)
+            continue
+        runs = _char_runs(piece)
+        if runs and all(run >= factor and run % factor == 0 for _char, run in runs):
+            flattened = _collapse_runs(piece, factor)
+            collapsed.append(flattened if flattened is not None else piece)
+        else:
+            collapsed.append(piece)
+    return ''.join(collapsed)
+
+
 def _prepare_packing_line(line):
-    """Collapse repeated glyphs and accept 'TotalWeight' or 'Total Weight:'."""
-    text = _collapse_stretched_glyphs(_normalize_measure_line(line))
+    """Collapse repeated label glyphs and accept 'TotalWeight' or 'Total Weight:'."""
+    text = _collapse_label_tokens(_normalize_measure_line(line))
     text = re.sub(r'(?i)total\s*pcs\b', 'Total Pcs', text)
     text = re.sub(r'(?i)total\s*sq\s*/?\s*ft\b', 'Total SQ/FT', text)
     text = re.sub(r'(?i)total\s*weight\b', 'Total Weight', text)
@@ -726,17 +762,31 @@ def _best_page_lines(candidates):
     return best
 
 
+def _page_text_layer(page):
+    """Drop the extra copies a bold label draws on top of itself.
+
+    The factory packing list overprints Total Pcs, Total SQ/FT, and Total
+    Weight four times. pdfplumber then reads 'TTTToooottttaaaallll'. dedupe_chars
+    keeps one copy of each glyph before extract_text or extract_words runs.
+    """
+    try:
+        return page.dedupe_chars()
+    except Exception:
+        return page
+
+
 def pdf_lines(payload):
     """Text lines from a packing-list PDF.
 
     pdfplumber reads the file itself. Render does not have the pdftotext
-    binary, so this never shells out. The word rows match pdftotext -layout
-    closely enough to keep Total Pcs, Total SQ/FT, and Total Weight together.
+    binary, so this never shells out. Bold labels are deduped first, then the
+    word rows keep Total Pcs, Total SQ/FT, and Total Weight together.
     """
     import pdfplumber
     collected = []
     with pdfplumber.open(io.BytesIO(payload)) as document:
         for page in document.pages:
+            page = _page_text_layer(page)
             candidates = []
             try:
                 candidates.append(_lines_from_words(page))
