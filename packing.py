@@ -1172,6 +1172,17 @@ def format_rack_numbers(numbers):
     return ', '.join(f'Rack {number}' for number in labels)
 
 
+def format_quantity(amount):
+    """A printed piece count or square-foot total, without a trailing zero."""
+    try:
+        number = float(amount)
+    except (TypeError, ValueError):
+        return ''
+    if abs(number - round(number)) < 0.005:
+        return str(int(round(number)))
+    return f'{number:.2f}'.rstrip('0').rstrip('.')
+
+
 def format_weight(amount, unit=''):
     try:
         number = float(amount)
@@ -1206,24 +1217,32 @@ def _serial_qty(rows):
     return totals
 
 
+def _printed_number(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def summarize_packing(entries):
-    """Rack count, racks on each list, and the printed weight in pounds."""
+    """Racks, printed piece count, square feet, and weight for each packing list."""
     racks = []
     lists = []
     total_lb = 0.0
+    total_pcs = 0
+    total_sqft = 0.0
     found_weight = False
+    found_pcs = False
+    found_sqft = False
     for entry in entries or []:
         numbers = racks_on_list(entry)
         for number in numbers:
             if number not in racks:
                 racks.append(number)
         unit = str(entry.get('weight_unit') or '').strip()
-        amount = None
-        if entry.get('weight') not in (None, ''):
-            try:
-                amount = float(entry.get('weight'))
-            except (TypeError, ValueError):
-                amount = None
+        amount = _printed_number(entry.get('weight'))
         shown_weight = None
         weight_text = 'weight not found'
         missing = True
@@ -1237,14 +1256,36 @@ def summarize_packing(entries):
             weight_text = format_weight(shown_lb, 'LBS') or 'weight not found'
             if not weight_text or weight_text == 'weight not found':
                 missing = True
+        pcs = _printed_number(entry.get('total_pcs'))
+        sqft = _printed_number(entry.get('total_sqft'))
+        if pcs is None:
+            pcs_text = 'pcs not found'
+            shown_pcs = None
+        else:
+            found_pcs = True
+            shown_pcs = int(round(pcs))
+            total_pcs += shown_pcs
+            pcs_text = f'{shown_pcs} pcs'
+        if sqft is None:
+            sqft_text = 'sq ft not found'
+            shown_sqft = None
+        else:
+            found_sqft = True
+            shown_sqft = round(sqft, 2)
+            total_sqft = round(total_sqft + shown_sqft, 2)
+            sqft_text = f'{format_quantity(shown_sqft)} sq ft'
         racks_label = format_rack_numbers(numbers)
         number = entry.get('number') or 'Packing list'
-        line = f'{number}: {racks_label} · {weight_text}'
+        line = f'{number}: {racks_label} · {pcs_text} · {sqft_text} · {weight_text}'
         lists.append({
             'id': entry.get('id'),
             'number': entry.get('number') or '',
             'racks': numbers,
             'racks_label': racks_label,
+            'pcs': shown_pcs,
+            'sqft': shown_sqft,
+            'pcs_text': pcs_text,
+            'sqft_text': sqft_text,
             'weight': shown_weight,
             'weight_unit': unit,
             'weight_text': weight_text,
@@ -1262,6 +1303,8 @@ def summarize_packing(entries):
         'rack_count': len(racks),
         'racks': racks,
         'lists': lists,
+        'pcs_label': str(total_pcs) if found_pcs else ('pcs not found' if lists else ''),
+        'sqft_label': format_quantity(total_sqft) if found_sqft else ('sq ft not found' if lists else ''),
         'weight_label': weight_label,
         'weight_missing': any(row.get('weight_missing') for row in lists),
     }
@@ -1270,12 +1313,17 @@ def summarize_packing(entries):
 
 
 def shipment_lines(summary):
-    """The rack and weight lines printed on an invoice. Page and PDF both use this."""
+    """Packing-list lines, then the totals. Page and PDF both use this."""
     if not summary or not summary.get('lists'):
-        return {'rack_line': '', 'list_lines': [], 'weight_line': ''}
+        return {
+            'rack_line': '', 'list_lines': [], 'pcs_line': '', 'sqft_line': '',
+            'weight_line': '', 'weight_missing': False,
+        }
     return {
-        'rack_line': f"Racks: {int(summary.get('rack_count') or 0)}",
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
+        'rack_line': f"Total racks: {int(summary.get('rack_count') or 0)}",
+        'pcs_line': f"Total pcs: {summary['pcs_label']}" if summary.get('pcs_label') else '',
+        'sqft_line': f"Total sq ft: {summary['sqft_label']}" if summary.get('sqft_label') else '',
         'weight_line': f"Total weight: {summary['weight_label']}" if summary.get('weight_label') else '',
         'weight_missing': bool(summary.get('weight_missing')),
     }

@@ -159,6 +159,8 @@ def test_adrian_packing_list_layout_stores_the_printed_weight():
     assert parsed['racks'] == ['5016']
     assert parsed['weight'] == 463
     assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
     assert parsed['weight_missing'] is False
     samples = [
         ('Total Weight : Approx. 1,463 LBS', 1463, 'LBS'),

@@ -8849,6 +8849,8 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         'weight': parsed.get('weight'),
         'weight_unit': parsed.get('weight_unit') or '',
         'weight_missing': parsed.get('weight') in (None, ''),
+        'total_pcs': parsed.get('total_pcs'),
+        'total_sqft': parsed.get('total_sqft'),
         'date': parsed.get('date') or '',
         'customer': parsed.get('customer') or '',
         'project': parsed.get('project') or '',
@@ -10570,6 +10572,10 @@ def _packing_measures_changed(original, measured):
         before = by_id.get(row.get('id')) or {}
         if row.get('weight') not in (None, '') and before.get('weight') in (None, ''):
             return True
+        if row.get('total_pcs') not in (None, '') and before.get('total_pcs') in (None, ''):
+            return True
+        if row.get('total_sqft') not in (None, '') and before.get('total_sqft') in (None, ''):
+            return True
         if row.get('racks') and not (before.get('racks') or before.get('rack')):
             return True
     return False
@@ -10592,6 +10598,10 @@ def _store_packing_measures(order_id, measured):
             entry['weight_missing'] = False
         elif entry.get('weight') in (None, '') and fresh.get('weight_missing'):
             entry['weight_missing'] = True
+        if entry.get('total_pcs') in (None, '') and fresh.get('total_pcs') not in (None, ''):
+            entry['total_pcs'] = fresh.get('total_pcs')
+        if entry.get('total_sqft') in (None, '') and fresh.get('total_sqft') not in (None, ''):
+            entry['total_sqft'] = fresh.get('total_sqft')
         if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
             entry['racks'] = list(fresh.get('racks') or [])
             if not entry.get('rack'):
@@ -10603,7 +10613,9 @@ def _measured_packing_list(entry, order_id):
     row = dict(entry or {})
     has_weight = row.get('weight') not in (None, '')
     has_racks = bool(row.get('racks') or row.get('rack'))
-    if has_weight and has_racks:
+    has_pcs = row.get('total_pcs') not in (None, '')
+    has_sqft = row.get('total_sqft') not in (None, '')
+    if has_weight and has_racks and has_pcs and has_sqft:
         return row
     payload = _read_packing_file(order_id, row.get('stored'))
     if not payload:
@@ -10619,8 +10631,8 @@ def _measured_packing_list(entry, order_id):
         measures = packing.weights_by_number(text_lines)
     except Exception:
         return row
+    number = str(row.get('number') or '')
     if not has_weight:
-        number = str(row.get('number') or '')
         chosen = measures.get(number)
         if not chosen and len(measures) == 1:
             only = next(iter(measures))
@@ -10632,6 +10644,11 @@ def _measured_packing_list(entry, order_id):
         elif (not number or parsed.get('number') == number) and parsed.get('weight') is not None:
             row['weight'] = parsed.get('weight')
             row['weight_unit'] = parsed.get('weight_unit') or ''
+    same_list = not number or parsed.get('number') == number
+    if not has_pcs and same_list and parsed.get('total_pcs') not in (None, ''):
+        row['total_pcs'] = parsed.get('total_pcs')
+    if not has_sqft and same_list and parsed.get('total_sqft') not in (None, ''):
+        row['total_sqft'] = parsed.get('total_sqft')
     if not row.get('racks') and parsed.get('racks'):
         row['racks'] = list(parsed.get('racks') or [])
     if not row.get('rack') and parsed.get('rack'):
@@ -11310,12 +11327,11 @@ def _render_invoice_pdf(invoice):
     customs = invoice.get('customs') or {}
     shipment = packing.get('shipment') or {}
     lines = list(shipment_bits)
-    if shipment.get('rack_line'):
-        lines.append(escape(shipment['rack_line']))
     for text in shipment.get('list_lines') or []:
         lines.append(escape(text))
-    if shipment.get('weight_line'):
-        lines.append(escape(shipment['weight_line']))
+    for key in ('rack_line', 'pcs_line', 'sqft_line', 'weight_line'):
+        if shipment.get(key):
+            lines.append(escape(shipment[key]))
     if customs.get('hts'):
         lines.append(f"HTS {escape(customs.get('hts'))}")
     if customs.get('origin'):
