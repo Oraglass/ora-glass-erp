@@ -101,16 +101,6 @@ def products_match(order_id, order_name, packing_name):
     return left == right or left in right or right in left
 
 
-def pdf_lines(payload):
-    import pdfplumber
-    lines = []
-    with pdfplumber.open(io.BytesIO(payload)) as document:
-        for page in document.pages:
-            text = page.extract_text(layout=True) or page.extract_text() or ''
-            lines.extend(text.splitlines())
-    return lines
-
-
 _ID_QTY = re.compile(r'^\((\d+)\)\s+(\d+)\b')
 _INCH_PREFIX = re.compile(
     r'^(?P<w>\d+(?:\s+\d+\s*/\s*\d+)?)\s+(?P<h>\d+(?:\s+\d+\s*/\s*\d+)?)(?:\s|$)'
@@ -214,6 +204,41 @@ def _note_missing_weight(header, warnings):
         return False
     warnings.append('Weight not found.')
     return True
+
+
+def measures_by_number(lines):
+    """Weight, piece count, and square feet printed on each Sales Delivery."""
+    found = {}
+    current = ''
+    pending = False
+    for raw in lines or []:
+        line = str(raw or '').strip()
+        if not line:
+            continue
+        delivery = _DELIVERY.search(line)
+        if delivery:
+            current = delivery.group(1)
+            pending = False
+        if not current:
+            continue
+        bucket = found.setdefault(current, {
+            'weight': None, 'weight_unit': '', 'total_pcs': None, 'total_sqft': None,
+        })
+        _consumed, pending = _feed_weight(line, bucket, pending)
+        pcs = _PCS.search(line)
+        if pcs and bucket.get('total_pcs') is None:
+            bucket['total_pcs'] = int(pcs.group(1))
+        sqft = _SQFT.search(line)
+        if sqft and bucket.get('total_sqft') is None:
+            bucket['total_sqft'] = float(sqft.group(1))
+    return {
+        number: row for number, row in found.items()
+        if number and (
+            row.get('weight') is not None
+            or row.get('total_pcs') is not None
+            or row.get('total_sqft') is not None
+        )
+    }
 
 
 def weights_by_number(lines):
@@ -536,6 +561,92 @@ def parse_packing_lines(lines):
         'rows': rows,
         'warnings': warnings,
     }
+
+
+def _lines_from_words(page):
+    """Group PDF words into rows, the same way pdftotext -layout does. No external binary."""
+    words = page.extract_words(use_text_flow=True, keep_blank_chars=False) or []
+    rows = []
+    for word in words:
+        top = float(word.get('top') or 0)
+        placed = None
+        for row in rows:
+            if abs(row['top'] - top) <= 2:
+                placed = row
+                break
+        if placed is None:
+            placed = {'top': top, 'words': []}
+            rows.append(placed)
+        placed['words'].append(word)
+    lines = []
+    for row in sorted(rows, key=lambda item: item['top']):
+        ordered = sorted(row['words'], key=lambda item: float(item.get('x0') or 0))
+        parts = []
+        last_x1 = None
+        for word in ordered:
+            x0 = float(word.get('x0') or 0)
+            if last_x1 is not None and x0 - last_x1 > 8:
+                parts.append('  ')
+            parts.append(str(word.get('text') or ''))
+            last_x1 = float(word.get('x1') or x0)
+        text = ''.join(parts).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _measure_score(lines):
+    text = '\n'.join(str(line or '') for line in lines or [])
+    score = 0
+    if _WEIGHT.search(text) or _WEIGHT_OPEN.search(text):
+        score += 4
+    if _PCS.search(text):
+        score += 2
+    if _SQFT.search(text):
+        score += 2
+    if _DELIVERY.search(text):
+        score += 1
+    return score
+
+
+def _best_page_lines(candidates):
+    best = []
+    best_score = -1
+    for lines in candidates:
+        cleaned = [str(line) for line in lines or [] if str(line or '').strip()]
+        score = _measure_score(cleaned)
+        if score > best_score:
+            best = cleaned
+            best_score = score
+    return best
+
+
+def pdf_lines(payload):
+    """Text lines from a packing-list PDF.
+
+    pdfplumber reads the file itself. Render does not have the pdftotext
+    binary, so this never shells out. The word rows match pdftotext -layout
+    closely enough to keep Total Pcs, Total SQ/FT, and Total Weight together.
+    """
+    import pdfplumber
+    collected = []
+    with pdfplumber.open(io.BytesIO(payload)) as document:
+        for page in document.pages:
+            candidates = []
+            try:
+                candidates.append(_lines_from_words(page))
+            except Exception:
+                pass
+            try:
+                candidates.append((page.extract_text() or '').splitlines())
+            except Exception:
+                pass
+            try:
+                candidates.append((page.extract_text(layout=True) or '').splitlines())
+            except Exception:
+                pass
+            collected.extend(_best_page_lines(candidates))
+    return collected
 
 
 def parse_packing_pdf(payload):
