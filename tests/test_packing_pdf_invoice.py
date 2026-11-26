@@ -371,6 +371,9 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     invoices = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
     assert len(invoices) == 1
     assert invoices[0]['kind'] == 'intercompany'
+    assert invoices[0].get('shipment_notes') == ''
+    assert invoices[0].get('shipment_source') == 'packed'
+    assert b'Packed pieces' not in pdf_text(client.get(f"/api/invoices/{invoices[0]['id']}/pdf").data)
     assert invoices[0]['issuer'] == 'us'
     assert invoices[0]['currency'] == 'usd'
     assert invoices[0]['company'] == 'Ora Glass (Canada) Inc'
@@ -400,6 +403,8 @@ def test_partial_delivery_and_intercompany_do_not_wait_for_the_customer_invoice(
     bills = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
     customer_bill = next(row for row in bills if row['kind'] == 'customer')
     assert customer_bill['issuer'] == 'ca'
+    assert customer_bill.get('shipment_notes') == ''
+    assert customer_bill.get('shipment_source') == 'packed'
     assert customer_bill['currency'] == 'cad'
     assert any(charge.get('label') == 'Delivery' for charge in customer_bill.get('extra_charges') or [])
     assert sum(line.get('pcs') or 0 for line in customer_bill['items'] if isinstance(line.get('pcs'), int)) == 13

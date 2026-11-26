@@ -9894,7 +9894,8 @@ def _issue_packed_customer_invoice(order, user, quantities=None):
     customer = _order_customer(order)
     issuer = 'ca' if _needs_intercompany(order) else 'us'
     shipment = {
-        'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '', 'notes': 'Packed pieces',
+        'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '',
+        'notes': '', 'source': 'packed',
     }
     document = _invoice_for_items(order, user, customer, items, summary, issuer, 'customer', shipment)
     stored = append_invoice(document)
@@ -9923,7 +9924,8 @@ def _issue_packed_intercompany(order, user):
         'date': datetime.now(ZoneInfo('America/Los_Angeles')).date().isoformat(),
         'rack': '',
         'truck_plate': '',
-        'notes': 'Packed pieces',
+        'notes': '',
+        'source': 'packed',
         'items': items,
         'lines': [
             {'serial': item.get('serial'), 'qty': item.get('pcs'), 'index': item.get('source_index')}
@@ -10322,7 +10324,8 @@ def _invoice_for_items(order, user, customer, items, summary, issuer, kind, ship
         'shipment_date': (shipment or {}).get('date') or '',
         'shipment_rack': (shipment or {}).get('rack') or '',
         'truck_plate': (shipment or {}).get('truck_plate') or '',
-        'shipment_notes': (shipment or {}).get('notes') or '',
+        'shipment_notes': _printed_shipment_note((shipment or {}).get('notes')),
+        'shipment_source': (shipment or {}).get('source') or '',
         'status': 'unpaid',
         'balance': summary.get('total', 0),
         'issuer': issuer,
@@ -10605,8 +10608,17 @@ def _invoices_visible(user):
     return rows
 
 
+def _printed_shipment_note(value):
+    """A customer-facing shipment note. The packed-pieces placeholder is not one."""
+    note = str(value or '').strip()
+    if note == 'Packed pieces':
+        return ''
+    return note
+
+
 def _present_invoice(invoice, payments):
     view = dict(invoice)
+    view['shipment_notes'] = _printed_shipment_note(invoice.get('shipment_notes'))
     view.pop('price_addon_percent', None)
     view['doc_type'] = document_type(invoice)
     view['issuer'] = invoice.get('issuer') or 'us'
@@ -11907,25 +11919,63 @@ def _render_invoice_pdf(invoice):
             f" &nbsp; <b>Rack:</b> {escape(invoice.get('shipment_rack') or '')}"
             f" &nbsp; <b>Truck:</b> {escape(invoice.get('truck_plate') or '')}"
         )
-    if invoice.get('shipment_notes'):
-        shipment_bits.append(f"<b>Notes:</b> {escape(invoice.get('shipment_notes'))}")
+    note = _printed_shipment_note(invoice.get('shipment_notes'))
+    if note:
+        shipment_bits.append(f"<b>Notes:</b> {escape(note)}")
     packing = invoice.get('packing') or {}
     customs = invoice.get('customs') or {}
     shipment = packing.get('shipment') or {}
-    lines = list(shipment_bits)
-    for text in shipment.get('list_lines') or []:
-        lines.append(escape(text))
-    for key in ('rack_line', 'pcs_line', 'sqft_line', 'weight_line'):
-        if shipment.get(key):
-            lines.append(escape(shipment[key]))
+    if shipment_bits:
+        elements.append(Paragraph('<br/>'.join(shipment_bits), label_style))
+    table_rows = list(shipment.get('rows') or [])
+    total = shipment.get('total') or {}
+    if table_rows:
+        head = [
+            Paragraph('<b>Packing list</b>', cell_style),
+            Paragraph('<b>Racks</b>', cell_style),
+            Paragraph('<b>Pcs</b>', cell_style),
+            Paragraph('<b>Sq ft</b>', cell_style),
+            Paragraph('<b>Weight</b>', cell_style),
+        ]
+        body = [head]
+        for row in table_rows:
+            body.append([
+                Paragraph(escape(row.get('number') or ''), cell_style),
+                Paragraph(escape(row.get('racks') or ''), cell_style),
+                Paragraph(escape(row.get('pcs') or ''), cell_style),
+                Paragraph(escape(row.get('sqft') or ''), cell_style),
+                Paragraph(escape(row.get('weight') or ''), cell_style),
+            ])
+        body.append([
+            Paragraph('<b>Total</b>', cell_style),
+            Paragraph(escape(str(total.get('racks') or '')), cell_style),
+            Paragraph(escape(str(total.get('pcs') or '')), cell_style),
+            Paragraph(escape(str(total.get('sqft') or '')), cell_style),
+            Paragraph(escape(str(total.get('weight') or '')), cell_style),
+        ])
+        shipment_table = Table(body, colWidths=[1.6 * inch, 1.8 * inch, 1.1 * inch, 1.3 * inch, 1.5 * inch])
+        shipment_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f5f5')),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(Paragraph('<b>Shipment</b>', label_style))
+        elements.append(shipment_table)
+        elements.append(Spacer(1, 8))
+    extra_lines = []
     if customs.get('hts'):
-        lines.append(f"HTS {escape(customs.get('hts'))}")
+        extra_lines.append(f"HTS {escape(customs.get('hts'))}")
     if customs.get('origin'):
-        lines.append(f"Origin: {escape(customs.get('origin'))}")
+        extra_lines.append(f"Origin: {escape(customs.get('origin'))}")
     if invoice.get('tax_label') and not invoice.get('tax_lines'):
-        lines.append(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}")
-    if lines:
-        elements.append(Paragraph('<br/>'.join(lines), label_style))
+        extra_lines.append(f"<b>Tax:</b> {escape(invoice.get('tax_label'))}")
+    if extra_lines:
+        elements.append(Paragraph('<br/>'.join(extra_lines), label_style))
     if document_type(invoice) == 'credit_note' and invoice.get('reason'):
         elements.append(Paragraph(f"<b>Reason:</b> {escape(invoice.get('reason') or '')}", label_style))
     if invoice.get('tax_free'):

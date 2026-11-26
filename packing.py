@@ -1599,8 +1599,26 @@ def shipment_lines(summary):
             'rack_line': '', 'list_lines': [], 'pcs_line': '', 'sqft_line': '',
             'weight_line': '', 'weight_missing': False,
         }
+    rows = []
+    for row in summary.get('lists') or []:
+        if not row.get('line') and not row.get('number'):
+            continue
+        rows.append({
+            'number': row.get('number') or '',
+            'racks': row.get('racks_label') or '',
+            'pcs': row.get('pcs_text') or '',
+            'sqft': row.get('sqft_text') or '',
+            'weight': row.get('weight_text') or '',
+        })
     return {
         'list_lines': [row.get('line') for row in summary.get('lists') or [] if row.get('line')],
+        'rows': rows,
+        'total': {
+            'racks': str(int(summary.get('rack_count') or 0)),
+            'pcs': summary.get('pcs_label') or '',
+            'sqft': summary.get('sqft_label') or '',
+            'weight': summary.get('weight_label') or '',
+        },
         'rack_line': f"Total racks: {int(summary.get('rack_count') or 0)}",
         'pcs_line': f"Total pcs: {summary['pcs_label']}" if summary.get('pcs_label') else '',
         'sqft_line': f"Total sq ft: {summary['sqft_label']}" if summary.get('sqft_label') else '',

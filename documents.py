@@ -810,27 +810,15 @@ def invoice_party(invoice):
 
 
 def tax_line_label(line, document):
-    """Tax row in the invoice totals. GST and HST carry the seller's GST number."""
+    """Tax row in the invoice totals: the tax name and rate only.
+
+    The seller's GST number stays in the Canada header. The customer's PST or
+    QST number stays in the customer block. Neither is repeated on this line.
+    """
+    del document
     name = str((line or {}).get('name') or 'Tax').strip() or 'Tax'
     rate = str((line or {}).get('rate') or '').strip()
-    label = f'{name} {rate}%'.strip()
-    kind = name.upper()
-    number = ''
-    if kind in {'GST', 'HST'}:
-        gst = str((document or {}).get('seller_gst_number') or '').strip()
-        if gst:
-            number = f'GST# {gst}'
-    elif kind in {'PST', 'RST'}:
-        pst = str((document or {}).get('pst_number') or '').strip()
-        if pst:
-            number = f'PST# {pst}'
-    elif kind == 'QST':
-        qst = str((document or {}).get('qst_number') or '').strip()
-        if qst:
-            number = f'QST# {qst}'
-    if number:
-        return f'{label} ({number})'
-    return label
+    return f'{name} {rate}%'.strip()
 
 
 def invoice_summary(invoice):
@@ -846,10 +834,15 @@ def invoice_summary(invoice):
     else:
         discount_label = 'fixed'
     subtotal_label = 'Tax-free subtotal' if (invoice or {}).get('tax_free') else 'IGU subtotal'
+    discount_amount = amount((invoice or {}).get('discount_amount'))
+    # A 0% or $0 discount must not print as "Discount (0.00%) $-0.00".
+    if abs(discount_amount) < 0.005:
+        discount_amount = 0.0
     rows = [
         {'label': subtotal_label, 'amount': amount((invoice or {}).get('subtotal') or (invoice or {}).get('igu_subtotal'))},
-        {'label': f'Discount ({discount_label})', 'amount': -amount((invoice or {}).get('discount_amount'))},
     ]
+    if discount_amount:
+        rows.append({'label': f'Discount ({discount_label})', 'amount': -discount_amount})
     extra_discount = amount((invoice or {}).get('additional_discount_amount'))
     if extra_discount:
         try:
@@ -860,8 +853,9 @@ def invoice_summary(invoice):
             'label': f'Additional discount ({extra_percent:g}%)',
             'amount': -extra_discount,
         })
-    igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
-    rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
+    if discount_amount or extra_discount:
+        igu_label = 'Total before extras' if (invoice or {}).get('tax_free') else 'IGU total'
+        rows.append({'label': igu_label, 'amount': amount((invoice or {}).get('igu_total'))})
     for charge in (invoice or {}).get('extra_charges') or []:
         if not isinstance(charge, dict):
             continue
@@ -870,7 +864,7 @@ def invoice_summary(invoice):
         if not isinstance(line, dict):
             continue
         rows.append({
-            'label': line.get('label') or tax_line_label(line, invoice),
+            'label': tax_line_label(line, invoice),
             'amount': amount(line.get('amount')),
         })
     rows.append({'label': 'Grand total', 'amount': amount((invoice or {}).get('total'))})
