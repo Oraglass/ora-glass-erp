@@ -10442,6 +10442,7 @@ def _present_invoice(invoice, payments):
     view['qbo_id'] = str(invoice.get('qbo_id') or '')
     view['qbo_sync'] = invoice.get('qbo_sync') or ''
     view['qbo_error'] = invoice.get('qbo_error') or invoice.get('qbo_warning') or ''
+    view['regenerate_warning'] = invoice.get('regenerate_warning') or ''
     view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], view.get('issuer') or 'us') if view['qbo_error'] else ''
     view['qbo_warning_url'] = quickbooks.settings_url(invoice.get('qbo_warning') or '', view.get('issuer') or 'us') if invoice.get('qbo_warning') else ''
     if not view['qbo_id'] and not view['qbo_sync']:
@@ -11039,16 +11040,6 @@ def regenerate_invoice(invoice_id):
         return json_error('Only an invoice can be regenerated.', 400)
     if document.get('voided'):
         return json_error('This document is already void.', 400)
-    from billing import invoice_applied, invoice_status
-    payments = load_payments()
-    if invoice_applied(document, payments) > 0.009:
-        return json_error(
-            'This invoice has a payment applied, so it cannot be regenerated. '
-            'Voiding it in QuickBooks would drop that payment.',
-            400,
-        )
-    if invoice_status(document, payments) != 'unpaid':
-        return json_error('Only an unpaid invoice can be regenerated.', 400)
     order = next((row for row in load_orders() if row.get('id') == document.get('order_id')), None)
     if not order:
         return json_error('The order for this invoice was not found.', 404)
@@ -11123,8 +11114,74 @@ def regenerate_invoice(invoice_id):
         )
     if plan == 'update':
         _release_replaced_quickbooks_id(document)
+        logger.info(
+            'Updated QuickBooks invoice %s in place for %s.',
+            expected, replacement.get('number') if replacement else document.get('number'),
+        )
+    warning = _move_invoice_allocations(document, replacement)
+    if warning and replacement:
+        logger.warning(warning)
+        rows = load_invoices()
+        for row in rows:
+            if row.get('id') == replacement.get('id'):
+                row['regenerate_warning'] = warning
+                replacement = row
+        save_invoices(rows)
     quickbooks.clear_invoice_replace()
     return jsonify(_present_invoice(replacement or document, load_payments()))
+
+
+def _move_invoice_allocations(original, replacement):
+    """Point payment allocations at the replacement invoice.
+
+    Amounts stay the same until they would exceed the new total. The rest
+    stays on the payment as unallocated credit.
+    """
+    from billing import money
+    if not original or not replacement:
+        return ''
+    new_total = money(replacement.get('total'))
+    room = new_total
+    dropped = 0.0
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        if payment.get('voided'):
+            continue
+        kept = []
+        touched = False
+        for row in payment.get('allocations') or []:
+            if row.get('voided') or row.get('target_type') != 'invoice' or row.get('target_id') != original.get('id'):
+                kept.append(row)
+                continue
+            touched = True
+            amount = money(row.get('amount'))
+            take = money(min(amount, room)) if room > 0 else 0.0
+            if take > 0.009:
+                moved = dict(row)
+                moved['target_id'] = replacement.get('id')
+                moved['amount'] = take
+                kept.append(moved)
+                room = money(room - take)
+            leftover = money(amount - take)
+            if leftover > 0.009:
+                dropped = money(dropped + leftover)
+        if touched:
+            payment['allocations'] = kept
+            changed = True
+            logger.info(
+                'Moved payment %s from invoice %s to %s.',
+                payment.get('id'), original.get('number') or original.get('id'),
+                replacement.get('number') or replacement.get('id'),
+            )
+    if changed:
+        save_payments(payments)
+    if dropped > 0.009:
+        return (
+            f'{dropped:.2f} of the payment was more than the new invoice total '
+            'and was left as unallocated credit.'
+        )
+    return ''
 
 
 def _abort_regenerated_invoice(original, replacement):

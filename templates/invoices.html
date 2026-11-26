@@ -247,6 +247,7 @@ function renderDetail(invoice) {
     + partyNote
     + fxLine + fxForm + packingNote + customs
     + '<p class="note" id="qbo-sync">QuickBooks: ' + esc(invoice.qbo_sync_label || 'Not sent') + (invoice.qbo_doc_number && invoice.qbo_sync === 'synced' ? ' · ' + esc(invoice.qbo_doc_number) : '') + (invoice.qbo_id ? ' · id ' + esc(invoice.qbo_id) : '') + '</p>'
+    + (invoice.regenerate_warning ? '<p class="error" id="regenerate-warning">' + esc(invoice.regenerate_warning) + '</p>' : '')
     + (invoice.qbo_error ? '<p class="error" id="qbo-error">' + qboErrorHtml(invoice.qbo_error, invoice.qbo_settings_url) + '</p>' : '')
     + (IS_ADMIN && !invoice.voided && invoice.qbo_sync !== 'synced' ? '<button type="button" class="btn secondary" id="send-qbo">Send to QuickBooks</button>' : '')
     + (invoice.qbo_warning && invoice.qbo_warning !== invoice.qbo_error ? '<p class="error">' + qboErrorHtml(invoice.qbo_warning, invoice.qbo_warning_url || invoice.qbo_settings_url) + '</p>' : '')

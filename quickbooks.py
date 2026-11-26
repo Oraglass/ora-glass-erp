@@ -1926,10 +1926,11 @@ def _record_invoice_sync(invoice, status, error='', qbo_id='', doc_number='', re
 _INVOICE_REPLACE = {}
 
 
-def begin_invoice_replace(qbo_id, sync_token):
+def begin_invoice_replace(qbo_id, sync_token, doc_number=''):
     """The next invoice push updates this QuickBooks invoice instead of creating one."""
     _INVOICE_REPLACE['qbo_id'] = str(qbo_id or '')
     _INVOICE_REPLACE['sync_token'] = str(sync_token or '0')
+    _INVOICE_REPLACE['doc_number'] = str(doc_number or '')
 
 
 def clear_invoice_replace():
@@ -1952,9 +1953,8 @@ def _fetch_remote_invoice(qbo_id):
 def regenerate_guard(invoice):
     """How regenerate should treat the QuickBooks copy.
 
-    A synced invoice is updated in place so its Id, and any payment linked to
-    that Id, stay. A QuickBooks balance below the total means a payment is
-    already applied, and voiding would drop it, so regenerate stops. An invoice
+    A synced invoice is updated in place, including one that already has a
+    payment. The Id and DocNumber stay, so the payment link stays. An invoice
     that was never sent is created as usual.
     """
     key = (invoice or {}).get('issuer') or 'us'
@@ -1985,16 +1985,18 @@ def regenerate_guard(invoice):
             f'QuickBooks did not return a balance for {remote.get("DocNumber") or link.get("qbo_id")}, '
             'so it was not regenerated.'
         )
-    total = money(remote.get('TotalAmt'))
+    qbo_id = remote.get('Id') or link.get('qbo_id')
+    doc_number = remote.get('DocNumber') or invoice.get('qbo_doc_number') or invoice.get('number') or ''
     balance = money(remote.get('Balance'))
+    total = money(remote.get('TotalAmt'))
     if balance + 0.009 < total:
-        shown = remote.get('DocNumber') or link.get('qbo_id')
-        return 'error', (
-            f'QuickBooks invoice {shown} has a payment applied '
-            f'(balance {balance:.2f} is below the total {total:.2f}). '
-            'It was not regenerated, because voiding it would drop that payment.'
-        )
-    begin_invoice_replace(remote.get('Id') or link.get('qbo_id'), remote.get('SyncToken') or link.get('sync_token'))
+        log('info', (
+            f'QuickBooks invoice {doc_number or qbo_id} has a payment '
+            f'(balance {balance:.2f} of {total:.2f}). Updating it in place so the payment stays linked.'
+        ))
+    else:
+        log('info', f'Updating QuickBooks invoice {doc_number or qbo_id} in place.')
+    begin_invoice_replace(qbo_id, remote.get('SyncToken') or link.get('sync_token'), doc_number)
     return 'update', remote
 
 
@@ -2098,6 +2100,13 @@ def push_document(invoice):
     if replacement:
         payload['Id'] = replacement['qbo_id']
         payload['SyncToken'] = replacement.get('sync_token') or '0'
+        payload['sparse'] = True
+        if replacement.get('doc_number'):
+            payload['DocNumber'] = str(replacement['doc_number'])[:21]
+        log('info', (
+            f"Sparse update of QuickBooks invoice {payload['Id']} "
+            f"({payload.get('DocNumber') or 'same number'})."
+        ))
     try:
         data = _post_entity(entity, payload)
     except QuickBooksError as exc:
@@ -2167,6 +2176,16 @@ def void_document(invoice):
         return False
     try:
         realm = load_tokens()['realm_id']
+        remote = _fetch_remote_invoice(link['qbo_id'])
+        if remote and remote.get('Balance') is not None and money(remote.get('Balance')) + 0.009 < money(remote.get('TotalAmt')):
+            message = (
+                f'QuickBooks invoice {remote.get("DocNumber") or link["qbo_id"]} still has a linked payment, '
+                'so it was not voided.'
+            )
+            _record_invoice_sync(invoice, 'error', error=message, qbo_id=link.get('qbo_id') or '', realm_id=realm)
+            log('error', message)
+            return False
+        log('info', f"Voiding QuickBooks {entity} {link['qbo_id']}.")
         api_post(f"/v3/company/{realm}/{entity}?operation=void", {'Id': link['qbo_id'], 'SyncToken': link['sync_token']})
         _record_invoice_sync(invoice, 'voided', qbo_id=link.get('qbo_id') or '', realm_id=realm)
         log('info', f"Voided QuickBooks {entity} {link['qbo_id']}.")
@@ -2175,6 +2194,94 @@ def void_document(invoice):
         log('error', f'Void {invoice.get("id")}: {exc}')
         return False
     return True
+
+
+def _fetch_remote_payment(qbo_id):
+    realm = load_tokens()['realm_id']
+    data = api_get(f"/v3/company/{realm}/payment/{qbo_id}")
+    remote = data.get('Payment') if isinstance(data, dict) else None
+    if isinstance(remote, dict) and str(remote.get('Id') or '') == str(qbo_id):
+        return remote
+    return None
+
+
+def _repoint_payment(payment_qbo_id, old_invoice_id, new_invoice_id):
+    """Point one QuickBooks payment line at the replacement invoice."""
+    remote = _fetch_remote_payment(payment_qbo_id)
+    if not remote:
+        raise QuickBooksError(f'QuickBooks payment {payment_qbo_id} was not found.')
+    lines = []
+    changed = False
+    for line in remote.get('Line') or []:
+        row = dict(line)
+        linked = []
+        for txn in row.get('LinkedTxn') or []:
+            updated = dict(txn)
+            if str(updated.get('TxnId') or '') == str(old_invoice_id) and updated.get('TxnType') == 'Invoice':
+                updated['TxnId'] = str(new_invoice_id)
+                changed = True
+            linked.append(updated)
+        if linked:
+            row['LinkedTxn'] = linked
+        lines.append(row)
+    if not changed:
+        log('info', f'QuickBooks payment {payment_qbo_id} is not linked to invoice {old_invoice_id}.')
+        return remote
+    realm = load_tokens()['realm_id']
+    data = api_post(f'/v3/company/{realm}/payment', {
+        'Id': remote.get('Id'),
+        'SyncToken': remote.get('SyncToken') or '0',
+        'sparse': True,
+        'Line': lines,
+    })
+    updated = data.get('Payment') or {}
+    log('info', f'QuickBooks payment {payment_qbo_id} now applies to invoice {new_invoice_id}.')
+    return updated or remote
+
+
+def repoint_payments_then_void(old_qbo_id, new_qbo_id, payment_ids):
+    """Create-then-relink-then-void. The new invoice must already exist.
+
+    A failed step does not void the old invoice. A payment that still points
+    at the old invoice blocks the void.
+    """
+    old_qbo_id = str(old_qbo_id or '')
+    new_qbo_id = str(new_qbo_id or '')
+    log('info', f'Relinking QuickBooks payments from invoice {old_qbo_id} to {new_qbo_id}.')
+    for payment_id in payment_ids or []:
+        try:
+            _repoint_payment(payment_id, old_qbo_id, new_qbo_id)
+        except QuickBooksError as exc:
+            message = f'QuickBooks payment {payment_id} was not moved to invoice {new_qbo_id}: {exc}'
+            log('error', message)
+            return False, message
+        still = _fetch_remote_payment(payment_id) or {}
+        for line in still.get('Line') or []:
+            for txn in line.get('LinkedTxn') or []:
+                if str(txn.get('TxnId') or '') == old_qbo_id and txn.get('TxnType') == 'Invoice':
+                    message = (
+                        f'QuickBooks payment {payment_id} still points at invoice {old_qbo_id}, '
+                        'so that invoice was not voided.'
+                    )
+                    log('error', message)
+                    return False, message
+    log('info', f'Voiding QuickBooks invoice {old_qbo_id} after its payments were moved.')
+    link_sync = '0'
+    remote = _fetch_remote_invoice(old_qbo_id) or {}
+    if remote.get('SyncToken') is not None:
+        link_sync = str(remote.get('SyncToken'))
+    try:
+        realm = load_tokens()['realm_id']
+        api_post(
+            f"/v3/company/{realm}/invoice?operation=void",
+            {'Id': old_qbo_id, 'SyncToken': link_sync},
+        )
+    except QuickBooksError as exc:
+        message = f'QuickBooks invoice {old_qbo_id} was not voided: {exc}'
+        log('error', message)
+        return False, message
+    log('info', f'Voided QuickBooks invoice {old_qbo_id}.')
+    return True, ''
 
 
 def _record_payment_sync(payment, status, error='', qbo_id='', realm_id='', sync_token=''):

@@ -192,7 +192,9 @@ def test_regenerate_updates_the_quickbooks_invoice_in_place(client, monkeypatch)
         assert len(writes) == 2
         updated = json.loads(writes[1][2])
         assert updated['Id'] == '80'
+        assert updated.get('sparse') is True
         assert updated.get('SyncToken')
+        assert updated.get('DocNumber') == json.loads(writes[0][2]).get('DocNumber')
         fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
         assert fresh['id'] != original['id']
         assert fresh['qbo_sync'] == 'synced'
@@ -249,7 +251,7 @@ def test_regenerate_refuses_when_the_old_quickbooks_invoice_cannot_be_voided(cli
         quickbooks.TRANSPORT = None
 
 
-def test_regenerate_stops_when_quickbooks_shows_a_payment(client, monkeypatch):
+def test_regenerate_updates_in_place_when_quickbooks_shows_a_payment(client, monkeypatch):
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
@@ -282,27 +284,37 @@ def test_regenerate_stops_when_quickbooks_shows_a_payment(client, monkeypatch):
         remote = next(row for row in fake.invoices if str(row.get('Id')) == str(original['qbo_id']))
         remote['TotalAmt'] = 100
         remote['Balance'] = 40
-        calls = len(fake.calls)
-        refused = client.post(f"/api/invoices/{original['id']}/regenerate")
-        assert refused.status_code == 400, refused.get_json()
-        message = refused.get_json().get('error') or ''
-        assert 'payment applied' in message
-        assert '40.00' in message
-        assert '100.00' in message
-        kept = next(row for row in load_invoices() if row['id'] == original['id'])
-        assert not kept.get('voided')
-        assert kept['qbo_id'] == original['qbo_id']
-        assert [call for call in fake.calls[calls:] if call[0] == 'POST' and '/invoice' in call[1]] == []
+        remote['DocNumber'] = original.get('qbo_doc_number') or original.get('number')
+        replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
+        assert replaced.status_code == 200, replaced.get_json()
+        voids = [call for call in fake.calls if 'operation=void' in call[1]]
+        assert voids == []
+        writes = [
+            call for call in fake.calls
+            if call[0] == 'POST' and urllib.parse.urlparse(call[1]).path.rstrip('/').endswith('/invoice')
+            and 'operation=void' not in call[1]
+        ]
+        updated = json.loads(writes[-1][2])
+        assert updated['Id'] == original['qbo_id']
+        assert updated.get('sparse') is True
+        assert updated.get('DocNumber') == remote['DocNumber']
+        fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
+        assert fresh['qbo_id'] == original['qbo_id']
     finally:
         quickbooks.TRANSPORT = None
 
 
-def test_regenerate_stops_when_an_erp_payment_is_allocated(client, monkeypatch):
+def test_regenerate_moves_the_payment_onto_the_replacement(client, monkeypatch):
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
     _books()
-    from storage import save_payments
+    from storage import load_customers, load_payments, save_payments
+    customers = load_customers()
+    customers['highq'].update({'credit_approved': True, 'credit_limit': 100000, 'credit_currency': 'cad'})
+    save_customers(customers)
+    import currency_rules
+    currency_rules.record_rate(1.4, '2026-11-01', 'admin@oraglass.us')
     save_orders([{
         'id': 1, 'customer_id': 'highq', 'company': 'HighQ Developments Inc', 'project': 'Misc',
         'status': 'approved', 'currency': 'cad',
@@ -312,18 +324,124 @@ def test_regenerate_stops_when_an_erp_payment_is_allocated(client, monkeypatch):
             'lines': [{'serial': 1, 'qty': 1}],
         }],
     }])
-    save_invoices([{
-        'id': 54, 'number': 'INV-0054', 'order_id': 1, 'kind': 'intercompany', 'issuer': 'us',
-        'currency': 'usd', 'customer_id': 'ora-glass-canada', 'company': 'Ora Glass (Canada) Inc',
-        'total': 100, 'invoice_date': '2026-11-20',
-        'items': [{'name': 'Unit', 'serial': 1, 'pcs': 1, 'qty': 1, 'unit_price': 100, 'total': 100, 'spec': _spec()}],
-    }])
+    fake = FakeQBO()
+    fake.customers = [{
+        'Id': '100000001', 'SyncToken': '1', 'DisplayName': 'Ora Glass (Canada) Inc',
+        'CurrencyRef': {'value': 'USD'},
+    }]
+    try:
+        _connect(client, fake, 'us', US_REALM)
+        created = client.post('/api/orders/1/customer-invoice', json={'create_intercompany': True})
+        assert created.status_code == 200, created.get_json()
+        original = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
+        save_payments([{
+            'id': 7, 'customer_id': original['customer_id'], 'currency': 'usd', 'amount': 25,
+            'voided': False, 'date': '2026-11-23',
+            'allocations': [{'target_type': 'invoice', 'target_id': original['id'], 'amount': 25}],
+        }])
+        replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
+        assert replaced.status_code == 200, replaced.get_json()
+        fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
+        assert fresh['id'] != original['id']
+        payment = load_payments()[0]
+        assert payment['allocations'] == [
+            {'target_type': 'invoice', 'target_id': fresh['id'], 'amount': 25},
+        ]
+        assert not any(
+            row.get('target_id') == original['id'] for row in payment['allocations']
+        )
+        voids = [call for call in fake.calls if 'operation=void' in call[1]]
+        assert voids == []
+    finally:
+        quickbooks.TRANSPORT = None
+
+
+def test_excess_allocation_is_left_as_unallocated_credit():
+    from app import _move_invoice_allocations
+    from storage import load_payments, save_invoices, save_payments
+    old = {'id': 54, 'number': 'INV-0054', 'total': 100}
+    new = {'id': 55, 'number': 'INV-0055', 'total': 40}
+    save_invoices([old, new])
     save_payments([{
-        'id': 1, 'customer_id': 'ora-glass-canada', 'currency': 'usd', 'amount': 25, 'voided': False,
-        'allocations': [{'target_type': 'invoice', 'target_id': 54, 'amount': 25}],
+        'id': 7, 'amount': 80, 'voided': False,
+        'allocations': [{'target_type': 'invoice', 'target_id': 54, 'amount': 80}],
     }])
-    refused = client.post('/api/invoices/54/regenerate')
-    assert refused.status_code == 400, refused.get_json()
-    assert 'payment applied' in (refused.get_json().get('error') or '')
-    kept = next(row for row in load_invoices() if row['id'] == 54)
-    assert not kept.get('voided')
+    warning = _move_invoice_allocations(old, new)
+    assert '40.00' in warning
+    assert 'unallocated credit' in warning
+    payment = load_payments()[0]
+    assert payment['allocations'] == [
+        {'target_type': 'invoice', 'target_id': 55, 'amount': 40},
+    ]
+
+
+def test_repointing_a_quickbooks_payment_happens_before_the_void(monkeypatch):
+    _configure(monkeypatch)
+    fake = FakeQBO()
+    fake.invoices.append({
+        'Id': '568', 'SyncToken': '2', 'DocNumber': 'INV-0054',
+        'TotalAmt': 100, 'Balance': 40,
+    })
+    fake.invoices.append({
+        'Id': '569', 'SyncToken': '0', 'DocNumber': 'INV-0055',
+        'TotalAmt': 100, 'Balance': 100,
+    })
+    fake.payments.append({
+        'Id': '82', 'SyncToken': '1', 'TotalAmt': 60,
+        'Line': [{'Amount': 60, 'LinkedTxn': [{'TxnId': '568', 'TxnType': 'Invoice'}]}],
+    })
+    quickbooks.TRANSPORT = fake
+    with quickbooks.connection_scope('us'):
+        quickbooks.save_tokens({
+            'access_token': 'access-1', 'refresh_token': 'refresh-1',
+            'realm_id': quickbooks.US_REALM, 'expires_at': 9999999999,
+        })
+        ok, error = quickbooks.repoint_payments_then_void('568', '569', ['82'])
+    assert ok, error
+    assert error == ''
+    kinds = []
+    for method, url, body in fake.calls:
+        if method != 'POST':
+            continue
+        path = urllib.parse.urlparse(url).path
+        if 'operation=void' in url:
+            kinds.append('void')
+        elif path.rstrip('/').endswith('/payment'):
+            kinds.append('payment')
+    assert kinds == ['payment', 'void']
+    moved = next(row for row in fake.payments if row['Id'] == '82')
+    assert moved['Line'][0]['LinkedTxn'][0]['TxnId'] == '569'
+    quickbooks.TRANSPORT = None
+
+
+def test_a_failed_payment_relink_does_not_void_the_old_invoice(monkeypatch):
+    _configure(monkeypatch)
+    fake = FakeQBO()
+    fake.invoices.append({
+        'Id': '568', 'SyncToken': '2', 'DocNumber': 'INV-0054',
+        'TotalAmt': 100, 'Balance': 40,
+    })
+    quickbooks.TRANSPORT = fake
+
+    def fail_get(path):
+        if '/payment/' in path:
+            raise quickbooks.QuickBooksError('Payment could not be read.')
+        return quickbooks.api_get.__wrapped__(path) if hasattr(quickbooks.api_get, '__wrapped__') else None
+
+    with quickbooks.connection_scope('us'):
+        quickbooks.save_tokens({
+            'access_token': 'access-1', 'refresh_token': 'refresh-1',
+            'realm_id': quickbooks.US_REALM, 'expires_at': 9999999999,
+        })
+        original_fetch = quickbooks._fetch_remote_payment
+        quickbooks._fetch_remote_payment = lambda qbo_id: (_ for _ in ()).throw(
+            quickbooks.QuickBooksError('Payment could not be read.')
+        )
+        try:
+            ok, error = quickbooks.repoint_payments_then_void('568', '569', ['82'])
+        finally:
+            quickbooks._fetch_remote_payment = original_fetch
+    assert ok is False
+    assert 'was not moved' in error
+    assert [call for call in fake.calls if 'operation=void' in call[1]] == []
+    quickbooks.TRANSPORT = None

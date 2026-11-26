@@ -114,8 +114,29 @@ class FakeQBO:
             return 200, {}, json.dumps({'Invoice': created}).encode()
         if 'creditmemo' in path:
             return 200, {}, json.dumps({'CreditMemo': {'Id': data.get('Id') or '81', 'SyncToken': '0'}}).encode()
-        if '/payment' in path:
-            return 200, {}, json.dumps({'Payment': {'Id': data.get('Id') or '82', 'SyncToken': '0', 'TotalAmt': data.get('TotalAmt')}}).encode()
+        if '/payment/' in path and method == 'GET':
+            wanted = path.rstrip('/').split('/')[-1]
+            match = next((row for row in self.payments if str(row.get('Id')) == wanted), None)
+            if not match:
+                match = {'Id': wanted, 'SyncToken': '0', 'Line': []}
+            return 200, {}, json.dumps({'Payment': match}).encode()
+        if '/payment' in path and 'operation=void' not in url:
+            if data.get('Id'):
+                match = next((row for row in self.payments if str(row.get('Id')) == str(data['Id'])), None)
+                if match is None:
+                    match = {'Id': str(data['Id']), 'SyncToken': '0', 'Line': []}
+                    self.payments.append(match)
+                if 'Line' in data:
+                    match['Line'] = data['Line']
+                match['SyncToken'] = str(int(match.get('SyncToken') or 0) + 1)
+                match['TotalAmt'] = data.get('TotalAmt', match.get('TotalAmt'))
+                return 200, {}, json.dumps({'Payment': match}).encode()
+            created = {
+                'Id': '82', 'SyncToken': '0', 'TotalAmt': data.get('TotalAmt'),
+                'Line': data.get('Line') or [],
+            }
+            self.payments.append(created)
+            return 200, {}, json.dumps({'Payment': created}).encode()
         if '/invoice/' in path and method == 'GET':
             wanted = path.rstrip('/').split('/')[-1]
             match = next((row for row in self.invoices if str(row.get('Id')) == wanted), None)
