@@ -555,3 +555,97 @@ def test_a_packing_list_with_no_printed_weight_is_flagged(client):
     assert b'49.' not in pdf
     page = open('templates/invoices.html', encoding='utf-8').read()
     assert 'weight-missing' in page
+    assert 'reread-packing' in page
+
+
+def _layout_pdf():
+    from reportlab.pdfgen import canvas
+    buffer = io.BytesIO()
+    sheet = canvas.Canvas(buffer, pagesize=(792, 612))
+    sheet.setFont('Courier', 8)
+    sheet.drawString(430, 560, 'Sales Delivery: XF261123002         Date:   11/23/2026')
+    sheet.drawString(200, 520, 'RackDetail               Total   Total Pcs :            3')
+    sheet.drawString(40, 506, 'RackCode                  RackName                  1      Total SQ/FT :          75.29')
+    sheet.drawString(360, 492, 'Total Weight :         Approx. 463 LBS')
+    sheet.drawString(40, 470, '5016         L3000*920*2200(THK:550)')
+    sheet.drawString(360, 470, 'Remarks:               5016')
+    sheet.save()
+    return buffer.getvalue()
+
+
+def test_pdf_totals_are_read_without_pdftotext(monkeypatch, client, data_dir):
+    """The live server has no pdftotext binary. pdfplumber still reads the totals."""
+    import subprocess
+    real_run = subprocess.run
+
+    def refuse_pdftotext(*args, **kwargs):
+        blob = ' '.join(str(part) for part in args)
+        if 'pdftotext' in blob:
+            raise AssertionError('pdftotext was called')
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', refuse_pdftotext)
+    parsed = packing_book.parse_packing_pdf(_layout_pdf())
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+    folder = data_dir / 'packing_files' / 'other'
+    folder.mkdir(parents=True)
+    (folder / 'XF261123002-layout.pdf').write_bytes(_layout_pdf())
+    write_user('admin@oraglass.us', 'admin')
+    write_user('seller@oraglass.us', 'sales')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_orders([{
+        'id': 1,
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'], 'stored': 'gone.pdf',
+            'lines': [{'serial': 1, 'qty': 3}],
+        }],
+    }])
+    save_invoices([dict(
+        _invoice(1, 'CA-INV-0001', [{'name': 'Glass', 'serial': 1, 'pcs': 3, 'total': 40}], kind='customer'),
+        issuer='ca', currency='cad', company='HighQ Developments Inc', qbo_id='569',
+    )])
+    opened = client.get('/api/invoices/1').get_json()
+    assert opened['number'] == 'CA-INV-0001'
+    assert opened['qbo_id'] == '569'
+    assert opened['packing']['shipment']['list_lines'] == [
+        'XF261123002: Rack 5016 · 3 pcs · 75.29 sq ft · 463 lb',
+    ]
+    orders = load_orders()
+    stored = orders[0]['packing_lists'][0]
+    assert stored['weight'] == 463
+    assert stored['total_pcs'] == 3
+    assert stored['total_sqft'] == 75.29
+    stored['weight'] = None
+    stored['total_pcs'] = None
+    stored['total_sqft'] = None
+    save_orders(orders)
+    client.post('/logout')
+    assert login(client, 'seller@oraglass.us').status_code == 302
+    assert client.post('/api/invoices/1/packing-lists/reread').status_code == 403
+    client.post('/logout')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    reread = client.post('/api/invoices/1/packing-lists/reread')
+    assert reread.status_code == 200, reread.get_json()
+    body = reread.get_json()
+    assert body['number'] == 'CA-INV-0001'
+    assert body['qbo_id'] == '569'
+    assert body['reread'][0]['status'] == 'read'
+    assert body['reread'][0]['weight'] == 463
+    assert body['reread'][0]['total_pcs'] == 3
+    assert body['packing']['shipment']['list_lines'] == [
+        'XF261123002: Rack 5016 · 3 pcs · 75.29 sq ft · 463 lb',
+    ]
+    again = next(row for row in load_orders()[0]['packing_lists'] if row.get('current', True))
+    assert again['weight'] == 463
+    assert again['total_pcs'] == 3
+    assert again['total_sqft'] == 75.29

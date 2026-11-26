@@ -9265,11 +9265,57 @@ def _place_parsed_packing(parsed, filename, stored, user):
 
 
 def _read_packing_file(scope, stored):
-    path = os.path.join(data_dir(), 'packing_files', str(scope), os.path.basename(stored or ''))
-    if not stored or not os.path.isfile(path):
+    path = _locate_packing_file(scope, stored)
+    if not path:
         return b''
     with open(path, 'rb') as handle:
         return handle.read()
+
+
+def _locate_packing_file(order_id, stored, number=''):
+    """Find a saved packing list on the data disk.
+
+    Uploads are written under DATA_DIR/packing_files. A deploy does not keep
+    files that were written next to the app, so both places are checked, and a
+    file whose name contains the packing-list number still counts.
+    """
+    from storage import BASE_DIR, data_dir
+    raw = str(stored or '').replace('\\', '/').strip()
+    name = os.path.basename(raw)
+    roots = []
+    for root in (data_dir(), os.path.join(BASE_DIR, 'data')):
+        if root and root not in roots:
+            roots.append(root)
+    candidates = []
+    if raw and os.path.isabs(raw):
+        candidates.append(raw)
+    if name:
+        for root in roots:
+            candidates.append(os.path.join(root, 'packing_files', str(order_id), name))
+            candidates.append(os.path.join(root, 'packing_files', 'inbox', name))
+            candidates.append(os.path.join(root, 'shipment_files', str(order_id), name))
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if path and os.path.isfile(path):
+            return path
+    token = re.sub(r'[^A-Za-z0-9]+', '', str(number or '')).lower()
+    for root in roots:
+        for folder in ('packing_files', 'shipment_files'):
+            base = os.path.join(root, folder)
+            if not os.path.isdir(base):
+                continue
+            for dirpath, _dirs, files in os.walk(base):
+                for filename in files:
+                    full = os.path.join(dirpath, filename)
+                    if name and filename == name:
+                        return full
+                    compact = re.sub(r'[^A-Za-z0-9]+', '', filename).lower()
+                    if token and token in compact:
+                        return full
+    return ''
 
 
 def _accept_packing_upload(filename, payload, user):
@@ -10744,8 +10790,8 @@ def _packing_measures_changed(original, measured):
     return False
 
 
-def _store_packing_measures(order_id, measured):
-    """Keep a weight read from an older packing-list file on the order."""
+def _store_packing_measures(order_id, measured, replace=False):
+    """Keep figures read from a packing-list file on the order."""
     orders = load_orders()
     order = next((row for row in orders if row.get('id') == order_id), None)
     if not order:
@@ -10755,15 +10801,15 @@ def _store_packing_measures(order_id, measured):
         fresh = by_id.get(entry.get('id'))
         if not fresh:
             continue
-        if entry.get('weight') in (None, '') and fresh.get('weight') not in (None, ''):
+        if fresh.get('weight') not in (None, '') and (replace or entry.get('weight') in (None, '')):
             entry['weight'] = fresh.get('weight')
             entry['weight_unit'] = fresh.get('weight_unit') or ''
             entry['weight_missing'] = False
         elif entry.get('weight') in (None, '') and fresh.get('weight_missing'):
             entry['weight_missing'] = True
-        if entry.get('total_pcs') in (None, '') and fresh.get('total_pcs') not in (None, ''):
+        if fresh.get('total_pcs') not in (None, '') and (replace or entry.get('total_pcs') in (None, '')):
             entry['total_pcs'] = fresh.get('total_pcs')
-        if entry.get('total_sqft') in (None, '') and fresh.get('total_sqft') not in (None, ''):
+        if fresh.get('total_sqft') not in (None, '') and (replace or entry.get('total_sqft') in (None, '')):
             entry['total_sqft'] = fresh.get('total_sqft')
         if not (entry.get('racks') or entry.get('rack')) and fresh.get('racks'):
             entry['racks'] = list(fresh.get('racks') or [])
@@ -10772,50 +10818,77 @@ def _store_packing_measures(order_id, measured):
     save_orders(orders)
 
 
-def _measured_packing_list(entry, order_id):
+def _measured_packing_list(entry, order_id, force=False):
     row = dict(entry or {})
     has_weight = row.get('weight') not in (None, '')
     has_racks = bool(row.get('racks') or row.get('rack'))
     has_pcs = row.get('total_pcs') not in (None, '')
     has_sqft = row.get('total_sqft') not in (None, '')
-    if has_weight and has_racks and has_pcs and has_sqft:
+    if not force and has_weight and has_racks and has_pcs and has_sqft:
+        row['measure_status'] = 'stored'
         return row
-    payload = _read_packing_file(order_id, row.get('stored'))
+    path = _locate_packing_file(order_id, row.get('stored'), row.get('number'))
+    if not path:
+        row['measure_status'] = 'missing'
+        row['measure_error'] = 'The saved packing-list file was not found on the data disk.'
+        return row
+    try:
+        with open(path, 'rb') as handle:
+            payload = handle.read()
+    except OSError:
+        row['measure_status'] = 'missing'
+        row['measure_error'] = 'The saved packing-list file could not be read.'
+        return row
     if not payload:
+        row['measure_status'] = 'missing'
+        row['measure_error'] = 'The saved packing-list file is empty.'
         return row
     import packing
     try:
         if payload.startswith(b'%PDF'):
             text_lines = packing.pdf_lines(payload)
-            parsed = packing.parse_packing_lines(text_lines)
         else:
             text_lines = payload.decode('utf-8', errors='replace').splitlines()
-            parsed = packing.parse_packing_lines(text_lines)
-        measures = packing.weights_by_number(text_lines)
+        parsed = packing.parse_packing_lines(text_lines)
+        measures = packing.measures_by_number(text_lines)
     except Exception:
+        row['measure_status'] = 'unread'
+        row['measure_error'] = 'The packing-list file could not be read as text.'
         return row
     number = str(row.get('number') or '')
-    if not has_weight:
-        chosen = measures.get(number)
-        if not chosen and len(measures) == 1:
-            only = next(iter(measures))
-            if not number or number == only:
-                chosen = measures[only]
-        if chosen:
+    chosen = measures.get(number)
+    if not chosen and len(measures) == 1:
+        only = next(iter(measures))
+        if not number or number == only:
+            chosen = measures[only]
+    if not has_weight or force:
+        if chosen and chosen.get('weight') is not None:
             row['weight'] = chosen.get('weight')
             row['weight_unit'] = chosen.get('weight_unit') or ''
+            row['weight_missing'] = False
         elif (not number or parsed.get('number') == number) and parsed.get('weight') is not None:
             row['weight'] = parsed.get('weight')
             row['weight_unit'] = parsed.get('weight_unit') or ''
-    same_list = not number or parsed.get('number') == number
-    if not has_pcs and same_list and parsed.get('total_pcs') not in (None, ''):
+            row['weight_missing'] = False
+    if (not has_pcs or force) and chosen and chosen.get('total_pcs') not in (None, ''):
+        row['total_pcs'] = chosen.get('total_pcs')
+    elif (not has_pcs or force) and parsed.get('total_pcs') not in (None, '') and (not number or parsed.get('number') == number):
         row['total_pcs'] = parsed.get('total_pcs')
-    if not has_sqft and same_list and parsed.get('total_sqft') not in (None, ''):
+    if (not has_sqft or force) and chosen and chosen.get('total_sqft') not in (None, ''):
+        row['total_sqft'] = chosen.get('total_sqft')
+    elif (not has_sqft or force) and parsed.get('total_sqft') not in (None, '') and (not number or parsed.get('number') == number):
         row['total_sqft'] = parsed.get('total_sqft')
     if not row.get('racks') and parsed.get('racks'):
         row['racks'] = list(parsed.get('racks') or [])
     if not row.get('rack') and parsed.get('rack'):
         row['rack'] = parsed.get('rack')
+    row['measure_path'] = path
+    if row.get('weight') in (None, '') and row.get('total_pcs') in (None, '') and row.get('total_sqft') in (None, ''):
+        row['measure_status'] = 'unread'
+        row['measure_error'] = 'The file was read, but Total Pcs, Total SQ/FT, and Total Weight were not in the text.'
+    else:
+        row['measure_status'] = 'read'
+        row.pop('measure_error', None)
     return row
 
 
@@ -11695,6 +11768,46 @@ def send_invoice_to_quickbooks(invoice_id):
         quickbooks.push_document_id(invoice_id)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
     return jsonify(_present_invoice(fresh, load_payments()))
+
+
+@app.route('/api/invoices/<int:invoice_id>/packing-lists/reread', methods=['POST'])
+@module_required('invoices')
+def reread_invoice_packing_lists(invoice_id):
+    """Re-parse saved packing lists and store the printed figures. The invoice itself is not changed."""
+    user = current_user()
+    if user.get('role') != 'admin':
+        return json_error('Only an administrator can re-read packing lists.', 403)
+    invoice = next((row for row in load_invoices() if row.get('id') == invoice_id), None)
+    if not invoice:
+        return json_error('Not found', 404)
+    number = invoice.get('number')
+    qbo_id = invoice.get('qbo_id')
+    order = next((row for row in load_orders() if row.get('id') == invoice.get('order_id')), None)
+    if not order:
+        return json_error('The order for this invoice was not found.', 404)
+    measured = [
+        _measured_packing_list(entry, order.get('id'), force=True)
+        for entry in order.get('packing_lists') or []
+        if entry.get('current', True)
+    ]
+    _store_packing_measures(order.get('id'), measured, replace=True)
+    notes = []
+    for row in measured:
+        notes.append({
+            'number': row.get('number') or '',
+            'status': row.get('measure_status') or '',
+            'error': row.get('measure_error') or '',
+            'weight': row.get('weight'),
+            'weight_unit': row.get('weight_unit') or '',
+            'total_pcs': row.get('total_pcs'),
+            'total_sqft': row.get('total_sqft'),
+        })
+    fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
+    if fresh.get('number') != number or fresh.get('qbo_id') != qbo_id:
+        return json_error('Re-reading packing lists must not change the invoice.', 500)
+    view = _present_invoice(fresh, load_payments())
+    view['reread'] = notes
+    return jsonify(view)
 
 
 @app.route('/api/invoices/<int:invoice_id>', methods=['GET'])

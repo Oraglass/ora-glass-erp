@@ -279,6 +279,7 @@ function renderDetail(invoice) {
     + '<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead><tbody>' + lines + charges + '</tbody></table>'
     + invoiceSummary(invoice)
     + (invoice.reason ? '<p class="note">Reason: ' + esc(invoice.reason) + '</p>' : '')
+    + (IS_ADMIN && invoice.order_id ? '<button type="button" class="btn secondary" id="reread-packing">Re-read packing lists</button>' : '')
     + (IS_ADMIN && invoice.doc_type !== 'credit_note' && !invoice.voided && invoice.status === 'unpaid' ? '<button type="button" class="btn" id="regenerate-doc">Regenerate</button>' : '')
     + (CAN_ISSUE && !invoice.voided ? '<button type="button" class="btn secondary" id="void-doc">Void</button>' : '')
     + (CAN_ISSUE && invoice.doc_type === 'credit_note' && !invoice.voided ? '<div class="row"><input id="apply-invoice" type="number" min="1" placeholder="Invoice id" aria-label="Invoice id"><input id="apply-amount" type="number" min="0.01" step="0.01" placeholder="Amount" aria-label="Amount"><button type="button" class="btn" id="apply-credit">Apply to invoice</button></div>' : '');
@@ -290,6 +291,17 @@ function renderDetail(invoice) {
     const body = await res.json().catch(() => ({}));
     sendQbo.disabled = false;
     if (!res.ok) { alert(body.error || 'Could not send this invoice to QuickBooks'); return; }
+    renderDetail(body);
+  });
+  const rereadPacking = document.getElementById('reread-packing');
+  if (rereadPacking) rereadPacking.addEventListener('click', async () => {
+    rereadPacking.disabled = true;
+    const res = await fetch('/api/invoices/' + invoice.id + '/packing-lists/reread', {method: 'POST'});
+    const body = await res.json().catch(() => ({}));
+    rereadPacking.disabled = false;
+    if (!res.ok) { alert(body.error || 'Could not re-read the packing lists'); return; }
+    const missed = (body.reread || []).filter(row => row.status && row.status !== 'read' && row.status !== 'stored');
+    if (missed.length) alert(missed.map(row => (row.number || 'Packing list') + ': ' + (row.error || 'Not read')).join('\n'));
     renderDetail(body);
   });
   const regenerateButton = document.getElementById('regenerate-doc');
