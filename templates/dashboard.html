@@ -102,6 +102,40 @@
             <p>Default 30. Customers are not emailed.</p>
         </form>
         {% endif %}
+        {% if customer_overdue and customer_overdue.count %}
+        <div class="import-notice" id="customer-overdue-racks">
+            {{ customer_overdue.count }} of your racks {{ 'have' if customer_overdue.count != 1 else 'has' }} been out longer than {{ customer_overdue.alert_after }} days.
+            <ul>
+            {% for row in customer_overdue.rows %}
+            <li>{{ row.number }} · delivered {{ row.delivered_on }} · {{ row.days }} days · {{ row.packing_number }}</li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        {% if open_damage_reports %}
+        <div class="import-notice" id="damage-report-alert">
+            <a href="/racks/damage">{{ open_damage_reports }} open damage report{{ 's' if open_damage_reports != 1 else '' }}</a>.
+            A driver marked a rack damaged. Customers are not emailed.
+        </div>
+        {% endif %}
+        {% if user.role == 'admin' %}
+        <div class="import-notice" id="overdue-racks">
+            {% if overdue_racks and overdue_racks.count %}
+            <a href="/racks?status=overdue">{{ overdue_racks.count }} rack{% if overdue_racks.count != 1 %}s{% endif %} overdue</a>
+            at a customer longer than that company's rack alert.
+            <ul>
+            {% for row in overdue_racks.rows %}
+            <li><a href="/racks/{{ row.number }}">{{ row.number }}</a> {{ row.customer_name }} · {{ row.days }} days · {{ row.packing_number }}</li>
+            {% endfor %}
+            </ul>
+            {% else %}
+            No racks are overdue.
+            {% endif %}
+            {% if overdue_report %}
+            <p>Weekly report: {{ overdue_report.schedule }}. {% if overdue_report.ran %}Last run {{ overdue_report.at_label }}.{% else %}It has not run yet.{% endif %} Customers are not emailed.</p>
+            {% endif %}
+        </div>
+        {% endif %}
         {% if qbo_expired %}
         <div class="import-notice" id="qbo-expired">
             QuickBooks connection expired - Reconnect

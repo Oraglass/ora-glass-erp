@@ -889,7 +889,7 @@ function renderDetail(order) {
   });
   if (sent) sent.addEventListener('click', () => changeStatus('sent', 'Mark this order as sent to production? It will count against the customer credit limit.'));
   if (made) made.addEventListener('click', () => changeStatus('made', 'Mark this order as made and ready for delivery?'));
-  if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', 'Mark this order as delivered? This creates an invoice. Further edits are limited to an administrator, and the invoice is not changed.'));
+  if (delivered) delivered.addEventListener('click', () => changeStatus('delivered', order.delivery_confirm || 'Mark this order as delivered? This creates an invoice. Racks on this order start their customer stay timer now. Further edits are limited to an administrator, and the invoice is not changed.'));
   if (edit) edit.addEventListener('click', () => openEditor(order));
   const toggleRemake = document.getElementById('toggle-remake');
   if (toggleRemake) toggleRemake.addEventListener('click', () => {
