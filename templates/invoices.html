@@ -280,8 +280,19 @@ function renderDetail(invoice) {
   if (voidButton) voidButton.addEventListener('click', async () => {
     const reason = prompt('Why void this document?');
     if (!reason) return;
-    const res = await fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})});
-    const body = await res.json().catch(() => ({}));
+    const send = (extra) => fetch('/api/invoices/' + invoice.id + '/void', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({reason}, extra || {}))});
+    let res = await send();
+    let body = await res.json().catch(() => ({}));
+    if (res.status === 409 && body.needs_payment_choice) {
+      const open = body.open_invoices || [];
+      const listed = open.map(row => row.number + ' (open ' + row.balance + ')').join(', ') || 'none';
+      const choice = prompt(body.error + ' Open invoices: ' + listed + '. Enter an invoice number to move the payment, or leave the box empty to keep it as unapplied credit.');
+      if (choice === null) return;
+      const match = open.find(row => String(row.number) === choice.trim());
+      if (choice.trim() && !match) { alert('That invoice is not open for this customer.'); return; }
+      res = await send(match ? {disposition: 'invoice', target_invoice_id: match.id} : {disposition: 'credit'});
+      body = await res.json().catch(() => ({}));
+    }
     if (!res.ok) { alert(body.error || 'Not voided'); return; }
     loadInvoices();
     renderDetail(body);

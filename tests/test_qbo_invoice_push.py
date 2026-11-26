@@ -183,24 +183,23 @@ def test_regenerate_updates_the_quickbooks_invoice_in_place(client, monkeypatch)
         replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
         assert replaced.status_code == 200, replaced.get_json()
         voids = [call for call in fake.calls if call[0] == 'POST' and 'operation=void' in call[1] and '/invoice' in call[1]]
-        assert voids == []
         writes = [
             call for call in fake.calls
             if call[0] == 'POST' and urllib.parse.urlparse(call[1]).path.rstrip('/').endswith('/invoice')
             and 'operation=void' not in call[1]
         ]
         assert len(writes) == 2
-        updated = json.loads(writes[1][2])
-        assert updated['Id'] == '80'
-        assert updated.get('sparse') is True
-        assert updated.get('SyncToken')
-        assert updated.get('DocNumber') == json.loads(writes[0][2]).get('DocNumber')
+        created = json.loads(writes[1][2])
+        assert 'Id' not in created
         fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
-        assert fresh['id'] == original['id']
-        assert fresh['number'] == original['number']
+        assert fresh['id'] != original['id']
+        assert fresh['number'] != original['number']
         assert fresh['qbo_sync'] == 'synced'
-        assert fresh['qbo_id'] == '80'
-        assert [row for row in load_invoices() if row.get('voided')] == []
+        assert fresh['qbo_id'] != original['qbo_id']
+        voided = next(row for row in load_invoices() if row['id'] == original['id'])
+        assert voided['voided'] is True
+        assert voided['number'] == original['number']
+        assert len(voids) == 1
     finally:
         quickbooks.TRANSPORT = None
 
@@ -282,22 +281,27 @@ def test_regenerate_updates_in_place_when_quickbooks_shows_a_payment(client, mon
         remote = next(row for row in fake.invoices if str(row.get('Id')) == str(original['qbo_id']))
         remote['TotalAmt'] = 100
         remote['Balance'] = 40
-        remote['DocNumber'] = original.get('qbo_doc_number') or original.get('number')
+        fake.payments.append({
+            'Id': '82', 'SyncToken': '1', 'TotalAmt': 60,
+            'Line': [{'Amount': 60, 'LinkedTxn': [{'TxnId': original['qbo_id'], 'TxnType': 'Invoice'}]}],
+        })
+        from storage import save_payments
+        save_payments([{
+            'id': 7, 'customer_id': original['customer_id'], 'currency': 'usd', 'amount': 60,
+            'voided': False, 'qbo_id': '82', 'date': '2026-11-23',
+            'allocations': [{'target_type': 'invoice', 'target_id': original['id'], 'amount': 60}],
+        }])
         replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
         assert replaced.status_code == 200, replaced.get_json()
-        voids = [call for call in fake.calls if 'operation=void' in call[1]]
-        assert voids == []
-        writes = [
-            call for call in fake.calls
-            if call[0] == 'POST' and urllib.parse.urlparse(call[1]).path.rstrip('/').endswith('/invoice')
-            and 'operation=void' not in call[1]
-        ]
-        updated = json.loads(writes[-1][2])
-        assert updated['Id'] == original['qbo_id']
-        assert updated.get('sparse') is True
-        assert updated.get('DocNumber') == remote['DocNumber']
         fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
-        assert fresh['qbo_id'] == original['qbo_id']
+        assert fresh['id'] != original['id']
+        assert fresh['qbo_id'] != original['qbo_id']
+        moved = next(row for row in fake.payments if row['Id'] == '82')
+        assert moved['Line'][0]['LinkedTxn'][0]['TxnId'] == fresh['qbo_id']
+        voids = [call for call in fake.calls if 'operation=void' in call[1]]
+        assert len(voids) == 1
+        body = voids[0][2].decode() if isinstance(voids[0][2], bytes) else voids[0][2]
+        assert original['qbo_id'] in body
     finally:
         quickbooks.TRANSPORT = None
 
@@ -340,14 +344,16 @@ def test_regenerate_moves_the_payment_onto_the_replacement(client, monkeypatch):
         replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
         assert replaced.status_code == 200, replaced.get_json()
         fresh = next(row for row in load_invoices() if row.get('kind') == 'intercompany' and not row.get('voided'))
-        assert fresh['id'] == original['id']
-        assert fresh['number'] == original['number']
+        assert fresh['id'] != original['id']
+        assert fresh['number'] != original['number']
         payment = load_payments()[0]
         assert payment['allocations'] == [
-            {'target_type': 'invoice', 'target_id': original['id'], 'amount': 25},
+            {'target_type': 'invoice', 'target_id': fresh['id'], 'amount': 25},
         ]
+        old = next(row for row in load_invoices() if row['id'] == original['id'])
+        assert old['voided'] is True
         voids = [call for call in fake.calls if 'operation=void' in call[1]]
-        assert voids == []
+        assert len(voids) == 1
     finally:
         quickbooks.TRANSPORT = None
 
@@ -410,7 +416,7 @@ def test_repointing_a_quickbooks_payment_happens_before_the_void(monkeypatch):
     quickbooks.TRANSPORT = None
 
 
-def test_a_rejected_quickbooks_update_replaces_the_invoice_and_moves_the_payment(client, monkeypatch):
+def test_a_failed_replacement_leaves_the_old_invoice_and_payment(client, monkeypatch):
     _configure(monkeypatch)
     write_user('admin@oraglass.us', 'admin')
     assert login(client, 'admin@oraglass.us').status_code == 302
@@ -451,24 +457,18 @@ def test_a_rejected_quickbooks_update_replaces_the_invoice_and_moves_the_payment
             'voided': False, 'qbo_id': '82', 'date': '2026-11-23',
             'allocations': [{'target_type': 'invoice', 'target_id': original['id'], 'amount': 25}],
         }])
-        fake.reject_invoice_update = True
-        replaced = client.post(f"/api/invoices/{original['id']}/regenerate")
-        assert replaced.status_code == 200, replaced.get_json()
-        fresh = replaced.get_json()
-        assert fresh['id'] != original['id']
-        assert fresh['number'] != original['number']
-        assert fresh['qbo_id'] != original['qbo_id']
+        fake.fail_next_invoice_create = True
+        refused = client.post(f"/api/invoices/{original['id']}/regenerate")
+        assert refused.status_code == 400, refused.get_json()
+        assert 'left unchanged' in (refused.get_json().get('error') or '')
         old = next(row for row in load_invoices() if row['id'] == original['id'])
-        assert old['voided'] is True
+        assert not old.get('voided')
         assert old['number'] == original['number']
+        assert old['qbo_id'] == original['qbo_id']
         payment = load_payments()[0]
-        assert payment['allocations'][0]['target_id'] == fresh['id']
+        assert payment['allocations'][0]['target_id'] == original['id']
         assert payment['allocations'][0]['amount'] == 25
-        moved = next(row for row in fake.payments if row['Id'] == '82')
-        assert moved['Line'][0]['LinkedTxn'][0]['TxnId'] == fresh['qbo_id']
-        voids = [call for call in fake.calls if 'operation=void' in call[1]]
-        assert len(voids) == 1
-        assert original['qbo_id'] in voids[0][1] or original['qbo_id'] in (voids[0][2].decode() if isinstance(voids[0][2], bytes) else voids[0][2])
+        assert [call for call in fake.calls if 'operation=void' in call[1]] == []
     finally:
         quickbooks.TRANSPORT = None
 
@@ -476,6 +476,62 @@ def test_a_rejected_quickbooks_update_replaces_the_invoice_and_moves_the_payment
 def money_balance(remote):
     total = float(remote.get('TotalAmt') or 0)
     return round(total - 25, 2)
+
+
+def test_void_asks_before_dropping_a_payment(client):
+    from storage import save_invoices, save_payments, load_payments
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_invoices([
+        {'id': 1, 'number': 'INV-0001', 'kind': 'customer', 'issuer': 'us', 'currency': 'usd',
+         'customer_id': 'harbor', 'company': 'Harbor', 'total': 100, 'invoice_date': '2026-11-01',
+         'items': [{'name': 'Glass', 'pcs': 1, 'total': 100}]},
+        {'id': 2, 'number': 'INV-0002', 'kind': 'customer', 'issuer': 'us', 'currency': 'usd',
+         'customer_id': 'harbor', 'company': 'Harbor', 'total': 80, 'invoice_date': '2026-11-02',
+         'items': [{'name': 'Glass', 'pcs': 1, 'total': 80}]},
+    ])
+    save_payments([{
+        'id': 5, 'customer_id': 'harbor', 'currency': 'usd', 'amount': 40, 'voided': False,
+        'allocations': [{'target_type': 'invoice', 'target_id': 1, 'amount': 40}],
+    }])
+    blocked = client.post('/api/invoices/1/void', json={'reason': 'Wrong bill'})
+    assert blocked.status_code == 409, blocked.get_json()
+    body = blocked.get_json()
+    assert body['needs_payment_choice'] is True
+    assert body['open_invoices'] == [{'id': 2, 'number': 'INV-0002', 'balance': 80}]
+    assert not load_invoices()[0].get('voided')
+    assert load_payments()[0]['allocations'][0]['target_id'] == 1
+    credit = client.post('/api/invoices/1/void', json={'reason': 'Wrong bill', 'disposition': 'credit'})
+    assert credit.status_code == 200, credit.get_json()
+    assert next(row for row in load_invoices() if row['id'] == 1)['voided'] is True
+    assert load_payments()[0]['allocations'] == []
+    assert load_payments()[0]['amount'] == 40
+
+
+def test_void_can_move_the_payment_to_another_invoice(client):
+    from storage import save_invoices, save_payments, load_payments
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_invoices([
+        {'id': 1, 'number': 'INV-0001', 'kind': 'customer', 'issuer': 'us', 'currency': 'usd',
+         'customer_id': 'harbor', 'company': 'Harbor', 'total': 100, 'invoice_date': '2026-11-01',
+         'items': [{'name': 'Glass', 'pcs': 1, 'total': 100}]},
+        {'id': 2, 'number': 'INV-0002', 'kind': 'customer', 'issuer': 'us', 'currency': 'usd',
+         'customer_id': 'harbor', 'company': 'Harbor', 'total': 80, 'invoice_date': '2026-11-02',
+         'items': [{'name': 'Glass', 'pcs': 1, 'total': 80}]},
+    ])
+    save_payments([{
+        'id': 5, 'customer_id': 'harbor', 'currency': 'usd', 'amount': 40, 'voided': False,
+        'allocations': [{'target_type': 'invoice', 'target_id': 1, 'amount': 40}],
+    }])
+    moved = client.post('/api/invoices/1/void', json={
+        'reason': 'Wrong bill', 'disposition': 'invoice', 'target_invoice_id': 2,
+    })
+    assert moved.status_code == 200, moved.get_json()
+    assert next(row for row in load_invoices() if row['id'] == 1)['voided'] is True
+    assert load_payments()[0]['allocations'] == [
+        {'target_type': 'invoice', 'target_id': 2, 'amount': 40},
+    ]
 
 
 def test_a_failed_payment_relink_does_not_void_the_old_invoice(monkeypatch):

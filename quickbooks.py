@@ -1950,29 +1950,24 @@ def _fetch_remote_invoice(qbo_id):
     return None
 
 
-def regenerate_guard(invoice):
-    """How regenerate should treat the QuickBooks copy.
-
-    A synced invoice is updated in place, including one that already has a
-    payment. The Id and DocNumber stay, so the payment link stays. An invoice
-    that was never sent is created as usual.
-    """
+def prepare_replacement(invoice):
+    """Look at QuickBooks before creating a new-numbered replacement. Nothing is changed."""
     key = (invoice or {}).get('issuer') or 'us'
     if _connection_key() != key:
         with connection_scope(key):
-            return regenerate_guard(invoice)
+            return prepare_replacement(invoice)
     if not invoice or invoice.get('qbo_origin') or invoice.get('source') == 'quickbooks':
-        return 'create', None
+        return 'local', None
     link = find_link('invoice', erp_id=invoice.get('id'))
     if not link or link.get('origin') == 'qbo':
-        return 'create', None
+        return 'local', None
     company, realm = _company_for_push()
     number = invoice.get('number') or 'the invoice'
     if not connected():
         return 'error', (
             f'QuickBooks is not connected for {company}'
             + (f' (realm {realm})' if realm else '')
-            + f', so {number} was not updated there. Reconnect, then regenerate again.'
+            + f', so {number} was not regenerated. Reconnect, then try again.'
         )
     try:
         remote = _fetch_remote_invoice(link.get('qbo_id'))
@@ -1980,24 +1975,47 @@ def regenerate_guard(invoice):
         return 'error', str(exc)
     if not remote:
         return 'error', f'QuickBooks invoice {link.get("qbo_id")} was not found, so {number} was not regenerated.'
-    if remote.get('Balance') is None:
-        return 'error', (
-            f'QuickBooks did not return a balance for {remote.get("DocNumber") or link.get("qbo_id")}, '
-            'so it was not regenerated.'
+    log('info', f'Replacement for {number} will be a new invoice. QuickBooks id {remote.get("Id")} is voided only after payments move.')
+    return 'linked', remote
+
+
+def payments_linked_to_invoice(qbo_id):
+    """QuickBooks payment ids whose lines still point at this invoice. None if the lookup fails."""
+    try:
+        rows = query_all('select * from Payment')
+    except QuickBooksError as exc:
+        log('error', f'Could not list QuickBooks payments before voiding invoice {qbo_id}: {exc}')
+        return None
+    found = []
+    for row in rows or []:
+        for line in row.get('Line') or []:
+            for txn in line.get('LinkedTxn') or []:
+                if str(txn.get('TxnId') or '') == str(qbo_id) and txn.get('TxnType') == 'Invoice':
+                    found.append(str(row.get('Id')))
+                    break
+    return found
+
+
+def void_unlinked_invoice(qbo_id, sync_token='0'):
+    """Void a QuickBooks invoice that no longer has a payment pointed at it."""
+    linked = payments_linked_to_invoice(qbo_id)
+    if linked is None:
+        return False, f'QuickBooks payments for invoice {qbo_id} could not be checked, so it was not voided.'
+    if linked:
+        return False, (
+            f'QuickBooks invoice {qbo_id} still has a linked payment ({", ".join(linked)}), so it was not voided.'
         )
-    qbo_id = remote.get('Id') or link.get('qbo_id')
-    doc_number = remote.get('DocNumber') or invoice.get('qbo_doc_number') or invoice.get('number') or ''
-    balance = money(remote.get('Balance'))
-    total = money(remote.get('TotalAmt'))
-    if balance + 0.009 < total:
-        log('info', (
-            f'QuickBooks invoice {doc_number or qbo_id} has a payment '
-            f'(balance {balance:.2f} of {total:.2f}). Updating it in place so the payment stays linked.'
-        ))
-    else:
-        log('info', f'Updating QuickBooks invoice {doc_number or qbo_id} in place.')
-    begin_invoice_replace(qbo_id, remote.get('SyncToken') or link.get('sync_token'), doc_number)
-    return 'update', remote
+    log('info', f'Voiding QuickBooks invoice {qbo_id} after its payments were moved.')
+    try:
+        realm = load_tokens()['realm_id']
+        api_post(
+            f"/v3/company/{realm}/invoice?operation=void",
+            {'Id': str(qbo_id), 'SyncToken': str(sync_token or '0')},
+        )
+    except QuickBooksError as exc:
+        return False, f'QuickBooks invoice {qbo_id} was not voided: {exc}'
+    log('info', f'Voided QuickBooks invoice {qbo_id}.')
+    return True, ''
 
 
 def push_document(invoice):
@@ -2176,11 +2194,12 @@ def void_document(invoice):
         return False
     try:
         realm = load_tokens()['realm_id']
-        remote = _fetch_remote_invoice(link['qbo_id'])
-        if remote and remote.get('Balance') is not None and money(remote.get('Balance')) + 0.009 < money(remote.get('TotalAmt')):
+        linked = payments_linked_to_invoice(link['qbo_id'])
+        if linked is None or linked:
             message = (
-                f'QuickBooks invoice {remote.get("DocNumber") or link["qbo_id"]} still has a linked payment, '
-                'so it was not voided.'
+                f'QuickBooks invoice {link["qbo_id"]} still has a linked payment, so it was not voided.'
+                if linked else
+                f'QuickBooks payments for invoice {link["qbo_id"]} could not be checked, so it was not voided.'
             )
             _record_invoice_sync(invoice, 'error', error=message, qbo_id=link.get('qbo_id') or '', realm_id=realm)
             log('error', message)
@@ -2439,7 +2458,7 @@ def push_payment(payment, force_update=False):
         'CurrencyRef': {'value': str(payment.get('currency') or 'usd').upper()},
         'PrivateNote': payment.get('reference') or payment.get('notes') or '',
     }
-    if lines:
+    if lines or already:
         payload['Line'] = lines
     if already:
         payload['Id'] = already

@@ -39,6 +39,7 @@ class FakeQBO:
         self.payments = []
         self.cdc = []
         self.reject_invoice_update = False
+        self.fail_next_invoice_create = False
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, body))
@@ -90,6 +91,9 @@ class FakeQBO:
                     continue
                 total += float(line.get('Amount') or 0)
             total = round(total, 2)
+            if not data.get('Id') and self.fail_next_invoice_create:
+                self.fail_next_invoice_create = False
+                return 400, {}, json.dumps({'Fault': {'Error': [{'Message': 'Invoice was not created', 'code': '6000'}]}}).encode()
             if data.get('Id'):
                 if self.reject_invoice_update:
                     return 400, {}, json.dumps({'Fault': {'Error': [{'Message': 'Invoice update was rejected', 'code': '6000'}]}}).encode()
@@ -521,9 +525,21 @@ def test_erp_invoice_payment_and_credit_note_are_pushed_once(client, monkeypatch
         assert allocated.status_code == 200, allocated.get_json()
         linked = json.loads(fake.posts('/payment')[-1][2])
         assert linked['Line'][0]['LinkedTxn'][0]['TxnType'] == 'Invoice'
-        voided = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company'})
+        blocked = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company'})
+        assert blocked.status_code == 409, blocked.get_json()
+        assert blocked.get_json()['needs_payment_choice'] is True
+        calls_before = len(fake.calls)
+        voided = client.post(f'/api/invoices/{invoice_id}/void', json={'reason': 'Wrong company', 'disposition': 'credit'})
         assert voided.status_code == 200, voided.get_json()
-        assert any('operation=void' in call[1] for call in fake.calls)
+        followed = [call for call in fake.calls[calls_before:] if call[0] == 'POST']
+        kinds = []
+        for _method, url, _body in followed:
+            path = urllib.parse.urlparse(url).path
+            if 'operation=void' in url:
+                kinds.append('void')
+            elif path.rstrip('/').endswith('/payment'):
+                kinds.append('payment')
+        assert kinds == ['payment', 'void']
     finally:
         quickbooks.TRANSPORT = None
 

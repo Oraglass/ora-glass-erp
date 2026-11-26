@@ -11124,7 +11124,7 @@ def _rebuilt_invoice(order, document, user):
 @app.route('/api/invoices/<int:invoice_id>/regenerate', methods=['POST'])
 @module_required('invoices')
 def regenerate_invoice(invoice_id):
-    """Rebuild lines and totals on this invoice. The number and the QuickBooks id stay."""
+    """Issue a new invoice number, move payments onto it, then void the old one."""
     user = current_user()
     if user.get('role') != 'admin':
         return json_error('Only an administrator can regenerate an invoice.', 403)
@@ -11140,43 +11140,94 @@ def regenerate_invoice(invoice_id):
     if not order:
         return json_error('The order for this invoice was not found.', 404)
     import quickbooks
-    plan, remote = quickbooks.regenerate_guard(document)
+    quickbooks.clear_invoice_replace()
+    plan, remote = quickbooks.prepare_replacement(document)
     if plan == 'error':
-        quickbooks.clear_invoice_replace()
-        return json_error(remote or 'QuickBooks did not accept an update, so the invoice was not regenerated.', 400)
+        return json_error(remote or 'QuickBooks did not accept a replacement, so the original invoice was left unchanged.', 400)
+    logger.info('Regenerating %s. Payments are moved before the old invoice is voided.', document.get('number'))
     draft, error = _rebuilt_invoice(order, document, user)
     if error or not draft:
-        quickbooks.clear_invoice_replace()
         return json_error(error or 'Could not regenerate this invoice.', 400)
-    snapshot = json.loads(json.dumps(document))
-    _save_invoice_row(draft)
-    logger.info('Rebuilt invoice %s on the same number.', document.get('number'))
-    if plan == 'update':
-        quickbooks.push_document_id(document.get('id'))
-        fresh = next((row for row in load_invoices() if row.get('id') == document.get('id')), None)
-        expected = str((remote or {}).get('Id') or '')
-        if fresh and fresh.get('qbo_sync') == 'synced' and str(fresh.get('qbo_id') or '') == expected:
-            logger.info('Sparse-updated QuickBooks invoice %s (%s).', expected, fresh.get('qbo_doc_number') or fresh.get('number'))
-            warning = _trim_invoice_allocations(fresh)
-            _apply_regenerate_warning(fresh, warning)
-            quickbooks.clear_invoice_replace()
-            done = _finish_invoice(next(row for row in load_invoices() if row.get('id') == fresh.get('id')), user)
-            return jsonify(_present_invoice(done, load_payments()))
-        logger.warning(
-            'QuickBooks rejected the update of invoice %s. Creating a replacement.',
-            document.get('number'),
-        )
-        _save_invoice_row(snapshot)
-        quickbooks.clear_invoice_replace()
-        replaced, fallback_error = _replace_rejected_invoice(snapshot, draft, user, remote)
-        if fallback_error:
-            return json_error(fallback_error, 400)
-        return jsonify(_present_invoice(replaced, load_payments()))
-    warning = _trim_invoice_allocations(draft)
-    _apply_regenerate_warning(draft, warning)
-    done = _finish_invoice(next(row for row in load_invoices() if row.get('id') == draft.get('id')), user)
-    quickbooks.clear_invoice_replace()
+    replacement = dict(draft)
+    for key in ('id', 'number', 'qbo_id', 'qbo_doc_number', 'qbo_sync', 'qbo_realm_id', 'qbo_sync_token', 'qbo_error', 'qbo_warning', 'regenerate_warning'):
+        replacement.pop(key, None)
+    stored = append_invoice(replacement)
+    logger.info('Created %s to replace %s.', stored.get('number'), document.get('number'))
+    if plan == 'linked':
+        quickbooks.push_document_id(stored.get('id'))
+        fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), None)
+        if not fresh or fresh.get('qbo_sync') != 'synced' or not fresh.get('qbo_id'):
+            _void_local_invoice(fresh or stored, 'Removed because QuickBooks did not accept the replacement.')
+            detail = (fresh or {}).get('qbo_error') or 'QuickBooks did not accept the replacement invoice'
+            return json_error(f'{detail} The original invoice was left unchanged.', 400)
+    else:
+        fresh = next((row for row in load_invoices() if row.get('id') == stored.get('id')), stored)
+    warning = _move_invoice_allocations(document, fresh)
+    if plan == 'linked':
+        moved, message = _sync_moved_payments(document, fresh, remote)
+        if not moved:
+            _restore_allocations(fresh.get('id'), document.get('id'))
+            _void_local_invoice(fresh, 'Removed because the QuickBooks payment was not moved.')
+            if fresh.get('qbo_id'):
+                quickbooks.void_unlinked_invoice(fresh.get('qbo_id'), '0')
+            return json_error(message or 'The QuickBooks payment was not moved, so the original invoice was left unchanged.', 400)
+    elif _payments_on_invoice(document):
+        logger.info('Moved ERP payments from %s to %s. This invoice was not in QuickBooks.', document.get('number'), fresh.get('number'))
+    _apply_regenerate_warning(fresh, warning)
+    _void_local_invoice(document, 'Regenerated to include line add-ons')
+    logger.info('Voided %s after %s took its payments.', document.get('number'), fresh.get('number'))
+    done = _finish_invoice(next(row for row in load_invoices() if row.get('id') == fresh.get('id')), user)
     return jsonify(_present_invoice(done, load_payments()))
+
+
+def _drop_invoice_allocations(invoice):
+    """Remove allocations to this invoice. The payment amount stays as unapplied credit."""
+    payments = load_payments()
+    changed = False
+    for payment in payments:
+        if payment.get('voided'):
+            continue
+        kept = [
+            row for row in payment.get('allocations') or []
+            if row.get('voided') or row.get('target_type') != 'invoice' or row.get('target_id') != invoice.get('id')
+        ]
+        if len(kept) != len(payment.get('allocations') or []):
+            payment['allocations'] = kept
+            changed = True
+            logger.info('Left payment %s as unapplied credit.', payment.get('id'))
+    if changed:
+        save_payments(payments)
+
+
+def _payments_on_invoice(invoice):
+    found = []
+    for payment in load_payments():
+        if payment.get('voided'):
+            continue
+        for row in payment.get('allocations') or []:
+            if not row.get('voided') and row.get('target_type') == 'invoice' and row.get('target_id') == invoice.get('id'):
+                found.append(payment)
+                break
+    return found
+
+
+def _sync_moved_payments(original, replacement, remote):
+    """Point each QuickBooks payment at the replacement, then void the old invoice."""
+    import quickbooks
+    old_qbo = str((remote or {}).get('Id') or original.get('qbo_id') or '')
+    for payment in _payments_on_invoice(replacement):
+        if not payment.get('qbo_id'):
+            continue
+        logger.info('Updating QuickBooks payment %s to invoice %s.', payment.get('qbo_id'), replacement.get('qbo_id'))
+        updated = quickbooks.push_payment(payment, force_update=True)
+        if not updated:
+            return False, payment.get('qbo_error') or f'QuickBooks payment {payment.get("qbo_id")} was not updated, so the original invoice was left unchanged.'
+    if not old_qbo:
+        return True, ''
+    ok, message = quickbooks.void_unlinked_invoice(old_qbo, (remote or {}).get('SyncToken') or '0')
+    if not ok:
+        return False, message
+    return True, ''
 
 
 def _apply_regenerate_warning(invoice, warning):
@@ -11363,6 +11414,65 @@ def void_document(invoice_id):
         return json_error('Not found', 404)
     if document.get('voided'):
         return json_error('This document is already void.', 400)
+    disposition = str(data.get('disposition') or '').strip()
+    qbo_voided = False
+    if document_type(document) == 'invoice' and _payments_on_invoice(document):
+        if disposition not in {'credit', 'invoice'}:
+            from billing import invoice_balance
+            return jsonify({
+                'error': 'This invoice has a payment applied. Move it to another open invoice for this customer, or leave it as unapplied credit.',
+                'needs_payment_choice': True,
+                'open_invoices': [
+                    {'id': row.get('id'), 'number': row.get('number'), 'balance': invoice_balance(row, load_payments())}
+                    for row in load_invoices()
+                    if row.get('id') != document.get('id')
+                    and not row.get('voided')
+                    and document_type(row) == 'invoice'
+                    and row.get('customer_id') == document.get('customer_id')
+                    and str(row.get('currency') or 'usd').lower() == str(document.get('currency') or 'usd').lower()
+                    and invoice_balance(row, load_payments()) > 0.009
+                ],
+            }), 409
+        snapshot = json.loads(json.dumps(load_payments()))
+        if disposition == 'credit':
+            _drop_invoice_allocations(document)
+            logger.info('Left the payment on %s as unapplied credit before voiding.', document.get('number'))
+        else:
+            target = next((row for row in load_invoices() if row.get('id') == data.get('target_invoice_id')), None)
+            if not target or target.get('voided') or target.get('customer_id') != document.get('customer_id'):
+                return json_error('Choose an open invoice for the same customer.', 400)
+            if str(target.get('currency') or 'usd').lower() != str(document.get('currency') or 'usd').lower():
+                return json_error('Choose an invoice in the same currency.', 400)
+            logger.info('Moving the payment from %s to %s before voiding.', document.get('number'), target.get('number'))
+            _move_invoice_allocations(document, target)
+        import quickbooks
+        for payment in load_payments():
+            if payment.get('voided') or not payment.get('qbo_id'):
+                continue
+            if payment.get('id') not in {row.get('id') for row in snapshot}:
+                continue
+            touched = any(
+                row.get('target_type') == 'invoice' and row.get('target_id') == document.get('id')
+                for row in next(item for item in snapshot if item.get('id') == payment.get('id')).get('allocations') or []
+            )
+            if not touched:
+                continue
+            updated = quickbooks.push_payment(payment, force_update=True)
+            if not updated:
+                save_payments(snapshot)
+                return json_error(
+                    payment.get('qbo_error') or 'QuickBooks did not update the payment, so the invoice was not voided.',
+                    400,
+                )
+        if document.get('qbo_id'):
+            ok, message = quickbooks.void_unlinked_invoice(document.get('qbo_id'), '0')
+            if not ok:
+                save_payments(snapshot)
+                for payment in snapshot:
+                    if payment.get('qbo_id'):
+                        quickbooks.push_payment(payment, force_update=True)
+                return json_error(message or 'The invoice was not voided because a payment is still linked in QuickBooks.', 400)
+            qbo_voided = True
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     document['voided'] = True
     document['void_reason'] = reason
@@ -11401,7 +11511,8 @@ def void_document(invoice_id):
     save_payments(payments)
     _refresh_invoice_statuses(payments)
     fresh = next(row for row in load_invoices() if row.get('id') == invoice_id)
-    _qbo('void_document', fresh)
+    if not qbo_voided:
+        _qbo('void_document', fresh)
     return jsonify(_present_invoice(fresh, load_payments()))
 
 

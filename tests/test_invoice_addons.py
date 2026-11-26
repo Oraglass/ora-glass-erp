@@ -136,11 +136,13 @@ def test_partial_invoices_prorate_addons_and_unpaid_intercompany_can_be_regenera
     assert rebuilt.status_code == 200, rebuilt.get_json()
     live = [row for row in load_invoices() if row.get('order_id') == 1 and not row.get('voided')]
     voided = [row for row in load_invoices() if row.get('order_id') == 1 and row.get('voided')]
-    assert voided == []
+    assert len(voided) == 1
+    assert voided[0]['id'] == short['id']
+    assert voided[0]['number'] == short['number']
     assert len([row for row in live if row.get('kind') == 'intercompany']) == 1
     fresh = next(row for row in live if row.get('kind') == 'intercompany')
-    assert fresh['id'] == short['id']
-    assert fresh['number'] == short['number']
+    assert fresh['id'] != short['id']
+    assert fresh['number'] != short['number']
     assert any(line.get('kind') == 'irregular_surcharge' for line in fresh['items'])
     assert sum(line.get('pcs') or 0 for line in fresh['items']) == 2
     now = client.post('/api/orders/1/customer-invoice', json={'create_intercompany': False, 'invoice_customer': True})
