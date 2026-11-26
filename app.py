@@ -9110,9 +9110,7 @@ def _attach_packing_list(order, parsed, user, filename, stored):
         })
     _stamp_log(order, user, changes)
     import racks as rack_book
-    rack_book.record_packing(
-        order, parsed.get('rack') or '', parsed.get('number') or '', parsed.get('rack_name') or '', user,
-    )
+    rack_book.sync_order_racks(order, user)
     return order, progress, unmatched
 
 
@@ -9668,9 +9666,13 @@ def reassign_legacy_packing(order_id, list_id):
     left, error = update_order(order_id, take_off_legacy)
     if error:
         return json_error(error, 400)
+    import racks as rack_book
     if not left.get('shipments') and not any(row.get('current', True) for row in left.get('packing_lists') or []):
+        rack_book.release_order_packing(order_id, user)
         save_orders([row for row in load_orders() if row.get('id') != order_id])
         left = None
+    else:
+        rack_book.sync_order_racks(left, user)
     return jsonify({
         'order_id': saved.get('id'),
         'legacy_id': None if left is None else left.get('id'),
@@ -9738,6 +9740,9 @@ def remove_packing_list(order_id, list_id):
         return updated, None
 
     saved, error = update_order(order_id, mutator)
+    if not error:
+        import racks as rack_book
+        rack_book.sync_order_racks(saved, user)
     if error:
         return json_error(error, 400)
     return jsonify(order_for_viewer(saved, user, with_coverage=True))

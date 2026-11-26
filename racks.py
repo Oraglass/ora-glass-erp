@@ -1,9 +1,9 @@
 """Rack inventory. A rack number comes from the packing list, such as 1054.
 
-A packing list records the rack as packed at Ora Glass. It joins the customer's
-inventory when a shipment that contains it is marked delivered. It leaves that
-inventory when a driver scans the empty rack, an admin marks it returned, or a
-new packing list reuses it. Reuse records an auto-return, then packs it again.
+Importing a packing list allocates those racks to the order's customer as
+Packed. The overdue clock starts only when the order is marked Delivered.
+A driver scan confirms the rack and does not open a second trip. Removing or
+re-reading the packing list adjusts that allocation.
 """
 
 import os
@@ -35,7 +35,7 @@ AT_CUSTOMER = 'at_customer'
 RETURNED = 'returned'
 STATUS_LABELS = {
     AT_ORA: 'At Ora Glass',
-    PACKED: 'At Ora Glass / Packed',
+    PACKED: 'Packed / allocated to customer',
     AT_CUSTOMER: 'At customer',
     RETURNED: 'Returned',
 }
@@ -172,6 +172,7 @@ def _event(action, user, moment, **extra):
         'truck_plate': '',
         'packing_number': '',
         'scan_method': '',
+        'method': '',
         'note': '',
     }
     row.update(extra)
@@ -213,7 +214,7 @@ def _complete_event(event):
         row['location_before'] = row.get('location_before') or place
         row['location_after'] = row.get('location_after') or row.get('location_before')
     for key in (
-        'user_name', 'user_role', 'scan_method', 'packing_number',
+        'user_name', 'user_role', 'scan_method', 'method', 'packing_number',
         'location_before', 'location_after',
         'customer_before_id', 'customer_before_name',
         'customer_after_id', 'customer_after_name',
@@ -292,7 +293,7 @@ def _apply_customer(row, order, shipment, when, name, user, moment):
     row['shipment_id'] = (shipment or {}).get('id')
     row['shipment_number'] = (shipment or {}).get('number') or ''
     row['truck_plate'] = (shipment or {}).get('truck_plate') or ''
-    row.setdefault('history', []).append(_event(
+    delivered = _event(
         'delivered', user, moment,
         customer_id=row['customer_id'],
         customer_name=row['customer_name'],
@@ -307,7 +308,9 @@ def _apply_customer(row, order, shipment, when, name, user, moment):
         truck_plate=row['truck_plate'],
         packing_number=row.get('packing_number') or '',
         note=f"Delivered on {row['shipment_number'] or 'delivery'}.",
-    ))
+    )
+    row['delivered_at'] = delivered['at']
+    row.setdefault('history', []).append(delivered)
     return row
 
 
@@ -386,9 +389,114 @@ def _assign_packed(row, order, number, label, name, user, moment=None):
             location_after='Ora Glass',
             order_id=row['order_id'],
             packing_number=label,
+            method='packing list import',
             note=f'Packed on {label}.',
         ))
     return row
+
+
+def _release_packed(row, user, moment, note):
+    """Take a packed allocation off the customer. A delivered rack is left alone."""
+    if row.get('status') != PACKED:
+        return row
+    before_id = row.get('customer_id') or ''
+    before_name = row.get('customer_name') or ''
+    label = row.get('packing_number') or ''
+    order_id = row.get('order_id')
+    row['status'] = AT_ORA
+    row['customer_id'] = ''
+    row['customer_name'] = ''
+    row['since'] = ''
+    row['order_id'] = None
+    row['packing_number'] = ''
+    row['shipment_id'] = None
+    row['shipment_number'] = ''
+    row['truck_plate'] = ''
+    row.setdefault('history', []).append(_event(
+        'unallocated', user, moment,
+        customer_before_id=before_id,
+        customer_before_name=before_name,
+        location_before=before_name or 'Customer',
+        location_after='Ora Glass',
+        order_id=order_id,
+        packing_number=label,
+        method='packing list import',
+        note=note,
+    ))
+    return row
+
+
+def _import_actor(user):
+    person = user or {}
+    if person.get('email') or person.get('phone') or person.get('name'):
+        return person
+    return {'email': 'system import', 'name': 'System import', 'role': 'system'}
+
+
+def current_packing_racks(order):
+    """Rack numbers on the packing lists that are still current."""
+    found = {}
+    for entry in (order or {}).get('packing_lists') or []:
+        if not entry.get('current', True):
+            continue
+        numbers = [
+            str(number).strip()
+            for number in (entry.get('racks') or [])
+            if str(number or '').strip()
+        ]
+        if not numbers and str(entry.get('rack') or '').strip():
+            numbers = [str(entry.get('rack')).strip()]
+        label = str(entry.get('number') or entry.get('rack') or '').strip()
+        name = str(entry.get('rack_name') or '').strip()
+        for number in numbers:
+            found[number] = (label or number, name)
+    return [(number, label, name) for number, (label, name) in found.items()]
+
+
+def sync_order_racks(order, user, moment=None):
+    """Match rack inventory to the order's current packing lists.
+
+    Racks on a current list are allocated to the customer. Racks that were
+    packed for this order and are no longer on a list are released. A rack
+    already delivered is not moved.
+    """
+    actor = _import_actor(user)
+    wanted = {number: (label, name) for number, label, name in current_packing_racks(order)}
+    order_id = (order or {}).get('id')
+
+    def change(racks):
+        for number, (label, name) in wanted.items():
+            row = racks.get(number) or _blank(number, name)
+            racks[number] = _assign_packed(row, order, number, label, name, actor, moment)
+        for number, row in list(racks.items()):
+            if not isinstance(row, dict) or row.get('order_id') != order_id:
+                continue
+            if row.get('status') != PACKED or number in wanted:
+                continue
+            racks[number] = _release_packed(
+                row, actor, moment, f'Packing list no longer includes rack {number}.',
+            )
+        return True
+
+    return _mutate(change)
+
+
+def release_order_packing(order_id, user, moment=None):
+    """Release every rack still only packed for this order."""
+    actor = _import_actor(user)
+
+    def change(racks):
+        for number, row in list(racks.items()):
+            if not isinstance(row, dict) or row.get('order_id') != order_id:
+                continue
+            if row.get('status') != PACKED:
+                continue
+            racks[number] = _release_packed(
+                row, actor, moment, f'Packing list removed from order {order_id}.',
+            )
+        return True
+
+    return _mutate(change)
 
 
 def record_packing(order, number, packing_number, name, user, moment=None):
@@ -401,10 +509,11 @@ def record_packing(order, number, packing_number, name, user, moment=None):
     if not number:
         return None
     label = packing_number or number
+    actor = _import_actor(user)
 
     def change(racks):
         row = racks.get(number) or _blank(number, name)
-        racks[number] = _assign_packed(row, order, number, label, name, user, moment)
+        racks[number] = _assign_packed(row, order, number, label, name, actor, moment)
         return racks[number].get('status')
 
     return _mutate(change)

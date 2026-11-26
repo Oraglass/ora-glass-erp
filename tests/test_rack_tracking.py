@@ -51,7 +51,7 @@ def test_packing_list_registers_a_rack_and_load_backfills_unshipped_lists(client
     listed = client.get('/api/racks').get_json()
     packed = next(row for row in listed if row['number'] == '1054')
     assert packed['status'] == 'packed'
-    assert packed['status_label'] == 'At Ora Glass / Packed'
+    assert packed['status_label'] == 'Packed / allocated to customer'
     assert packed['customer_id'] == 'harbor-glass'
     assert packed['customer_name'] == 'Harbor Glass'
     assert packed['order_id'] == 4
@@ -84,7 +84,7 @@ def test_packing_list_registers_a_rack_and_load_backfills_unshipped_lists(client
     assert stayed['status'] == 'packed'
     assert stayed['since'] == ''
     shown = next(row for row in client.get('/api/racks').get_json() if row['number'] == '2002')
-    assert shown['status_label'] == 'At Ora Glass / Packed'
+    assert shown['status_label'] == 'Packed / allocated to customer'
     assert shown['days'] is None
     assert shown['overdue'] is False
 
@@ -299,7 +299,7 @@ def test_delivered_shipments_backfill_and_only_admin_can_mark_returned(client):
     assert any(item.get('action') == 'delivered' for item in delivered['history'])
     assert [item.get('action') for item in delivered['history']] == ['packed', 'delivered']
     assert waiting['status'] == 'packed'
-    assert waiting['status_label'] == 'At Ora Glass / Packed'
+    assert waiting['status_label'] == 'Packed / allocated to customer'
     assert waiting['days'] is None
     again = client.get('/api/racks').get_json()
     assert len(next(row for row in again if row['number'] == '1054')['history']) == 2
@@ -397,7 +397,7 @@ def test_new_packing_list_auto_returns_a_rack_still_at_the_customer(client):
     assert auto['customer_name'] == 'Harbor Glass'
     assert reused['history'].index(auto) < reused['history'].index(packed)
     shown = next(row for row in client.get('/api/racks').get_json() if row['number'] == '1054')
-    assert shown['status_label'] == 'At Ora Glass / Packed'
+    assert shown['status_label'] == 'Packed / allocated to customer'
     assert shown['days'] is None
     assert client.get('/api/racks?status=at_customer').get_json() == []
 
@@ -691,3 +691,74 @@ def test_each_company_sets_its_own_rack_alert_and_customer_view(client):
     maple_home = client.get('/dashboard')
     assert b'id="customer-overdue-racks"' not in maple_home.data
     assert b'1054' not in maple_home.data
+
+
+def test_packing_import_allocates_and_delivery_starts_the_stay(client):
+    from datetime import date, datetime, timezone
+    import racks
+    _users()
+    order = {
+        'id': 7,
+        'customer_id': 'harbor-glass',
+        'company': 'Harbor Glass',
+        'packing_lists': [{
+            'id': 1, 'current': True, 'number': 'XF1', 'rack': '1054',
+            'racks': ['1054', '1055'], 'rack_name': 'East',
+        }],
+    }
+    racks.sync_order_racks(order, None)
+    packed = racks.load_rows()
+    assert packed['1054']['status'] == 'packed'
+    assert packed['1054']['customer_id'] == 'harbor-glass'
+    assert packed['1054']['since'] == ''
+    shown = racks.present(packed['1054'], date(2026, 11, 26))
+    assert shown['status_label'] == 'Packed / allocated to customer'
+    assert shown['overdue'] is False
+    assert shown['trips'] == 0
+    event = packed['1054']['history'][-1]
+    assert event['action'] == 'packed'
+    assert event['method'] == 'packing list import'
+    assert event['user'] == 'system import'
+    assert event['packing_number'] == 'XF1'
+    assert event['order_id'] == 7
+    assert racks.record_scan('1054', {'email': 'dana@oraglass.us', 'role': 'driver'}, 'camera') is True
+    after_scan = racks.load_rows()['1054']
+    assert after_scan['status'] == 'packed'
+    assert after_scan['since'] == ''
+    assert racks.lifetime_stats(after_scan, date(2026, 11, 26))['trips'] == 0
+    order['shipments'] = [{
+        'id': 1, 'number': 'S1', 'status': 'delivered', 'delivered_on': '2026-11-01',
+        'rack': '1054, 1055',
+    }]
+    when = datetime(2026, 11, 1, 18, 30, tzinfo=timezone.utc)
+    racks.deliver_order(order, {'email': 'sam@oraglass.us', 'name': 'Sam', 'role': 'sales'}, when)
+    delivered = racks.load_rows()['1054']
+    assert delivered['status'] == 'at_customer'
+    assert delivered['since'] == '2026-11-01'
+    assert delivered['delivered_at'].startswith('2026-11-01T18:30:00')
+    history_len = len(delivered['history'])
+    racks.deliver_order(order, {'email': 'sam@oraglass.us', 'role': 'sales'}, when)
+    assert len(racks.load_rows()['1054']['history']) == history_len
+    fresh = {
+        'id': 8, 'customer_id': 'harbor-glass', 'company': 'Harbor Glass',
+        'packing_lists': [{
+            'id': 1, 'current': True, 'number': 'XF9', 'rack': '3001', 'racks': ['3001', '3002'],
+        }],
+    }
+    racks.sync_order_racks(fresh, {'email': 'sam@oraglass.us', 'name': 'Sam', 'role': 'sales'})
+    racks.sync_order_racks({**fresh, 'packing_lists': [{
+        'id': 2, 'current': True, 'number': 'XF9', 'rack': '3002', 'racks': ['3002'],
+    }]}, {'email': 'sam@oraglass.us', 'role': 'sales'})
+    rows = racks.load_rows()
+    assert rows['3001']['status'] == 'at_ora'
+    assert rows['3001']['customer_id'] == ''
+    assert rows['3001']['history'][-1]['action'] == 'unallocated'
+    assert rows['3001']['history'][-1]['method'] == 'packing list import'
+    assert rows['3002']['status'] == 'packed'
+    assert rows['3002']['customer_id'] == 'harbor-glass'
+    assert len([item for item in rows['3002']['history'] if item['action'] == 'packed']) == 1
+    racks.release_order_packing(8, {'email': 'sam@oraglass.us', 'role': 'sales'})
+    released = racks.load_rows()['3002']
+    assert released['status'] == 'at_ora'
+    assert released['history'][-1]['action'] == 'unallocated'
+    assert racks.lifetime_stats(delivered, date(2026, 11, 11))['longest_days'] == 10
