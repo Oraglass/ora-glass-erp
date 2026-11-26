@@ -1432,6 +1432,15 @@ def inject_user():
             dict(item, label=f"{item['label']} ({review_count})") if item.get('id') == 'orders' else item
             for item in nav
         ]
+    if user and staff_can_order(user):
+        import racks as rack_book
+        open_damage = rack_book.open_damage_count()
+        if open_damage:
+            nav = [
+                dict(item, label=f"{item['label']} ({open_damage})")
+                if item.get('endpoint') == 'racks_page' else item
+                for item in nav
+            ]
     return {
         'current_user': user,
         'nav_modules': nav,
@@ -1656,6 +1665,7 @@ def dashboard():
     user = current_user()
     if not user_has_module(user, 'dashboard'):
         return forbidden()
+    import racks as rack_book
     return render_template(
         'dashboard.html',
         user=user,
@@ -1672,6 +1682,7 @@ def dashboard():
         overdue_racks=_overdue_rack_panel(user),
         overdue_report=_overdue_report(user),
         customer_overdue=_customer_overdue_panel(user),
+        open_damage_reports=rack_book.open_damage_count() if staff_can_order(user) else 0,
     )
 
 

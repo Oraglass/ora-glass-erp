@@ -1375,33 +1375,6 @@ def overdue_rows(racks, today=None, customers=None):
     return found
 
 
-def damaged_rows(racks):
-    """Racks a driver marked damaged. The customer is the one on that pickup."""
-    found = []
-    for number, row in (racks or {}).items():
-        if not isinstance(row, dict):
-            continue
-        if row.get('status') != DAMAGED and not row.get('damaged'):
-            continue
-        reported = {}
-        for item in reversed(row.get('history') or []):
-            if isinstance(item, dict) and item.get('damaged'):
-                reported = item
-                break
-        photos = row.get('damage_photos') or reported.get('photos') or []
-        found.append({
-            'number': str(row.get('number') or number),
-            'customer_id': reported.get('customer_id') or row.get('customer_id') or '',
-            'customer_name': reported.get('customer_name') or row.get('customer_name') or '',
-            'note': row.get('damage_note') or reported.get('damage_note') or '',
-            'reported_by': reported.get('user_name') or reported.get('user') or '',
-            'at': reported.get('at') or '',
-            'photos': len([photo for photo in photos if isinstance(photo, dict) and photo.get('id')]),
-        })
-    found.sort(key=lambda item: item.get('number') or '')
-    return found
-
-
 def weekly_overdue_due(now=None):
     """True after 7:00 AM Pacific on Monday, until this week's report is stored."""
     now = _pacific_now(now)
@@ -1429,7 +1402,6 @@ def run_weekly_overdue_if_due(now=None):
             'week': week,
             'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             'rows': rows,
-            'damaged': damaged_rows(load_rows()),
             'emailed': False,
         }
         atomic_write_json(path, record)
@@ -1446,7 +1418,6 @@ def weekly_report_view():
         'at_label': pacific_label(at) if at else '',
         'week': record.get('week') or '',
         'rows': record.get('rows') or [],
-        'damaged': record.get('damaged') or [],
         'ran': bool(record.get('week')),
         'schedule': 'Monday at 7:00 AM Pacific',
     }

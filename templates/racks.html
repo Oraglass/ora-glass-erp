@@ -20,6 +20,7 @@ td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
 .overdue{background:#fff4e5}
 .badge-overdue{display:inline-block;margin-left:6px;background:#9f1239;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
 .badge-damaged{display:inline-block;margin-left:6px;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.damage-alert{background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:12px}
 .damaged{background:#fff7ed}
 .note{color:#555;font-size:14px;margin-top:8px}
 .report{margin-top:16px;border-top:1px solid #eee;padding-top:12px}
@@ -34,8 +35,8 @@ a{color:#C41E3A}
 <h2 style="color:#333">Racks</h2>
 <p class="note">{% if staff %}Every rack, and how long it has been at a customer. A rack is overdue after the number of days set on that company. The default is 14.{% else %}Racks your company is holding.{% endif %}</p>
 {% if staff %}
-<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports</a></p>
-<p class="note" id="open-damage-reports">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</p>
+<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports{% if open_damage_reports %} <span class="badge-damaged">{{ open_damage_reports }}</span>{% endif %}</a></p>
+<p class="note{% if open_damage_reports %} damage-alert{% endif %}" id="open-damage-reports"><a href="/racks/damage">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</a></p>
 {% endif %}
 {% if customer_overdue and customer_overdue.count %}
 <div class="note" id="customer-overdue-racks" style="background:#fff4e5;border:1px solid #f0c9d0;border-radius:8px;padding:12px">
@@ -85,20 +86,6 @@ a{color:#C41E3A}
 {% endfor %}
 </tbody>
 </table>
-{% endif %}
-<h3 id="damaged-racks">Damaged racks</h3>
-<p class="note">Included in the Monday report with the overdue racks.</p>
-{% if report.damaged %}
-<table>
-<thead><tr><th>Rack</th><th>Customer</th><th>Note</th><th>Reported by</th><th class="num">Photos</th></tr></thead>
-<tbody>
-{% for row in report.damaged %}
-<tr><td><a href="/racks/{{ row.number }}">{{ row.number }}</a></td><td>{{ row.customer_name }}</td><td>{{ row.note }}</td><td>{{ row.reported_by }}</td><td class="num">{{ row.photos }}</td></tr>
-{% endfor %}
-</tbody>
-</table>
-{% elif report.ran %}
-<p class="note">None were damaged.</p>
 {% endif %}
 </div>
 {% endif %}

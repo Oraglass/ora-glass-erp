@@ -895,6 +895,8 @@ def test_driver_damage_photos_are_kept_and_an_admin_can_clear_them(client):
     refused = client.post('/api/racks/1054/clear-damage')
     assert refused.status_code == 403
     assert load_racks()['1054']['status'] == 'damaged'
+    assert b'id="damage-report-alert"' not in client.get('/dashboard').data
+    assert b'Racks (' not in client.get('/racks').data
     client.post('/logout')
     assert login(client, 'admin@oraglass.us').status_code == 302
     photo = client.get(f'/api/racks/1054/photos/{photo_id}')
@@ -911,18 +913,23 @@ def test_driver_damage_photos_are_kept_and_an_admin_can_clear_them(client):
     assert b'Clear damaged' in detail.data
     inventory = client.get('/racks')
     assert b'badge-damaged' in inventory.data
-    assert b'id="damaged-racks"' in inventory.data
+    assert b'id="open-damage-reports"' in inventory.data
+    assert b'2 open damage reports' in inventory.data
+    assert b'Racks (2)' in inventory.data
+    assert b'id="damaged-racks"' not in inventory.data
+    assert b'Included in the Monday report' not in inventory.data
+    reports = client.get('/api/racks/damage-reports').get_json()
+    issued = next(row for row in reports if row['rack'] == '1054')
+    assert issued['status'] == 'open'
+    assert issued['note'] == 'Bent corner'
+    assert issued['driver_name'] == 'Dana Driver'
     pacific = ZoneInfo('America/Los_Angeles')
     record = rack_book.run_weekly_overdue_if_due(datetime(2026, 11, 23, 7, 0, tzinfo=pacific))
-    damaged = next(row for row in record['damaged'] if row['number'] == '1054')
-    assert damaged['customer_name'] == 'Harbor Glass'
-    assert damaged['note'] == 'Bent corner'
-    assert damaged['reported_by'] == 'Dana Driver'
-    assert damaged['photos'] == 1
+    assert 'damaged' not in record
+    assert all(row['number'] != '1054' for row in record['rows'])
     shown = client.get('/racks').data
-    assert b'Included in the Monday report' in shown
-    assert b'Bent corner' in shown
-    assert b'Dana Driver' in shown
+    assert b'Weekly overdue racks' in shown
+    assert b'Bent corner' not in shown
     cleared = client.post('/api/racks/1054/clear-damage')
     assert cleared.status_code == 200
     after = load_racks()['1054']
@@ -1017,8 +1024,15 @@ def test_damage_reports_list_repair_and_charge(client, monkeypatch):
     assert b'Cracked base' not in page.data
     assert b'Mark this report repaired, no cost? This clears the damaged flag.' in page.data
     assert b'Charge the customer and close this report? This creates a repair invoice.' in page.data
-    assert b'2 open damage reports' in client.get('/racks').data
-    assert b'id="open-damage-reports"' in client.get('/racks').data
+    racks_page = client.get('/racks').data
+    assert b'2 open damage reports' in racks_page
+    assert b'id="open-damage-reports"' in racks_page
+    assert b'Racks (2)' in racks_page
+    assert b'Included in the Monday report' not in racks_page
+    home = client.get('/dashboard').data
+    assert b'id="damage-report-alert"' in home
+    assert b'2 open damage reports' in home
+    assert b'Customers are not emailed' in home
     client.post('/logout')
     assert login(client, 'rep@oraglass.us').status_code == 302
     blocked = client.post(f"/api/racks/damage-reports/{harbor['id']}/charge", json={'amount': 40, 'description': 'Rack repair'})

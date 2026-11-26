@@ -74,6 +74,12 @@
             </ul>
         </div>
         {% endif %}
+        {% if open_damage_reports %}
+        <div class="import-notice" id="damage-report-alert">
+            <a href="/racks/damage">{{ open_damage_reports }} open damage report{{ 's' if open_damage_reports != 1 else '' }}</a>.
+            A driver marked a rack damaged. Customers are not emailed.
+        </div>
+        {% endif %}
         {% if user.role == 'admin' %}
         <div class="import-notice" id="overdue-racks">
             {% if overdue_racks and overdue_racks.count %}

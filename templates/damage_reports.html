@@ -18,7 +18,8 @@ table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
 th{background:#f5f5f5;text-align:left;padding:8px;border-bottom:2px solid #ddd}
 td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
 .note{color:#555;font-size:14px;margin-top:8px}
-.badge-open{display:inline-block;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.badge-open,.badge-damaged{display:inline-block;background:#9a3412;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700}
+.damage-alert{background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:12px}
 .thumbs img{width:72px;height:72px;object-fit:cover;border-radius:6px;margin-right:6px}
 a{color:#C41E3A}
 </style>
@@ -28,8 +29,8 @@ a{color:#C41E3A}
 {% include 'partials/header.html' %}
 <div class="container"><div class="card">
 <h2 style="color:#333">Damage reports</h2>
-<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports</a></p>
-<p class="note" id="open-damage-reports">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</p>
+<p class="note" id="rack-tabs"><a href="/racks">Inventory</a> · <a href="/racks/damage">Damage reports{% if open_damage_reports %} <span class="badge-damaged">{{ open_damage_reports }}</span>{% endif %}</a></p>
+<p class="note{% if open_damage_reports %} damage-alert{% endif %}" id="open-damage-reports"><a href="/racks">{{ open_damage_reports }} open damage report{{ '' if open_damage_reports == 1 else 's' }}</a></p>
 <form class="filters" method="get" action="/racks/damage" id="damage-filters">
 <label>Status
 <select name="status" aria-label="Status">
