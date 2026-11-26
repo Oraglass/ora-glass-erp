@@ -38,6 +38,7 @@ class FakeQBO:
         }]
         self.payments = []
         self.cdc = []
+        self.reject_invoice_update = False
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, body))
@@ -90,6 +91,8 @@ class FakeQBO:
                 total += float(line.get('Amount') or 0)
             total = round(total, 2)
             if data.get('Id'):
+                if self.reject_invoice_update:
+                    return 400, {}, json.dumps({'Fault': {'Error': [{'Message': 'Invoice update was rejected', 'code': '6000'}]}}).encode()
                 match = next((row for row in self.invoices if str(row.get('Id')) == str(data['Id'])), None)
                 if match is None:
                     match = {'Id': str(data['Id']), 'Balance': total}
