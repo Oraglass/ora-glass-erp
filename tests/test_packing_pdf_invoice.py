@@ -147,6 +147,37 @@ def test_weight_on_the_rack_line_is_the_printed_amount(client):
     assert stored['racks'] == ['5016']
 
 
+def test_adrian_packing_list_layout_stores_the_printed_weight():
+    """pdftotext -layout of XF261123002. The weight is on the totals line, not calculated."""
+    from pathlib import Path
+    import packing
+    text = Path('tests/fixtures/xf261123002_layout.txt').read_text(encoding='utf-8')
+    parsed = packing.parse_packing_lines(text.splitlines())
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['date'] == '2026-11-23'
+    assert parsed['rack'] == '5016'
+    assert parsed['racks'] == ['5016']
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['weight_missing'] is False
+    samples = [
+        ('Total Weight : Approx. 1,463 LBS', 1463, 'LBS'),
+        ('Total Weight : Approx. 463.50 LB', 463.5, 'LBS'),
+        ('Total Weight : Approx. 10.5 KG', 10.5, 'KG'),
+    ]
+    for line, amount, unit in samples:
+        row = packing.parse_packing_lines([
+            'Sales Delivery: XF9 Date: 11/23/2026',
+            line,
+            '5016 L3000*920*2200(THK:550)',
+            '(1) 1',
+            '24 36',
+            '609.6 mm 914.4 mm',
+        ])
+        assert row['weight'] == amount, line
+        assert row['weight_unit'] == unit, line
+
+
 def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description():
     import packing
     parsed = packing.parse_packing_lines(HIGHQ_LIST.splitlines())

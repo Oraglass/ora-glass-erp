@@ -80,14 +80,48 @@ class FakeQBO:
             return 200, {}, json.dumps({'Customer': {**self.customers[0], 'SyncToken': '4'}}).encode()
         if path.rstrip('/').endswith('/customer'):
             return 200, {}, json.dumps({'Customer': {'Id': data.get('Id') or '55', 'SyncToken': '1', 'DisplayName': data.get('DisplayName')}}).encode()
-        if path.rstrip('/').endswith('/invoice') or 'operation=void' in url and '/invoice' in path:
-            return 200, {}, json.dumps({'Invoice': {'Id': data.get('Id') or '80', 'SyncToken': '0'}}).encode()
+        if 'operation=void' in url and '/invoice' in path:
+            return 200, {}, json.dumps({'Invoice': {'Id': data.get('Id') or '80', 'SyncToken': '1', 'Balance': 0, 'TotalAmt': 0}}).encode()
+        if path.rstrip('/').endswith('/invoice'):
+            total = 0.0
+            for line in data.get('Line') or []:
+                if line.get('DetailType') == 'DiscountLineDetail':
+                    continue
+                total += float(line.get('Amount') or 0)
+            total = round(total, 2)
+            if data.get('Id'):
+                match = next((row for row in self.invoices if str(row.get('Id')) == str(data['Id'])), None)
+                if match is None:
+                    match = {'Id': str(data['Id']), 'Balance': total}
+                    self.invoices.append(match)
+                match['SyncToken'] = str(int(match.get('SyncToken') or 0) + 1)
+                match['DocNumber'] = data.get('DocNumber') or match.get('DocNumber') or ''
+                match['TotalAmt'] = total
+                match['Balance'] = total
+                match['Line'] = data.get('Line') or []
+                return 200, {}, json.dumps({'Invoice': match}).encode()
+            used = {str(row.get('Id')) for row in self.invoices}
+            number = 80
+            while str(number) in used:
+                number += 1
+            created = {
+                'Id': str(number), 'SyncToken': '0',
+                'DocNumber': data.get('DocNumber') or '',
+                'TotalAmt': total, 'Balance': total,
+                'Line': data.get('Line') or [],
+            }
+            self.invoices.append(created)
+            return 200, {}, json.dumps({'Invoice': created}).encode()
         if 'creditmemo' in path:
             return 200, {}, json.dumps({'CreditMemo': {'Id': data.get('Id') or '81', 'SyncToken': '0'}}).encode()
         if '/payment' in path:
             return 200, {}, json.dumps({'Payment': {'Id': data.get('Id') or '82', 'SyncToken': '0', 'TotalAmt': data.get('TotalAmt')}}).encode()
         if '/invoice/' in path and method == 'GET':
-            return 200, {}, json.dumps({'Invoice': self.invoices[0]}).encode()
+            wanted = path.rstrip('/').split('/')[-1]
+            match = next((row for row in self.invoices if str(row.get('Id')) == wanted), None)
+            if not match:
+                match = {'Id': wanted, 'SyncToken': '0', 'TotalAmt': 0, 'Balance': 0}
+            return 200, {}, json.dumps({'Invoice': match}).encode()
         return 200, {}, b'{}'
 
     def posts(self, suffix):

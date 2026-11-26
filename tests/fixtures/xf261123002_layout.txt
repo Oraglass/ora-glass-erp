@@ -1,0 +1,6 @@
+Sales Delivery: XF261123002         Date:   11/23/2026
+                          RackDetail               Total   Total Pcs :            3
+RackCode                  RackName                  1      Total SQ/FT :          75.29
+                                                           Total Weight :         Approx. 463 LBS
+      5016         L3000*920*2200(THK:550)
+                                                           Remarks:               5016

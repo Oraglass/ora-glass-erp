@@ -1923,6 +1923,81 @@ def _record_invoice_sync(invoice, status, error='', qbo_id='', doc_number='', re
     save_invoices(invoices)
 
 
+_INVOICE_REPLACE = {}
+
+
+def begin_invoice_replace(qbo_id, sync_token):
+    """The next invoice push updates this QuickBooks invoice instead of creating one."""
+    _INVOICE_REPLACE['qbo_id'] = str(qbo_id or '')
+    _INVOICE_REPLACE['sync_token'] = str(sync_token or '0')
+
+
+def clear_invoice_replace():
+    _INVOICE_REPLACE.clear()
+
+
+def _fetch_remote_invoice(qbo_id):
+    realm = load_tokens()['realm_id']
+    data = api_get(f"/v3/company/{realm}/invoice/{qbo_id}")
+    remote = data.get('Invoice') if isinstance(data, dict) else None
+    if isinstance(remote, dict) and str(remote.get('Id') or '') == str(qbo_id):
+        return remote
+    if isinstance(data, dict):
+        for value in data.values():
+            if isinstance(value, dict) and str(value.get('Id') or '') == str(qbo_id):
+                return value
+    return None
+
+
+def regenerate_guard(invoice):
+    """How regenerate should treat the QuickBooks copy.
+
+    A synced invoice is updated in place so its Id, and any payment linked to
+    that Id, stay. A QuickBooks balance below the total means a payment is
+    already applied, and voiding would drop it, so regenerate stops. An invoice
+    that was never sent is created as usual.
+    """
+    key = (invoice or {}).get('issuer') or 'us'
+    if _connection_key() != key:
+        with connection_scope(key):
+            return regenerate_guard(invoice)
+    if not invoice or invoice.get('qbo_origin') or invoice.get('source') == 'quickbooks':
+        return 'create', None
+    link = find_link('invoice', erp_id=invoice.get('id'))
+    if not link or link.get('origin') == 'qbo':
+        return 'create', None
+    company, realm = _company_for_push()
+    number = invoice.get('number') or 'the invoice'
+    if not connected():
+        return 'error', (
+            f'QuickBooks is not connected for {company}'
+            + (f' (realm {realm})' if realm else '')
+            + f', so {number} was not updated there. Reconnect, then regenerate again.'
+        )
+    try:
+        remote = _fetch_remote_invoice(link.get('qbo_id'))
+    except QuickBooksError as exc:
+        return 'error', str(exc)
+    if not remote:
+        return 'error', f'QuickBooks invoice {link.get("qbo_id")} was not found, so {number} was not regenerated.'
+    if remote.get('Balance') is None:
+        return 'error', (
+            f'QuickBooks did not return a balance for {remote.get("DocNumber") or link.get("qbo_id")}, '
+            'so it was not regenerated.'
+        )
+    total = money(remote.get('TotalAmt'))
+    balance = money(remote.get('Balance'))
+    if balance + 0.009 < total:
+        shown = remote.get('DocNumber') or link.get('qbo_id')
+        return 'error', (
+            f'QuickBooks invoice {shown} has a payment applied '
+            f'(balance {balance:.2f} is below the total {total:.2f}). '
+            'It was not regenerated, because voiding it would drop that payment.'
+        )
+    begin_invoice_replace(remote.get('Id') or link.get('qbo_id'), remote.get('SyncToken') or link.get('sync_token'))
+    return 'update', remote
+
+
 def push_document(invoice):
     key = (invoice or {}).get('issuer') or 'us'
     if _connection_key() != key:
@@ -1945,8 +2020,9 @@ def push_document(invoice):
     kind = 'credit' if invoice.get('doc_type') == 'credit_note' else 'invoice'
     entity = 'creditmemo' if kind == 'credit' else 'invoice'
     response_key = 'CreditMemo' if kind == 'credit' else 'Invoice'
+    replacement = dict(_INVOICE_REPLACE) if kind == 'invoice' and _INVOICE_REPLACE.get('qbo_id') else None
     existing = find_link(kind, erp_id=invoice.get('id'))
-    if existing:
+    if existing and not replacement:
         _record_invoice_sync(
             invoice, 'synced', qbo_id=existing.get('qbo_id') or '',
             doc_number=invoice.get('qbo_doc_number') or invoice.get('number') or '',
@@ -2019,6 +2095,9 @@ def push_document(invoice):
     term = _term_ref(invoice.get('payment_terms') or customer.get('payment_terms') or 'Net 30')
     if term:
         payload['SalesTermRef'] = term
+    if replacement:
+        payload['Id'] = replacement['qbo_id']
+        payload['SyncToken'] = replacement.get('sync_token') or '0'
     try:
         data = _post_entity(entity, payload)
     except QuickBooksError as exc:
@@ -2026,7 +2105,18 @@ def push_document(invoice):
         _record_invoice_sync(invoice, 'error', error=message, realm_id=realm)
         log('error', f"Document {invoice.get('number') or invoice.get('id')}: {message}")
         return None
+    finally:
+        if replacement:
+            clear_invoice_replace()
     remote = data.get(response_key) or {}
+    if replacement and str(remote.get('Id') or '') != str(replacement['qbo_id']):
+        message = (
+            f'QuickBooks returned invoice {remote.get("Id") or "nothing"} '
+            f'instead of updating {replacement["qbo_id"]}.'
+        )
+        _record_invoice_sync(invoice, 'error', error=message, realm_id=realm)
+        log('error', message)
+        return None
     if remote.get('Id'):
         upsert_link(kind, invoice.get('id'), remote.get('Id'), remote.get('SyncToken'), 'erp', realm_id=realm)
         _record_invoice_sync(

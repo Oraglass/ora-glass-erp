@@ -10460,6 +10460,7 @@ def _present_invoice(invoice, payments):
         'error': 'Not sent',
         'not_connected': 'Not connected',
         'voided': 'Voided in QuickBooks',
+        'moved': 'Updated in QuickBooks',
     }.get(view['qbo_sync'], 'Not sent')
     if view.get('fx_rate') not in (None, ''):
         view['fx_date'] = _shown_fx_date(invoice)
@@ -11021,8 +11022,14 @@ def regenerate_invoice(invoice_id):
         return json_error('Only an invoice can be regenerated.', 400)
     if document.get('voided'):
         return json_error('This document is already void.', 400)
-    from billing import invoice_status
+    from billing import invoice_applied, invoice_status
     payments = load_payments()
+    if invoice_applied(document, payments) > 0.009:
+        return json_error(
+            'This invoice has a payment applied, so it cannot be regenerated. '
+            'Voiding it in QuickBooks would drop that payment.',
+            400,
+        )
     if invoice_status(document, payments) != 'unpaid':
         return json_error('Only an unpaid invoice can be regenerated.', 400)
     order = next((row for row in load_orders() if row.get('id') == document.get('order_id')), None)
@@ -11033,12 +11040,17 @@ def regenerate_invoice(invoice_id):
         return json_error('This invoice has no glass pieces to regenerate.', 400)
     reason = 'Regenerated to include line add-ons'
     import quickbooks
-    qbo_void = quickbooks.void_document(document)
-    if qbo_void is False:
-        return json_error(
-            document.get('qbo_error') or 'QuickBooks did not void the previous invoice, so a new one was not created.',
-            400,
-        )
+    plan, remote = quickbooks.regenerate_guard(document)
+    if plan == 'error':
+        quickbooks.clear_invoice_replace()
+        return json_error(remote or 'QuickBooks did not accept an update, so the invoice was not regenerated.', 400)
+    if plan != 'update':
+        qbo_void = quickbooks.void_document(document)
+        if qbo_void is False:
+            return json_error(
+                document.get('qbo_error') or 'QuickBooks did not void the previous invoice, so a new one was not created.',
+                400,
+            )
     _mark_invoice_void(document, user, reason)
     for index, row in enumerate(invoices):
         if row.get('id') == document.get('id'):
@@ -11065,6 +11077,7 @@ def regenerate_invoice(invoice_id):
     else:
         number, error = _issue_packed_customer_invoice(order, user, quantities)
     if error or not number:
+        quickbooks.clear_invoice_replace()
         document['voided'] = False
         document.pop('void_reason', None)
         document.pop('voided_by', None)
@@ -11079,7 +11092,49 @@ def regenerate_invoice(invoice_id):
         (row for row in load_invoices() if row.get('number') == number and not row.get('voided')),
         None,
     )
+    expected = str((remote or {}).get('Id') or '') if plan == 'update' else ''
+    if plan == 'update' and (
+        not replacement
+        or replacement.get('qbo_sync') != 'synced'
+        or str(replacement.get('qbo_id') or '') != expected
+    ):
+        quickbooks.clear_invoice_replace()
+        _abort_regenerated_invoice(document, replacement)
+        return json_error(
+            (replacement or {}).get('qbo_error') or 'QuickBooks did not update the invoice, so it was not regenerated.',
+            400,
+        )
+    if plan == 'update':
+        _release_replaced_quickbooks_id(document)
+    quickbooks.clear_invoice_replace()
     return jsonify(_present_invoice(replacement or document, load_payments()))
+
+
+def _abort_regenerated_invoice(original, replacement):
+    """Put the original invoice back and drop the new one when QuickBooks was not updated."""
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') == (original or {}).get('id'):
+            row['voided'] = False
+            row.pop('void_reason', None)
+            row.pop('voided_by', None)
+            row.pop('voided_at', None)
+        if replacement and row.get('id') == replacement.get('id'):
+            row['voided'] = True
+            row['void_reason'] = 'Regenerate was rolled back because QuickBooks was not updated.'
+            row.pop('qbo_id', None)
+    save_invoices(rows)
+
+
+def _release_replaced_quickbooks_id(original):
+    """The QuickBooks id now belongs to the new invoice. The voided one no longer claims it."""
+    rows = load_invoices()
+    for row in rows:
+        if row.get('id') != (original or {}).get('id'):
+            continue
+        row.pop('qbo_id', None)
+        row['qbo_sync'] = 'moved'
+    save_invoices(rows)
 
 
 @app.route('/api/invoices/<int:invoice_id>/void', methods=['POST'])

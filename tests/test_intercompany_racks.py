@@ -366,6 +366,45 @@ Total Weight :
 """
 
 
+def test_xf261123002_layout_backfills_463_lb(client, data_dir):
+    """The saved packing-list file is Adrian's pdftotext layout. The invoice prints 463 lb."""
+    from pathlib import Path
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    folder = data_dir / 'packing_files' / '1'
+    folder.mkdir(parents=True)
+    (folder / 'xf2.txt').write_text(
+        Path('tests/fixtures/xf261123002_layout.txt').read_text(encoding='utf-8'),
+        encoding='utf-8',
+    )
+    save_orders([{
+        'id': 1,
+        'quote_id': 18,
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'], 'stored': 'xf2.txt',
+            'lines': [{'serial': 1, 'qty': 3}],
+        }],
+    }])
+    save_invoices([_invoice(55, 'INV-0055', [
+        {'name': 'Glass', 'serial': 1, 'pcs': 3, 'total': 40},
+    ])])
+    packing = client.get('/api/invoices/55').get_json()['packing']
+    assert packing['shipment']['list_lines'] == ['XF261123002: Rack 5016 · 463 lb']
+    assert packing['shipment']['weight_line'] == 'Total weight: 463 lb'
+    assert packing['weight_missing'] is False
+    stored = load_orders()[0]['packing_lists'][0]
+    assert stored['weight'] == 463
+    assert stored['weight_unit'] == 'LBS'
+    pdf = pdf_text(client.get('/api/invoices/55/pdf').data)
+    assert b'XF261123002: Rack 5016 \\267 463 lb' in pdf
+    assert b'Total weight: 463 lb' in pdf
+
+
 def test_regenerated_invoice_uses_the_weight_printed_on_the_packing_list(client, data_dir):
     """INV-0055 and CA-INV-0001 stored the racks and not the weight. The saved files have it."""
     from tests.test_packing_pdf_invoice import HIGHQ_LIST
