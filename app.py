@@ -802,6 +802,10 @@ def _switch_factor(target, fx_rate):
 
 
 def _required_currency(customer):
+    import customer_accounts
+    row = customer_accounts.home_account(customer or {})
+    if row and row.get('currency') in CURRENCIES:
+        return row['currency']
     import currency_rules
     return currency_rules.customer_currency(customer or {})
 
@@ -834,7 +838,81 @@ def _shown_fx_date(invoice):
     return str((invoice or {}).get('invoice_date') or '')[:10] or stored
 
 
-def public_customer(customer_id, customer, tiers, user_count):
+def _account_rows(customer, orders=None, invoices=None, payments=None):
+    """Each issuing company, with its balance when the books were passed in."""
+    import customer_accounts
+    customer_accounts.ensure_accounts(customer)
+    rows = []
+    home = customer_accounts.home_entity(customer)
+    seen = set()
+    for entity in customer_accounts.ENTITIES:
+        row = customer_accounts.account(customer, entity)
+        if not row:
+            continue
+        seen.add((entity, row.get('currency')))
+        rows.append(_account_balance(customer, row, orders, invoices, payments))
+    if invoices is not None:
+        for invoice in invoices:
+            if invoice.get('customer_id') != customer.get('id') or invoice.get('voided'):
+                continue
+            entity = customer_accounts.document_entity(invoice, home)
+            currency = str(invoice.get('currency') or 'usd').lower()
+            if (entity, currency) in seen:
+                continue
+            seen.add((entity, currency))
+            rows.append(_account_balance(customer, {
+                'entity': entity,
+                'label': customer_accounts.LABELS.get(entity, entity),
+                'currency': currency,
+                'gst': entity == 'ca',
+                'credit_limit': 0,
+                'qbo_id': '',
+            }, orders, invoices, payments))
+    return rows
+
+
+def _account_balance(customer, row, orders, invoices, payments):
+    import customer_accounts
+    entity = row.get('entity')
+    currency = row.get('currency') or 'usd'
+    view = {
+        'entity': entity,
+        'label': row.get('label') or customer_accounts.LABELS.get(entity, ''),
+        'currency': currency,
+        'gst': bool(row.get('gst')),
+        'credit_limit': money(row.get('credit_limit') or 0),
+        'qbo_id': row.get('qbo_id') or '',
+        'balance': 0,
+        'open_receivables': 0,
+    }
+    if orders is None or invoices is None or payments is None:
+        return view
+    available, limit, receivables = available_credit(
+        customer, currency, orders, invoices, payments, issuer=entity,
+    )
+    credits = 0.0
+    for note in invoices:
+        if document_type(note) != 'credit_note' or note.get('voided'):
+            continue
+        if note.get('customer_id') != customer.get('id'):
+            continue
+        if str(note.get('currency') or 'usd').lower() != currency:
+            continue
+        if (note.get('issuer') or 'us') != entity:
+            continue
+        remaining = round(money(note.get('total')) - credit_note_applied(note), 2)
+        if remaining > 0:
+            credits += remaining
+    view['credit_limit'] = limit
+    view['open_receivables'] = receivables
+    view['available_credit'] = available
+    view['unapplied_credits'] = round(credits, 2)
+    view['balance'] = round(receivables - credits, 2)
+    return view
+
+
+def public_customer(customer_id, customer, tiers, user_count, orders=None, invoices=None, payments=None):
+    import customer_accounts
     return {
         'id': customer_id,
         'name': customer.get('name') or '',
@@ -861,6 +939,8 @@ def public_customer(customer_id, customer, tiers, user_count):
         'payment_terms_days': payment_term_days(customer),
         'credit_limit': money(customer.get('credit_limit') or 0),
         'credit_currency': _shown_credit_currency(customer),
+        'home_entity': customer_accounts.home_entity(customer),
+        'accounts': _account_rows(customer, orders, invoices, payments),
         'tier': customer.get('tier') or '',
         'tier_label': tier_label(customer.get('tier'), tiers),
         'additional_discount_percent': _percent(customer.get('additional_discount_percent')),
@@ -3303,12 +3383,17 @@ def get_customers():
     tiers = load_tiers()
     customers = load_customers()
     counts = customer_user_counts()
+    orders = load_orders()
+    invoices = load_invoices()
+    payments = load_payments()
     if user.get('role') == 'customer':
         customer_id = user.get('customer_id')
         customer = customers.get(customer_id)
         if not customer:
             return jsonify([])
-        row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        row = public_customer(
+            customer_id, customer, tiers, counts.get(customer_id, 0), orders, invoices, payments,
+        )
         import racks as rack_book
         row['rack_count'] = rack_book.held_count(customer_id)
         return jsonify([row])
@@ -3318,7 +3403,9 @@ def get_customers():
     for customer_id, customer in customers.items():
         if customer.get('books_entity'):
             continue
-        row = public_customer(customer_id, customer, tiers, counts.get(customer_id, 0))
+        row = public_customer(
+            customer_id, customer, tiers, counts.get(customer_id, 0), orders, invoices, payments,
+        )
         row['rack_count'] = rack_book.held_count(customer_id, rack_rows)
         row['price_addon_percent'] = _percent(customer.get('price_addon_percent'), 1000)
         rows.append(row)
@@ -3420,6 +3507,32 @@ def change_tax_number(cid):
         'history': tax_numbers.history_for(cid),
         'changelog': customer.get('changelog') or [],
     })
+
+
+@app.route('/api/customers/<cid>/accounts', methods=['POST'])
+@admin_required
+def add_customer_account(cid):
+    """Add the other issuing company. This does not create a QuickBooks customer."""
+    if not ID_RE.fullmatch(cid or ''):
+        return json_error('Not found', 404)
+    data = json_body() or {}
+    entity = clean_text(data.get('entity'), 8).lower()
+    customers = load_customers()
+    customer = customers.get(cid)
+    if not customer or customer.get('books_entity'):
+        return json_error('Not found', 404)
+    import customer_accounts
+    error = customer_accounts.add_account(customer, entity)
+    if error:
+        return json_error(error, 400)
+    customers[cid] = customer
+    save_customers(customers)
+    tiers = load_tiers()
+    row = public_customer(
+        cid, load_customers()[cid], tiers, customer_user_counts().get(cid, 0),
+        load_orders(), load_invoices(), load_payments(),
+    )
+    return jsonify(row)
 
 
 @app.route('/customers/<cid>/tax-numbers.pdf', methods=['GET'])
@@ -3814,10 +3927,16 @@ def _ship_province(value, customer):
     return billing if billing in PROVINCE_CODES else ''
 
 
-def _canada_tax_fields(customer, ship_province=None):
-    """Resolved Canada tax for a document. Empty for customers outside Canada."""
+def _canada_tax_fields(customer, ship_province=None, issuer=None):
+    """Resolved Canada tax for a document. Empty unless that company account charges GST."""
+    import customer_accounts
+    entity = issuer or customer_accounts.home_entity(customer or {})
+    row = customer_accounts.account(customer or {}, entity)
     import quickbooks
-    if not customer or not quickbooks.is_canadian(customer):
+    if row is not None:
+        if not row.get('gst'):
+            return {}
+    elif not customer or not quickbooks.is_canadian(customer):
         return {}
     province = _ship_province(ship_province, customer)
     code, _warning, label = quickbooks.resolve_canada_tax(customer, province)
@@ -3837,7 +3956,7 @@ def _tax_number_snapshot(customer):
 def _apply_canada_tax(document, customer, ship_province=None, rates=None):
     """Store the tax result and the numbers that produced it. Later edits do not rewrite this."""
     import tax_numbers
-    document.update(_canada_tax_fields(customer, ship_province))
+    document.update(_canada_tax_fields(customer, ship_province, (document or {}).get('issuer')))
     document.update(_tax_number_snapshot(customer))
     document['seller_gst_number'] = tax_numbers.seller_gst_number()
     document['show_seller_gst'] = True
@@ -4035,6 +4154,7 @@ def save_quote():
         if prior and prior.get('fx_rate'):
             fx_rate = _stored_fx(prior)
     currency_changed = False
+    selling_entity = None
     if user.get('role') == 'customer':
         customer_id = user.get('customer_id')
         customer = customers.get(customer_id or '')
@@ -4042,6 +4162,7 @@ def save_quote():
             return json_error('Your account is not linked to a customer.', 400)
         company = customer.get('name') or 'Customer'
         required = _required_currency(customer)
+        selling_entity = __import__('customer_accounts').home_entity(customer)
         currency_changed = currency != required
         if currency_changed and quote_type != 'size':
             factor = _switch_factor(required, fx_rate)
@@ -4064,7 +4185,16 @@ def save_quote():
         if customer:
             customer_id = raw_customer
             company = customer.get('name') or 'Customer'
-            required = _required_currency(customer)
+            import customer_accounts
+            requested_issuer = clean_text(data.get('issuer'), 8).lower()
+            if requested_issuer in customer_accounts.ENTITIES:
+                chosen, account_error = customer_accounts.require_account(customer, requested_issuer)
+                if account_error:
+                    return json_error(account_error, 400)
+            else:
+                chosen = customer_accounts.home_account(customer)
+            selling_entity = (chosen or {}).get('entity')
+            required = (chosen or {}).get('currency') or _required_currency(customer)
             currency_changed = currency != required
             if currency_changed and quote_type != 'size':
                 factor = _switch_factor(required, fx_rate)
@@ -4115,6 +4245,8 @@ def save_quote():
         ) if quote_type == 'size' else priced)
         _stamp_terms(existing, existing['items'], kept_discount, kept_addon)
         existing['currency'] = currency
+        if selling_entity:
+            existing['issuer'] = selling_entity
         existing['fx_rate'] = fx_rate
         existing['type'] = quote_type
         existing['tier'] = tier
@@ -4129,7 +4261,7 @@ def save_quote():
         owner = customers.get(existing.get('customer_id') or '')
         if 'ship_province' in data:
             existing['ship_province'] = _ship_province(data.get('ship_province'), owner)
-        existing.update(_canada_tax_fields(owner, existing.get('ship_province')))
+        existing.update(_canada_tax_fields(owner, existing.get('ship_province'), existing.get('issuer')))
         _record_quote_edit(existing, user, old_items)
         saved = replace_quote(quote_id, existing)
         if saved:
@@ -4147,6 +4279,7 @@ def save_quote():
         'job_address': clean_text(data.get('job_address'), 500),
         'items': _assign_line_numbers(_charge_saved_size_lines(priced, _effective_minimum(customer)) if quote_type == 'size' else priced),
         'currency': currency,
+        'issuer': selling_entity or '',
         'fx_rate': fx_rate,
         'type': quote_type,
         'tier': tier,
@@ -7449,7 +7582,16 @@ def convert_quote_to_order(quote_id):
     if not quote.get('fx_rate'):
         quote['fx_rate'] = _stored_fx(quote)
     currency = str(quote.get('currency') or 'usd').lower()
-    expected = _required_currency(customer)
+    import customer_accounts
+    requested = quote.get('issuer') if quote.get('issuer') in customer_accounts.ENTITIES else ''
+    if requested and customer_accounts.account(customer, requested):
+        selling_entity = requested
+    else:
+        selling_entity = customer_accounts.home_entity(customer)
+    selling_account, account_error = customer_accounts.require_account(customer, selling_entity)
+    if account_error:
+        return json_error(account_error, 400)
+    expected = selling_account['currency']
     currency_notice = None
     if currency != expected:
         currency_notice = f'Converted this quote to {expected.upper()} for {company}.'
@@ -7537,7 +7679,7 @@ def convert_quote_to_order(quote_id):
         order_discount_percent,
     )
     ship = _ship_province(data.get('ship_province'), customer)
-    tax = _canada_tax_fields(customer, ship)
+    tax = _canada_tax_fields(customer, ship, selling_entity)
     snapshot = _tax_number_snapshot(customer)
     import tax_numbers
     tax_lines = tax_numbers.tax_breakdown(
@@ -7565,6 +7707,7 @@ def convert_quote_to_order(quote_id):
         'job_address': quote.get('job_address') or '',
         'notes': '',
         'currency': currency,
+        'issuer': selling_entity,
         'fx_rate': _stored_fx(quote),
         'tier': company_tier,
         'tier_label': tier_label(company_tier, tiers),
@@ -9892,7 +10035,11 @@ def _issue_packed_customer_invoice(order, user, quantities=None):
     from billing import apply_additional_discount
     summary = apply_additional_discount(summary, order.get('additional_discount_percent'))
     customer = _order_customer(order)
-    issuer = 'ca' if _needs_intercompany(order) else 'us'
+    import customer_accounts
+    issuer = customer_accounts.entity_for_order(customer, order)
+    _selling, account_error = customer_accounts.require_account(customer, issuer, order.get('currency'))
+    if account_error:
+        return None, account_error
     shipment = {
         'number': '', 'id': None, 'date': '', 'rack': '', 'truck_plate': '',
         'notes': '', 'source': 'packed',
@@ -10548,21 +10695,25 @@ def _issue_shipment_invoice(order, shipment, user, include_extras):
 
 def _issue_final_customer_invoice(order, user):
     """One invoice for the whole order. Used for US orders when shipping is complete, and for Canada."""
-    import quickbooks
+    import customer_accounts
     if order.get('remake') and not order.get('charge_customer'):
         return None, None
     if order.get('packing_lists'):
         return _issue_packed_customer_invoice(order, user)
     if any(
         row.get('order_id') == order.get('id') and row.get('kind') != 'intercompany' and not row.get('voided')
-        and (row.get('issuer') or 'us') == ('ca' if quickbooks.is_canadian(_order_customer(order)) else 'us')
+        and (row.get('issuer') or 'us') == customer_accounts.entity_for_order(_order_customer(order), order)
         for row in load_invoices()
     ):
         return None, None
     customer = _order_customer(order)
-    if quickbooks.is_canadian(customer):
+    issuer = customer_accounts.entity_for_order(customer, order)
+    selling, account_error = customer_accounts.require_account(customer, issuer, order.get('currency'))
+    if account_error:
+        return None, account_error
+    if selling.get('gst'):
         base = _invoice_from_order(order, user)
-        base['issuer'] = 'ca'
+        base['issuer'] = issuer
         base['kind'] = 'customer'
         _apply_canada_tax(base, customer, order.get('ship_province'))
         stored = append_invoice(base)
@@ -11061,17 +11212,28 @@ def create_document():
     customer = customers.get(customer_id or '')
     if not customer:
         return json_error('Choose a customer.', 400)
-    import quickbooks
-    if linked_invoice:
-        issuer = linked_invoice.get('issuer') or 'us'
-    elif quickbooks.is_canadian(customer):
-        issuer = 'ca'
-    else:
+    import customer_accounts
+    requested_issuer = clean_text(data.get('issuer'), 8).lower()
+    if customer.get('books_entity'):
         issuer = 'us'
+        selling = {'currency': 'usd', 'gst': False}
+    elif linked_invoice:
+        issuer = linked_invoice.get('issuer') or 'us'
+    elif order and order.get('issuer') in customer_accounts.ENTITIES:
+        issuer = order.get('issuer')
+    elif requested_issuer in customer_accounts.ENTITIES:
+        issuer = requested_issuer
+    else:
+        issuer = customer_accounts.home_entity(customer)
+    if customer.get('books_entity'):
+        selling = {'currency': currency or 'usd', 'gst': False}
+        account_error = None
+    else:
+        selling, account_error = customer_accounts.require_account(customer, issuer, currency)
+        if account_error:
+            return json_error(account_error, 400)
     if not currency:
-        currency = _shown_credit_currency(customer)
-    if issuer == 'ca' and quickbooks.is_canadian(customer) and data.get('order_id') in (None, ''):
-        currency = _required_currency(customer)
+        currency = selling['currency']
     if currency not in CURRENCIES:
         return json_error('Currency must be USD or CAD.', 400)
     reason = clean_text(data.get('reason'), 300)
@@ -12144,6 +12306,11 @@ def record_payment():
     currency = clean_text(data.get('currency'), 8).lower()
     if currency not in CURRENCIES:
         return json_error('Currency must be USD or CAD.', 400)
+    import customer_accounts
+    payment_entity = 'ca' if currency == 'cad' else 'us'
+    _selling, account_error = customer_accounts.require_account(customer, payment_entity, currency)
+    if account_error:
+        return json_error(account_error, 400)
     method = clean_text(data.get('method'), 20).lower()
     if method not in PAYMENT_METHODS:
         return json_error('Unknown payment method.', 400)
@@ -12185,6 +12352,7 @@ def record_payment():
         'date': paid_on,
         'amount': amount,
         'currency': currency,
+        'issuer': payment_entity,
         'method': method,
         'reference': clean_text(data.get('reference'), 80),
         'notes': clean_text(data.get('notes'), 500),
@@ -12452,6 +12620,7 @@ def _credit_body(customer, orders, invoices, payments, requested_currency='', us
         'unapplied_credits': unapplied_credits(invoices, customer_id, currency),
         'balance': round(receivables - unapplied_credits(invoices, customer_id, currency), 2),
         'by_currency': _credit_books(customer, orders, invoices, payments),
+        'by_account': _account_rows(customer, orders, invoices, payments),
         'cards_all_time': True,
         'read_only': (user or {}).get('role') == 'customer' or not can_record_payments(user or {}),
     }

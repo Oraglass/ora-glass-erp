@@ -225,9 +225,7 @@ def test_customer_cannot_choose_a_different_tier(client):
     from app import PRICING
     expected = calculate_price_sqf({'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T2'}, 'T2', PRICING, load_tiers())
     other = calculate_price_sqf({'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T1'}, 'T1', PRICING, load_tiers())
-    import currency_rules
-    rate, _day = currency_rules.rate_on('2026-11-17')
-    assert body['price_sqf'] == round(expected * rate, 2)
+    assert body['price_sqf'] == expected
     assert 'fx_rate' not in body
     assert expected != other
     company_tier = client.post('/api/calculate', json={'glass1': 'Clear Glass 4mm', 'temper1': 'n/a', 'tier': 'T5'})

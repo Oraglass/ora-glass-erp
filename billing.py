@@ -306,8 +306,11 @@ def unapplied_credits(invoices, customer_id, currency):
     return round(total, 2)
 
 
-def open_receivables(customer_id, currency, orders, invoices, payments, exclude_order_id=None):
-    """Unpaid invoice balances plus uncovered in-production orders, in one currency."""
+def open_receivables(customer_id, currency, orders, invoices, payments, exclude_order_id=None, issuer=None):
+    """Unpaid invoice balances plus uncovered in-production orders, in one currency.
+
+    When issuer is set, only that Ora Glass company is included.
+    """
     total = 0.0
     invoiced_orders = set()
     for invoice in invoices or []:
@@ -316,6 +319,8 @@ def open_receivables(customer_id, currency, orders, invoices, payments, exclude_
         if invoice.get('customer_id') != customer_id:
             continue
         if str(invoice.get('currency') or 'usd').lower() != currency:
+            continue
+        if issuer and (invoice.get('issuer') or 'us') != issuer:
             continue
         if invoice.get('order_id') and invoice.get('source') != 'manual':
             invoiced_orders.add(invoice.get('order_id'))
@@ -328,6 +333,8 @@ def open_receivables(customer_id, currency, orders, invoices, payments, exclude_
         if order.get('id') == exclude_order_id:
             continue
         if order_currency(order) != currency:
+            continue
+        if issuer and (order.get('issuer') or issuer) != issuer:
             continue
         if order.get('invoice_id') or order.get('id') in invoiced_orders:
             continue
@@ -342,12 +349,22 @@ def open_receivables(customer_id, currency, orders, invoices, payments, exclude_
     return round(total, 2)
 
 
-def available_credit(customer, currency, orders, invoices, payments, exclude_order_id=None):
+def available_credit(customer, currency, orders, invoices, payments, exclude_order_id=None, issuer=None):
     customer = customer or {}
-    limit_currency = str(customer.get('credit_currency') or 'usd').lower()
-    limit = money(customer.get('credit_limit') or 0) if limit_currency == currency else 0.0
+    import customer_accounts
+    if issuer:
+        row = customer_accounts.account(customer, issuer) or {}
+        limit = money(row.get('credit_limit') or 0) if str(row.get('currency') or '') == currency else 0.0
+    else:
+        home = customer_accounts.home_account(customer) or {}
+        if home and home.get('currency') == currency:
+            limit = money(home.get('credit_limit') or customer.get('credit_limit') or 0)
+        else:
+            limit_currency = str(customer.get('credit_currency') or 'usd').lower()
+            limit = money(customer.get('credit_limit') or 0) if limit_currency == currency else 0.0
     receivables = open_receivables(
-        customer.get('id'), currency, orders, invoices, payments, exclude_order_id=exclude_order_id,
+        customer.get('id'), currency, orders, invoices, payments,
+        exclude_order_id=exclude_order_id, issuer=issuer,
     )
     credits = unapplied_credits(invoices, customer.get('id'), currency)
     return round(limit - receivables + credits, 2), limit, receivables

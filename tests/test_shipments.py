@@ -148,10 +148,15 @@ def test_open_windows_and_canada_invoice_per_shipment(client, monkeypatch):
     customers['harbor-glass']['name'] = 'Open Windows Inc'
     customers['harbor-glass']['country'] = 'Canada'
     save_customers(customers)
+    customers = load_customers()
+    import customer_accounts
+    assert customer_accounts.add_account(customers['harbor-glass'], 'ca') is None
+    save_customers(customers)
     from storage import load_orders, save_orders
     orders = load_orders()
     order = next(row for row in orders if row['id'] == order_id)
     order['currency'] = 'cad'
+    order['issuer'] = 'ca'
     order['company'] = 'Open Windows Inc'
     save_orders(orders)
     first = _ship(client, order_id, 1, 'XF260729003')

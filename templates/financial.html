@@ -42,7 +42,7 @@ a{color:#9f1830}
 <p class="note" id="fin-company">{{ customer_name }}</p>
 {% endif %}
 <div id="fin-body"{% if staff_view %} hidden{% endif %}>
-<p class="note" id="cards-scope">Summary cards are all-time. Each currency is shown on its own and includes every open invoice in that currency. The date range filters the payments, invoices, and orders below.</p>
+<p class="note" id="cards-scope">Summary cards are all-time. Each Ora Glass company and currency is shown on its own. The date range filters the payments, invoices, and orders below.</p>
 {% if is_admin %}
 <p><button type="button" class="btn" id="import-open-invoices">Import open invoices from QuickBooks</button></p>
 <p class="note" id="import-open-result"></p>
@@ -110,6 +110,11 @@ function statAmount(credit, field) {
 }
 function renderCards(credit) {
   const box = document.getElementById('credit-stats');
+  const accounts = credit.by_account || [];
+  if (accounts.length) {
+    box.innerHTML = accounts.map(row => '<div class="stat"><h3>' + money(row.currency, row.balance) + '</h3><p>' + esc(row.label) + ' · ' + esc(String(row.currency || '').toUpperCase()) + (row.gst ? ' · GST' : ' · No GST') + '</p><p>Open ' + money(row.currency, row.open_receivables) + '</p></div>').join('');
+    return;
+  }
   box.innerHTML = '<div class="stat"><h3>' + money(credit.credit_currency, credit.credit_limit) + '</h3><p>Credit limit</p></div>'
     + '<div class="stat"><h3>' + statAmount(credit, 'available_credit') + '</h3><p>Available credit</p></div>'
     + '<div class="stat"><h3>' + statAmount(credit, 'open_receivables') + '</h3><p>Open receivables</p></div>'
