@@ -1,4 +1,4 @@
-"""Canada invoice tax sits in the totals, with the PST number left in the header."""
+"""Canada invoice tax sits in the totals as a name and rate. Registration numbers stay in the header and the customer block."""
 
 import documents
 from storage import save_invoices
@@ -6,18 +6,20 @@ from tests.conftest import login, write_user
 from tests.test_quote_export import pdf_text
 
 
-def test_tax_line_labels_include_the_registration_for_each_canada_tax():
+def test_tax_line_labels_are_the_name_and_rate_only():
     invoice = {
         'seller_gst_number': '729631119 RT0001',
         'pst_number': 'PST-100',
         'qst_number': 'QST-200',
     }
-    assert documents.tax_line_label({'name': 'GST', 'rate': '5'}, invoice) == 'GST 5% (GST# 729631119 RT0001)'
-    assert documents.tax_line_label({'name': 'HST', 'rate': '13'}, invoice) == 'HST 13% (GST# 729631119 RT0001)'
-    assert documents.tax_line_label({'name': 'PST', 'rate': '7'}, invoice) == 'PST 7% (PST# PST-100)'
-    assert documents.tax_line_label({'name': 'RST', 'rate': '7'}, invoice) == 'RST 7% (PST# PST-100)'
-    assert documents.tax_line_label({'name': 'QST', 'rate': '9.975'}, invoice) == 'QST 9.975% (QST# QST-200)'
+    assert documents.tax_line_label({'name': 'GST', 'rate': '5'}, invoice) == 'GST 5%'
+    assert documents.tax_line_label({'name': 'HST', 'rate': '13'}, invoice) == 'HST 13%'
+    assert documents.tax_line_label({'name': 'PST', 'rate': '7'}, invoice) == 'PST 7%'
+    assert documents.tax_line_label({'name': 'RST', 'rate': '7'}, invoice) == 'RST 7%'
+    assert documents.tax_line_label({'name': 'QST', 'rate': '9.975'}, invoice) == 'QST 9.975%'
     assert documents.tax_line_label({'name': 'PST', 'rate': '7'}, {}) == 'PST 7%'
+    assert 'GST#' not in documents.tax_line_label({'name': 'GST', 'rate': '5'}, invoice)
+    assert 'PST#' not in documents.tax_line_label({'name': 'PST', 'rate': '7'}, invoice)
 
 
 def test_customer_block_order_is_shared_by_every_invoice_type(client):
@@ -65,7 +67,8 @@ def test_customer_block_order_is_shared_by_every_invoice_type(client):
         '100 Main St', 'Vancouver, BC V6B 1A1', 'Canada',
     ]
     assert next(row['text'] for row in canada['party'] if row['key'] == 'gst') == 'GST# 111222333 RT0001'
-    assert any(row['label'].startswith('GST 5% (GST#') for row in canada['summary'])
+    assert any(row['label'] == 'GST 5%' for row in canada['summary'])
+    assert all('GST#' not in row['label'] and 'PST#' not in row['label'] for row in canada['summary'])
     intercompany = client.get('/api/invoices/2').get_json()
     assert [row['key'] for row in intercompany['party']] == [
         'customer', 'address', 'address', 'address', 'gst', 'project', 'order',
@@ -81,9 +84,11 @@ def test_customer_block_order_is_shared_by_every_invoice_type(client):
     pst = text.find(b'PST:')
     project = text.find(b'Project:')
     order = text.find(b'Order:')
-    igu = text.find(b'IGU total')
-    assert -1 not in (customer, street, gst, pst, project, order, igu)
-    assert customer < street < gst < pst < project < order < igu
+    subtotal = text.find(b'IGU subtotal')
+    assert -1 not in (customer, street, gst, pst, project, order, subtotal)
+    assert customer < street < gst < pst < project < order < subtotal
+    assert b'Discount' not in text
+    assert b'IGU total' not in text
     canada_pdf = pdf_text(client.get('/api/invoices/1/pdf').data)
     assert b'Ora Glass \\(Canada\\) Inc.' in canada_pdf
     assert b'GST# 729631119 RT0001' in canada_pdf
@@ -132,22 +137,32 @@ def test_canada_invoice_moves_gst_into_the_totals_and_keeps_pst_in_the_header(cl
     labels = [row['label'] for row in body['summary']]
     assert labels == [
         'IGU subtotal',
-        'Discount (fixed)',
-        'IGU total',
-        'GST 5% (GST# 729631119 RT0001)',
-        'PST 7% (PST# PST-100)',
+        'GST 5%',
+        'PST 7%',
         'Grand total',
         'Payments applied',
         'Balance due',
     ]
     assert [row['amount'] for row in body['summary'] if row['label'].startswith('GST')] == [125.85]
+    discounted = dict(body)
+    discounted['discount_amount'] = 10
+    discounted['igu_total'] = 90
+    shown = documents.invoice_summary(discounted)
+    assert [row['label'] for row in shown if row['label'].startswith('Discount') or row['label'] == 'IGU total'] == [
+        'Discount (fixed)', 'IGU total',
+    ]
     text = pdf_text(client.get('/api/invoices/1/pdf').data)
     pst = text.find(b'PST:')
-    igu = text.find(b'IGU total')
-    gst = text.find(b'GST 5% \\(GST# 729631119 RT0001\\)')
-    provincial = text.find(b'PST 7% \\(PST# PST-100\\)')
+    subtotal = text.find(b'IGU subtotal')
+    gst = text.find(b'GST 5%')
+    provincial = text.find(b'PST 7%')
     grand = text.find(b'Grand total')
-    assert -1 not in (pst, igu, gst, provincial, grand)
-    assert pst < igu < gst < provincial < grand
-    assert b'PST-100' in text[:igu]
-    assert text.find(b'GST 5%') == gst
+    assert -1 not in (pst, subtotal, gst, provincial, grand)
+    assert pst < subtotal < gst < provincial < grand
+    assert b'PST-100' in text[:subtotal]
+    assert b'GST# 729631119 RT0001' in text[:subtotal]
+    assert b'GST#' not in text[subtotal:]
+    assert b'PST#' not in text
+    assert b'PST-100' not in text[subtotal:]
+    assert b'Discount' not in text
+    assert b'IGU total' not in text
