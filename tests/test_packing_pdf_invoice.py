@@ -180,6 +180,58 @@ def test_adrian_packing_list_layout_stores_the_printed_weight():
         assert row['weight_unit'] == unit, line
 
 
+def test_pdfplumber_text_of_xf261123002_collapses_repeated_glyphs():
+    """pdfplumber reads each totals glyph four times on Adrian's packing list."""
+    from pathlib import Path
+    import packing
+    text = Path('tests/fixtures/xf261123002_pdfplumber.txt').read_text(encoding='utf-8')
+    assert 'TTTToooottttaaaallll WWWWeeeeiiiigggghhhhtttt' in text
+    assert 'PPPPccccssss' in text
+    assert '77775555....22229999' in text
+    parsed = packing.parse_packing_lines(text.splitlines())
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['date'] == '2026-11-23'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+    tight = packing.parse_packing_lines([
+        'Sales Delivery: XF261123002 Date: 11/23/2026',
+        'TotalPcs: 3',
+        'TotalSQ/FT:75.29',
+        'TotalWeight：Approx. 463 LBS',
+        '5016 L3000*920*2200(THK:550)',
+    ])
+    assert tight['total_pcs'] == 3
+    assert tight['total_sqft'] == 75.29
+    assert tight['weight'] == 463
+
+
+def test_real_xf261123002_pdf_reads_without_pdftotext(monkeypatch):
+    import subprocess
+    from pathlib import Path
+    import packing
+    real_run = subprocess.run
+
+    def refuse_pdftotext(*args, **kwargs):
+        blob = ' '.join(str(part) for part in args)
+        if 'pdftotext' in blob:
+            raise AssertionError('pdftotext was called')
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', refuse_pdftotext)
+    payload = Path('tests/fixtures/XF261123002.pdf').read_bytes()
+    assert packing.pdf_has_text(payload) is True
+    parsed = packing.parse_packing_pdf(payload)
+    assert parsed['number'] == 'XF261123002'
+    assert parsed['rack'] == '5016'
+    assert parsed['weight'] == 463
+    assert parsed['weight_unit'] == 'LBS'
+    assert parsed['total_pcs'] == 3
+    assert parsed['total_sqft'] == 75.29
+
+
 def test_real_packing_list_reads_parenthesis_serials_and_ignores_the_description():
     import packing
     parsed = packing.parse_packing_lines(HIGHQ_LIST.splitlines())

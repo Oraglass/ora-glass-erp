@@ -1,0 +1,26 @@
+Packing List Sales Delivery: XF261123002 Date: 11/23/2026
+Customer P.O.#:
+2312 Leatherwood Pl, Production
+Lynden, WA 98264,USA
+Update By: Production Net: C.O.D
+Sold To: HighQ Job Name: PO1
+RackDetail Total TTTToooottttaaaallll PPPPccccssss :::: 3333
+RackCode RackName 1 TTTToooottttaaaallll SSSSQQQQ////FFFFTTTT :::: 77775555....22229999
+TTTToooottttaaaallll WWWWeeeeiiiigggghhhhtttt :::: AAAApppppppprrrrooooxxxx.... 444466663333 LLLLBBBBSSSS
+5016 L3000*920*2200(THK:550)
+RRRReeeemmmmaaaarrrrkkkkssss:::: 5555000011116666
+Glass Detail
+ID QTY WIDTH HEIGHT FLOOR # ITEM DESCRIPTION
+37 128 3/8 32 - 6mmSolarban60 VT Tempered +20mmSuperSpacer with
+(3) 1
+940 mm 3261 mm Argon(Polysulfide)+6mmClear Glass Tempered
+31 17/32 95 27/32 32 - 6mmSolarban60 VT Tempered +20mmSuperSpacer with
+(4) 1
+801 mm 2434 mm Argon(Polysulfide)+6mmClear Glass Tempered
+32 95 29/32 32 - 6mmSolarban60 VT Tempered +20mmSuperSpacer with
+(5) 1
+813 mm 2436 mm Argon(Polysulfide)+6mmClear Glass Tempered
+Accept
+Signature:
+Date:
+Name:

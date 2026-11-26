@@ -25,11 +25,15 @@ _CUSTOMER = re.compile(r'Customer\s*:\s*(.+)', re.I)
 _PROJECT = re.compile(r'Project\s*:\s*(.+)', re.I)
 _PO = re.compile(r'(?:P\.?\s*O\.?|Purchase Order)\s*#?\s*:\s*(.+)', re.I)
 _SERIAL_LINE = re.compile(r'(?:serial|s/?n|sn)\s*[:#]?\s*(\d+)\s*$', re.I)
-_PCS = re.compile(r'Total Pcs\s*:\s*(\d+)', re.I)
-_SQFT = re.compile(r'Total SQ/?FT\s*:\s*([\d.]+)', re.I)
+_PCS = re.compile(r'Total\s*Pcs\s*:?\s*(\d+)', re.I)
+_SQFT = re.compile(r'Total\s*SQ\s*/?\s*FT\s*:?\s*([\d.]+)', re.I)
 _WEIGHT_WORD = r'(?:Approx(?:imate)?|Appx|Appr)'
 _WEIGHT = re.compile(
     rf'(?:Total\s*)?Weight\b[^:\n]{{0,80}}:\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
+    re.I,
+)
+_WEIGHT_TIGHT = re.compile(
+    rf'Total\s*Weight\s*:?\s*(?:{_WEIGHT_WORD}\.?\s*)?([\d,]+(?:\.\d+)?)\s*([A-Za-z]+)?',
     re.I,
 )
 _WEIGHT_OPEN = re.compile(
@@ -136,8 +140,69 @@ def _normalize_measure_line(line):
         .replace('\u00a0', ' ')
         .replace('\u3000', ' ')
         .replace('：', ':')
+        .replace('﹕', ':')
         .replace('，', ',')
     )
+
+
+def _glyph_repeat_factor(text):
+    """How many times this PDF repeats each glyph.
+
+    The production packing list draws the totals column so pdfplumber reads
+    every letter four times: 'TTTToooottttaaaallll WWWWeeeeiiiigggghhhhtttt'.
+    A real double letter, such as the two p's in Approx, becomes a run of eight.
+    """
+    from collections import Counter
+    counts = Counter()
+    index = 0
+    length = len(text)
+    while index < length:
+        end = index + 1
+        while end < length and text[end] == text[index]:
+            end += 1
+        run = end - index
+        if run >= 2 and not text[index].isspace():
+            counts[run] += 1
+        index = end
+    if not counts:
+        return 1
+    factor, hits = counts.most_common(1)[0]
+    total = sum(counts.values())
+    # Two identical characters are normal (1200, 00, a double letter). The
+    # broken totals column repeats every glyph four times, so only that
+    # stretch is collapsed.
+    if factor >= 4 and hits >= 4 and hits / total >= 0.6:
+        return factor
+    return 1
+
+
+def _collapse_stretched_glyphs(text):
+    factor = _glyph_repeat_factor(text)
+    if factor <= 1:
+        return text
+    parts = []
+    index = 0
+    length = len(text)
+    while index < length:
+        end = index + 1
+        while end < length and text[end] == text[index]:
+            end += 1
+        run = end - index
+        if not text[index].isspace() and run >= factor and run % factor == 0:
+            parts.append(text[index] * (run // factor))
+        else:
+            parts.append(text[index:end])
+        index = end
+    return ''.join(parts)
+
+
+def _prepare_packing_line(line):
+    """Collapse repeated glyphs and accept 'TotalWeight' or 'Total Weight:'."""
+    text = _collapse_stretched_glyphs(_normalize_measure_line(line))
+    text = re.sub(r'(?i)total\s*pcs\b', 'Total Pcs', text)
+    text = re.sub(r'(?i)total\s*sq\s*/?\s*ft\b', 'Total SQ/FT', text)
+    text = re.sub(r'(?i)total\s*weight\b', 'Total Weight', text)
+    return text
 
 
 def _store_weight(header, amount, unit):
@@ -172,8 +237,8 @@ def _feed_weight(line, header, pending):
     """
     if header.get('weight') is not None:
         return False, False
-    text = _normalize_measure_line(line).strip()
-    found = _WEIGHT.search(text)
+    text = _prepare_packing_line(line).strip()
+    found = _WEIGHT.search(text) or _WEIGHT_TIGHT.search(text)
     if found:
         _store_weight(header, found.group(1), found.group(2))
         return False, False
@@ -212,7 +277,7 @@ def measures_by_number(lines):
     current = ''
     pending = False
     for raw in lines or []:
-        line = str(raw or '').strip()
+        line = _prepare_packing_line(raw).strip()
         if not line:
             continue
         delivery = _DELIVERY.search(line)
@@ -247,7 +312,7 @@ def weights_by_number(lines):
     current = ''
     pending = False
     for raw in lines or []:
-        line = str(raw or '').strip()
+        line = _prepare_packing_line(raw).strip()
         if not line:
             continue
         delivery = _DELIVERY.search(line)
@@ -394,7 +459,11 @@ def _parse_id_qty_lines(cleaned):
 
 def parse_packing_lines(lines):
     """Turn packing-list text lines into a header and glass rows."""
-    cleaned = [str(line or '').strip() for line in lines if str(line or '').strip()]
+    cleaned = []
+    for line in lines or []:
+        prepared = _prepare_packing_line(line).strip()
+        if prepared:
+            cleaned.append(prepared)
     if any(_ID_QTY.match(line) for line in cleaned):
         return _parse_id_qty_lines(cleaned)
     header = {
@@ -595,8 +664,44 @@ def _lines_from_words(page):
     return lines
 
 
+def _lines_beside_labels(page):
+    """Read a total whose amount sits in another text object on the same row.
+
+    The label and the number are separate words. Their y positions can differ
+    by a few points, so a single text line misses the amount.
+    """
+    words = page.extract_words(use_text_flow=True, keep_blank_chars=False) or []
+    if not words:
+        return []
+    ordered = sorted(words, key=lambda word: (float(word.get('top') or 0), float(word.get('x0') or 0)))
+    emitted = []
+    seen = set()
+    for index, word in enumerate(ordered):
+        top = float(word.get('top') or 0)
+        x0 = float(word.get('x0') or 0)
+        chunk = [word]
+        for other in ordered[index + 1:]:
+            other_x = float(other.get('x0') or 0)
+            if other_x + 1 < x0:
+                continue
+            if abs(float(other.get('top') or 0) - top) > 6:
+                continue
+            if other_x - float(chunk[-1].get('x1') or other_x) > 180:
+                break
+            chunk.append(other)
+            if len(chunk) >= 8:
+                break
+        prepared = _prepare_packing_line(' '.join(str(item.get('text') or '') for item in chunk)).strip()
+        if not prepared or prepared in seen:
+            continue
+        if _PCS.search(prepared) or _SQFT.search(prepared) or _WEIGHT.search(prepared) or _WEIGHT_TIGHT.search(prepared):
+            seen.add(prepared)
+            emitted.append(prepared)
+    return emitted
+
+
 def _measure_score(lines):
-    text = '\n'.join(str(line or '') for line in lines or [])
+    text = '\n'.join(_prepare_packing_line(line) for line in lines or [])
     score = 0
     if _WEIGHT.search(text) or _WEIGHT_OPEN.search(text):
         score += 4
@@ -645,8 +750,22 @@ def pdf_lines(payload):
                 candidates.append((page.extract_text(layout=True) or '').splitlines())
             except Exception:
                 pass
+            try:
+                candidates.append(_lines_beside_labels(page))
+            except Exception:
+                pass
             collected.extend(_best_page_lines(candidates))
     return collected
+
+
+def pdf_has_text(payload):
+    """False when the page is only vectors or a scanned image."""
+    import pdfplumber
+    try:
+        with pdfplumber.open(io.BytesIO(payload)) as document:
+            return any(page.chars for page in document.pages)
+    except Exception:
+        return False
 
 
 def parse_packing_pdf(payload):

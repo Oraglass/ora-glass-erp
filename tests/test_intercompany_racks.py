@@ -649,3 +649,91 @@ def test_pdf_totals_are_read_without_pdftotext(monkeypatch, client, data_dir):
     assert again['weight'] == 463
     assert again['total_pcs'] == 3
     assert again['total_sqft'] == 75.29
+
+
+def test_real_xf261123002_pdf_backfills_on_reread(client, data_dir):
+    """The live file repeats every totals glyph. Re-read still stores 3 / 75.29 / 463."""
+    from pathlib import Path
+    payload = Path('tests/fixtures/XF261123002.pdf').read_bytes()
+    folder = data_dir / 'packing_files' / 'other'
+    folder.mkdir(parents=True)
+    (folder / 'XF261123002.pdf').write_bytes(payload)
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_orders([{
+        'id': 1,
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'], 'stored': 'gone.pdf',
+            'lines': [{'serial': 1, 'qty': 3}],
+        }],
+    }])
+    save_invoices([dict(
+        _invoice(54, 'CA-INV-0001', [{'name': 'Glass', 'serial': 1, 'pcs': 3, 'total': 40}], kind='customer'),
+        issuer='ca', currency='cad', company='HighQ Developments Inc', qbo_id='569',
+    )])
+    reread = client.post('/api/invoices/54/packing-lists/reread')
+    assert reread.status_code == 200, reread.get_json()
+    body = reread.get_json()
+    assert body['number'] == 'CA-INV-0001'
+    assert body['qbo_id'] == '569'
+    assert body['reread'][0]['status'] == 'read'
+    assert body['reread'][0]['error'] == ''
+    assert body['reread'][0]['weight'] == 463
+    assert body['reread'][0]['total_pcs'] == 3
+    assert body['reread'][0]['total_sqft'] == 75.29
+    assert body['packing']['shipment']['list_lines'] == [
+        'XF261123002: Rack 5016 · 3 pcs · 75.29 sq ft · 463 lb',
+    ]
+
+
+def test_a_pdf_with_no_text_layer_says_so(client, data_dir):
+    from reportlab.pdfgen import canvas
+    buffer = io.BytesIO()
+    sheet = canvas.Canvas(buffer)
+    sheet.line(20, 20, 200, 200)
+    sheet.save()
+    payload = buffer.getvalue()
+    assert packing_book.pdf_has_text(payload) is False
+    folder = data_dir / 'packing_files' / 'other'
+    folder.mkdir(parents=True)
+    (folder / 'XF261123002.pdf').write_bytes(payload)
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    save_orders([{
+        'id': 1,
+        'company': 'HighQ Developments Inc',
+        'project': 'Misc',
+        'status': 'sent',
+        'items': [_glass()],
+        'packing_lists': [{
+            'id': 2, 'current': True, 'number': 'XF261123002', 'rack': '5016',
+            'racks': ['5016'], 'stored': 'gone.pdf',
+        }],
+    }])
+    save_invoices([dict(
+        _invoice(54, 'CA-INV-0001', [{'name': 'Glass', 'serial': 1, 'pcs': 3, 'total': 40}], kind='customer'),
+        issuer='ca', currency='cad',
+    )])
+    body = client.post('/api/invoices/54/packing-lists/reread').get_json()
+    assert body['reread'][0]['status'] == 'unread'
+    assert 'no text layer' in body['reread'][0]['error']
+    assert body['number'] == 'CA-INV-0001'
+
+
+def test_invoice_actions_ask_before_they_run():
+    page = open('templates/invoices.html', encoding='utf-8').read()
+    assert "Are you sure you want to regenerate invoice " in page
+    assert 'Payments allocated to it are moved to the new invoice, and QuickBooks is updated' in page
+    assert "Are you sure you want to void invoice " in page
+    assert 'This voids the invoice in the ERP and in QuickBooks' in page
+    assert "Are you sure you want to re-read packing lists on invoice " in page
+    assert "Are you sure you want to send invoice " in page
+    assert "Are you sure you want to create a credit note" in page
+    assert "Are you sure you want to send this payment to QuickBooks?" in page
+    assert "Are you sure you want to send unsynced payments to QuickBooks?" in page
+    assert "Are you sure you want to allocate this payment to the selected invoices?" in page
