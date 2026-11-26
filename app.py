@@ -6789,6 +6789,10 @@ def order_customer_choices():
             'province': customer.get('province') or '',
             'country': customer.get('country') or '',
             'currency': _required_currency(customer),
+            'accounts': [
+                entity for entity in ('us', 'ca')
+                if __import__('customer_accounts').account(customer, entity)
+            ],
         })
     rows.sort(key=lambda row: (row['name'].lower(), row['id']))
     return jsonify(rows)
@@ -12211,7 +12215,11 @@ def _present_payment(payment):
         'not_connected': 'Not connected',
         'voided': 'Voided in QuickBooks',
     }.get(view['qbo_sync'], 'Not sent')
-    issuer = 'ca' if str(payment.get('currency') or '').lower() == 'cad' else 'us'
+    stored_issuer = str(payment.get('issuer') or '').lower()
+    issuer = stored_issuer if stored_issuer in {'us', 'ca'} else (
+        'ca' if str(payment.get('currency') or '').lower() == 'cad' else 'us'
+    )
+    view['issuer'] = issuer
     import quickbooks
     view['qbo_settings_url'] = quickbooks.settings_url(view['qbo_error'], issuer) if view['qbo_error'] else ''
     return view
@@ -12279,7 +12287,10 @@ def get_payments():
         rows = load_payments()
         if requested:
             rows = [row for row in rows if row.get('customer_id') == requested]
+    issuer = clean_text(request.args.get('issuer'), 8).lower()
     rows = [_present_payment(row) for row in rows]
+    if issuer in {'us', 'ca'}:
+        rows = [row for row in rows if (row.get('issuer') or 'us') == issuer]
     rows.sort(key=lambda row: row.get('id') or 0, reverse=True)
     return jsonify(rows)
 
@@ -12696,23 +12707,35 @@ def financial_overview():
         return json_error('Unknown customer.', 404)
     date_from = _query_date('from')
     date_to = _query_date('to')
+    issuer = clean_text(request.args.get('issuer'), 8).lower()
+    if issuer not in {'us', 'ca'}:
+        issuer = ''
     orders = load_orders()
     invoices = load_invoices()
     payments = load_payments()
     credit = _credit_body(customer, orders, invoices, payments, '', user)
+    if issuer:
+        credit['by_account'] = [
+            row for row in (credit.get('by_account') or []) if row.get('entity') == issuer
+        ]
     pay_rows = []
     for row in payments:
         if row.get('customer_id') != customer_id:
             continue
         if not _in_date_range(row.get('date'), date_from, date_to):
             continue
-        pay_rows.append(_present_payment(row))
+        shown_payment = _present_payment(row)
+        if issuer and (shown_payment.get('issuer') or 'us') != issuer:
+            continue
+        pay_rows.append(shown_payment)
     pay_rows.sort(key=lambda row: (str(row.get('date') or ''), row.get('id') or 0), reverse=True)
     invoice_rows = []
     for row in invoices:
         if row.get('customer_id') != customer_id or document_type(row) != 'invoice':
             continue
         if not _in_date_range(row.get('invoice_date'), date_from, date_to):
+            continue
+        if issuer and (row.get('issuer') or 'us') != issuer:
             continue
         shown = _present_invoice(row, payments)
         invoice_rows.append({
@@ -12736,6 +12759,11 @@ def financial_overview():
         if order.get('customer_id') != customer_id or order_status(order) == 'voided':
             continue
         if not _in_date_range(order_day(order), date_from, date_to):
+            continue
+        order_issuer = str(order.get('issuer') or '').lower()
+        if order_issuer not in {'us', 'ca'}:
+            order_issuer = 'ca' if str(order.get('currency') or '').lower() == 'cad' else 'us'
+        if issuer and order_issuer != issuer:
             continue
         status = order_status(order)
         invoiced, not_invoiced = _order_invoice_split(order, invoices)

@@ -47,6 +47,11 @@ h2,h3{color:#333}
 <h2>Invoices</h2>
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 <div class="filters">
+<select id="filter-issuer" aria-label="Issued by">
+<option value="">All issuers</option>
+<option value="us">Ora Glass Inc · USD</option>
+<option value="ca">Ora Glass (Canada) Inc · CAD</option>
+</select>
 {% if staff_view %}<select id="filter-invoice-customer"><option value="">All customers</option></select>{% endif %}
 <input type="date" id="filter-invoice-from" aria-label="From date">
 <input type="date" id="filter-invoice-to" aria-label="To date">
@@ -72,8 +77,9 @@ h2,h3{color:#333}
 </div>
 <table>
 <thead><tr><th>Number</th><th>Type</th><th>Issued by</th><th>Date</th><th>Customer</th><th>Project</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Due</th></tr></thead>
-<tbody id="invoice-list"><tr><td colspan="8" style="color:#666">Loading...</td></tr></tbody>
+<tbody id="invoice-list"><tr><td colspan="10" style="color:#666">Loading...</td></tr></tbody>
 </table>
+<p class="note" id="invoice-summary"></p>
 </div>
 {% if can_issue %}
 <div class="card" id="create-invoice" hidden>
@@ -119,6 +125,11 @@ h2,h3{color:#333}
 {% if can_record %}
 <form id="payment-form">
 <div class="row">
+<select id="pay-issuer" aria-label="Issued by">
+<option value="">All issuers</option>
+<option value="us">Ora Glass Inc · USD</option>
+<option value="ca">Ora Glass (Canada) Inc · CAD</option>
+</select>
 <select id="pay-customer" required aria-label="Customer"></select>
 <input type="date" id="pay-date" required aria-label="Payment date">
 <input type="number" id="pay-amount" min="0.01" step="0.01" placeholder="Amount" required aria-label="Amount">
@@ -209,38 +220,118 @@ function invoiceSummary(invoice) {
 function money(currency, amount) {
   return esc(String(currency || '').toUpperCase()) + ' $' + Number(amount || 0).toFixed(2);
 }
+let customerRows = [];
+function selectedIssuer() {
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  const payIssuer = document.getElementById('pay-issuer');
+  const panel = document.getElementById('invoice-panel');
+  if (panel && !panel.hidden && invoiceIssuer) return invoiceIssuer.value;
+  if (payIssuer && payIssuer.value) return payIssuer.value;
+  return (invoiceIssuer && invoiceIssuer.value) || '';
+}
 function query() {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams(location.search);
+  ['customer_id', 'issuer', 'from', 'to', 'status', 'type'].forEach(key => params.delete(key));
   if (STAFF) {
-    const customer = document.getElementById('filter-invoice-customer').value;
-    if (customer) params.set('customer_id', customer);
+    const customer = document.getElementById('filter-invoice-customer');
+    if (customer && customer.value) params.set('customer_id', customer.value);
   }
+  const issuer = selectedIssuer();
   const from = document.getElementById('filter-invoice-from').value;
   const to = document.getElementById('filter-invoice-to').value;
   const status = document.getElementById('filter-invoice-status').value;
   const type = document.getElementById('filter-invoice-type').value;
+  if (issuer) params.set('issuer', issuer);
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (status) params.set('status', status);
   if (type) params.set('type', type);
   return params;
 }
+function rememberFilters() {
+  const params = query();
+  const next = params.toString();
+  history.replaceState({}, '', location.pathname + (next ? '?' + next : ''));
+  document.querySelectorAll('.fin-tabs a').forEach(link => { link.search = next ? '?' + next : ''; });
+}
+function customersForIssuer(issuer) {
+  if (!issuer) return customerRows;
+  return customerRows.filter(row => (row.accounts || []).indexOf(issuer) >= 0);
+}
+function fillCustomerSelects() {
+  const issuer = selectedIssuer();
+  const rows = customersForIssuer(issuer);
+  const filter = document.getElementById('filter-invoice-customer');
+  const pay = document.getElementById('pay-customer');
+  const previousFilter = filter ? filter.value : '';
+  const previousPay = pay ? pay.value : '';
+  if (filter) {
+    filter.innerHTML = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    if (rows.some(row => row.id === previousFilter)) filter.value = previousFilter;
+  }
+  if (pay) {
+    pay.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+    if (rows.some(row => row.id === previousPay)) pay.value = previousPay;
+  }
+  const currency = document.getElementById('pay-currency');
+  if (currency) {
+    if (issuer === 'us' || issuer === 'ca') {
+      currency.value = issuer === 'ca' ? 'cad' : 'usd';
+      currency.disabled = true;
+    } else {
+      currency.disabled = false;
+    }
+  }
+}
+function applyQuery() {
+  const params = new URLSearchParams(location.search);
+  const issuer = params.get('issuer') || '';
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  const payIssuer = document.getElementById('pay-issuer');
+  if (invoiceIssuer && (issuer === '' || issuer === 'us' || issuer === 'ca')) invoiceIssuer.value = issuer;
+  if (payIssuer && (issuer === '' || issuer === 'us' || issuer === 'ca')) payIssuer.value = issuer;
+  const from = document.getElementById('filter-invoice-from');
+  const to = document.getElementById('filter-invoice-to');
+  const status = document.getElementById('filter-invoice-status');
+  const type = document.getElementById('filter-invoice-type');
+  if (from && params.get('from')) from.value = params.get('from');
+  if (to && params.get('to')) to.value = params.get('to');
+  if (status && params.get('status')) status.value = params.get('status');
+  if (type && params.get('type')) type.value = params.get('type');
+  fillCustomerSelects();
+  const customer = params.get('customer_id') || '';
+  const filter = document.getElementById('filter-invoice-customer');
+  const pay = document.getElementById('pay-customer');
+  if (filter && [...filter.options].some(option => option.value === customer)) filter.value = customer;
+  if (pay && customer && [...pay.options].some(option => option.value === customer)) pay.value = customer;
+}
 async function loadCustomers() {
-  if (!STAFF) return [];
+  if (!STAFF) { applyQuery(); return []; }
   const res = await fetch('/api/order-customers');
   if (!res.ok) return [];
-  const rows = await res.json();
-  const options = '<option value="">All customers</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
-  const filter = document.getElementById('filter-invoice-customer');
-  if (filter) filter.innerHTML = options;
-  const pay = document.getElementById('pay-customer');
-  if (pay) pay.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
-  return rows;
+  customerRows = await res.json();
+  applyQuery();
+  return customerRows;
+}
+function renderInvoiceSummary(rows) {
+  const box = document.getElementById('invoice-summary');
+  if (!box) return;
+  const totals = {};
+  rows.forEach(row => {
+    if (row.voided || row.doc_type === 'credit_note') return;
+    const code = String(row.currency || 'usd').toLowerCase();
+    if (!totals[code]) totals[code] = {total: 0, balance: 0};
+    totals[code].total += Number(row.total) || 0;
+    totals[code].balance += Number(row.balance) || 0;
+  });
+  const codes = Object.keys(totals).sort();
+  box.textContent = codes.length ? 'Totals by currency: ' + codes.map(code => code.toUpperCase() + ' $' + totals[code].total.toFixed(2) + ' · balance $' + totals[code].balance.toFixed(2)).join('    ') : '';
 }
 function renderInvoices(rows) {
   const body = document.getElementById('invoice-list');
+  renderInvoiceSummary(rows);
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="9" style="color:#666">No invoices found</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" style="color:#666">No invoices found</td></tr>';
     return;
   }
   body.innerHTML = rows.map(row => '<tr><td><a href="/invoices/' + esc(row.id) + '" data-invoice="' + esc(row.id) + '">' + esc(row.number) + '</a></td><td>' + esc(row.type_label || 'Invoice') + '</td><td>' + esc(row.issuer_label || '') + ' · ' + esc(String(row.currency || '').toUpperCase()) + '</td><td>' + esc(row.invoice_date) + '</td><td>' + esc(row.company) + '</td><td>' + esc(row.project || '-') + '</td><td class="num">' + money(row.currency, row.total) + '</td><td class="num">' + money(row.currency, row.balance) + '</td><td><span class="badge ' + esc(row.status) + '">' + esc(row.status_label) + '</span></td><td>' + esc(row.due_date || '') + '</td></tr>').join('');
@@ -368,6 +459,7 @@ function renderDetail(invoice) {
   });
 }
 async function loadInvoices() {
+  rememberFilters();
   const res = await fetch('/api/invoices?' + query().toString());
   if (res.status === 401) { window.location = '/login'; return; }
   if (!res.ok) return;
@@ -491,7 +583,8 @@ async function loadOpenInvoices() {
     renderPickers();
     return;
   }
-  const params = new URLSearchParams({customer_id: customer.value, currency: currency.value, issuer: currency.value === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'});
+  const issuer = selectedIssuer() || (currency.value === 'cad' ? 'ca' : 'us');
+  const params = new URLSearchParams({customer_id: customer.value, currency: issuer === 'ca' ? 'cad' : 'usd', issuer: issuer, balance: 'open', type: 'invoice'});
   const res = await fetch('/api/invoices?' + params.toString());
   openInvoices = res.ok ? await res.json() : [];
   const visible = new Set(openInvoices.map(row => String(row.id)));
@@ -508,7 +601,7 @@ async function loadAllocInvoices() {
   }
   const params = new URLSearchParams({
     customer_id: payment.customer_id, currency: payment.currency,
-    issuer: payment.currency === 'cad' ? 'ca' : 'us', balance: 'open', type: 'invoice'
+    issuer: payment.issuer || (payment.currency === 'cad' ? 'ca' : 'us'), balance: 'open', type: 'invoice'
   });
   const res = await fetch('/api/invoices?' + params.toString());
   allocInvoices = res.ok ? await res.json() : [];
@@ -520,8 +613,12 @@ async function loadPayments() {
   const params = new URLSearchParams();
   if (STAFF) {
     const customer = document.getElementById('filter-invoice-customer');
-    if (customer && customer.value) params.set('customer_id', customer.value);
+    const pay = document.getElementById('pay-customer');
+    const chosen = (customer && customer.value) || (pay && pay.value) || '';
+    if (chosen) params.set('customer_id', chosen);
   }
+  const issuer = selectedIssuer();
+  if (issuer) params.set('issuer', issuer);
   const res = await fetch('/api/payments?' + params.toString());
   if (!res.ok) return;
   renderPayments(await res.json());
@@ -552,9 +649,14 @@ async function loadCredit() {
   if (!res.ok) return;
   const credit = await res.json();
   if (payCurrency && payCurrency.dataset.locked !== '1' && credit.currency) payCurrency.value = credit.currency;
-  let summary = credit.company + ' credit limit ' + money(credit.credit_currency, credit.credit_limit);
-  if (credit.credit_currency === credit.currency) summary += '. Available ' + money(credit.currency, credit.available_credit);
-  summary += '. Open receivables ' + money(credit.currency, credit.open_receivables) + '. Unallocated payments ' + money(credit.currency, credit.unallocated_payments) + '. Unapplied credits ' + money(credit.currency, credit.unapplied_credits) + '. Balance ' + money(credit.currency, credit.balance) + '.';
+  const issuer = selectedIssuer();
+  const books = (credit.by_account || []).filter(row => !issuer || row.entity === issuer);
+  let summary = credit.company || '';
+  if (books.length) {
+    summary += (summary ? ' ' : '') + books.map(row => row.label + ' ' + String(row.currency || '').toUpperCase() + ': open ' + money(row.currency, row.open_receivables) + ', balance ' + money(row.currency, row.balance)).join(' · ');
+  } else {
+    summary += ' open receivables ' + money(credit.currency, credit.open_receivables) + ', balance ' + money(credit.currency, credit.balance);
+  }
   document.getElementById('credit-summary').textContent = summary;
   loadOpenInvoices();
 }
@@ -655,10 +757,29 @@ if (CAN_ISSUE) {
   loadOrders();
 }
 document.getElementById('invoice-filter').addEventListener('click', () => { loadInvoices(); loadPayments(); loadCredit(); });
+const filterIssuer = document.getElementById('filter-issuer');
+if (filterIssuer) filterIssuer.addEventListener('change', () => {
+  const payIssuer = document.getElementById('pay-issuer');
+  if (payIssuer) payIssuer.value = filterIssuer.value;
+  fillCustomerSelects();
+  loadInvoices();
+  loadPayments();
+  loadCredit();
+});
+const payIssuer = document.getElementById('pay-issuer');
+if (payIssuer) payIssuer.addEventListener('change', () => {
+  const invoiceIssuer = document.getElementById('filter-issuer');
+  if (invoiceIssuer) invoiceIssuer.value = payIssuer.value;
+  fillCustomerSelects();
+  loadInvoices();
+  loadPayments();
+  loadCredit();
+});
 const filterCustomer = document.getElementById('filter-invoice-customer');
 if (filterCustomer) filterCustomer.addEventListener('change', () => {
   const pay = document.getElementById('pay-customer');
-  if (pay) pay.value = filterCustomer.value;
+  if (pay && [...pay.options].some(option => option.value === filterCustomer.value)) pay.value = filterCustomer.value;
+  rememberFilters();
   const currency = document.getElementById('pay-currency');
   if (currency) delete currency.dataset.locked;
   pickedIds = [];

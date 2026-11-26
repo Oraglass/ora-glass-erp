@@ -36,6 +36,11 @@ a{color:#9f1830}
 {% if note %}<p class="note">{{ note }}</p>{% endif %}
 {% if staff_view %}
 <p class="note">Choose a customer to see their credit, payments, invoices, and orders. Record a payment on the Record payment tab.</p>
+<select id="fin-issuer" aria-label="Issued by">
+<option value="">All issuers</option>
+<option value="us">Ora Glass Inc · USD</option>
+<option value="ca">Ora Glass (Canada) Inc · CAD</option>
+</select>
 <select id="fin-customer" aria-label="Customer"><option value="">Choose a customer</option></select>
 <p class="note" id="fin-empty">Choose a customer to see their overview.</p>
 {% else %}
@@ -162,12 +167,18 @@ async function load(customerId) {
     return;
   }
   showOverview(true);
-  const params = new URLSearchParams();
+  const params = new URLSearchParams(location.search);
+  ['customer_id', 'issuer', 'from', 'to'].forEach(key => params.delete(key));
   if (customerId) params.set('customer_id', customerId);
-  const from = document.getElementById('fin-from').value;
+  const issuer = document.getElementById('fin-issuer');
+  const from = document.getElementById('fin-from') ? document.getElementById('fin-from').value : '';
   const to = document.getElementById('fin-to').value;
+  if (issuer && issuer.value) params.set('issuer', issuer.value);
   if (from) params.set('from', from);
   if (to) params.set('to', to);
+  const next = params.toString();
+  history.replaceState({}, '', location.pathname + (next ? '?' + next : ''));
+  document.querySelectorAll('.fin-tabs a').forEach(link => { link.search = next ? '?' + next : ''; });
   const res = await fetch('/api/financial?' + params.toString());
   if (!res.ok) {
     document.getElementById('credit-stats').innerHTML = '';
@@ -213,15 +224,38 @@ if (importButton) {
     }
   });
 }
+let overviewCustomers = [];
+function fillOverviewCustomers() {
+  const issuer = document.getElementById('fin-issuer').value;
+  const rows = issuer ? overviewCustomers.filter(row => (row.accounts || []).indexOf(issuer) >= 0) : overviewCustomers;
+  const select = document.getElementById('fin-customer');
+  const previous = select.value;
+  select.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  if (rows.some(row => row.id === previous)) select.value = previous;
+}
 async function start() {
+  const params = new URLSearchParams(location.search);
+  const issuer = document.getElementById('fin-issuer');
+  if (issuer && (params.get('issuer') === 'us' || params.get('issuer') === 'ca')) issuer.value = params.get('issuer');
+  if (params.get('from')) document.getElementById('fin-from').value = params.get('from');
+  if (params.get('to')) document.getElementById('fin-to').value = params.get('to');
   if (!STAFF) { load(''); return; }
+  if (!issuer) return;
   const res = await fetch('/api/order-customers');
   if (!res.ok) return;
-  const rows = await res.json();
+  overviewCustomers = await res.json();
   const select = document.getElementById('fin-customer');
-  select.innerHTML = '<option value="">Choose a customer</option>' + rows.map(row => '<option value="' + esc(row.id) + '">' + esc(row.name) + '</option>').join('');
+  fillOverviewCustomers();
+  if (params.get('customer_id') && [...select.options].some(option => option.value === params.get('customer_id'))) {
+    select.value = params.get('customer_id');
+  }
   select.addEventListener('change', () => load(select.value));
-  showOverview(false);
+  issuer.addEventListener('change', () => {
+    fillOverviewCustomers();
+    load(select.value);
+  });
+  if (select.value) load(select.value);
+  else showOverview(false);
 }
 start();
 </script>
