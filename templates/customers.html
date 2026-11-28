@@ -56,6 +56,13 @@ td.actions{width:11rem}
 <div class="modal" id="customer-modal">
 <div class="modal-content">
 <h3 style="margin-bottom:20px" id="modal-title">Add Customer</h3>
+{% if can_manage %}
+<div id="portal-users" hidden>
+<h3 style="margin:0 0 8px;font-size:15px">Portal users</h3>
+<p class="help" id="portal-users-empty" hidden>This customer has no portal users.</p>
+<div id="portal-user-list"></div>
+</div>
+{% endif %}
 <input type="hidden" id="c-id">
 <div class="form-group"><label>Company Name</label><input type="text" id="c-name"></div>
 <div class="form-group"><label>Domain</label><input type="text" id="c-domain" placeholder="open-windows.ca"></div>
@@ -247,6 +254,23 @@ async function loadCustomers() {
   customers = data;
   render();
 }
+async function loadPortalUsers(customer) {
+  const box = document.getElementById('portal-users');
+  if (!box) return;
+  const list = document.getElementById('portal-user-list');
+  const empty = document.getElementById('portal-users-empty');
+  if (!customer) { box.hidden = true; list.innerHTML = ''; return; }
+  box.hidden = false;
+  const users = await api('/api/impersonation/customers');
+  const row = (users || []).find(item => item.id === customer.id);
+  const people = row ? row.users : [];
+  empty.hidden = people.length > 0;
+  list.innerHTML = people.map(user =>
+    '<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid #eee">'
+    + '<span>' + esc(user.name) + ' · ' + esc(user.role_label || '') + '</span>'
+    + '<button class="btn btn-secondary" type="button" data-login-as="' + esc(user.account) + '" data-login-name="' + esc(user.name) + '">Log in as</button></div>'
+  ).join('');
+}
 function openModal(customer) {
   document.getElementById('modal-title').textContent = customer ? 'Edit Customer' : 'Add Customer';
   document.getElementById('c-id').value = customer ? customer.id : '';
@@ -319,6 +343,7 @@ function openModal(customer) {
   document.getElementById('c-credit').checked = customer ? !!customer.credit_approved : false;
   renderAccounts(customer);
   document.getElementById('customer-modal').classList.add('active');
+  loadPortalUsers(customer);
 }
 function renderAccounts(customer) {
   const panel = document.getElementById('account-panel');
@@ -501,6 +526,24 @@ document.getElementById('c-terms').addEventListener('change', () => {
 });
 document.getElementById('close-customer').addEventListener('click', () => {
   document.getElementById('customer-modal').classList.remove('active');
+});
+const portalUsers = document.getElementById('portal-users');
+if (portalUsers) portalUsers.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-login-as]');
+  if (!button) return;
+  const name = button.getAttribute('data-login-name') || 'this user';
+  const company = document.getElementById('c-name').value || 'this customer';
+  if (!confirm('Log in as ' + name + ' at ' + company + '? You will see their portal. Their password is not changed.')) return;
+  const body = new FormData();
+  body.append('account', button.getAttribute('data-login-as'));
+  const res = await fetch('/impersonate', {method: 'POST', body});
+  if (res.redirected) { window.location = res.url; return; }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || 'Could not log in as that user');
+    return;
+  }
+  window.location = '/';
 });
 document.getElementById('add-canada-account').addEventListener('click', async () => {
   const id = document.getElementById('add-canada-account').dataset.id;
