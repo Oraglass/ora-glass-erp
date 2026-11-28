@@ -498,6 +498,26 @@ def is_regular_clear(name):
     return bool(_REGULAR_CLEAR.match(str(name or '').strip()))
 
 
+def clear_vitro_label(name):
+    """Quote-form label for a large clear sheet. The stored price name stays unchanged."""
+    match = re.match(r'(?i)^clear glass (\d+mm) large$', str(name or '').strip())
+    if not match:
+        return ''
+    return f'Clear Vitro {match.group(1)}'
+
+
+def clear_vitro_for(name, names):
+    """The same-thickness Large clear row, or blank when that thickness has none."""
+    match = re.match(r'(?i)^clear glass (\d+mm)$', str(name or '').strip())
+    if not match:
+        return ''
+    wanted = f'clear glass {match.group(1)} large'
+    for candidate in names or []:
+        if str(candidate).strip().lower() == wanted:
+            return candidate
+    return ''
+
+
 def sheet_limit_inches(sheet_size):
     """Sheet Width x Sheet Height from the pricing row, in inches."""
     match = re.search(r'(\d+(?:\.\d+)?)"x(\d+(?:\.\d+)?)"', str(sheet_size or ''))

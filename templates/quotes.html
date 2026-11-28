@@ -100,7 +100,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <p id="quote-tax" hidden style="margin:0 0 12px;color:#333;font-size:14px"></p>
 <div id="tab-sqf" class="tab-content active">
 <div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size1" style="color:#666;font-weight:normal"></span></label><select id="glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
@@ -108,7 +108,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div><div class="sealant-note" id="sealant1-note"></div></div>
 <div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size2" style="color:#666;font-weight:normal"></span></label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size2" style="color:#666;font-weight:normal"></span></label><select id="glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
@@ -116,7 +116,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div><div class="sealant-note" id="sealant2-note"></div></div>
 <div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="size3" style="color:#666;font-weight:normal"></span></label><select id="glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 {% macro tier_field(field_id) %}
@@ -155,7 +155,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group small"><label>Pieces</label><input type="number" id="pieces" value="1" min="1"></div>
 </div></div>
 <div class="section"><h3>Layer A (Outboard)</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="s-size1" style="color:#666;font-weight:normal"></span></label><select id="s-glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="s-size1" style="color:#666;font-weight:normal"></span></label><select id="s-glass1"><option value="">Select...</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="s-temper1"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 1 & Sealant 1 - optional</h3><div class="layer">
@@ -163,7 +163,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="s-sealant1"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div><div class="sealant-note" id="s-sealant1-note"></div></div>
 <div class="section"><h3>Layer B (Middle) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="s-size2" style="color:#666;font-weight:normal"></span></label><select id="s-glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="s-size2" style="color:#666;font-weight:normal"></span></label><select id="s-glass2"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="s-temper2"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 <div class="section"><h3>Spacer 2 & Sealant 2 - optional</h3><div class="layer">
@@ -171,7 +171,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div class="form-group"><label>Sealant</label><select id="s-sealant2"><option value="">n/a</option>{% for s in sealants %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
 </div><div class="sealant-note" id="s-sealant2-note"></div></div>
 <div class="section"><h3>Layer C (Inboard) - optional</h3><div class="layer">
-<div class="form-group"><label>Glass <span id="s-size3" style="color:#666;font-weight:normal"></span></label><select id="s-glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}">{{ g.name }}</option>{% endfor %}</select></div>
+<div class="form-group"><label>Glass <span id="s-size3" style="color:#666;font-weight:normal"></span></label><select id="s-glass3"><option value="">n/a</option>{% for g in glass %}<option value="{{ g.name }}" data-size="{{ g.get('sheet_size', '') }}" data-regular-clear="{{ 'yes' if g.get('regular_clear') else '' }}" data-vitro="{{ g.get('vitro_name') or '' }}">{{ g.get('display_name') or g.name }}</option>{% endfor %}</select></div>
 <div class="form-group small"><label>Tempering</label><select id="s-temper3"><option value="n/a">Annealed</option><option value="yes">Tempered</option></select></div>
 </div></div>
 {{ tier_field('s-tier') }}
@@ -183,8 +183,11 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5}
 <div><div class="result-price" style="font-size:20px"><span id="s-curr-label2">USD</span> $<span id="s-price">0.00</span> / piece</div></div>
 </div>
 <div class="result-price" style="font-size:22px;margin-top:15px;border-top:1px solid #ddd;padding-top:10px">Total: <span id="s-curr-label3">USD</span> $<span id="s-total">0.00</span></div>
-<p id="clear-vitro-note" hidden style="margin:10px 0 0;font-size:14px;font-weight:700;color:#9f1830">Size exceeds regular clear limit, Clear Vitro required</p>
 <div style="margin-top:8px;font-size:13px;color:#C41E3A;font-weight:bold" id="s-igu-name"></div>
+</div>
+<div id="clear-vitro-prompt" hidden style="margin-top:12px">
+<p id="clear-vitro-note" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#9f1830">Size exceeds regular clear limit, Clear Vitro required</p>
+<button type="button" class="btn" id="switch-clear-vitro" onclick="switchToClearVitro()">Switch to Clear Vitro</button>
 </div>
 <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px"><input type="checkbox" id="s-irregular"> Irregular shape (+$<span id="irregular-rate">{{ '%.2f'|format(irregular_rate) }}</span> per piece)</label>
 <button class="btn" style="background:#333;margin-top:15px" onclick="addSizeToQuote()">Add to Quote</button>
@@ -243,7 +246,7 @@ function componentThickness(name) {
   if (laminated && (mmParts.length || inches)) return round(mmParts.reduce((sum, value) => sum + value, 0) + inches);
   return mmParts.length ? round(mmParts[0]) : 0;
 }
-function generateIGUName(){const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;const t1=document.getElementById('temper1').value;const t2=document.getElementById('temper2').value;const t3=document.getElementById('temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+').replace(/Tempered\+/g, 'Tempered +')}
+function generateIGUName(){const g1=document.getElementById('glass1').value;const g2=document.getElementById('glass2').value;const g3=document.getElementById('glass3').value;const s1=document.getElementById('spacer1').value;const s2=document.getElementById('spacer2').value;const se1=document.getElementById('sealant1').value;const se2=document.getElementById('sealant2').value;const t1=document.getElementById('temper1').value;const t2=document.getElementById('temper2').value;const t3=document.getElementById('temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' Large','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+').replace(/Tempered\+/g, 'Tempered +')}
 function addToQuote(){const name=document.getElementById('igu-name').textContent;const price=document.getElementById('price').textContent;const project=document.getElementById('project-name').value;if(!name||!selectedCurrency)return;quoteItems.push({name,price,currency:selectedCurrency,project,size:'-',pcs:'-'});renderQuoteList()}
 function renderQuoteList(){const tbody=document.getElementById('quote-body');tbody.innerHTML=quoteItems.map((item,i)=>'<tr><td class="col-product">'+item.name+'</td><td class="col-size">'+(item.size||'-')+'</td><td class="col-qty">'+(item.pcs||'-')+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.price+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="removeItem('+i+')">×</button></td></tr>').join('');document.getElementById('quote-list').style.display=quoteItems.length?'block':'none'}
 function removeItem(i){openSqfIndex=null;quoteItems.splice(i,1);renumberLines(quoteItems);renderQuoteList()}
@@ -276,36 +279,85 @@ function dualSize(width, height, unit) {
   const metric = displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm';
   return '<span class="size-imperial">' + imperial + '</span><span class="size-metric">' + metric + '</span>';
 }
-function addSizeToQuote(){const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
+function addSizeToQuote(){const vitroPrompt=document.getElementById('clear-vitro-prompt');if(vitroPrompt&&!vitroPrompt.hidden)return;if(document.getElementById('size-result').style.display==='none')return;const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
 function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem('+i+')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
 function removeSizeItem(i){openSizeIndex=null;sizeQuoteItems.splice(i,1);renumberLines(sizeQuoteItems);renderSizeQuoteList()}
 async function exportSizeQuote(){if(!selectedCurrency){alert('Select currency first');return}const project=document.getElementById('project-name').value;const items=sizeQuoteItems.map(i=>({name:i.name+' - '+i.size,sqf:i.sqf,price_sqf:i.priceSqf,price_pc:i.pricePc,total:i.total,pcs:i.pcs,spec:i.spec||null,irregular_shape:!!i.irregular_shape,surcharge_rate:i.surcharge_rate||null}));await fetch('/api/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project,type:'size',tier:document.getElementById('s-tier').value})});const res=await fetch('/api/export-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items,currency:selectedCurrency,project})});const blob=await res.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ORA_Quote.pdf';a.click()}
-function checkSheetSize(){
+function sheetFits(option, width, height, unit) {
+  if (!option || !option.dataset.size) return true;
+  const match = option.dataset.size.match(/(\d+(?:\.\d+)?)"x(\d+(?:\.\d+)?)"/);
+  if (!match) return true;
+  let inputW = width;
+  let inputH = height;
+  if (unit === 'mm') { inputW = width / 25.4; inputH = height / 25.4; }
+  const sheetW = parseFloat(match[1]);
+  const sheetH = parseFloat(match[2]);
+  return (inputW <= sheetW && inputH <= sheetH) || (inputW <= sheetH && inputH <= sheetW);
+}
+function optionForGlass(name) {
+  const select = document.getElementById('s-glass1');
+  if (!select || !name || name === 'n/a') return null;
+  return Array.from(select.options).find(option => option.value === name) || null;
+}
+function regularClearOvers(spec) {
+  const width = parseFloat(spec && spec.width) || 0;
+  const height = parseFloat(spec && spec.height) || 0;
+  const unit = spec && spec.unit === 'mm' ? 'mm' : 'in';
+  return ['glass1', 'glass2', 'glass3'].filter(key => {
+    const option = optionForGlass(spec[key]);
+    return option && option.dataset.regularClear === 'yes' && !sheetFits(option, width, height, unit);
+  });
+}
+function showClearVitroPrompt(targets) {
+  window.clearVitroTargets = targets;
+  const prompt = document.getElementById('clear-vitro-prompt');
+  const button = document.getElementById('switch-clear-vitro');
+  if (prompt) prompt.hidden = !targets.length;
+  if (button) button.hidden = !targets.some(row => row.next);
+}
+function switchToClearVitro() {
+  (window.clearVitroTargets || []).forEach(row => {
+    if (!row.next) return;
+    const el = document.getElementById(row.id);
+    if (el) el.value = row.next;
+  });
+  ['s-glass1', 's-glass2', 's-glass3'].forEach(id => {
+    const el = document.getElementById(id);
+    const sel = el.options[el.selectedIndex];
+    const sizeEl = document.getElementById(id.replace('s-glass', 's-size'));
+    if (sizeEl) sizeEl.textContent = sel && sel.dataset.size ? '(' + sel.dataset.size + ')' : '';
+  });
+  calcSize();
+}
+function switchLineToClearVitro(index) {
+  const item = sizeQuoteItems[index];
+  if (!item || !item.spec) return;
+  regularClearOvers(item.spec).forEach(key => {
+    const option = optionForGlass(item.spec[key]);
+    if (option && option.dataset.vitro) item.spec[key] = option.dataset.vitro;
+  });
+  const rebuilt = iguNameFromSpec(item.spec);
+  if (rebuilt) item.name = rebuilt;
+  repriceSizeItem(index);
+}
+function checkSheetSize() {
   const w = parseFloat(document.getElementById('width').value) || 0;
   const h = parseFloat(document.getElementById('height').value) || 0;
   const unit = document.getElementById('unit').value;
-  const glasses = ['s-glass1', 's-glass2', 's-glass3'];
   let error = '';
-  let clearVitro = false;
-  for (const id of glasses) {
+  const targets = [];
+  ['s-glass1', 's-glass2', 's-glass3'].forEach(id => {
     const el = document.getElementById(id);
     const sel = el.options[el.selectedIndex];
-    if (!sel || !sel.dataset.size) continue;
-    const match = sel.dataset.size.match(/(\d+(?:\.\d+)?)"x(\d+(?:\.\d+)?)"/);
-    if (!match) continue;
-    const sheetW = parseFloat(match[1]);
-    const sheetH = parseFloat(match[2]);
-    let inputW = w;
-    let inputH = h;
-    if (unit === 'mm') { inputW = w / 25.4; inputH = h / 25.4; }
-    const fits = (inputW <= sheetW && inputH <= sheetH) || (inputW <= sheetH && inputH <= sheetW);
-    if (fits) continue;
-    if (sel.dataset.regularClear === 'yes') { clearVitro = true; continue; }
-    error = 'Size exceeds sheet (' + sel.dataset.size + ') for ' + sel.value;
-    break;
-  }
-  window.clearVitroRequired = clearVitro;
+    if (!sel || !sel.value || sel.value === 'n/a' || sheetFits(sel, w, h, unit)) return;
+    if (sel.dataset.regularClear === 'yes') {
+      targets.push({id: id, next: sel.dataset.vitro || ''});
+      return;
+    }
+    if (!error) error = 'Size exceeds sheet (' + sel.dataset.size + ') for ' + sel.value;
+  });
+  showClearVitroPrompt(targets);
   const errEl = document.getElementById('size-error');
   if (error) {
     if (!errEl) {
@@ -317,13 +369,18 @@ function checkSheetSize(){
     }
     document.getElementById('size-error').textContent = error;
     document.getElementById('size-error').style.display = 'block';
+  } else if (errEl) {
+    errEl.style.display = 'none';
+  }
+  if (error || targets.length) {
+    document.getElementById('size-result').style.display = 'none';
+    document.getElementById('s-total').textContent = '';
     return false;
   }
-  if (errEl) errEl.style.display = 'none';
   return true;
 }
-async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize()){const vitroNote=document.getElementById('clear-vitro-note');if(vitroNote)vitroNote.hidden=true;return}const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?erpRate:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);window.sizeMinimumSqf=Number(result.minimum_sqf)||0;const chargedSqf=Math.max(sqf,(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0);document.getElementById('area').textContent=chargedSqf.toFixed(2);const areaTotal=document.getElementById('area-total');if(areaTotal)areaTotal.textContent=(chargedSqf*pcs).toFixed(2);const minimumNote=document.getElementById('minimum-sqf-note');if(minimumNote){const shown=(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0;minimumNote.hidden=!(shown>0);minimumNote.textContent=shown>0?('Pieces smaller than '+shown+' sq ft are charged as '+shown+' sq ft.'):'';}const pricePerPc=result.price_sqf*chargedSqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block';const vitroNote=document.getElementById('clear-vitro-note');if(vitroNote)vitroNote.hidden=!window.clearVitroRequired}
-function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+').replace(/Tempered\+/g, 'Tempered +')}
+async function calcSize(){if(!selectedCurrency)return;if(!checkSheetSize())return;const g1=document.getElementById('s-glass1').value;const s1=document.getElementById('s-spacer1').value;const g2=document.getElementById('s-glass2').value;const s2=document.getElementById('s-spacer2').value;const g3=document.getElementById('s-glass3').value;if(!g1||g1==='n/a')return;if(g2&&g2!=='n/a'&&(!s1||s1==='n/a')){alert('Select Spacer 1 before Layer B');return}if(g3&&g3!=='n/a'&&(!s2||s2==='n/a')){alert('Select Spacer 2 before Layer C');return}if(g3&&g3!=='n/a'&&(!g2||g2==='n/a')){alert('Select Layer B before Layer C');return}const w=parseFloat(document.getElementById('width').value)||0;const h=parseFloat(document.getElementById('height').value)||0;const pcs=parseInt(document.getElementById('pieces').value)||1;const unit=document.getElementById('unit').value;let sqf=0;if(unit==='mm'){sqf=(w*h)/92903.04}else{sqf=(w*h)/144}console.log('Calc:',w,h,unit,sqf);document.getElementById('area').textContent=sqf.toFixed(2);document.getElementById('pcs').textContent=pcs;const data={glass1:g1,glass2:g2,glass3:g3,temper1:document.getElementById('s-temper1').value,temper2:document.getElementById('s-temper2').value,temper3:document.getElementById('s-temper3').value,spacer1:s1,spacer2:s2,sealant1:document.getElementById('s-sealant1').value,sealant2:document.getElementById('s-sealant2').value,tier:document.getElementById('s-tier').value,fx_rate:erpRate};const res=await fetch('/api/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await res.json();const mult=selectedCurrency==='cad'?erpRate:1;const curr=selectedCurrency.toUpperCase();document.getElementById('s-curr-label').textContent=curr;document.getElementById('s-curr-label2').textContent=curr;document.getElementById('s-curr-label3').textContent=curr;document.getElementById('s-price-sqf').textContent=(result.price_sqf*mult).toFixed(2);window.sizeMinimumSqf=Number(result.minimum_sqf)||0;const chargedSqf=Math.max(sqf,(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0);document.getElementById('area').textContent=chargedSqf.toFixed(2);const areaTotal=document.getElementById('area-total');if(areaTotal)areaTotal.textContent=(chargedSqf*pcs).toFixed(2);const minimumNote=document.getElementById('minimum-sqf-note');if(minimumNote){const shown=(draftQuoteId&&window.draftMinimumSqf!=null)?Number(window.draftMinimumSqf):Number(result.minimum_sqf)||0;minimumNote.hidden=!(shown>0);minimumNote.textContent=shown>0?('Pieces smaller than '+shown+' sq ft are charged as '+shown+' sq ft.'):'';}const pricePerPc=result.price_sqf*chargedSqf*mult;document.getElementById('s-price').textContent=pricePerPc.toFixed(2);document.getElementById('s-total').textContent=(pricePerPc*pcs).toFixed(2);document.getElementById('s-igu-name').textContent=generateSizeIGUName();document.getElementById('size-result').style.display='block';const vitroNote=document.getElementById('clear-vitro-note');if(vitroNote)vitroNote.hidden=!window.clearVitroRequired}
+function generateSizeIGUName(){const g1=document.getElementById('s-glass1').value;const g2=document.getElementById('s-glass2').value;const g3=document.getElementById('s-glass3').value;const s1=document.getElementById('s-spacer1').value;const s2=document.getElementById('s-spacer2').value;const se1=document.getElementById('s-sealant1').value;const se2=document.getElementById('s-sealant2').value;const t1=document.getElementById('s-temper1').value;const t2=document.getElementById('s-temper2').value;const t3=document.getElementById('s-temper3').value;function cleanGlass(name,temper){if(!name||name==='n/a')return'';let n=name.replace(' Jumbo','').replace(' Large','').replace(' / sqf','');const m=n.match(/(\d+)mm/);const thick=m?m[1]:'';n=n.replace(/\d+mm/,'').trim();const suffix=temper==='yes'?' Tempered':'';return thick+'mm'+n+suffix}function cleanSpacer(name,sealant){if(!name||name==='n/a')return'';const m=name.match(/(\d+)mm/);const thick=m?m[1]:'';const type=name.toLowerCase().includes('techno')?'Technoform':'SuperSpacer';const seal=sealant&&sealant.toLowerCase().includes('silicone')?'Silicone':'Polysulfide';return thick+'mm'+type+' with Argon('+seal+')'}const parts=[];const g2on=g2&&g2!=='n/a';const g3on=g3&&g3!=='n/a';if(g1&&g1!=='n/a')parts.push(cleanGlass(g1,t1));if(g2on&&s1&&s1!=='n/a')parts.push(cleanSpacer(s1,se1));if(g2on)parts.push(cleanGlass(g2,t2));if(g3on&&s2&&s2!=='n/a')parts.push(cleanSpacer(s2,se2));if(g3on)parts.push(cleanGlass(g3,t3));let totalMm=0;function addMm(value,active){if(!active)return;totalMm+=componentThickness(value)}addMm(g1,g1&&g1!=='n/a');addMm(s1,g2on&&s1&&s1!=='n/a');addMm(g2,g2on);addMm(s2,g3on&&s2&&s2!=='n/a');addMm(g3,g3on);const inches=totalMm/25.4;const whole=Math.floor(inches);const frac=inches-whole;const denom=16;const numer=Math.round(frac*denom);let fracStr='';if(numer===0)fracStr=whole.toString();else if(numer===denom)fracStr=(whole+1).toString();else{const g=(a,b)=>b?g(b,a%b):a;const d=g(numer,denom);fracStr=(whole?whole+' ':'')+(numer/d)+'/'+(denom/d)}totalMm=Math.round(totalMm*100)/100;if(Math.abs(totalMm-Math.round(totalMm))<1e-9)totalMm=Math.round(totalMm);return totalMm+' ('+fracStr+'") - '+parts.filter(p=>p).join('+').replace(/Tempered\+/g, 'Tempered +')}
 document.getElementById('s-glass1').addEventListener('change',function(){const sel=this.options[this.selectedIndex];document.getElementById('s-size1').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass1','s-temper1');calculate();calcSize()});
 document.getElementById('s-glass2').addEventListener('change',function(){onLiteChange('s-','2');const sel=this.options[this.selectedIndex];document.getElementById('s-size2').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass2','s-temper2');calcSize()});
 document.getElementById('s-glass3').addEventListener('change',function(){onLiteChange('s-','3');const sel=this.options[this.selectedIndex];document.getElementById('s-size3').textContent=sel&&sel.dataset.size?'('+sel.dataset.size+')':'';updateTemper('s-glass3','s-temper3');calcSize()});
@@ -437,7 +494,10 @@ renderSizeQuoteList = function () {
     const shownSize = (item.spec && item.spec.width) ? dualSize(item.spec.width, item.spec.height, unit) + '<div class="size-edit"><input type="number" aria-label="Width" min="0" step="any" value="' + quoteEsc(item.spec.width) + '" onchange="setSizeDimension(' + i + ', \'width\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> x <input type="number" aria-label="Height" min="0" step="any" value="' + quoteEsc(item.spec.height) + '" onchange="setSizeDimension(' + i + ', \'height\', this.value)" style="width:4.2rem;padding:4px;border:1px solid #ddd;border-radius:4px"> ' + unit + '</div>' : shownQuoteSize(item);
     const extra = item.irregular_shape ? '<tr><td class="col-line"></td><td class="col-product">Irregular shape surcharge – ' + quoteEsc(item.name) + '</td><td></td><td></td><td></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + (rate * pcs).toFixed(2) + '</td><td></td></tr>' : '';
     const panel = openSizeIndex === i ? '<tr class="line-editor" data-line-editor="' + i + '"><td colspan="7">' + specEditor(item, i) + '</td></tr>' : '';
-    return '<tr><td class="col-line">' + (i + 1) + '</td>' + nameCell(item.name) + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total) + '</td>' + lineActions(i, 'size') + '</tr>' + panel + extra;
+    const vitroNote = item.clear_vitro_required ? '<div id="line-vitro-' + i + '"><p style="margin:6px 0;font-size:13px;font-weight:700;color:#9f1830">Size exceeds regular clear limit, Clear Vitro required</p><button type="button" class="btn" onclick="switchLineToClearVitro(' + i + ')">Switch to Clear Vitro</button></div>' : '';
+    const product = '<td class="col-product"><div class="igu-name">' + quoteEsc(item.name || '') + '</div>' + vitroNote + '</td>';
+    const priceText = item.clear_vitro_required ? '' : quoteEsc(String(item.currency || '').toUpperCase()) + ' $' + quoteEsc(item.total);
+    return '<tr><td class="col-line">' + (i + 1) + '</td>' + product + floorCell(item, i, 'size') + '<td class="col-size">' + shownSize + '</td><td class="col-qty"><input type="number" aria-label="Quantity" min="1" value="' + quoteEsc(item.pcs) + '" onchange="setSizeQty(' + i + ', this.value)" style="width:4rem;padding:4px;border:1px solid #ddd;border-radius:4px"></td><td class="col-price">' + priceText + '</td>' + lineActions(i, 'size') + '</tr>' + panel + extra;
   }).join('');
   document.getElementById('size-quote-list').style.display = sizeQuoteItems.length ? 'block' : 'none';
   const taxBase = sizeQuoteItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
@@ -613,6 +673,15 @@ async function repriceSizeItem(index) {
   const height = parseFloat(spec.height) || 0;
   const pcs = parseInt(item.pcs, 10) || 1;
   const unit = spec.unit === 'mm' ? 'mm' : 'in';
+  if (regularClearOvers(spec).length) {
+    item.clear_vitro_required = true;
+    item.total = '';
+    item.priceSqf = '';
+    item.pricePc = '';
+    renderSizeQuoteList();
+    return;
+  }
+  item.clear_vitro_required = false;
   const real = unit === 'mm' ? (width * height) / 92903.04 : (width * height) / 144;
   const tier = document.getElementById('s-tier');
   const tierId = (typeof editingQuote !== 'undefined' && editingQuote && typeof draftTier !== 'undefined' && draftTier) ? draftTier : (tier ? tier.value : '');

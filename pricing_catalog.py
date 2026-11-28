@@ -10,7 +10,10 @@ import os
 import re
 from datetime import datetime, timezone
 
-from quoting import TEMPER_PRICES, classify, glass_family, is_regular_clear, load_pricing, load_pricing_workbook
+from quoting import (
+    TEMPER_PRICES, classify, clear_vitro_for, clear_vitro_label, glass_family,
+    is_regular_clear, load_pricing, load_pricing_workbook,
+)
 from storage import atomic_write_json, data_dir, lock_for, read_json
 
 TABS = (
@@ -320,6 +323,10 @@ def pricing_rows(catalog=None):
             'tariff_percent': item.get('tariff_percent'),
             'aliases': list(item.get('aliases') or []),
         })
+    names = [row['name'] for row in rows]
+    for row in rows:
+        row['vitro_name'] = clear_vitro_for(row['name'], names)
+        row['display_name'] = clear_vitro_label(row['name']) or row['name']
     return rows
 
 
