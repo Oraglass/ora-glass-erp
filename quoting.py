@@ -490,6 +490,86 @@ def calculate_price_sqf(
     return round(total, 2)
 
 
+_REGULAR_CLEAR = re.compile(r'^clear glass \d+mm$', re.IGNORECASE)
+
+
+def is_regular_clear(name):
+    """A standard clear lite, not the Large or Jumbo sheet of the same thickness."""
+    return bool(_REGULAR_CLEAR.match(str(name or '').strip()))
+
+
+def clear_vitro_label(name):
+    """Quote-form label for a large clear sheet. The stored price name stays unchanged."""
+    match = re.match(r'(?i)^clear glass (\d+mm) large$', str(name or '').strip())
+    if not match:
+        return ''
+    return f'Clear Vitro {match.group(1)}'
+
+
+CLEAR_VITRO_REMARK = 'Clear Vitro'
+_LARGE_CLEAR = re.compile(r'(?i)^clear glass \d+mm large$')
+
+
+def uses_clear_vitro(spec):
+    """True when any lite is a large clear sheet (shown as Clear Vitro)."""
+    if not isinstance(spec, dict):
+        return False
+    return any(_LARGE_CLEAR.match(str(spec.get(key) or '').strip()) for key in ('glass1', 'glass2', 'glass3'))
+
+
+def with_clear_vitro_remark(remarks, spec):
+    """Append Clear Vitro to existing remarks. Leave the text alone when it is already there."""
+    text = str(remarks or '').strip()
+    if not uses_clear_vitro(spec):
+        return text
+    if re.search(r'(?i)(?<!\w)clear vitro(?!\w)', text):
+        return text
+    return f'{text} {CLEAR_VITRO_REMARK}'.strip() if text else CLEAR_VITRO_REMARK
+
+
+def clear_vitro_for(name, names):
+    """The same-thickness Large clear row, or blank when that thickness has none."""
+    match = re.match(r'(?i)^clear glass (\d+mm)$', str(name or '').strip())
+    if not match:
+        return ''
+    wanted = f'clear glass {match.group(1)} large'
+    for candidate in names or []:
+        if str(candidate).strip().lower() == wanted:
+            return candidate
+    return ''
+
+
+def sheet_limit_inches(sheet_size):
+    """Sheet Width x Sheet Height from the pricing row, in inches."""
+    match = re.search(r'(\d+(?:\.\d+)?)"x(\d+(?:\.\d+)?)"', str(sheet_size or ''))
+    if not match:
+        return None
+    return float(match.group(1)), float(match.group(2))
+
+
+def exceeds_regular_clear_limit(name, sheet_size, width, height, unit='in'):
+    """True when a regular clear lite does not fit its sheet in either direction.
+
+    The limit is that row's sheet size. A piece that fits when turned still fits.
+    Large and Jumbo clear are not regular clear, so they do not raise this flag.
+    """
+    if not is_regular_clear(name):
+        return False
+    limit = sheet_limit_inches(sheet_size)
+    try:
+        wide = float(width)
+        high = float(height)
+    except (TypeError, ValueError):
+        return False
+    if not limit or wide <= 0 or high <= 0:
+        return False
+    if str(unit or 'in').lower() == 'mm':
+        wide, high = wide / 25.4, high / 25.4
+    sheet_w, sheet_h = limit
+    fits = (wide <= sheet_w and high <= sheet_h) or (wide <= sheet_h and high <= sheet_w)
+    return not fits
+
+
 def classify(pricing):
     glass, spacers, sealants = [], [], []
     for item in pricing:

@@ -12,7 +12,7 @@ import re
 from openpyxl import Workbook, load_workbook
 
 from copy_notes import strip_copy_history
-from quoting import DWG_KIND, SURCHARGE_KIND
+from quoting import DWG_KIND, SURCHARGE_KIND, with_clear_vitro_remark
 from storage import (
     atomic_write_json,
     data_dir,
@@ -860,7 +860,7 @@ def line_export(item, quantity=None, serial=None, currency=None, fx_rate=None):
         'Width(In)': width_in,
         'Height(In)': height_in,
         'Quantity': quantity,
-        'Remarks': strip_copy_history(item.get('remarks')).strip(),
+        'Remarks': with_clear_vitro_remark(strip_copy_history(item.get('remarks')).strip(), spec),
     }
 
 

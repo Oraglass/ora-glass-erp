@@ -70,6 +70,7 @@ from quoting import (
     sealant_match_map,
     suggest_sealant,
     tier_for_request,
+    with_clear_vitro_remark,
 )
 import orgadata_import
 from order_import import (
@@ -4663,6 +4664,10 @@ def _charge_saved_size_lines(items, minimum):
         if price_sqf and charged > real + 0.001:
             item['price_pc'] = round(price_sqf * charged, 2)
             item['total'] = round(item['price_pc'] * pieces, 2)
+        from quoting import with_clear_vitro_remark
+        remark = with_clear_vitro_remark(item.get('remarks'), spec)
+        if remark:
+            item['remarks'] = remark
     return items
 
 
@@ -5018,10 +5023,11 @@ def _repriced_quote_items(items, tier, currency, tiers, fx_rate=None, price_fact
             if label:
                 copied_line['name'] = label
             copied_line.update(_size_price_fields(priced))
-            if item.get('remarks'):
-                remark = strip_copy_history(clean_text(item.get('remarks'), 500))
-                if remark:
-                    copied_line['remarks'] = remark
+            remark = with_clear_vitro_remark(
+                strip_copy_history(clean_text(item.get('remarks'), 500)), spec,
+            )
+            if remark:
+                copied_line['remarks'] = remark
             floor = production.floor_code(item)
             if floor:
                 copied_line['floor'] = floor
@@ -8629,10 +8635,11 @@ def _parse_order_items(raw, tier, currency, tiers, fx_rate=None, price_factor=1,
         line.update(_size_price_fields(priced))
         if raw_item.get('surcharge_rate') not in (None, ''):
             line['surcharge_rate'] = raw_item.get('surcharge_rate')
-        if raw_item.get('remarks'):
-            remark = strip_copy_history(clean_text(raw_item.get('remarks'), 500))
-            if remark:
-                line['remarks'] = remark
+        remark = with_clear_vitro_remark(
+            strip_copy_history(clean_text(raw_item.get('remarks'), 500)), spec,
+        )
+        if remark:
+            line['remarks'] = remark
         floor = production.floor_code(raw_item)
         if floor:
             line['floor'] = clean_text(floor, 80)
