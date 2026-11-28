@@ -391,7 +391,8 @@ function render(orders) {
       : '';
     const when = order.approved_at_display || order.approved_at || '';
     const count = glassPieceCount(order.items);
-    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderBehalfLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
+    const byAdmin = order.by_admin ? ' <span class="by-admin" style="display:inline-block;background:#9f1830;color:#fff;border-radius:8px;padding:1px 6px;font-size:11px;white-space:nowrap">by admin</span>' : '';
+    return '<tr><td><a href="/orders/' + esc(order.id) + '">' + esc(orderNumber(order)) + '</a></td><td>' + esc(order.quote_id) + '</td><td>' + esc(order.company || '') + byAdmin + '</td><td>' + esc(order.project || '-') + '</td><td>' + badge(order) + '</td><td class="num" id="order-pcs-' + esc(order.id) + '">' + esc(count.pieces) + '</td><td class="num" id="order-sqf-' + esc(order.id) + '">' + esc(formatSqf(count.sqf)) + '</td><td>' + invoiceBadge(order) + '</td><td>' + esc(order.approved_by || '') + '<br>' + esc(when) + '</td>' + priceCells + '<td><div class="row-actions">' + orderOpenLink(order) + orderInvoiceLink(order) + orderBehalfLink(order) + orderVoidLink(order) + orderPdfLink(order) + orderExcelLink(order) + '</div></td></tr>';
   }).join('');
 }
 function totalsTable(order) {
@@ -438,6 +439,7 @@ async function postInvoiceChoice(order, invoiceCustomerNow) {
 }
 function describeChange(change) {
   const action = change.action;
+  if (change.field === 'acting') return change.new || '';
   if (change.field === 'job_address') return 'Job address: ' + (change.old || '(blank)') + ' → ' + (change.new || '(blank)');
   if (action === 'added') return 'Added ' + change.field + ': ' + JSON.stringify(change.new);
   if (action === 'removed') return 'Removed ' + change.field + ': ' + JSON.stringify(change.old);
@@ -829,6 +831,7 @@ function renderDetail(order) {
     ? ''
     : appendImportMarkup(order) + '<table id="priced-lines"><thead><tr><th class="num">#</th><th class="floor">Floor</th><th class="product">Product</th><th class="size">Size</th><th class="num">Qty</th><th class="num">Sq ft</th>' + priceHead + '</tr></thead><tbody>' + rows + '</tbody></table>' + totalsTable(order);
   const when = order.approved_at_display || order.approved_at || '';
+  const actingNote = order.acting_label ? '<p class="note" id="acting-label">' + esc(order.acting_label) + '</p>' : '';
   const headerBits = [order.company, order.project, order.po ? 'PO ' + order.po : '', order.legacy ? '' : (order.tier_label || order.tier || ''), (order.approved_by ? 'Approved by ' + order.approved_by : ''), when].filter(Boolean);
   const headerSummary = order.legacy
     ? headerBits.map(esc).join(' · ') + '.'
@@ -857,6 +860,7 @@ function renderDetail(order) {
   const coverage = coverageBlock(order);
   const coverageSection = coverage ? sectionBlock('Credit coverage', '', 'How this order sits against the customer credit limit and prepayments.', coverage) : '';
   box.innerHTML = '<section class="section"><h3>Order ' + esc(orderNumber(order)) + ' ' + badge(order) + ' ' + invoiceBadge(order) + '</h3>'
+    + actingNote
     + '<div class="actions">' + buttons + '</div>'
     + remakeForm(order)
     + '<p class="note">' + headerSummary + '</p>'

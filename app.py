@@ -645,7 +645,7 @@ def _enforce(module=None, admin=False):
     user = current_user()
     if not user:
         return None, unauthenticated()
-    if user.get('must_change_password') and request.endpoint not in PASSWORD_CHANGE_ENDPOINTS:
+    if user.get('must_change_password') and not session.get('impersonator') and request.endpoint not in PASSWORD_CHANGE_ENDPOINTS:
         if wants_json():
             return None, json_error('Password change required', 403)
         return None, redirect(url_for('change_password'))
@@ -1531,11 +1531,20 @@ def inject_user():
                 if item.get('endpoint') == 'racks_page' else item
                 for item in nav
             ]
+    impersonation = None
+    admin = _impersonator_user()
+    if admin and user and user.get('role') == 'customer':
+        customer = load_customers().get(user.get('customer_id') or '') or {}
+        impersonation = {
+            'user': user.get('name') or user.get('email') or '',
+            'customer': customer.get('name') or user.get('customer_id') or '',
+        }
     return {
         'current_user': user,
         'nav_modules': nav,
         'has_dashboard': 'dashboard' in allowed,
         'review_count': review_count,
+        'impersonation': impersonation,
     }
 
 
@@ -1607,6 +1616,8 @@ def login():
             return redirect(url_for('punch'))
         if user.get('role') == 'driver':
             return redirect(next_url or url_for('rack_scan'))
+        if user.get('role') == 'admin':
+            return redirect(url_for('enter_account', next=next_url) if next_url else url_for('enter_account'))
         return redirect(next_url or url_for('dashboard'))
     return render_template('login.html', next_url=safe_next(request.args.get('next')) or '')
 
@@ -1615,6 +1626,152 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for('login'))
+
+
+def _impersonator_user():
+    key = session.get('impersonator')
+    if not key:
+        return None
+    user = load_users().get(key)
+    if not user or user.get('role') != 'admin' or not user.get('active', True):
+        return None
+    return user
+
+
+def _acting_sentence(admin, viewer):
+    import impersonation
+    return impersonation.acting_label(
+        (admin or {}).get('name') or (admin or {}).get('email'),
+        (viewer or {}).get('name') or (viewer or {}).get('email'),
+    )
+
+
+def _note_acting(record, kind):
+    """Keep a new record on the customer user, and note the admin who made it."""
+    admin = _impersonator_user()
+    if not admin or not isinstance(record, dict):
+        return record
+    viewer = current_user() or {}
+    import impersonation
+    record['by_admin'] = True
+    record['created_by_admin'] = admin.get('email') or ''
+    record['created_by_admin_name'] = admin.get('name') or admin.get('email') or 'Admin'
+    record['on_behalf_of'] = viewer.get('email') or ''
+    record['on_behalf_of_name'] = viewer.get('name') or viewer.get('email') or ''
+    record['acting_label'] = _acting_sentence(admin, viewer)
+    if isinstance(record.get('changelog'), list):
+        record['changelog'].append({
+            'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            'user': viewer.get('email') or '',
+            'changes': [{'field': 'acting', 'new': record['acting_label']}],
+        })
+    impersonation.record(admin, viewer, kind, record.get('acting_label'))
+    return record
+
+
+def _portal_users(customer_id):
+    rows = []
+    customers = load_customers()
+    tiers = load_tiers()
+    for key, user in load_users().items():
+        if user.get('role') != 'customer' or user.get('customer_id') != customer_id:
+            continue
+        if not user.get('active', True):
+            continue
+        view = dict(user)
+        view['account'] = key
+        public = public_user(view, customers, tiers)
+        public['account'] = key
+        rows.append(public)
+    rows.sort(key=lambda row: (row.get('name') or '', row.get('email') or ''))
+    return rows
+
+
+def _start_impersonation(admin_key, target_key):
+    users = load_users()
+    admin = users.get(admin_key)
+    if not admin or admin.get('role') != 'admin' or not admin.get('active', True):
+        return 'Only an administrator can view the portal as a customer.'
+    target = users.get(target_key)
+    if not target or target.get('role') != 'customer' or not target.get('active', True):
+        return 'Choose one of that customer\'s portal users.'
+    customer = load_customers().get(target.get('customer_id') or '')
+    if not customer or customer.get('status') == 'inactive':
+        return 'That customer is not active.'
+    import impersonation
+    impersonation.record(admin, target, 'start', customer.get('name') or '')
+    session['user'] = target_key
+    session['impersonator'] = admin_key
+    session.permanent = True
+    return None
+
+
+@app.route('/enter', methods=['GET'])
+@admin_required
+def enter_account():
+    return render_template('enter.html', next_url=safe_next(request.args.get('next')) or '')
+
+
+@app.route('/enter/continue', methods=['POST'])
+@admin_required
+def enter_as_admin():
+    return redirect(safe_next(request.form.get('next')) or url_for('dashboard'))
+
+
+@app.route('/api/impersonation/customers', methods=['GET'])
+@admin_required
+def impersonation_customers():
+    rows = []
+    for customer_id, customer in load_customers().items():
+        if customer.get('books_entity') or customer.get('status') == 'inactive':
+            continue
+        users = _portal_users(customer_id)
+        rows.append({
+            'id': customer_id,
+            'name': customer.get('name') or customer_id,
+            'users': [
+                {
+                    'account': user.get('account'),
+                    'name': user.get('name') or user.get('email') or '',
+                    'email': user.get('email') or '',
+                    'role_label': user.get('customer_subrole_label') or '',
+                }
+                for user in users
+            ],
+        })
+    rows.sort(key=lambda row: row['name'].lower())
+    return jsonify(rows)
+
+
+@app.route('/impersonate', methods=['POST'])
+@admin_required
+def impersonate():
+    data = json_body() or request.form
+    target = clean_text((data or {}).get('account'), 120)
+    error = _start_impersonation(session.get('user'), target)
+    if error:
+        if wants_json():
+            return json_error(error, 400)
+        flash(error, 'error')
+        return redirect(url_for('enter_account'))
+    if wants_json():
+        return jsonify({'ok': True})
+    return redirect(url_for('dashboard'))
+
+
+@app.route('/impersonate/stop', methods=['POST'])
+@login_required
+def stop_impersonation():
+    admin_key = session.get('impersonator')
+    admin = _impersonator_user()
+    viewer = current_user()
+    if not admin:
+        return redirect(url_for('dashboard'))
+    import impersonation
+    impersonation.record(admin, viewer, 'stop', '')
+    session['user'] = admin_key
+    session.pop('impersonator', None)
+    return redirect(url_for('dashboard'))
 
 
 @app.route('/setup-password/<token>', methods=['GET', 'POST'])
@@ -4703,6 +4860,7 @@ def save_quote():
     _stamp_terms(quote, quote['items'], new_discount, new_addon)
     if user.get('role') == 'customer':
         quote.update(_canada_tax_fields(customer, data.get('ship_province')))
+    _note_acting(quote, 'quote')
     stored = append_quote(quote)
     _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id']})
@@ -4786,7 +4944,7 @@ def _record_quote_edit(quote, user, old_items):
     at = datetime.now(ZoneInfo('America/Los_Angeles')).replace(microsecond=0).isoformat()
     email = user.get('email') or ''
     revisions = [row for row in (quote.get('revisions') or []) if isinstance(row, dict)]
-    revisions.append({
+    revision = {
         'number': number,
         'at': at,
         'user': email,
@@ -4794,7 +4952,11 @@ def _record_quote_edit(quote, user, old_items):
         'lines': _revision_lines(old_items, new_items),
         'old_total': _quote_money_total(old_items),
         'new_total': _quote_money_total(new_items),
-    })
+    }
+    admin = _impersonator_user()
+    if admin:
+        revision['note'] = _acting_sentence(admin, user)
+    revisions.append(revision)
     quote['revisions'] = revisions
     quote['revision'] = number
     quote['edited_at'] = at
@@ -4967,6 +5129,7 @@ def copy_quote(quote_id):
     copied.update(_canada_tax_fields(owner, ship))
     copy_discount, copy_addon = _saved_or_company_terms(source if 'price_addon_percent' in source or 'additional_discount_percent' in source else None, owner)
     _stamp_terms(copied, copied['items'], copy_discount, copy_addon)
+    _note_acting(copied, 'quote')
     stored = append_quote(copied)
     _remember_igus(stored.get('items'), stored.get('date'))
     return jsonify({'success': True, 'id': stored['id']})
@@ -5335,6 +5498,8 @@ def _present_import(record, template, user, currency='usd', extra_glass=None, ex
         'tier': tier or '',
         'company': record.get('company') or '',
         'filename': record.get('filename') or '',
+        'acting_label': record.get('acting_label') or '',
+        'by_admin': bool(record.get('by_admin')),
     }
 
 
@@ -5518,7 +5683,7 @@ def create_order_import():
     if error:
         return json_error(error, 400)
     stored = store_upload(upload.filename, payload)
-    record = add_import({
+    record = {
         'customer_id': customer_id,
         'company': customer.get('name') or '',
         'user': user.get('email'),
@@ -5527,7 +5692,9 @@ def create_order_import():
         'status': 'uploaded',
         'template_id': None,
         'project': clean_text(request.form.get('project'), 200),
-    })
+    }
+    _note_acting(record, 'import')
+    record = add_import(record)
     templates = [row for row in load_templates() if row.get('customer_id') == customer_id and row.get('active', True)]
     requested = clean_text(request.form.get('template_id'), 20)
     currency = clean_text(request.form.get('currency') or 'usd', 8).lower()
@@ -5542,7 +5709,11 @@ def create_order_import():
     if reason == 'needs_template':
         record['status'] = 'needs_template'
         replace_import(record['id'], record)
-        return jsonify({'id': record['id'], 'status': 'needs_template', 'templates': [], 'lines': [], 'company': record['company'], 'filename': record['filename']})
+        return jsonify({
+            'id': record['id'], 'status': 'needs_template', 'templates': [], 'lines': [],
+            'company': record['company'], 'filename': record['filename'],
+            'acting_label': record.get('acting_label') or '', 'by_admin': bool(record.get('by_admin')),
+        })
     if reason == 'choose':
         record['status'] = 'choose_template'
         replace_import(record['id'], record)
@@ -5553,6 +5724,8 @@ def create_order_import():
             'lines': [],
             'company': record['company'],
             'filename': record['filename'],
+            'acting_label': record.get('acting_label') or '',
+            'by_admin': bool(record.get('by_admin')),
         })
     return jsonify(_present_import(record, chosen, user, currency))
 
@@ -5764,6 +5937,7 @@ def quote_from_import(import_id):
     quote['import_template_id'] = record.get('template_id')
     quote['source_filename'] = filename
     quote['source_files'] = [{'filename': filename, 'stored': record.get('stored') or ''}]
+    _note_acting(quote, 'import')
     stored = append_quote(quote)
     _remember_igus(stored.get('items'), stored.get('date'))
     record['status'] = 'quoted'
@@ -6430,6 +6604,7 @@ def quote_from_orgadata(import_id):
     }
     _stamp_terms(quote, items, discount, addon)
     quote.update(_canada_tax_fields(customer, None))
+    _note_acting(quote, 'import')
     stored = append_quote(quote)
     _remember_igus(stored.get('items'), stored.get('date'))
     record['status'] = 'quoted'
@@ -7742,6 +7917,8 @@ def order_for_viewer(order, user, with_coverage=False):
         **_review_payload(order, user),
         'invoice_id': order.get('invoice_id'),
         'invoice_number': order.get('invoice_number'),
+        'acting_label': order.get('acting_label') or '',
+        'by_admin': bool(order.get('by_admin')),
         'delivery_creates_invoice': not (
             (order.get('remake') and not order.get('charge_customer'))
             or order.get('legacy')
@@ -8124,7 +8301,7 @@ def convert_quote_to_order(quote_id):
             return json_error(message, 400)
         warning = message
     approved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    order = append_order({
+    order = {
         'quote_id': quote_id,
         'customer_id': customer_id,
         'company': company,
@@ -8169,7 +8346,9 @@ def convert_quote_to_order(quote_id):
         'converted_by': user.get('email'),
         'approved_at': approved_at,
         'date': approved_at[:10],
-    })
+    }
+    _note_acting(order, 'order')
+    order = append_order(order)
     if prepared:
         import drawings as drawing_store
         saved_drawings = []
@@ -8377,10 +8556,14 @@ def _stamp_log(order, user, changes):
     if not changes:
         return order
     log = list(order.get('changelog') or [])
+    admin = _impersonator_user()
+    noted = list(changes)
+    if admin:
+        noted.append({'field': 'acting', 'new': _acting_sentence(admin, user)})
     log.append({
         'at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         'user': user.get('email') or '',
-        'changes': changes,
+        'changes': noted,
     })
     order['changelog'] = log
     return order

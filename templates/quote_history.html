@@ -257,7 +257,8 @@ function renderQuotes(rows) {
     const taxNote = (quote.tax_lines || []).map(line => '<div class="note">' + esc(line.name) + ' ' + esc(line.rate) + '%</div>').join('')
       || (quote.tax_label ? '<div class="note">' + esc(quote.tax_label) + '</div>' : '');
     const pieces = glassPieceCount(quote.items).pieces;
-    return '<tr><td>' + esc(quoteNumber(quote)) + '</td><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td class="num" id="quote-pcs-' + esc(quote.id) + '">' + esc(pieces) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
+    const byAdmin = quote.by_admin ? ' <span class="by-admin" style="display:inline-block;background:#9f1830;color:#fff;border-radius:8px;padding:1px 6px;font-size:11px;white-space:nowrap">by admin</span>' : '';
+    return '<tr><td>' + esc(quoteNumber(quote)) + '</td><td>' + esc(quote.date) + '</td><td>' + esc(quote.time || '-') + '</td><td>' + esc(quote.user) + byAdmin + '</td><td>' + esc(quote.company || 'ORA') + '</td><td>' + esc(quote.project || '-') + '</td><td>' + esc(productLabel(quote)) + drawingNote + taxNote + '</td><td class="num" id="quote-pcs-' + esc(quote.id) + '">' + esc(pieces) + '</td><td>' + esc(String(quote.currency || '').toUpperCase()) + '</td><td>$' + total.toFixed(2) + '</td><td>' + esc(quote.type) + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
   }).join('');
 }
 function fillUsers(rows) {
@@ -502,7 +503,9 @@ function showQuoteDetail(quote) {
   const edits = (quote.revisions || []).map(rev => '<li>Revision ' + esc(rev.number) + ' · ' + esc(rev.user) + ' · ' + esc(rev.at) + (rev.note ? ' · ' + esc(rev.note) : '') + '</li>').join('');
   const editNote = quote.edited_at ? '<p class="note" id="quote-edited">Edited ' + esc(quote.edited_at) + ' by ' + esc(quote.edited_by || '') + '</p>' : '';
   const editLink = quote.can_edit ? '<p><a href="/quotes?edit=' + encodeURIComponent(quote.id) + '">Edit quote</a></p>' : '';
+  const acting = quote.acting_label ? '<p class="note" id="acting-label">' + esc(quote.acting_label) + '</p>' : '';
   box.innerHTML = '<h3 style="margin:16px 0 8px;color:#333">Quote #' + esc(quoteNumber(quote)) + '</h3>'
+    + acting
     + editNote
     + editLink
     + (edits ? '<div class="log" id="quote-revisions"><h3 style="color:#333;font-size:14px">Revision history</h3><ul>' + edits + '</ul></div>' : '')

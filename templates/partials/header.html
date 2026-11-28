@@ -77,3 +77,12 @@
 </div>
 {% endif %}
 {% endwith %}
+{% if impersonation %}
+<div id="impersonation-banner" style="background:#9f1830;color:#fff;padding:10px 30px;font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:12px">
+  <span>Viewing as {{ impersonation.user }} ({{ impersonation.customer }}) - Return to admin</span>
+  <form method="post" action="{{ url_for('stop_impersonation') }}" style="margin:0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" style="background:#fff;color:#9f1830;border:0;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">Return to admin</button>
+  </form>
+</div>
+{% endif %}
