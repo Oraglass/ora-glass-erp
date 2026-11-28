@@ -490,6 +490,45 @@ def calculate_price_sqf(
     return round(total, 2)
 
 
+_REGULAR_CLEAR = re.compile(r'^clear glass \d+mm$', re.IGNORECASE)
+
+
+def is_regular_clear(name):
+    """A standard clear lite, not the Large or Jumbo sheet of the same thickness."""
+    return bool(_REGULAR_CLEAR.match(str(name or '').strip()))
+
+
+def sheet_limit_inches(sheet_size):
+    """Sheet Width x Sheet Height from the pricing row, in inches."""
+    match = re.search(r'(\d+(?:\.\d+)?)"x(\d+(?:\.\d+)?)"', str(sheet_size or ''))
+    if not match:
+        return None
+    return float(match.group(1)), float(match.group(2))
+
+
+def exceeds_regular_clear_limit(name, sheet_size, width, height, unit='in'):
+    """True when a regular clear lite does not fit its sheet in either direction.
+
+    The limit is that row's sheet size. A piece that fits when turned still fits.
+    Large and Jumbo clear are not regular clear, so they do not raise this flag.
+    """
+    if not is_regular_clear(name):
+        return False
+    limit = sheet_limit_inches(sheet_size)
+    try:
+        wide = float(width)
+        high = float(height)
+    except (TypeError, ValueError):
+        return False
+    if not limit or wide <= 0 or high <= 0:
+        return False
+    if str(unit or 'in').lower() == 'mm':
+        wide, high = wide / 25.4, high / 25.4
+    sheet_w, sheet_h = limit
+    fits = (wide <= sheet_w and high <= sheet_h) or (wide <= sheet_h and high <= sheet_w)
+    return not fits
+
+
 def classify(pricing):
     glass, spacers, sealants = [], [], []
     for item in pricing:
