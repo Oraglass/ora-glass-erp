@@ -506,6 +506,27 @@ def clear_vitro_label(name):
     return f'Clear Vitro {match.group(1)}'
 
 
+CLEAR_VITRO_REMARK = 'Clear Vitro'
+_LARGE_CLEAR = re.compile(r'(?i)^clear glass \d+mm large$')
+
+
+def uses_clear_vitro(spec):
+    """True when any lite is a large clear sheet (shown as Clear Vitro)."""
+    if not isinstance(spec, dict):
+        return False
+    return any(_LARGE_CLEAR.match(str(spec.get(key) or '').strip()) for key in ('glass1', 'glass2', 'glass3'))
+
+
+def with_clear_vitro_remark(remarks, spec):
+    """Append Clear Vitro to existing remarks. Leave the text alone when it is already there."""
+    text = str(remarks or '').strip()
+    if not uses_clear_vitro(spec):
+        return text
+    if re.search(r'(?i)(?<!\w)clear vitro(?!\w)', text):
+        return text
+    return f'{text} {CLEAR_VITRO_REMARK}'.strip() if text else CLEAR_VITRO_REMARK
+
+
 def clear_vitro_for(name, names):
     """The same-thickness Large clear row, or blank when that thickness has none."""
     match = re.match(r'(?i)^clear glass (\d+mm)$', str(name or '').strip())

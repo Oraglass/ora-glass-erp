@@ -279,7 +279,7 @@ function dualSize(width, height, unit) {
   const metric = displayMm(wmm) + ' x ' + displayMm(hmm) + ' mm';
   return '<span class="size-imperial">' + imperial + '</span><span class="size-metric">' + metric + '</span>';
 }
-function addSizeToQuote(){const vitroPrompt=document.getElementById('clear-vitro-prompt');if(vitroPrompt&&!vitroPrompt.hidden)return;if(document.getElementById('size-result').style.display==='none')return;const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
+function addSizeToQuote(){const vitroPrompt=document.getElementById('clear-vitro-prompt');if(vitroPrompt&&!vitroPrompt.hidden)return;if(document.getElementById('size-result').style.display==='none')return;const name=document.getElementById('s-igu-name').textContent;const w=document.getElementById('width').value;const h=document.getElementById('height').value;const pcs=document.getElementById('pieces').value;const unit=document.getElementById('unit').value;const total=document.getElementById('s-total').textContent;const sqf=document.getElementById('area').textContent;const priceSqf=document.getElementById('s-price-sqf').textContent;const pricePc=document.getElementById('s-price').textContent;if(!name||!w||!h||!selectedCurrency)return;const size=w+' x '+h+' '+unit;const project=document.getElementById('project-name').value;const added={name,size,total,sqf,priceSqf,pricePc,pcs,currency:selectedCurrency,project,spec:{glass1:document.getElementById('s-glass1').value,temper1:document.getElementById('s-temper1').value,spacer1:document.getElementById('s-spacer1').value,sealant1:document.getElementById('s-sealant1').value,glass2:document.getElementById('s-glass2').value,temper2:document.getElementById('s-temper2').value,spacer2:document.getElementById('s-spacer2').value,sealant2:document.getElementById('s-sealant2').value,glass3:document.getElementById('s-glass3').value,temper3:document.getElementById('s-temper3').value,width:document.getElementById('width').value,height:document.getElementById('height').value,unit:document.getElementById('unit').value}};added.irregular_shape=document.getElementById('s-irregular').checked;if(added.irregular_shape)added.surcharge_rate=IRREGULAR_RATE;if(window.editingLineMeta){Object.assign(added,window.editingLineMeta);window.editingLineMeta=null}added.remarks=noteClearVitro(added.remarks, added.spec);if(typeof placeSizeLine==='function')placeSizeLine(added);else sizeQuoteItems.push(added);renderSizeQuoteList()}
 function toggleIrregular(i, checked){sizeQuoteItems[i].irregular_shape=checked;if(checked)sizeQuoteItems[i].surcharge_rate=sizeQuoteItems[i].surcharge_rate||IRREGULAR_RATE;renderSizeQuoteList()}
 function renderSizeQuoteList(){const tbody=document.getElementById('size-quote-body');tbody.innerHTML=sizeQuoteItems.map((item,i)=>{const checked=item.irregular_shape?' checked':'';const rate=Number(item.surcharge_rate||IRREGULAR_RATE);const pcs=Number(item.pcs)||1;const extra=item.irregular_shape?'<tr><td class="col-product">Irregular shape surcharge – '+item.name+' - '+item.size+'</td><td class="col-size"></td><td class="col-qty"></td><td class="col-price">'+item.currency.toUpperCase()+' $'+(rate*pcs).toFixed(2)+'</td><td></td></tr>':'';return '<tr><td class="col-product">'+item.name+'<div style="font-size:12px;color:#555"><label><input type="checkbox" '+checked+' onchange="toggleIrregular('+i+', this.checked)"> Irregular shape</label></div></td><td class="col-size">'+item.size+'</td><td class="col-qty">'+item.pcs+'</td><td class="col-price">'+item.currency.toUpperCase()+' $'+item.total+'</td><td class="col-remove"><button type="button" class="quote-remove" aria-label="Remove item" onclick="editSizeItem('+i+')">Edit</button> <button type="button" class="quote-remove" aria-label="Remove item" onclick="removeSizeItem('+i+')">×</button></td></tr>'+extra;}).join('');document.getElementById('size-quote-list').style.display=sizeQuoteItems.length?'block':'none';const note=document.getElementById('drawing-note');if(note)note.hidden=!sizeQuoteItems.some(item=>item.irregular_shape)}
 function removeSizeItem(i){openSizeIndex=null;sizeQuoteItems.splice(i,1);renumberLines(sizeQuoteItems);renderSizeQuoteList()}
@@ -330,6 +330,13 @@ function switchToClearVitro() {
   });
   calcSize();
 }
+function noteClearVitro(remarks, spec) {
+  const glasses = [spec && spec.glass1, spec && spec.glass2, spec && spec.glass3];
+  const used = glasses.some(name => /^clear glass \d+mm large$/i.test(String(name || '').trim()));
+  const text = String(remarks || '').trim();
+  if (!used || /(?<!\w)clear vitro(?!\w)/i.test(text)) return text;
+  return text ? text + ' Clear Vitro' : 'Clear Vitro';
+}
 function switchLineToClearVitro(index) {
   const item = sizeQuoteItems[index];
   if (!item || !item.spec) return;
@@ -337,6 +344,7 @@ function switchLineToClearVitro(index) {
     const option = optionForGlass(item.spec[key]);
     if (option && option.dataset.vitro) item.spec[key] = option.dataset.vitro;
   });
+  item.remarks = noteClearVitro(item.remarks, item.spec);
   const rebuilt = iguNameFromSpec(item.spec);
   if (rebuilt) item.name = rebuilt;
   repriceSizeItem(index);
@@ -905,6 +913,7 @@ function updateSizeEditor() {
   if (irregular) item.irregular_shape = irregular.checked;
   const remark = panel.querySelector('[data-field="remarks"]');
   if (remark) item.remarks = remark.value;
+  item.remarks = noteClearVitro(item.remarks, item.spec);
   const rebuilt = iguNameFromSpec(item.spec);
   if (rebuilt) item.name = rebuilt;
   openSizeIndex = null;

@@ -1,8 +1,13 @@
 """Regular clear keeps its sheet size, and an oversized piece warns instead of stopping."""
 
+import io
+
 import openpyxl
 
+import documents
+import production
 from quoting import clear_vitro_for, clear_vitro_label, exceeds_regular_clear_limit, is_regular_clear
+from storage import load_quotes
 from tests.conftest import login, write_user
 
 WORKBOOK = 'pricing_base.xlsx'
@@ -74,3 +79,44 @@ def test_size_tab_holds_the_price_until_clear_vitro_is_chosen(client):
     })
     assert priced.status_code == 200
     assert priced.get_json()['price_sqf'] > 0
+
+
+def test_clear_vitro_remark_is_appended_and_exported(client):
+    write_user('admin@oraglass.us', 'admin')
+    assert login(client, 'admin@oraglass.us').status_code == 302
+    spec = {
+        'glass1': 'Clear Glass 6mm Large', 'temper1': 'n/a',
+        'spacer1': 'Superspacer 12mm / sqf', 'sealant1': 'n/a',
+        'glass2': 'Clear Glass 6mm', 'temper2': 'n/a',
+        'width': 20, 'height': 30, 'unit': 'in',
+    }
+    name = documents.igu_name_from_spec(spec)
+    assert 'Large' not in name
+    assert '6mmClear Glass' in name
+    saved = client.post('/api/quotes', json={
+        'items': [{
+            'name': 'Clear Glass 6mm Large', 'pcs': 1, 'price_sqf': 3.34, 'total': 10,
+            'remarks': 'Edge work', 'spec': spec,
+        }],
+        'currency': 'usd', 'project': 'Vitro', 'type': 'size', 'tier': 'T2',
+    })
+    assert saved.status_code == 200, saved.get_json()
+    stored = next(row for row in load_quotes() if row['id'] == saved.get_json()['id'])
+    line = stored['items'][0]
+    assert line['remarks'] == 'Edge work Clear Vitro'
+    assert 'Large' not in line['name']
+    book = openpyxl.load_workbook(io.BytesIO(production.workbook_bytes(stored['items'])))
+    rows = list(book.active.iter_rows(min_row=1, max_row=2, values_only=True))
+    header, values = rows
+    assert values[header.index('Remarks')] == 'Edge work Clear Vitro'
+    assert 'Large' not in values[header.index('Product Name')]
+    assert 'Clear Glass' in values[header.index('Product Name')]
+    again = production.export_lines([{
+        'remarks': 'Edge work Clear Vitro', 'spec': spec, 'pcs': 1, 'price_sqf': 3.34,
+    }])
+    assert again[0]['Remarks'] == 'Edge work Clear Vitro'
+    plain = dict(spec, glass1='Clear Glass 6mm')
+    regular = production.export_lines([{
+        'remarks': 'Edge work', 'spec': plain, 'pcs': 1, 'price_sqf': 2,
+    }])
+    assert regular[0]['Remarks'] == 'Edge work'
